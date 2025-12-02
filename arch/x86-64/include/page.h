@@ -14,28 +14,26 @@
 #define SELECTOR_TI (2)
 #define SELECTOR_INDEX (3)
 
-/* page size */
+// 页表条目标志位
+#define PTE_PRESENT     (1 << 0)    // 页存在标志
+#define PTE_WRITABLE    (1 << 1)    // 可写标志
+#define PTE_USER        (1 << 2)    // 用户访问标志
+#define PTE_WRITE_THROUGH (1 << 3)  // 写直达标志
+#define PTE_CACHE_DISABLE (1 << 4)  // 缓存禁用标志
+#define PTE_ACCESSED    (1 << 5)    // 访问标志
+#define PTE_DIRTY       (1 << 6)    // 脏页标志
+#define PTE_PAGE_SIZE   (1 << 7)    // 页大小标志 (0: 4KB, 1: 2MB/1GB)
+#define PTE_GLOBAL      (1 << 8)    // 全局页标志
+#define PTE_NO_EXECUTE  (1ULL << 63) // 不可执行标志
 
+// 物理内存页大小 (4KB)
+#define PAGE_SIZE 0x1000
 #define PAGE_SHIFT 12
-#define PAGE_SIZE (1UL << PAGE_SHIFT)
 #define PAGE_MASK (~(PAGE_SIZE - 1))
 
-/* Page Table Entry attributes */
-
-#define PTE_ATTR_P  (1 << 0)
-#define PTE_ATTR_RW (1 << 1)
-#define PTE_ATTR_US (1 << 2)
-#define PTE_ATTR_PWT    (1 << 3)
-#define PTE_ATTR_PCD    (1 << 4)
-#define PTE_ATTR_A  (1 << 5)
-#define PTE_ATTR_D  (1 << 6)
-
-/* Page Directory Entry attributes*/
-
-#define PDE_ATTR_P     (1 << 0)
-#define PDE_ATTR_RW    (1 << 1)
-#define PDE_ATTR_PS    (1 << 7)
-#define PDE_DEFAULT     (PDE_ATTR_P | PDE_ATTR_RW)
+// 物理页框状态
+#define PAGE_FREE 0
+#define PAGE_USED 1
 
 /* page table entry */
 
@@ -44,7 +42,7 @@
 #define PDPT_OFFSET 30
 #define PML4_OFFSET 39
 
-#define PT_ENTRY_MASK 0b111111111UL
+#define PT_ENTRY_MASK   0b111111111UL
 #define PT_MASK (PT_ENTRY_MASK << PT_OFFSET)
 #define PD_MASK (PT_ENTRY_MASK << PD_OFFSET)
 #define PDPT_MASK (PT_ENTRY_MASK << PDPT_OFFSET)
@@ -60,14 +58,6 @@
 #ifndef ASM_FILE
 
 #include <stdint.h>
-
-/* basic types for page table */
-
-typedef uint64_t PML4_t;
-typedef uint64_t PDPT_t;
-typedef uint64_t PD_t;
-typedef uint64_t PT_t;
-typedef uint64_t page_attr_t;
 
 #define PAGE_ALIGN(addr)    ((((size_t) addr) + (PAGE_SIZE - 1)) & PAGE_MASK)
 

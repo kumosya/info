@@ -10,10 +10,11 @@ namespace boot {
 
 	/*  Clear the screen and initialize VIDEO, XPOS and YPOS. */
 	void video_init() {
+		video_addr = (uint8_t *)VIDEO_ADDR;
 		int i;
 		for (i = 0; i < VIDEO_HEIGHT * VIDEO_WIDTH * 2; i++)
 		{
-			*(VIDEO_ADDR + i) = 0;
+			*(video_addr + i) = 0;
 		}
 		xpos = 0;
 		ypos = 0;
@@ -31,8 +32,8 @@ namespace boot {
 			return;
 		}
 
-		*(VIDEO_ADDR + (xpos + ypos * VIDEO_WIDTH) * 2) = c & 0xFF;
-		*(VIDEO_ADDR + (xpos + ypos * VIDEO_WIDTH) * 2 + 1) = ATTRIBUTE;
+		*(video_addr + (xpos + ypos * VIDEO_WIDTH) * 2) = c & 0xFF;
+		*(video_addr + (xpos + ypos * VIDEO_WIDTH) * 2 + 1) = ATTRIBUTE;
 
 		xpos++;
 		if (xpos >= VIDEO_WIDTH)

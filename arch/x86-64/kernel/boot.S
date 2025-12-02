@@ -79,11 +79,11 @@ _start:
 
 	/* Set up page table for booting stage */
 	mov     $pt, %eax
-	or      $(PDE_ATTR_P | PDE_ATTR_RW), %eax
+	or      $(PTE_PRESENT | PTE_WRITABLE), %eax
 	mov     %eax, pd
 
 	xor     %eax, %eax
-	or      $(PDE_ATTR_P | PDE_ATTR_RW | PDE_ATTR_PS), %eax
+	or      $(PTE_PRESENT | PTE_WRITABLE | PTE_PAGE_SIZE), %eax
 	movl    %eax, pt
 
 	xor     %eax, %eax
