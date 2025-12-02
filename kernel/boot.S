@@ -69,7 +69,7 @@ _start:
 	/* Clear eflags */
 	pushl   $0
 	popf
-
+	
 	/* Disable paging (UEFI may turn it on) */
 	mov     %cr0, %eax
 	mov     $CR0_PG, %ebx

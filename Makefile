@@ -1,5 +1,20 @@
-ARCH = x86-64
-#ARCH = aarch64
+CPP=g++
+CPPFLAGS=-c -m64 -fno-builtin -mcmodel=large -fno-stack-protector -nostartfiles -nostdinc -nostdlib \
+			-std=c++11 -fno-asynchronous-unwind-tables -fno-exceptions -fno-rtti -s \
+            -I ./include \
+			-I ./lib/libc/include/ \
+            -I ./lib/libc++/include/
+LD=ld
+LDFLAGS= -nostdlib -z noexecstack --no-warn-rwx-segments -no-relax -T kernel/kernel.lds -m elf_x86_64
+MANGLE_HDR = include/cpp_mangle.h
+
+KERNEL_ELF = build/kernel.elf
+OBJS+= \
+	kernel/entry.o \
+    kernel/boot.o \
+    kernel/boot_video.o \
+    kernel/mm.o \
+	kernel/init.o
 
 DD = dd
 PARTED = parted
@@ -15,34 +30,50 @@ PARTED_DEV = $(LOOP_DEV)p1
 MOUNT_POINT = /mnt/disk
 ZERO_FILL_SIZE = 32M
 
-ifeq ($(ARCH), x86-64)
-	QEMU := qemu-system-x86_64
-else ifeq ($(ARCH), aarch64)
-	QEMU := qemu-system-aarch64
-endif
+QEMU = qemu-system-x86_64
 IMG = build/disk.img
-ifeq ($(ARCH), x86-64)
-	QEMU_OPTS = -m 512M -hda $(IMG)
-else ifeq ($(ARCH), aarch64)
-	QEMU_OPTS = -M virt -cpu cortex-a53 -kernel arch/aarch64/kernel.elf -nographic -serial stdio -monitor null -s -S
-endif
+QEMU_OPTS = -m 512M -hda $(IMG)
 
 ifeq ($(DEBUG), true)
+	CPPFLAGS+= -g -D DEBUG
 	QEMU_OPTS += -s -S
 endif
 
-# set architecture aarch64:isa64r2
-# target remote :1234
-
 .PHONY: all clean makeimg cpfiles run runall
 
-all:
-	@cd lib/libc && $(MAKE) all ARCH=$(ARCH)
-	@cd arch/$(ARCH) && $(MAKE) all
+all: clean kernel/entry.o $(KERNEL_ELF)
+	# @cd lib/libc && $(MAKE) all
+
+$(KERNEL_ELF): $(OBJS)
+	@echo -e '\e[32m[LD]\e[0m $@'
+	@$(LD) $(LDFLAGS) -o $@ $(OBJS)
+
+# Compile the C++ entry object first
+kernel/entry.o: kernel/entry.cc
+	@echo -e '\e[32m[CPP]\e[0m $<'
+	@$(CPP) $(CPPFLAGS) -c -o $@ $<
+	@mangled=`nm -g --defined-only $@ | awk '/cppstart/ {print $$3; exit}'`; \
+	if [ -z "$$mangled" ]; then \
+		echo "ERROR: can't find cppstart symbol in $@"; exit 1; \
+	fi; \
+	printf '%s\n' "#define CPPSTART $$mangled" > $(MANGLE_HDR)
+
+# Assemble/Preprocess boot.S after the mangled-header is available.
+# Use assembler-with-cpp so #include "include/cpp_mangle.h" in boot.S works.
+kernel/boot.o: kernel/boot.S
+	@echo -e '\e[32m[CPP]\e[0m $<'
+	@$(CPP) $(CPPFLAGS) -x assembler-with-cpp -o $@ $<
+
+# Generic rule for compiling .cc -> .o (others)
+%.o: %.cc
+	@echo -e '\e[32m[CPP]\e[0m $<'
+	@$(CPP) $(CPPFLAGS) -o $@ $<
+
 
 clean:
+	@echo -e '\e[33m[RM]\e[0m Cleaning build files ...'
+	@rm -f kernel.elf $(OBJS) $(MANGLE_HDR)
 	@cd lib/libc && $(MAKE) clean ARCH=$(ARCH)
-	@cd arch/$(ARCH) && $(MAKE) clean
 
 makeimg: all
 	@echo -e '\e[34m[DD]\e[0m $(IMG)'
@@ -63,16 +94,13 @@ makeimg: all
 	@sudo $(LOSETUP) -d $(LOOP_DEV)
 
 cpfiles:
-ifeq ($(ARCH), x86-64)
 	@echo -e '\e[34m[CP]\e[0m Copying files to rootfs ...'
+	@cp $(KERNEL_ELF) $(ROOTFS)/boot/kernel.elf
 	@sudo $(LOSETUP) -P $(LOOP_DEV) $(IMG)
 	@sudo $(MOUNT) $(PARTED_DEV) $(MOUNT_POINT)
 	@sudo cp -r $(ROOTFS)/* $(MOUNT_POINT)
 	@sudo $(UMOUNT) $(MOUNT_POINT)
 	@sudo $(LOSETUP) -d $(LOOP_DEV)
-else ifeq ($(ARCH), aarch64)
-	@echo -e 'There is no need to copy files to rootfs for aarch64.'
-endif
 
 qemu: 
 	@echo -e '\e[34m[QEMU]\e[0m Running QEMU ...'

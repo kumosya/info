@@ -27,7 +27,7 @@ cppstart (uint32_t magic, uint8_t *addr)
 		boot::printf ("Error: Unaligned mbi: 0x%x.\n", addr);
 		while (true);
 	}
-
+	
 	boot::mm::init(addr);
 
 	/* We should not get here. */
