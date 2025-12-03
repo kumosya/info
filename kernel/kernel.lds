@@ -16,7 +16,7 @@ SECTIONS
     __boot_start = .;
 
     /* ASM引导状态内核 */
-    .boot.loader :
+    .boot :
     {
         KEEP(*(.boot.header))      /* 保留引导头 */
         *(.boot.*)                /* 所有引导相关节 */

@@ -35,8 +35,8 @@ IMG = build/disk.img
 QEMU_OPTS = -m 512M -hda $(IMG)
 
 ifeq ($(DEBUG), true)
-	CPPFLAGS+= -g -D DEBUG
-	QEMU_OPTS += -s -S
+	CPPFLAGS+=  -O0 -g -D DEBUG
+	QEMU_OPTS += -s -S 
 endif
 
 .PHONY: all clean makeimg cpfiles run runall

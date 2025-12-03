@@ -13,7 +13,7 @@
 /*  The size of our stack (16KB). */
 #define STACK_SIZE                      0x4000
         
-.section .boot.loader.header
+.section .boot.header
         
 multiboot_header:
 	/*  Align 64 bits boundary. */
@@ -52,7 +52,7 @@ end_tag_start:
 end_tag_end:
 multiboot_header_end:
 
-.section .boot.loader.text32
+.section .boot.text32
     .code32
     .align 0x1000
     .extern CPPMAIN
@@ -130,7 +130,7 @@ _start:
 	hlt
 	jmp .loop
 
-.section .boot.loader.data
+.section .boot.data
     .align 0x1000
 
     .globl boot_stack, boot_stack_top, pd, pt

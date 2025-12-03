@@ -72,11 +72,13 @@ namespace boot {
             void* alloc();
             void free(void* addr);
         }
-        namespace paging {
+        namespace page {
             void init(uint64_t start_addr, uint64_t end_addr);
             void mapping(uint64_t* pml4, uint64_t virt_addr, uint64_t phys_addr, uint64_t flags);
             void mapping_kernel(uint64_t* pml4);
+            void mapping_identity(uint64_t* pml4, uint64_t size);
         }
+        static void *memset (void *dest, int val, size_t len);
         void init(uint8_t *addr);
     }
 }
