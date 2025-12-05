@@ -23,7 +23,6 @@
 extern char KERM_VADDR[];
 extern char __boot_end;
 extern char __kernel_end;
-extern char KERM_VADDR[];
 extern void cppinit();
 
 namespace boot {
@@ -41,7 +40,7 @@ namespace boot {
 
     namespace mm {
         // 页表条目结构
-        union page_table_entry {
+        union pt_entry {
             uint64_t value;
             struct {
                 uint64_t present        : 1;   // 页存在标志
@@ -59,6 +58,13 @@ namespace boot {
                 uint64_t no_execute     : 1;   // 不可执行标志
             } __attribute__((packed));
         };
+
+        struct page {
+            uint64_t flag;
+            uint64_t vaddr;
+            uint32_t count;
+        };
+
         namespace frame {
             // 页框结构
             struct mem {
@@ -66,17 +72,19 @@ namespace boot {
                 uint64_t free_pages;       // 空闲页框数
                 uint64_t bitmap_size;      // 位图大小 (字节)
                 uint8_t* bitmap;           // 页框位图
-                uint64_t start_addr;       // 起始地址
+                struct page* pages;        // 页管理数组
+                uint64_t start_addr;       // 起始地址 (原始区域起始)
+                uint64_t start_usable;     // 可用物理起始地址（跳过位图和管理数组）
             };
             void init(uint64_t start_addr, uint64_t end_addr);
             void* alloc();
             void free(void* addr);
         }
-        namespace page {
-            void init(uint64_t start_addr, uint64_t end_addr);
-            void mapping(uint64_t* pml4, uint64_t virt_addr, uint64_t phys_addr, uint64_t flags);
-            void mapping_kernel(uint64_t* pml4);
-            void mapping_identity(uint64_t* pml4, uint64_t size);
+        namespace paging {
+            void init();
+            void mapping(pt_entry* pml4, uint64_t virt_addr, uint64_t phys_addr, uint64_t flags);
+            void mapping_kernel(pt_entry* pml4);
+            void mapping_identity(pt_entry* pml4, uint64_t size);
         }
         static void *memset (void *dest, int val, size_t len);
         void init(uint8_t *addr);
