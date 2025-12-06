@@ -5,7 +5,8 @@ CPPFLAGS=-c -m64 -fno-builtin -mcmodel=large -fno-stack-protector -nostartfiles 
 			-I ./lib/libc/include/ \
             -I ./lib/libc++/include/
 LD=ld
-LDFLAGS= -nostdlib -z noexecstack --no-warn-rwx-segments -no-relax -T kernel/kernel.lds -m elf_x86_64
+LDFLAGS= -nostdlib -z noexecstack --no-warn-rwx-segments -no-relax -T kernel/kernel.lds -m elf_x86_64 \
+			-L ./lib/ -l:libc.a
 MANGLE_HDR = include/cpp_mangle.h
 
 KERNEL_ELF = build/kernel.elf
@@ -14,7 +15,9 @@ OBJS+= \
     kernel/boot.o \
     kernel/boot_video.o \
     kernel/mm.o \
-	kernel/init.o
+	kernel/init.o \
+	kernel/idt.o\
+	kernel/video.o
 
 DD = dd
 PARTED = parted
@@ -39,10 +42,12 @@ ifeq ($(DEBUG), true)
 	QEMU_OPTS += -s -S 
 endif
 
-.PHONY: all clean makeimg cpfiles run runall
+.PHONY: all lib clean makeimg cpfiles run runall
 
-all: clean kernel/entry.o $(KERNEL_ELF)
-	# @cd lib/libc && $(MAKE) all
+lib:
+	@cd lib/libc && $(MAKE) all
+
+all: clean lib kernel/entry.o $(KERNEL_ELF)
 
 $(KERNEL_ELF): $(OBJS)
 	@echo -e '\e[32m[LD]\e[0m $@'
@@ -73,7 +78,7 @@ kernel/boot.o: kernel/boot.S
 clean:
 	@echo -e '\e[33m[RM]\e[0m Cleaning build files ...'
 	@rm -f kernel.elf $(OBJS) $(MANGLE_HDR)
-	@cd lib/libc && $(MAKE) clean ARCH=$(ARCH)
+	# @cd lib/libc && $(MAKE) clean ARCH=$(ARCH)
 
 makeimg: all
 	@echo -e '\e[34m[DD]\e[0m $(IMG)'

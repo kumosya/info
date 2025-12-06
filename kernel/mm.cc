@@ -1,14 +1,43 @@
 #include <entry.h>
 #include <multiboot2.h>
 #include <page.h>
+#include <idt.h>
 
 #include <stdint.h>
 
+/* 这个内存管理其实还是有一些问题的，不过就先这样了 */
+
+static idt_entry idt_ety[256];
+
+static void set_idt_entry(int vec, void* handler, uint16_t sel, uint8_t type_attr) {
+	uint64_t addr = (uint64_t)handler;
+	idt_ety[vec].offset_low = addr & 0xFFFF;
+	idt_ety[vec].selector = sel;
+	idt_ety[vec].ist = 0;
+	idt_ety[vec].type_attr = type_attr;
+	idt_ety[vec].offset_mid = (addr >> 16) & 0xFFFF;
+	idt_ety[vec].offset_high = (addr >> 32) & 0xFFFFFFFF;
+	idt_ety[vec].zero = 0;
+}
+
+extern "C" void ge_fault_handler_c() {
+	boot::printf("#GP Fault!\n");
+	// Halt so user can inspect
+	while (true) { asm volatile("hlt"); }
+}
+// C handler called from the assembly stub. Prints CR2 and halts.
+extern "C" void page_fault_handler_c(uint64_t fault_addr) {
+	boot::printf("Page Fault! CR2=0x%lx\n", fault_addr);
+	// Halt so user can inspect
+	while (true) { asm volatile("hlt"); }
+}
+
 namespace boot::mm {
 	frame::mem pm;
+
 	namespace frame {
 		void init(uint64_t start_addr, uint64_t end_addr) {
-			boot::printf("Frame init: 0x%lx - 0x%lx\n", start_addr, end_addr);
+//			boot::printf("Frame init: 0x%lx - 0x%lx\n", start_addr, end_addr);
 			pm.start_addr = start_addr;
 			uint64_t region_size = end_addr - start_addr;
 			uint64_t max_pages = region_size / PAGE_SIZE;
@@ -36,10 +65,10 @@ namespace boot::mm {
 			// 初始化位图和页描述符
 			memset(pm.bitmap, 0x00, pm.bitmap_size); // 0 表示空闲
 
-			boot::printf("Frame Allocator initialized. Metadata at 0x%lx - 0x%lx\n",
+/*			boot::printf("Frame Allocator initialized. Metadata at 0x%lx - 0x%lx\n",
 				start_addr, pm.start_usable);
 			boot::printf("pages start at 0x%lx\n", (uint64_t)pm.pages);
-
+*/
 			for (uint64_t i = 0; i < pm.total_pages; ++i) {
 				pm.pages[i].flag = PAGE_FREE;
 				pm.pages[i].vaddr = pm.start_usable + i * PAGE_SIZE;
@@ -47,10 +76,11 @@ namespace boot::mm {
 			}
 			
 			
-			boot::printf("Total Pages: %lu K, Free Pages: %lu K, Bitmap Size: %lu KiB\n",
+/*			boot::printf("Total Pages: %lu K, Free Pages: %lu K, Bitmap Size: %lu KiB\n",
 				pm.total_pages / 1024, pm.free_pages / 1024, pm.bitmap_size / 1024);
 			boot::printf("Usable Memory starts at 0x%lx. reserve_pages=%lu\n", pm.start_usable, reserve_pages);
-		}
+*/
+			}
 
 		void* alloc() {
 			if (pm.free_pages == 0) {
@@ -98,11 +128,11 @@ namespace boot::mm {
 	}
 
 	namespace paging {
-		void init() {
-			boot::printf("Page init\n");
+		void init(multiboot_tag_elf_sections *elf_sections) {
+//			boot::printf("Page init\n");
 
 			// 测试分配几个页框
-			int *p = (int *)frame::alloc();
+/*			int *p = (int *)frame::alloc();
 			boot::printf("Test alloc page1 at 0x%lx\n", (uint64_t)p);
 
 			*p = 0x12345678;
@@ -119,34 +149,31 @@ namespace boot::mm {
 			frame::free(q);
 			boot::printf("Freed page at 0x%lx\n\n", (uint64_t)q);
 
-			
+*/			
 			pt_entry* pml4 = (pt_entry*)frame::alloc();
 			memset(pml4, 0, PAGE_SIZE);
-			boot::printf("New PML4 allocated at 0x%lx\n", (uint64_t)pml4);
-			mapping_identity(pml4, 0x2000000); // 映射前32MB物理内存
-			mapping_kernel(pml4);
-			mapping(pml4, 0x6000fffff000, 0x3000000, PTE_PRESENT | PTE_WRITABLE); 
-			// 映射虚拟地址0x6000fffff000到物理地址0x3000000，用于测试
-			// 这里不知道为什么，像0x8000fffff000这样的地址映射会失败
-			// 到时候再修复
-			// :(
-			// 现在连个异常处理都没有
-			// 调试及其麻烦
-			// gdb调试内核也不方便
-			// 气死了
+			//boot::printf("New PML4 allocated at 0x%lx\n", (uint64_t)pml4);
 			
-			boot::printf("Identity mapping for first 32MB set up.\n");
+			mapping_identity(pml4, 0x2000000); // 映射前32MB物理内存
+			mapping_kernel(pml4, elf_sections);
+			
+			//boot::printf("cppinit: 0x%lx\n", (uint64_t)cppinit);
+			//mapping(pml4, 0xffff8dddfffff000, 0x3000000, PTE_PRESENT | PTE_WRITABLE); 
+			
+			//boot::printf("Identity mapping for first 32MB set up.\n");
 			asm __volatile__ (
 				"mov %0, %%cr3\n"
 				:
 				: "r"(pml4)
 			);
-			boot::printf("Switching to new page table at 0x%lx\n", (uint64_t)pml4);
+			//boot::printf("Switching to new page table at 0x%lx\n", (uint64_t)pml4);
 			// 测试映射是否生效
-			int *r = (int *)0x6000fffff000;
+			/*int *r = (int *)0xffff8dddfffff000;
 			boot::printf("Accessing mapped address 0x3000000: 0x%lx\n", r);
 			*r = 0xDEADBEEF;
 			boot::printf("Wrote %x to 0x3000000\n", *r);
+			boot::printf("cppinit: 0x%lx, ", (uint64_t)cppinit);
+			*/
 		}
 
 		void mapping(pt_entry* pml4, uint64_t virt_addr, uint64_t phys_addr, uint64_t flags) {
@@ -180,26 +207,39 @@ namespace boot::mm {
 
 			// PT
 			pt[pt_idx].value = (phys_addr & PAGE_MASK) | flags;
-			/* 
-			pmd = (pmd_t*) (pud[pud_i] & PAGE_MASK);
-			if (!pmd[pmd_i]) {
-				pmd[pmd_i] = (pmd_t) boot_mm_page_alloc();
-				if (IS_ERR_PTR((void*) pmd[pmd_i])) {
-					pmd[pmd_i] = (pmd_t) nullptr;
-					return -ENOMEM;
-				}
-
-				boot_memset((void*) ((mm::phys_addr_t) pmd[pmd_i]), 0 ,PAGE_SIZE);
-				pmd[pmd_i] |= PDE_DEFAULT;
-			}
-
-			pte = (pte_t*) (pmd[pmd_i] & PAGE_MASK);
-			pte[pte_i] = pa | attr;
-	 */
 		}
 
+
 		// 映射内核段
-		void mapping_kernel(pt_entry* pml4) {
+		void mapping_kernel(pt_entry* pml4, multiboot_tag_elf_sections *elf_sections) {
+			for (size_t i = 0; i < elf_sections->num; i++) {
+				char *section = elf_sections->sections + i * elf_sections->entsize;
+				uint64_t paddr = *(uint64_t *)(section + 16); // section address
+				uint64_t offset = *(uint64_t *)(section + 24); // section size
+				switch (i) {
+					case 2: // text
+						//boot::printf("ELF Section '%d': Vir: 0x%lx Off: 0x%lx\n", i, paddr, offset);
+						for (uint64_t addr = 0; addr < offset; addr += PAGE_SIZE) {
+							mapping(pml4, 0xffff800000000000 + addr, paddr + addr, PTE_PRESENT | PTE_WRITABLE);
+						}
+						break;
+					case 3: // rodata
+						//boot::printf("ELF Section '%d': Vir: 0x%lx Off: 0x%lx\n", i, paddr, offset);
+						for (uint64_t addr = 0; addr < offset; addr += PAGE_SIZE) {
+							mapping(pml4, 0xffff800010000000 + addr, paddr + addr, PTE_PRESENT | PTE_WRITABLE);
+						}
+						break;
+					case 4: // data + bss
+						//boot::printf("ELF Section '%d': Vir: 0x%lx Off: 0x%lx\n", i, paddr, offset);
+						for (uint64_t addr = 0; addr < offset; addr += PAGE_SIZE) {
+							mapping(pml4, 0xffff800020000000 + addr, paddr + addr, PTE_PRESENT | PTE_WRITABLE);
+						}
+						break;
+					default:
+						//boot::printf("ELF Section '%d': Vir: 0x%lx Off: 0x%lx (skipped)\n", i, vaddr, offset);
+						break;
+				}
+			}
 		}
 
 		void mapping_identity(pt_entry* pml4, uint64_t size) {
@@ -216,30 +256,75 @@ namespace boot::mm {
 		return dest;
 	}
 
+	void ge_fault_stub(void) {
+		asm __volatile__ (
+		"    cli\n"
+		"    /* call the C handler; it will not return */\n"
+		"    call ge_fault_handler_c\n"
+		"1:\t hlt\n"
+		"    jmp 1b\n");
+	}
+	void page_fault_stub(void) {
+		asm __volatile__ (
+		"    cli\n"
+		"    /* read CR2 into RDI (first arg) */\n"
+		"    mov %cr2, %rdi\n"
+		"    /* call the C handler; it will not return */\n"
+		"    call page_fault_handler_c\n"
+		"1:\t hlt\n"
+		"    jmp 1b\n");
+	}
+	
 	void init(uint8_t *addr) {
-		boot::printf("MM init\n");
+		//boot::printf("MM init\n");
 		
 		multiboot_mmap_entry *mmap;
-		multiboot_tag *tag = (multiboot_tag *)(addr + 8);;
-		while (tag->type != MULTIBOOT_TAG_TYPE_MMAP) {
-			if (tag->type == MULTIBOOT_TAG_TYPE_END) {
-				boot::printf("Error: Memory map tag is not found!\n");
-				while (true);
+		multiboot_tag *tag = (multiboot_tag *)(addr + 8);
+		multiboot_tag_mmap *mmap_tag = NULL;
+		multiboot_tag_elf_sections *elf_sections = NULL;
+		while (tag->type != MULTIBOOT_TAG_TYPE_END) {
+			if (tag->type == MULTIBOOT_TAG_TYPE_MMAP) {
+				mmap_tag = (multiboot_tag_mmap *)tag;
+			}
+			else if (tag->type == MULTIBOOT_TAG_TYPE_ELF_SECTIONS) {
+				elf_sections = (multiboot_tag_elf_sections *)tag;
 			}
 			tag = (multiboot_tag *)((uint8_t *)tag + ((tag->size + 7) & ~7));
 		}
+
+		if (!mmap_tag) {
+			boot::printf("Error: Memory map tag is not found!\n");
+			while (true);
+		}
+		if (!elf_sections) {
+			boot::printf("Error: ELF sections tag is not found!\n");
+			while (true);
+		}
 		
-		multiboot_tag_mmap *mmap_tag = (multiboot_tag_mmap *)tag;
 		mmap = mmap_tag->entries;
 		size_t entry_count = (mmap_tag->size - sizeof(multiboot_tag_mmap)) / mmap_tag->entry_size;
 		for (size_t i = 0; i < entry_count; i++) {
 			if (mmap->type == MULTIBOOT_MEMORY_AVAILABLE && mmap->addr >= 0x100000) {
-				boot::printf("Available Memory: Addr: 0x%lx, Len: 0x%lx\n", mmap->addr, mmap->len);
+//				boot::printf("Available Memory: Addr: 0x%lx, Len: 0x%lx\n", mmap->addr, mmap->len);
 				mm::frame::init(mmap->addr + 0x100000, mmap->addr + mmap->len);
 			}
 			mmap = (multiboot_mmap_entry *)((uint8_t *)mmap + mmap_tag->entry_size);
 		}
-		paging::init();
+
+		// Install minimal IDT and page-fault handler before enabling mappings
+		// zero out idt
+		memset(&idt_ety, 0, sizeof(idt_ety));
+		// kernel code selector is 0x08 (see gdt setup in boot.S)
+//		boot::printf("handler set for page fault at 0x%lx\n", (uint64_t)page_fault_stub);
+		set_idt_entry(13, (void*)ge_fault_stub, 0x08, 0x8E);
+		set_idt_entry(14, (void*)page_fault_stub, 0x08, 0x8E);
+		idt_ptr_t idtp;
+		idtp.limit = sizeof(idt_ety) - 1;
+		idtp.base = (uint64_t)&idt_ety;
+		asm __volatile__ ("lidt %0" : : "m" (idtp));
+//		boot::printf("IDT loaded, page-fault handler installed.\n");
+
+		paging::init(elf_sections);
 
 		return;
 	}

@@ -30,7 +30,6 @@ cppstart (uint32_t magic, uint8_t *addr)
 	
 	boot::mm::init(addr);
 
-	/* We should not get here. */
-	//boot::printf ("Error: cppinit returned.\n");
-	while(true);
+	void (*init)() = (void (*)())0xffff800000000000;
+	init();
 }

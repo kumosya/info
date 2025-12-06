@@ -15,21 +15,21 @@ extern "C" {
 #endif
 #endif
 
-void *memcpy (void *__restrict, const void *__restrict, size_t);
+void *memcpy (void * , const void * , size_t);
 void *memmove (void *, const void *, size_t);
 void *memset (void *, int, size_t);
 int memcmp (const void *, const void *, size_t);
 void *memchr (const void *, int, size_t);
 
-char *strcpy(char *restrict dest, const char *restrict src);
-char *strncpy(char *restrict dest, const char *restrict src, size_t n);
-char *strcat(char *restrict dest, const char *restrict src);
-char *strncat(char *restrict dest, const char *restrict src, size_t n);
+char *strcpy(char * dest, const char * src);
+char *strncpy(char * dest, const char * src, size_t n);
+char *strcat(char * dest, const char * src);
+char *strncat(char * dest, const char * src, size_t n);
 
 int strcmp(const char *s1, const char *s2);
 int strncmp(const char *s1, const char *s2, size_t n);
 int strcoll(const char *s1, const char *s2);
-size_t strxfrm(char *restrict dest, const char *restrict src, size_t n);
+size_t strxfrm(char * dest, const char * src, size_t n);
 
 char *strchr(const char *s, int c);
 char *strrchr(const char *s, int c);
@@ -39,7 +39,7 @@ size_t strspn(const char *s, const char *accept);
 
 char *strpbrk(const char *s, const char *charset);
 char *strstr(const char *haystack, const char *needle);
-char *strtok(char *restrict s, const char *restrict delim);
+char *strtok(char * s, const char * delim);
 
 size_t strlen(const char *s);
 char *strerror(int errnum);

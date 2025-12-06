@@ -49,7 +49,7 @@ namespace boot {
 	function printf. */
 	int printf(const char *fmt, ...) {
 		va_list argp;
-		char str[50];
+		char str[64];
 		int a;
 		va_start(argp, fmt);		  /*开始使用可变参数*/
 		a = vsprintf(str, fmt, argp); /*格式化输出*/

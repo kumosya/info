@@ -52,7 +52,7 @@ end_tag_start:
 end_tag_end:
 multiboot_header_end:
 
-.section .boot.text32
+.section .boot.text
     .code32
     .align 0x1000
     .extern CPPMAIN
