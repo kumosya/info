@@ -51,9 +51,13 @@ typedef struct {
 /* 错误常量 */
 #define EOF (-1)
 
+#if defined(__cplusplus)
+extern "C" {
+#endif /* __cplusplus */
+
 /* 内存操作函数 */
 int remove(const char *filename);
-int rename(const char *old, const char *new);
+int rename(const char *old_name, const char *new_name);
 FILE *tmpfile(void);
 char *tmpnam(char *s);
 
@@ -117,5 +121,9 @@ void clearerr(FILE *stream);
 /* 二进制文件操作 */
 int fileno(FILE *stream);
 FILE *fdopen(int fd, const char *mode);
+
+#if defined(__cplusplus)
+}
+#endif /* __cplusplus */
 
 #endif /* _STDIO_H */

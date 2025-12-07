@@ -1,23 +1,32 @@
 CPP=g++
-CPPFLAGS=-c -m64 -fno-builtin -mcmodel=large -fno-stack-protector -nostartfiles -nostdinc -nostdlib \
-			-std=c++11 -fno-asynchronous-unwind-tables -fno-exceptions -fno-rtti -s \
+CPPFLAGS=-c -m64 -nostdlib -nostdinc -fno-stack-protector -mcmodel=large \
+			-fno-asynchronous-unwind-tables -ffreestanding -fno-exceptions \
+			-std=c++11 -fno-pie \
             -I ./include \
 			-I ./lib/libc/include/ \
             -I ./lib/libc++/include/
 LD=ld
-LDFLAGS= -nostdlib -z noexecstack --no-warn-rwx-segments -no-relax -T kernel/kernel.lds -m elf_x86_64 \
-			-L ./lib/ -l:libc.a
+LDFLAGS= -nostdlib -static -z noexecstack --no-warn-rwx-segments -no-relax -T kernel/kernel.lds -m elf_x86_64 \
+			
 MANGLE_HDR = include/cpp_mangle.h
 
 KERNEL_ELF = build/kernel.elf
 OBJS+= \
 	kernel/entry.o \
-    kernel/boot.o \
-    kernel/boot_video.o \
-    kernel/mm.o \
+	kernel/boot.o \
+	kernel/boot_video.o \
+	kernel/mm.o \
+	kernel/pic.o \
+	kernel/assert.o \
+	kernel/serial.o \
+	kernel/timer.o \
 	kernel/init.o \
-	kernel/idt.o\
-	kernel/video.o
+	kernel/idt.o \
+	kernel/tty.o \
+	mm/page.o \
+	mm/new.o \
+	mm/pool.o \
+	lib/libc.a
 
 DD = dd
 PARTED = parted
@@ -35,7 +44,7 @@ ZERO_FILL_SIZE = 32M
 
 QEMU = qemu-system-x86_64
 IMG = build/disk.img
-QEMU_OPTS = -m 512M -hda $(IMG)
+QEMU_OPTS = -m 512M -hda $(IMG) -nographic -serial mon:stdio -boot c
 
 ifeq ($(DEBUG), true)
 	CPPFLAGS+=  -O0 -g -D DEBUG

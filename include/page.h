@@ -1,19 +1,6 @@
 #ifndef _PAGE_H_
 #define _PAGE_H_
 
-/* CR0 */
-#define CR0_PG (1 << 31)
-
-/* CR4 */
-#define CR4_PSE (1 << 4)
-#define CR4_PAE (1 << 5)
-#define CR4_PGE (1 << 7)
-
-/* Segment selector */
-#define SELECTOR_RPL (0)
-#define SELECTOR_TI (2)
-#define SELECTOR_INDEX (3)
-
 // 页表条目标志位
 #define PTE_PRESENT     (1 << 0)    // 页存在标志
 #define PTE_WRITABLE    (1 << 1)    // 可写标志
@@ -87,6 +74,15 @@ struct page {
 	uint32_t count;
 };
 
+struct frame_mem {
+	uint64_t total_pages;      // 总页框数
+	uint64_t free_pages;       // 空闲页框数
+	uint64_t bitmap_size;      // 位图大小 (字节)
+	uint8_t* bitmap;           // 页框位图
+	page* pages;        // 页管理数组
+	uint64_t start_addr;       // 起始地址 (原始区域起始)
+	uint64_t start_usable;     // 可用物理起始地址（跳过位图和管理数组）
+};
 
 #endif
 

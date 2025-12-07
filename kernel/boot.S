@@ -1,6 +1,7 @@
 #define ASM_FILE        1
 #include <multiboot2.h>
 #include <page.h>
+#include <cpu.h>
 #include <cpp_mangle.h>
 
 /*  C++ symbol format. HAVE_ASM_USCORE is defined by configure. */
@@ -28,7 +29,7 @@ multiboot_header:
 	.long   -(MULTIBOOT2_HEADER_MAGIC + MULTIBOOT_ARCHITECTURE_I386 + (multiboot_header_end - multiboot_header))
 entry_address_tag_start:        
 	.align  8
-	.short MULTIBOOT_HEADER_TAG_ENTRY_ADDRESS
+	.short MULTIBOOT_HEADER_TAG_ENTRY_ADDRESS_EFI64
 	.short MULTIBOOT_HEADER_TAG_OPTIONAL
 	.long entry_address_tag_end - entry_address_tag_start
 	/*  entry_addr */

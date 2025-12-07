@@ -36,19 +36,11 @@ namespace boot {
 
     namespace mm {
         namespace frame {
-            // 页框结构
-            struct mem {
-                uint64_t total_pages;      // 总页框数
-                uint64_t free_pages;       // 空闲页框数
-                uint64_t bitmap_size;      // 位图大小 (字节)
-                uint8_t* bitmap;           // 页框位图
-                page* pages;        // 页管理数组
-                uint64_t start_addr;       // 起始地址 (原始区域起始)
-                uint64_t start_usable;     // 可用物理起始地址（跳过位图和管理数组）
-            };
             void init(uint64_t start_addr, uint64_t end_addr);
             void* alloc();
             void free(void* addr);
+            void* alloc_pages(size_t n);
+            void free_pages(void* addr, size_t n);
         }
         namespace paging {
             void init(multiboot_tag_elf_sections *elf_sections);

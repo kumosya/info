@@ -4,7 +4,7 @@
 #include <cstdint>
 
 void cppstart (uint32_t magic, uint8_t *addr);
-void cppinit(void);
+extern void cppinit(frame_mem *pm);
 
 // 外部符号声明
 extern char __kernel_start;
@@ -15,6 +15,7 @@ void
 cppstart (uint32_t magic, uint8_t *addr)
 {
 	boot::video_init();
+//	boot::printf("cppinit addr: 0x%lx\n", (uint64_t)&cppinit);
 	
 	//  Am I booted by a Multiboot-compliant boot loader? 
 	if (magic != MULTIBOOT2_BOOTLOADER_MAGIC)
@@ -29,7 +30,4 @@ cppstart (uint32_t magic, uint8_t *addr)
 	}
 	
 	boot::mm::init(addr);
-
-	void (*init)() = (void (*)())0xffff800000000000;
-	init();
 }

@@ -7,6 +7,16 @@
 
 /* 这个内存管理其实还是有一些问题的，不过就先这样了 */
 
+extern char __kernel_start[];
+extern char __kernel_end[];
+
+extern char __text_start[];
+extern char __rodata_start[];
+extern char __data_start[];
+extern char __bss_start[];
+
+extern void cppinit();
+
 static idt_entry idt_ety[256];
 
 static void set_idt_entry(int vec, void* handler, uint16_t sel, uint8_t type_attr) {
@@ -33,7 +43,7 @@ extern "C" void page_fault_handler_c(uint64_t fault_addr) {
 }
 
 namespace boot::mm {
-	frame::mem pm;
+	frame_mem pm;
 
 	namespace frame {
 		void init(uint64_t start_addr, uint64_t end_addr) {
@@ -87,6 +97,7 @@ namespace boot::mm {
 				boot::printf("Error: Out of memory!\n");
 				while (true);
 			}
+
 			// 查找位图中第一个空闲位
 			for (uint64_t byte = 0; byte < pm.bitmap_size; ++byte) {
 				if (pm.bitmap[byte] != 0xFF) {
@@ -111,6 +122,38 @@ namespace boot::mm {
 			while (true);
 		}
 
+		// Allocate N contiguous pages. Returns physical address (page-aligned) or nullptr.
+		void* alloc_pages(size_t n) {
+			if (n == 0) n = 1;
+			if (pm.free_pages < n) return nullptr;
+			uint64_t total = pm.total_pages;
+			for (uint64_t start = 0; start + n <= total; ++start) {
+				bool ok = true;
+				for (uint64_t j = 0; j < n; ++j) {
+					uint64_t idx = start + j;
+					uint64_t byte = idx / 8;
+					int bit = idx % 8;
+					uint8_t mask = (1u << bit);
+					if (pm.bitmap[byte] & mask) { ok = false; start += j; break; }
+				}
+				if (!ok) continue;
+				// mark bits
+				for (uint64_t j = 0; j < n; ++j) {
+					uint64_t idx = start + j;
+					uint64_t byte = idx / 8;
+					int bit = idx % 8;
+					uint8_t mask = (1u << bit);
+					pm.bitmap[byte] |= mask;
+					pm.pages[idx].flag = PAGE_USED;
+					pm.pages[idx].count = 1;
+				}
+				pm.free_pages -= n;
+				uint64_t addr = pm.start_usable + start * PAGE_SIZE;
+				return (void*)addr;
+			}
+			return nullptr;
+		}
+
 		void free(void* addr) {
 			uint64_t a = (uint64_t)addr;
 			if (a < pm.start_usable) return;
@@ -124,6 +167,25 @@ namespace boot::mm {
 			pm.pages[idx].count = 0;
 			memset(addr, 0, PAGE_SIZE);
 			pm.free_pages++;
+		}
+
+		
+		void free_pages(void* addr, size_t n) {
+			if (!addr || n == 0) return;
+			uint64_t a = (uint64_t)addr;
+			if (a < pm.start_usable) return;
+			uint64_t idx = (a - pm.start_usable) / PAGE_SIZE;
+			if (idx >= pm.total_pages) return;
+			for (size_t i = 0; i < n && (idx + i) < pm.total_pages; ++i) {
+				uint64_t cur = idx + i;
+				uint64_t byte = cur / 8;
+				int bit = cur % 8;
+				uint8_t mask = (1u << bit);
+				pm.bitmap[byte] &= ~mask;
+				pm.pages[cur].flag = PAGE_FREE;
+				pm.pages[cur].count = 0;
+			}
+			pm.free_pages += n;
 		}
 	}
 
@@ -188,6 +250,7 @@ namespace boot::mm {
 				memset(pdpt, 0, PAGE_SIZE);
 				pml4[pml4_idx].value = ((uint64_t)pdpt & PAGE_MASK) | PTE_PRESENT | PTE_WRITABLE;
 			}
+
 			pt_entry* pdpt = (pt_entry*)(pml4[pml4_idx].value & PAGE_MASK);
 			// PDPT
 			if (!(pdpt[pdpt_idx].value & PTE_PRESENT)) {
@@ -214,30 +277,15 @@ namespace boot::mm {
 		void mapping_kernel(pt_entry* pml4, multiboot_tag_elf_sections *elf_sections) {
 			for (size_t i = 0; i < elf_sections->num; i++) {
 				char *section = elf_sections->sections + i * elf_sections->entsize;
-				uint64_t paddr = *(uint64_t *)(section + 16); // section address
-				uint64_t offset = *(uint64_t *)(section + 24); // section size
-				switch (i) {
-					case 2: // text
-						//boot::printf("ELF Section '%d': Vir: 0x%lx Off: 0x%lx\n", i, paddr, offset);
-						for (uint64_t addr = 0; addr < offset; addr += PAGE_SIZE) {
-							mapping(pml4, 0xffff800000000000 + addr, paddr + addr, PTE_PRESENT | PTE_WRITABLE);
-						}
-						break;
-					case 3: // rodata
-						//boot::printf("ELF Section '%d': Vir: 0x%lx Off: 0x%lx\n", i, paddr, offset);
-						for (uint64_t addr = 0; addr < offset; addr += PAGE_SIZE) {
-							mapping(pml4, 0xffff800010000000 + addr, paddr + addr, PTE_PRESENT | PTE_WRITABLE);
-						}
-						break;
-					case 4: // data + bss
-						//boot::printf("ELF Section '%d': Vir: 0x%lx Off: 0x%lx\n", i, paddr, offset);
-						for (uint64_t addr = 0; addr < offset; addr += PAGE_SIZE) {
-							mapping(pml4, 0xffff800020000000 + addr, paddr + addr, PTE_PRESENT | PTE_WRITABLE);
-						}
-						break;
-					default:
-						//boot::printf("ELF Section '%d': Vir: 0x%lx Off: 0x%lx (skipped)\n", i, vaddr, offset);
-						break;
+				uint64_t vaddr = *(uint64_t *)(section + 16); // section address
+				uint64_t offset = *(uint64_t *)(section + 24); // section offset
+				uint64_t size = *(uint64_t *)(section + 32); // section size
+				if (vaddr == (uint64_t)__text_start || vaddr == (uint64_t)__rodata_start ||
+					vaddr == (uint64_t)__data_start) {
+//					boot::printf("ELF Section '%d': Vir: 0x%lx Off: 0x%lx Size: %d B\n", i, vaddr, offset, size);
+					for (uint64_t addr = 0; addr < offset; addr += PAGE_SIZE) {
+						mapping(pml4, vaddr + addr, 0x100000 - 0x1000 + offset + addr, PTE_PRESENT | PTE_WRITABLE);
+					}
 				}
 			}
 		}
@@ -326,6 +374,6 @@ namespace boot::mm {
 
 		paging::init(elf_sections);
 
-		return;
+		cppinit();
 	}
 }

@@ -1,15 +1,35 @@
 #include <mm.h>
 #include <entry.h>
 #include <idt.h>
-#include <video.h>
+#include <tty.h>
+#include <page.h>
+#include <pic.h>
+#include <serial.h>
+#include <timer.h>
+#include <serial.h>
+#include <timer.h>
+#include <kassert.h>
 
 #include <stdint.h>
 
-void cppinit(void)
+uint64_t pm_addr;
+
+void cppinit()
 {
-    video::init();
+#ifndef OUTPUT_TO_SERIAL
+    tty::video::init();
+#endif
+    pic::init();
     idt::init();
-    int *p = (int *)0xffff8000001000;
-    *p = 0x12345678;
+    serial::init();
+    timer::init(100);
+
+    mm::pool::init();
+    
+    int *p = new int;
+    *p = 0x3456789a;
+    tty::printf("p = 0x%lx, *p = 0x%x\n", (uint64_t)p, *p);
+    delete p;
+
     while (true);
 }

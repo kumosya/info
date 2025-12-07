@@ -63,7 +63,7 @@ SECTIONS
     __boot_end = .;
 
     /* 64位C内核 */
-    //. = KERM_VADDR;
+    . = KERM_VADDR;
     __kernel_start = .;
     __text_start = .;
 
@@ -80,7 +80,7 @@ SECTIONS
 
     __text_end = .;
     __text_size = __text_end - __text_start;
-    //. = KERVM_RODATA_BASE;
+    . = KERVM_RODATA_BASE;
     __rodata_start = .;
 
     /* 64位只读数据段 */
@@ -96,7 +96,7 @@ SECTIONS
 
     __rodata_end = .;
     __rodata_size = __rodata_end - __rodata_start;
-    //. = KERVM_DATA_BASE;
+    . = KERVM_DATA_BASE;
     __data_start = .;
 
     /* 64位数据段 */
@@ -121,7 +121,7 @@ SECTIONS
 
     __data_end = .;
     __data_size = __data_end - __data_start;
-    //. = KERVM_BSS_BASE;
+    . = KERVM_BSS_BASE;
     __bss_start = .;
 
     /* 64位BSS段 */
