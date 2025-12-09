@@ -1,0 +1,22 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"*.S": "asm-intel-x86-generic",
+			"cstdint": "cpp",
+			"stdlib.h": "c",
+			"stddef.h": "c",
+			"cstdarg": "cpp",
+			"stdint.h": "c"
+		},
+		"makefile.configureOnOpen": true,
+		"[cpp]": {
+			"editor.defaultFormatter": "xaver.clang-format",
+			"editor.formatOnSave": true
+		}
+	}
+}

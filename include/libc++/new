@@ -1,0 +1,31 @@
+#ifndef LIBCPP_NEW_H
+#define LIBCPP_NEW_H
+
+/* Minimal <new> for freestanding builds: declare placement new and
+   basic operator new/delete signatures so code using placement-new
+   and delete compiles. Implementations of global operator new/delete
+   are usually provided by the runtime or the freestanding environment. */
+
+#include <stddef.h>
+
+#ifdef __cplusplus
+
+namespace std {
+class bad_alloc {};
+}
+
+// Global allocation hooks (declarations only)
+void* operator new(size_t) noexcept;
+void operator delete(void*) noexcept;
+
+// Placement new (returns the pointer passed in)
+inline void* operator new(size_t, void* p) noexcept { return p; }
+inline void operator delete(void*, void*) noexcept {}
+
+// Provide a minimal nothrow tag
+namespace std { struct nothrow_t {}; }
+extern const std::nothrow_t nothrow;
+
+#endif /* __cplusplus */
+
+#endif /* LIBCPP_NEW_H */
