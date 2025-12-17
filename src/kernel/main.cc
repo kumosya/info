@@ -15,7 +15,7 @@ void delay(void) {
     for (int i = 0; i<0xfffffff; i++);
 }
 
-void cppmain(uint8_t *addr) {
+void kernel_main(uint8_t *addr) {
     tty::video::init(addr);
     pic::init();
     gdt::init();
@@ -24,7 +24,7 @@ void cppmain(uint8_t *addr) {
     serial::init();
     timer::init(100);
 
-    task::proc::init();
+    task::thread::init();
 
     mm::pool::init();
     int *p = new int;

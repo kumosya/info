@@ -50,6 +50,31 @@ void set_entry(int index, uint64_t base, uint64_t limit, uint8_t access, uint8_t
 void init();
 } // namespace gdt
 
+// Stubs implemented in interrupt.S
+extern "C" void pit_stub();
+extern "C" void kbd_stub();
+
+extern "C" void de_stub();
+extern "C" void debug_stub();
+extern "C" void nmi_stub();
+extern "C" void bp_stub();
+extern "C" void of_stub();
+extern "C" void br_stub();
+extern "C" void ud_stub();
+extern "C" void nm_stub();
+extern "C" void df_stub();
+extern "C" void ts_stub();
+extern "C" void np_stub();
+extern "C" void ss_stub();
+extern "C" void gp_stub();
+extern "C" void pf_stub();
+extern "C" void mf_stub();
+extern "C" void ac_stub();
+extern "C" void mc_stub();
+extern "C" void xm_stub();
+extern "C" void ve_stub();
+extern "C" void cp_stub();
+
 #endif /* ASM_FILE */
 
 #endif /* CPU_H */

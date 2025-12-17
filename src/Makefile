@@ -11,52 +11,29 @@ LDFLAGS= -nostdlib -static -z noexecstack --no-warn-rwx-segments -no-relax -T ke
 MANGLE_HDR = ../include/kernel/cpp_mangle.h
 
 KERNEL_ELF = ../build/kernel.elf
-OBJS= \
-	kernel/start.o \
-	kernel/boot.o \
-	kernel/boot_video.o \
-	kernel/mm.o \
-	kernel/pic.o \
-	kernel/assert.o \
-	kernel/serial.o \
-	kernel/timer.o \
-	kernel/keyboard.o \
-	kernel/main.o \
-	kernel/idt.o \
-	kernel/gdt.o \
-	kernel/tty.o \
-	kernel/interrupt.o \
-	mm/page.o \
-	mm/new.o \
-	mm/pool.o \
-	task/proc.o \
-	../lib/libc.a
 
-all: kernel/start.o $(KERNEL_ELF)
+SRCS:=${wildcard kernel/*/*.cc kernel/*.cc \
+				mm/*.cc \
+				task/*.cc \
+				drivers/*.cc \
+				drivers/*/*.cc \
+				fs/*.cc \
+				fs/*/*.cc \
+		}
+OBJS:=$(patsubst %.cc, %.o, $(SRCS))
+AS_OBJS:=kernel/boot/head.o kernel/interrupt.o
 
-$(KERNEL_ELF): $(OBJS)
+LIBC = ../lib/libc.a
+
+all: $(KERNEL_ELF)
+	@echo $(OBJS)
+
+$(KERNEL_ELF): $(OBJS) $(AS_OBJS)
 	@echo -e '\e[32m[LD]\e[0m $@'
-	@$(LD) $(LDFLAGS) -o $@ $(OBJS)
+	@$(LD) $(LDFLAGS) -o $@ $(OBJS) $(AS_OBJS) $(LIBC)
 
-# Compile the C++ start object first
-kernel/start.o: kernel/start.cc
+%.o: %.S
 	@echo -e '\e[32m[CPP]\e[0m $<'
-	@$(CPP) $(CPPFLAGS) -c -o $@ $<
-	@mangled=`nm -g --defined-only $@ | awk '/cppstart/ {print $$3; exit}'`; \
-	if [ -z "$$mangled" ]; then \
-		echo "ERROR: can't find cppstart symbol in $@"; exit 1; \
-	fi; \
-	printf '%s\n' "#define CPPSTART $$mangled" > $(MANGLE_HDR)
-
-# Assemble/Preprocess boot.S after the mangled-header is available.
-# Use assembler-with-cpp so #include "include/cpp_mangle.h" in boot.S works.
-kernel/boot.o: kernel/boot.S
-	@echo -e '\e[32m[CPP]\e[0m $<'
-	@$(CPP) $(CPPFLAGS) -x assembler-with-cpp -o $@ $<
-
-# Assemble interrupt stubs
-kernel/interrupt.o: kernel/interrupt.S
-	@echo -e '\e[32m[ASM]\e[0m $<'
 	@$(CPP) $(CPPFLAGS) -x assembler-with-cpp -o $@ $<
 
 # Generic rule for compiling .cc -> .o (others)
@@ -65,4 +42,4 @@ kernel/interrupt.o: kernel/interrupt.S
 	@$(CPP) $(CPPFLAGS) -o $@ $<
 
 clean: 
-	@rm -f kernel.elf $(OBJS) $(MANGLE_HDR)
+	@rm -f $(OBJS) $(AS_OBJS) $(KERNEL_ELF)

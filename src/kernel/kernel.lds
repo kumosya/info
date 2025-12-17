@@ -13,54 +13,54 @@ SECTIONS
 {
     /* 引导加载器将内核加载到1MB地址 */
     . = 1M;
-    __boot_start = .;
+    __start = .;
 
     /* ASM引导状态内核 */
     .boot :
     {
         KEEP(*(.boot.header))      /* 保留引导头 */
         *(.boot.*)                /* 所有引导相关节 */
-        kernel/boot.o    /* 引导汇编文件的引导相关节 */
-        kernel/start.o      /* 入口代码 */
-        kernel/boot_video.o /* 视频输出代码 */
-        kernel/mm.o         /* 内存管理代码 */
+        kernel/boot/head.o    /* 引导汇编文件的引导相关节 */
+        kernel/boot/start.o      /* 入口代码 */
+        kernel/boot/video.o /* 视频输出代码 */
+        kernel/boot/mm.o         /* 内存管理代码 */
     }
     . = ALIGN(4096);
     .boot.text :
     {
-        kernel/boot.o(.text)    /* 引导汇编文件的引导相关节 */
-        kernel/start.o(.text)      /* 入口代码 */
-        kernel/boot_video.o(.text) /* 视频输出代码 */
-        kernel/mm.o(.text)         /* 内存管理代码 */
+        kernel/boot/head.o(.text)    /* 引导汇编文件的引导相关节 */
+        kernel/boot/start.o(.text)      /* 入口代码 */
+        kernel/boot/video.o(.text) /* 视频输出代码 */
+        kernel/boot/mm.o(.text)         /* 内存管理代码 */
     }
     . = ALIGN(4096);
     .boot.rodata :
     {
-        kernel/boot.o(.rodata)    /* 引导汇编文件的引导相关节 */
-        kernel/start.o(.rodata)      /* 入口代码 */
-        kernel/boot_video.o(.rodata) /* 视频输出代码 */
-        kernel/mm.o(.rodata)         /* 内存管理代码 */
+        kernel/boot/head.o(.rodata)    /* 引导汇编文件的引导相关节 */
+        kernel/boot/start.o(.rodata)      /* 入口代码 */
+        kernel/boot/video.o(.rodata) /* 视频输出代码 */
+        kernel/boot/mm.o(.rodata)         /* 内存管理代码 */
     }
     . = ALIGN(4096);
     .boot.data :
     {
-        kernel/boot.o(.data)    /* 引导汇编文件的引导相关节 */
-        kernel/start.o(.data)      /* 入口代码 */
-        kernel/boot_video.o(.data) /* 视频输出代码 */
-        kernel/mm.o(.data)         /* 内存管理代码 */
+        kernel/boot/head.o(.data)    /* 引导汇编文件的引导相关节 */
+        kernel/boot/start.o(.data)      /* 入口代码 */
+        kernel/boot/video.o(.data) /* 视频输出代码 */
+        kernel/boot/mm.o(.data)         /* 内存管理代码 */
     }
     . = ALIGN(4096);
 
     .boot.bss :
     {
-        kernel/boot.o(.bss)    /* 引导汇编文件的引导相关节 */
-        kernel/start.o(.bss)      /* 入口代码 */
-        kernel/boot_video.o(.bss) /* 视频输出代码 */
-        kernel/mm.o(.bss)         /* 内存管理代码 */
+        kernel/boot/head.o(.bss)    /* 引导汇编文件的引导相关节 */
+        kernel/boot/start.o(.bss)      /* 入口代码 */
+        kernel/boot/video.o(.bss) /* 视频输出代码 */
+        kernel/boot/mm.o(.bss)         /* 内存管理代码 */
     }
     . = ALIGN(4096);
 
-    __boot_end = .;
+    __end = .;
 
     /* 64位C内核 */
     . = KERM_VADDR;
@@ -68,7 +68,7 @@ SECTIONS
     __text_start = .;
 
     /* 代码段 */
-    .text ALIGN(4096) : AT (__boot_end)
+    .text ALIGN(4096) : AT (__end)
     {
         *(.text)
         *(.text.*)                 /* 所有.text.*节 */
@@ -84,7 +84,7 @@ SECTIONS
     __rodata_start = .;
 
     /* 64位只读数据段 */
-    .rodata ALIGN(4096) : AT (__boot_end + __text_size)
+    .rodata ALIGN(4096) : AT (__end + __text_size)
     {
         *(.rodata)        
         *(.rodata.*)                 /* 所有.rodata.*节 */
@@ -100,7 +100,7 @@ SECTIONS
     __data_start = .;
 
     /* 64位数据段 */
-    .kernel.data ALIGN(4096) : AT (__boot_end + __text_size + __rodata_size)
+    .kernel.data ALIGN(4096) : AT (__end + __text_size + __rodata_size)
     {
         *(.data)        
         *(.data.*)                 /* 所有.data.*节 */
@@ -125,7 +125,7 @@ SECTIONS
     __bss_start = .;
 
     /* 64位BSS段 */
-    .kernel.bss ALIGN(4096) : AT (__boot_end + __text_size + __rodata_size + __data_size)
+    .kernel.bss ALIGN(4096) : AT (__end + __text_size + __rodata_size + __data_size)
     {
         *(COMMON)                  /* 公共符号 */
         *(.bss.*)                  /* 所有.bss.*节 */

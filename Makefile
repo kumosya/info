@@ -33,7 +33,7 @@ lib:
 	@cd lib/libc && $(MAKE) all
 
 all: clean
-	@$(MAKE) lib
+	# @$(MAKE) lib
 	@$(MAKE) -C src all
 
 clean:

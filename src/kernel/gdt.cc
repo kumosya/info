@@ -1,5 +1,4 @@
 #include "cpu.h"
-
 #include <cstdint>
 #include <string>
 
@@ -9,18 +8,18 @@ namespace gdt {
 uint64_t gdt_table[5];
 gdt_ptr_t gdtr;
 
-void set_entry(int index, uint64_t base, uint64_t limit, uint8_t access, uint8_t gran) {
+void set_entry(int index, uint8_t access, uint8_t gran) {
     uint64_t descriptor;
 
     // Create the high 32 bits of the descriptor
-    descriptor = (limit & 0x000F0000ULL) >> 16; // Limit bits 16-19
-    descriptor |= (uint64_t)(gran & 0x0F) << 20;          // Granularity
+    descriptor = (0 & 0x000F0000ULL) >> 16; // Limit bits 16-19
+    descriptor |= (uint64_t)(gran & 0x0F) << 52;          // Granularity
     descriptor |= (uint64_t)(access & 0xFF) << 40;        // Access byte
-    descriptor |= (base & 0xFF000000ULL) >> 24; // Base bits 24-31
+    descriptor |= (0 & 0xFF000000ULL) >> 24; // Base bits 24-31
 
     // Create the low 32 bits of the descriptor
-    descriptor |= (base & 0x00FFFFFFULL) << 16; // Base bits 0-23
-    descriptor |= (limit & 0x0000FFFFULL);      // Limit bits 0-15
+    descriptor |= (0 & 0x00FFFFFFULL) << 16; // Base bits 0-23
+    descriptor |= (0 & 0x0000FFFFULL);      // Limit bits 0-15
 
     gdt_table[index] = descriptor;
 }
@@ -30,15 +29,15 @@ static void lgdt(gdt_ptr_t *gdtr) {
 }
 void init() {
     // Null descriptor
-    gdt_table[0] = 0;
+    set_entry(0, 0, 0);
     // Code segment descriptor
-    gdt_table[1] = 0x00AF9A000000FFFF;
+    set_entry(1, 0x9a, 0xa);
     // Data segment descriptor
-    gdt_table[2] = 0x00AF92000000FFFF;
+    set_entry(2, 0x92, 0xa);
     // User code segment descriptor
-    gdt_table[3] = 0x00AFFA000000FFFF;
+    set_entry(3, 0xfa, 0xa);
     // User data segment descriptor
-    gdt_table[4] = 0x00AFF2000000FFFF;
+    set_entry(4, 0xf2, 0xa);
 
     gdtr.limit = sizeof(gdt_table) - 1;
     gdtr.base  = (uint64_t)&gdt_table;
