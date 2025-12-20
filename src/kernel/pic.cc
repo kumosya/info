@@ -41,10 +41,9 @@ void init() {
     remap(0x20, 0x28);
     // Mask all IRQs by default
     mask(0xFF, 0xFF);
-    
+
     /* Enable hardware interrupts now that PIC and IDT are set up */
     asm volatile("sti");
-
 }
 
 void mask_irq(int irq) {

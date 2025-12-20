@@ -23,21 +23,14 @@ static int vsprintf(char *buf, const char *fmt, va_list args);
 static size_t strlen(const char *s);
 
 namespace mm {
-namespace frame {
-    void init(uint64_t start_addr, uint64_t end_addr);
-    void *alloc();
-    void free(void *addr);
-    void *alloc_pages(size_t n);
-    void free_pages(void *addr, size_t n);
-} // namespace frame
-namespace paging {
-    void init(multiboot_tag_elf_sections *elf_sections);
-    void mapping(pt_entry *pml4, uint64_t virt_addr, uint64_t phys_addr, uint64_t flags);
-    void mapping_kernel(pt_entry *pml4, multiboot_tag_elf_sections *elf_sections);
-    void mapping_identity(pt_entry *pml4, uint64_t size);
-} // namespace paging
-    static void *memset(void *dest, int val, size_t len);
-    void init(uint8_t *addr);
+void *alloc();
+void mapping(pt_entry *pml4, uint64_t virt_addr, uint64_t phys_addr, uint64_t flags);
+void mapping_kernel(pt_entry *pml4, multiboot_tag_elf_sections *elf_sections);
+void mapping_identity(pt_entry *pml4, uint64_t size);
+
+void *memset(void *dest, int val, size_t len);
+void frame_init(uint64_t start_addr, uint64_t end_addr);
+void init(uint8_t *addr);
 } // namespace mm
 } // namespace boot
 

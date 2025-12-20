@@ -30,6 +30,14 @@ static inline uint8_t inb(uint16_t port) {
     return ret;
 }
 
+static inline void outw(uint16_t port, uint8_t val) { asm __volatile__("outb %0, %1" : : "a"(val), "Nd"(port)); }
+
+static inline uint16_t inw(uint16_t port) {
+    uint16_t ret;
+    asm __volatile__("inw %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
 namespace serial {
 void init();
 void putc(char c);

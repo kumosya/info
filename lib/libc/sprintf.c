@@ -313,3 +313,170 @@ int sprintf(char *str, const char *format, ...)
     
     return ret;
 }
+
+
+/*
+ * vsnprintf - Format a bufing into a strfer with size limitation using va_list
+ * Returns the number of characters that would have been written if the strfer was large enough
+ */
+int vsnprintf(char *str, size_t size, const char *format, va_list args)
+{
+    int len, i;
+    char *buf, *s;
+    int *ip;
+    int flags, field_width, precision;
+//    int qualifier;
+
+    for (buf = str; *format; ++format)
+    {
+        if (buf - str >= (ssize_t)(size - 1))
+        {
+            break;
+        }
+
+        if (*format != '%')
+        {
+            *buf++ = *format;
+            continue;
+        }
+
+        flags = 0;
+    repeat:
+        ++format;
+        switch (*format)
+        {
+        case '-':
+            flags |= LEFT;
+            goto repeat;
+        case '+':
+            flags |= PLUS;
+            goto repeat;
+        case ' ':
+            flags |= SPACE;
+            goto repeat;
+        case '#':
+            flags |= SPECIAL;
+            goto repeat;
+        case '0':
+            flags |= ZEROPAD;
+            goto repeat;
+        }
+
+        field_width = -1;
+        if (is_digit(*format))
+            field_width = skip_atoi(&format);
+        else if (*format == '*')
+        {
+            field_width = va_arg(args, int);
+            if (field_width < 0)
+            {
+                field_width = -field_width;
+                flags |= LEFT;
+            }
+        }
+
+        precision = -1;
+        if (*format == '.')
+        {
+            ++format;
+            if (is_digit(*format))
+                precision = skip_atoi(&format);
+            else if (*format == '*')
+            {
+                precision = va_arg(args, int);
+            }
+            if (precision < 0)
+                precision = 0;
+        }
+
+//        qualifier = -1;
+        if (*format == 'h' || *format == 'l' || *format == 'L')
+        {
+//            qualifier = *format;
+            ++format;
+        }
+
+        switch (*format) {
+        case 'c':
+            if (!(flags & LEFT))
+                while (--field_width > 0)
+                    *buf++ = ' ';
+            *buf++ = (unsigned char)va_arg(args, int);
+            while (--field_width > 0)
+                *buf++ = ' ';
+            break;
+        case 's':
+            s = va_arg(args, char *);
+            len = strlen(s);
+            if (precision < 0)
+                precision = len;
+            else if (len > precision)
+                len = precision;
+            if (!(flags & LEFT))
+                while (len < field_width--)
+                    *buf++ = ' ';
+            for (i = 0; i < len; ++i)
+                *buf++ = *s++;
+            while (len < field_width--)
+                *buf++ = ' ';
+            break;
+        case 'o':
+            buf = number(buf, va_arg(args, unsigned long), 8, field_width, precision, flags);
+            break;
+        case 'p':
+            if (field_width == -1)
+            {
+                field_width = 8;
+                flags |= ZEROPAD;
+            }
+            buf = number(buf, (unsigned long long)va_arg(args, void *), 16, field_width, precision, flags);
+            break;
+        case 'x':
+            flags |= SMALL;
+            buf = number(buf, va_arg(args, unsigned long), 16, field_width, precision, flags);
+            break;
+        case 'X':
+            buf = number(buf, va_arg(args, unsigned long), 16, field_width, precision, flags);
+            break;
+        case 'd':
+        case 'i':
+            flags |= SIGN;
+            buf = number(buf, va_arg(args, unsigned long), 10, field_width, precision, flags);
+            break;
+        case 'u':
+            buf = number(buf, va_arg(args, unsigned long), 10, field_width, precision, flags);
+            break;
+        case 'n':
+            ip = va_arg(args, int *);
+            *ip = (buf - str);
+            break;
+        default:
+            if (*format != '%')
+                *buf++ = '%';
+            if (*format)
+                *buf++ = *format;
+            else
+                --format;
+            break;
+        }
+    }
+    *buf = '\0';
+    return buf - str;
+}
+
+/*
+ * snprintf - Format a bufing into a strfer with size limitation
+ * Returns the number of characters that would have been written if the strfer was large enough
+ */
+int snprintf(char *buf, size_t size, const char *format, ...)
+{
+    va_list args;
+    int ret;
+    
+    va_start(args, format);
+    ret = vsnprintf(buf, size, format, args);
+    va_end(args);
+    
+    return ret;
+}
+

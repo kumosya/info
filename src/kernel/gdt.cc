@@ -12,14 +12,14 @@ void set_entry(int index, uint8_t access, uint8_t gran) {
     uint64_t descriptor;
 
     // Create the high 32 bits of the descriptor
-    descriptor = (0 & 0x000F0000ULL) >> 16; // Limit bits 16-19
-    descriptor |= (uint64_t)(gran & 0x0F) << 52;          // Granularity
-    descriptor |= (uint64_t)(access & 0xFF) << 40;        // Access byte
-    descriptor |= (0 & 0xFF000000ULL) >> 24; // Base bits 24-31
+    descriptor = (0 & 0x000F0000ULL) >> 16;        // Limit bits 16-19
+    descriptor |= (uint64_t)(gran & 0x0F) << 52;   // Granularity
+    descriptor |= (uint64_t)(access & 0xFF) << 40; // Access byte
+    descriptor |= (0 & 0xFF000000ULL) >> 24;       // Base bits 24-31
 
     // Create the low 32 bits of the descriptor
     descriptor |= (0 & 0x00FFFFFFULL) << 16; // Base bits 0-23
-    descriptor |= (0 & 0x0000FFFFULL);      // Limit bits 0-15
+    descriptor |= (0 & 0x0000FFFFULL);       // Limit bits 0-15
 
     gdt_table[index] = descriptor;
 }

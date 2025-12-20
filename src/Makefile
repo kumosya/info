@@ -6,7 +6,7 @@ CPPFLAGS=-c -m64 -nostdlib -nostdinc -fno-stack-protector -mcmodel=large \
 			-I ../include/libc/ \
             -I ../include/libc++/
 LD=ld
-LDFLAGS= -nostdlib -static -z noexecstack --no-warn-rwx-segments -no-relax -T kernel/kernel.lds -m elf_x86_64 \
+LDFLAGS= -nostdlib -static -z noexecstack --no-warn-rwx-segments -no-relax -T ../scripts/kernel.lds -m elf_x86_64 \
 			
 MANGLE_HDR = ../include/kernel/cpp_mangle.h
 
@@ -26,7 +26,6 @@ AS_OBJS:=kernel/boot/head.o kernel/interrupt.o
 LIBC = ../lib/libc.a
 
 all: $(KERNEL_ELF)
-	@echo $(OBJS)
 
 $(KERNEL_ELF): $(OBJS) $(AS_OBJS)
 	@echo -e '\e[32m[LD]\e[0m $@'

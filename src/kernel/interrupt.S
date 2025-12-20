@@ -705,20 +705,20 @@ cp_stub:
 
 .section .boot.text
 
-.global ge_fault_stub
+.global gp_fault_stub
 .global page_fault_stub
 
 /* Boot-time GE and PF stubs used by early boot IDT; these call C handlers
    and then halt (they don't return). */
-ge_fault_stub:
+gp_fault_stub:
     cli
-    call ge_fault_handler_c
+    call boot_gp_fault_handler
 1:  hlt
     jmp 1b
 
 page_fault_stub:
     cli
     mov %cr2, %rdi
-    call page_fault_handler_c
+    call boot_page_fault_handler
 2:  hlt
     jmp 2b

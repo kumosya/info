@@ -29,6 +29,27 @@ endif
 
 .PHONY: all lib clean makeimg cpfiles run runall
 
+mkdirs:
+	@mkdir -p $(ROOTFS)/dev
+	@mkdir -p $(ROOTFS)/mnt
+	@mkdir -p $(ROOTFS)/media
+
+	@mkdir -p $(ROOTFS)/root
+	@mkdir -p $(ROOTFS)/sbin
+	@mkdir -p $(ROOTFS)/bin
+	@mkdir -p $(ROOTFS)/lib
+
+	@mkdir -p $(ROOTFS)/home
+	@mkdir -p $(ROOTFS)/usr
+	@mkdir -p $(ROOTFS)/usr/bin
+	@mkdir -p $(ROOTFS)/usr/lib
+	@mkdir -p $(ROOTFS)/usr/sbin
+	@mkdir -p $(ROOTFS)/usr/include
+
+	@mkdir -p $(ROOTFS)/opt
+	@mkdir -p $(ROOTFS)/var
+	@mkdir -p $(ROOTFS)/var/log
+
 lib:
 	@cd lib/libc && $(MAKE) all
 
@@ -59,9 +80,12 @@ makeimg: all
 	@sudo $(UMOUNT) $(MOUNT_POINT)
 	@sudo $(LOSETUP) -d $(LOOP_DEV)
 
-cpfiles:
+cpfiles: mkdirs
 	@echo -e '\e[34m[CP]\e[0m Copying files to rootfs ...'
 	@cp $(KERNEL_ELF) $(ROOTFS)/boot/kernel.elf
+	@cp -r scripts/etc/ $(ROOTFS)/
+	@cp scripts/grub.cfg $(ROOTFS)/boot/grub/grub.cfg
+	
 	@sudo $(LOSETUP) -P $(LOOP_DEV) $(IMG)
 	@sudo $(MOUNT) $(PARTED_DEV) $(MOUNT_POINT)
 	@sudo cp -r $(ROOTFS)/* $(MOUNT_POINT)

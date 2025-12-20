@@ -44,12 +44,20 @@
 
 #ifndef ASM_FILE
 
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 
 using namespace std;
 
 #define PAGE_ALIGN(addr) ((((size_t)addr) + (PAGE_SIZE - 1)) & PAGE_MASK)
+
+extern char __kernel_start[];
+extern char __kernel_end[];
+
+extern char __text_start[];
+extern char __rodata_start[];
+extern char __data_start[];
+extern char __bss_start[];
 
 // 页表条目结构
 union pt_entry {
@@ -86,6 +94,9 @@ struct frame_mem {
     uint64_t start_addr;   // 起始地址 (原始区域起始)
     uint64_t start_usable; // 可用物理起始地址（跳过位图和管理数组）
 };
+
+/* in kernel/boot/mm.cc */
+extern frame_mem pm;
 
 #endif
 

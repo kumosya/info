@@ -1,5 +1,5 @@
-#include "start.h"
 #include "multiboot2.h"
+#include "start.h"
 #include "tty.h"
 
 #include <cstdarg>
