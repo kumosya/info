@@ -18,37 +18,69 @@
 
 #include <cstdint>
 
-using namespace std;
-
-struct idt_entry {
-    uint16_t offset_low;
-    uint16_t selector;
-    uint8_t ist;
-    uint8_t type_attr;
-    uint16_t offset_mid;
-    uint32_t offset_high;
-    uint32_t zero;
+struct faultStack_code {
+    std::uint64_t r11, r10, r9, r8;
+    std::uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
+    std::uint64_t error_code, rip, cs, rflags, rsp, ss;
 } __attribute__((packed));
 
-struct idt_ptr_t {
-    uint16_t limit;
-    uint64_t base;
-} __attribute__((packed));
-
-struct gdt_ptr_t {
-    uint16_t limit;
-    uint64_t base;
+struct faultStack_nocode {
+    std::uint64_t r11, r10, r9, r8;
+    std::uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
+    std::uint64_t rip, cs, rflags, rsp, ss;
 } __attribute__((packed));
 
 namespace idt {
-void init();
-static void set_entry(int vec, void *handler, uint16_t sel, uint8_t type_attr);
-} // namespace idt
+struct Entry {
+    std::uint16_t offset_low;
+    std::uint16_t selector;
+    std::uint8_t ist;
+    std::uint8_t type_attr;
+    std::uint16_t offset_mid;
+    std::uint32_t offset_high;
+    std::uint32_t zero;
+} __attribute__((packed));
+
+struct Ptr {
+    std::uint16_t limit;
+    std::uint64_t base;
+} __attribute__((packed));
+
+void Init();
+static void SetEntry(int vec, void *handler, std::uint16_t sel, std::uint8_t type_attr);
+}  // namespace idt
 
 namespace gdt {
-void set_entry(int index, uint64_t base, uint64_t limit, uint8_t access, uint8_t gran);
-void init();
-} // namespace gdt
+
+struct Ptr {
+    std::uint16_t limit;
+    std::uint64_t base;
+} __attribute__((packed));
+
+struct TssEntry {
+    std::uint32_t reserved0;
+    std::uint64_t rsp0;
+    std::uint64_t rsp1;
+    std::uint64_t rsp2;
+    std::uint32_t reserved1;
+    std::uint32_t ist1;
+    std::uint32_t ist2;
+    std::uint32_t ist3;
+    std::uint32_t ist4;
+    std::uint32_t ist5;
+    std::uint32_t ist6;
+    std::uint32_t ist7;
+    std::uint32_t reserved2;
+    std::uint16_t reserved3;
+    std::uint16_t iomap_base;
+} __attribute__((packed));
+
+
+extern TssEntry tss;
+void SetEntry(int index, std::uint64_t base, std::uint64_t limit, std::uint8_t access, std::uint8_t gran);
+void SetTss(int index, std::uint64_t tss_base, std::uint8_t access);
+void Init();
+}  // namespace gdt
 
 // Stubs implemented in interrupt.S
 extern "C" void pit_stub();

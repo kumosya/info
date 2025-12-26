@@ -1,13 +1,20 @@
+#include <cstdint>
+#include <cstring>
+
 #include "mm.h"
 #include "page.h"
 #include "tty.h"
 
-#include <cstdint>
-#include <cstring>
-
-
 namespace mm::slab {
-void init() {
+void Init() {
 
-    tty::printf("Slab initialized.\n"); }
-} // namespace mm::slab
+    /* TODO */
+
+    tty::printf("Slab initialized.\n");
+    
+    int *p = new int;
+    *p     = 0x3456789a;
+    tty::printf("p = 0x%lx, *p = 0x%x\n", (std::uint64_t)p, *p);
+    delete p;
+}
+}  // namespace mm::slab

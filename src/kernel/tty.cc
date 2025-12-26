@@ -1,11 +1,12 @@
-#include "tty.h"
-#include "io.h"
-#include "mm.h"
-#include "multiboot2.h"
 
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+
+#include "io.h"
+#include "mm.h"
+#include "tty.h"
+#include "multiboot2.h"
 
 using namespace std;
 
@@ -14,7 +15,7 @@ namespace video {
 static int xpos = 0;
 static int ypos = 0;
 
-void init(uint8_t *addr) {
+void Init(uint8_t *addr) {
     multiboot_mmap_entry *mmap;
     multiboot_tag *tag                 = (multiboot_tag *)(addr + 8);
     multiboot_tag_framebuffer *buf_tag = NULL;
@@ -39,7 +40,8 @@ void init(uint8_t *addr) {
         }
 
         for (int addr = 0; addr < height * width * size; addr += PAGE_SIZE) {
-            mm::page::map(mm::page::kernel_pml4, (uint64_t)(FRAMEBUFFER_BASE + addr), (uint64_t)(buf_tag->common.framebuffer_addr + addr),
+            mm::page::Map(mm::page::kernel_pml4, (uint64_t)(FRAMEBUFFER_BASE + addr),
+                          (uint64_t)(buf_tag->common.framebuffer_addr + addr),
                           PTE_PRESENT | PTE_WRITABLE);
         }
     } else {
@@ -50,7 +52,8 @@ void init(uint8_t *addr) {
         width  = VIDEO_WIDTH;
 
         for (int addr = 0; addr < height * width * size; addr += PAGE_SIZE) {
-            mm::page::map(mm::page::kernel_pml4, (uint64_t)(FRAMEBUFFER_BASE + addr), (uint64_t)(VIDEO_ADDR + addr), PTE_PRESENT | PTE_WRITABLE);
+            mm::page::Map(mm::page::kernel_pml4, (uint64_t)(FRAMEBUFFER_BASE + addr),
+                          (uint64_t)(VIDEO_ADDR + addr), PTE_PRESENT | PTE_WRITABLE);
         }
     }
 
@@ -71,13 +74,12 @@ void init(uint8_t *addr) {
 }
 
 /*  Put a character on the screen. */
-void putchar(char c, uint8_t color) {
+void Putchar(char c, uint8_t color) {
     if (c == '\n' || c == '\r') {
     newline:
         xpos = 0;
         ypos++;
-        if (ypos >= height)
-            ypos = 0;
+        if (ypos >= height) ypos = 0;
         return;
     }
 
@@ -85,21 +87,20 @@ void putchar(char c, uint8_t color) {
         *((uint8_t *)FRAMEBUFFER_BASE + (xpos + ypos * width) * 2)     = c;
         *((uint8_t *)FRAMEBUFFER_BASE + (xpos + ypos * width) * 2 + 1) = color;
         xpos++;
-        if (xpos >= width)
-            goto newline;
+        if (xpos >= width) goto newline;
         return;
     }
-} // namespace video
+}  // namespace video
 
-} // namespace video
+}  // namespace video
 
 static void puts(const char *s, uint8_t color) {
     while (*s)
 #if OUTPUT_TO_SERIAL == true
-        serial::putc(*s++);
+        serial::Putc(*s++);
 #else
-        video::putchar(*s++, color);
-#endif // OUTPUT_TO_SERIAL
+        video::Putchar(*s++, color);
+#endif  // OUTPUT_TO_SERIAL
 }
 
 /*  Format a string and print it on the screen, just like the libc
@@ -115,7 +116,7 @@ int printf(const char *fmt, ...) {
     return a;
 }
 
-void panic(const char *fmt, ...) {
+void Panic(const char *fmt, ...) {
     va_list argp;
     char str[128];
     int a;
@@ -128,4 +129,4 @@ void panic(const char *fmt, ...) {
         asm volatile("hlt");
     }
 }
-} // namespace tty
+}  // namespace tty

@@ -1,10 +1,9 @@
 #ifndef _WCHAR_H
 #define _WCHAR_H
 
-#include <stddef.h>
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdio.h>
-
 
 #ifdef __cplusplus
 extern "C" {
@@ -32,7 +31,7 @@ struct tm;
 
 #define WCHAR_MIN __WCHAR_MIN__
 #define WCHAR_MAX __WCHAR_MAX__
-#define WEOF      (-1)
+#define WEOF (-1)
 
 /* Functions for wide character classification */
 

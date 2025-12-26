@@ -1,12 +1,11 @@
 #include "vfs.h"
-#include "block.h"
-#include "fs/ext2.h"
-#include "tty.h"
 
 #include <cstdint>
 #include <cstring>
 
-using namespace std;
+#include "block.h"
+#include "fs/ext2.h"
+#include "tty.h"
 
 namespace vfs {
 
@@ -14,32 +13,41 @@ namespace vfs {
 static FileSystem *registered_filesystems = nullptr;
 
 // Global mount points list
-static Mount *mount_points = nullptr;
+static MountFs *mount_points = nullptr;
 
 // VFS initialization
-void init() {
+int Proc(int argc, char *argv[]) {
     // 查找第一个IDE设备
-    block::Device *dev = block::find_device("hda");
+    block::Device *dev = block::FindDevice("hda");
     if (dev) {
         registered_filesystems = nullptr;
         mount_points           = nullptr;
 
         // Register built-in file systems
-        register_filesystems();
+        RegisterFileSystems();
 
         // Mount root filesystem (ext2) on /
-        int ret = mount("hda", "/", "ext2", 0);
+        int ret = Mount("hda", "/", "ext2", 0);
         if (ret != 0) {
             // Failed to mount root filesystem
-            tty::panic("Failed to mount root filesystem on /");
+            tty::Panic("Failed to mount root filesystem on /");
+            return -2;
         }
     } else {
-        tty::panic("hda not found.");
+        tty::Panic("hda not found.");
+        return -1;
     }
+
+    while (true) {
+        for (int i = 0; i < 0xffffff; i++);
+        tty::printf("F");
+    }
+
+    return 1;
 }
 
 // Register a new file system
-int register_filesystem(FileSystem *fs) {
+int RegisterFileSystem(FileSystem *fs) {
     if (!fs || strlen(fs->name) == 0) {
         return -1;
     }
@@ -48,7 +56,7 @@ int register_filesystem(FileSystem *fs) {
     FileSystem *current = registered_filesystems;
     while (current) {
         if (strcmp(current->name, fs->name) == 0) {
-            return -2; // Already registered
+            return -2;  // Already registered
         }
         current = current->next;
     }
@@ -60,29 +68,8 @@ int register_filesystem(FileSystem *fs) {
     return 0;
 }
 
-// Register all built-in file systems
-void register_filesystems() {
-    // Register EXT2 file system
-    static FileSystem ext2_fs;
-    strncpy(ext2_fs.name, "ext2", sizeof(ext2_fs.name) - 1);
-
-    // Map EXT2 operations to VFS operations
-    ext2_fs.ops.mount   = vfs_mount_ext2;
-    ext2_fs.ops.umount  = vfs_umount_ext2;
-    ext2_fs.ops.open    = vfs_open_ext2;
-    ext2_fs.ops.close   = vfs_close_ext2;
-    ext2_fs.ops.read    = vfs_read_ext2;
-    ext2_fs.ops.write   = vfs_write_ext2;
-    ext2_fs.ops.mkdir   = nullptr; // Not implemented yet
-    ext2_fs.ops.rmdir   = nullptr; // Not implemented yet
-    ext2_fs.ops.readdir = vfs_readdir_ext2;
-    ext2_fs.ops.stat    = nullptr; // Not implemented yet
-
-    register_filesystem(&ext2_fs);
-}
-
 // Find a registered file system by name
-FileSystem *get_filesystem(const char *name) {
+FileSystem *GetFileSystem(const char *name) {
     if (!name) {
         return nullptr;
     }
@@ -99,19 +86,19 @@ FileSystem *get_filesystem(const char *name) {
 }
 
 // Mount a file system
-int mount(const char *device, const char *path, const char *fs_type, uint32_t flags) {
+int Mount(const char *device, const char *path, const char *fs_type, std::uint32_t flags) {
     if (!device || !path || !fs_type) {
         return -1;
     }
 
     // Find file system
-    FileSystem *fs = get_filesystem(fs_type);
+    FileSystem *fs = GetFileSystem(fs_type);
     if (!fs || !fs->ops.mount) {
         return -2;
     }
 
     // Check if path is already mounted
-    Mount *current = mount_points;
+    MountFs *current = mount_points;
     while (current) {
         if (strcmp(current->path, path) == 0) {
             return -3;
@@ -120,7 +107,7 @@ int mount(const char *device, const char *path, const char *fs_type, uint32_t fl
     }
 
     // Call file system-specific mount
-    Mount *mount = fs->ops.mount(fs, device, path, flags);
+    MountFs *mount = fs->ops.mount(fs, device, path, flags);
     if (!mount) {
         return -4;
     }
@@ -134,14 +121,14 @@ int mount(const char *device, const char *path, const char *fs_type, uint32_t fl
 }
 
 // Unmount a file system
-int umount(const char *path) {
+int Umount(const char *path) {
     if (!path) {
         return -1;
     }
 
     // Find mount point
-    Mount *mount = nullptr;
-    Mount *prev  = nullptr;
+    MountFs *mount = nullptr;
+    MountFs *prev  = nullptr;
 
     if (mount_points && strcmp(mount_points->path, path) == 0) {
         mount        = mount_points;
@@ -176,13 +163,13 @@ int umount(const char *path) {
 }
 
 // Open a file
-File *open(const char *path, uint32_t flags) {
+File *Open(const char *path, std::uint32_t flags) {
     if (!path) {
         return nullptr;
     }
 
     // Find the mount point for this path
-    Mount *mount = find_mount_point(path);
+    MountFs *mount = FindMountPoint(path);
     if (!mount) {
         tty::printf("VFS: No mount point for path '%s'\n", path);
         return nullptr;
@@ -190,7 +177,7 @@ File *open(const char *path, uint32_t flags) {
 
     // Extract the relative path (after mount point)
     char rel_path[256];
-    extract_relative_path(mount, path, rel_path, sizeof(rel_path));
+    ExtractRelativePath(mount, path, rel_path, sizeof(rel_path));
 
     // Call file system-specific open
     if (!mount->fs->ops.open) {
@@ -211,12 +198,12 @@ File *open(const char *path, uint32_t flags) {
 }
 
 // Close a file
-int close(File *file) {
+int Close(File *file) {
     if (!file) {
         return -1;
     }
 
-    Mount *mount = file->mount;
+    MountFs *mount = file->mount;
     if (!mount || !mount->fs->ops.close) {
         return -2;
     }
@@ -225,12 +212,12 @@ int close(File *file) {
 }
 
 // Read from a file
-ssize_t read(File *file, void *buf, size_t count) {
+ssize_t Read(File *file, void *buf, size_t count) {
     if (!file || !buf || count == 0) {
         return -1;
     }
 
-    Mount *mount = file->mount;
+    MountFs *mount = file->mount;
     if (!mount || !mount->fs->ops.read) {
         return -2;
     }
@@ -239,12 +226,12 @@ ssize_t read(File *file, void *buf, size_t count) {
 }
 
 // Write to a file
-ssize_t write(File *file, const void *buf, size_t count) {
+ssize_t Write(File *file, const void *buf, size_t count) {
     if (!file || !buf || count == 0) {
         return -1;
     }
 
-    Mount *mount = file->mount;
+    MountFs *mount = file->mount;
     if (!mount || !mount->fs->ops.write) {
         return -2;
     }
@@ -253,31 +240,31 @@ ssize_t write(File *file, const void *buf, size_t count) {
 }
 
 // Seek in a file
-ssize_t seek(File *file, int64_t offset, int whence) {
+ssize_t Seek(File *file, std::int64_t offset, int whence) {
     if (!file) {
         return -1;
     }
 
-    uint64_t new_pos = file->position;
+    std::uint64_t new_pos = file->position;
 
     // For EXT2 files, we can access the inode directly through the private_data
     if (file->private_data) {
         ext2::File *ext2_file = static_cast<ext2::File *>(file->private_data);
-        uint64_t file_size    = ext2_file->inode.i_size;
+        std::uint64_t file_size    = ext2_file->inode.i_size;
 
         // Calculate new position based on whence
         switch (whence) {
-        case SEEK_SET:
-            new_pos = static_cast<uint64_t>(offset);
-            break;
-        case SEEK_CUR:
-            new_pos += offset;
-            break;
-        case SEEK_END:
-            new_pos = file_size + offset;
-            break;
-        default:
-            return -1;
+            case SEEK_SET:
+                new_pos = static_cast<std::uint64_t>(offset);
+                break;
+            case SEEK_CUR:
+                new_pos += offset;
+                break;
+            case SEEK_END:
+                new_pos = file_size + offset;
+                break;
+            default:
+                return -1;
         }
 
         // Ensure the new position is within bounds (0 <= new_pos)
@@ -297,20 +284,20 @@ ssize_t seek(File *file, int64_t offset, int whence) {
 }
 
 // List directory entries
-DirEntry *readdir(const char *path, uint32_t index) {
+DirEntry *readdir(const char *path, std::uint32_t index) {
     if (!path) {
         return nullptr;
     }
 
     // Find the mount point for this path
-    Mount *mount = find_mount_point(path);
+    MountFs *mount = FindMountPoint(path);
     if (!mount) {
         return nullptr;
     }
 
     // Extract the relative path (after mount point)
     char rel_path[256];
-    extract_relative_path(mount, path, rel_path, sizeof(rel_path));
+    ExtractRelativePath(mount, path, rel_path, sizeof(rel_path));
 
     // Call file system-specific readdir
     if (!mount->fs->ops.readdir) {
@@ -321,15 +308,15 @@ DirEntry *readdir(const char *path, uint32_t index) {
 }
 
 // Helper function to find mount point for a path
-Mount *find_mount_point(const char *path) {
+MountFs *FindMountPoint(const char *path) {
     if (!path || path[0] != '/') {
         return nullptr;
     }
 
-    Mount *best_match = nullptr;
+    MountFs *best_match = nullptr;
     size_t best_len   = 0;
 
-    Mount *current = mount_points;
+    MountFs *current = mount_points;
     while (current) {
         size_t mount_len = strlen(current->path);
 
@@ -349,7 +336,8 @@ Mount *find_mount_point(const char *path) {
 }
 
 // Helper function to extract relative path after mount point
-void extract_relative_path(Mount *mount, const char *full_path, char *rel_path, size_t rel_path_len) {
+void ExtractRelativePath(MountFs *mount, const char *full_path, char *rel_path,
+                           size_t rel_path_len) {
     if (!mount || !full_path || !rel_path) {
         return;
     }
@@ -384,27 +372,27 @@ void extract_relative_path(Mount *mount, const char *full_path, char *rel_path, 
 // EXT2 integration functions
 
 // Mount EXT2 file system
-Mount *vfs_mount_ext2(FileSystem *fs, const char *device, const char *path, uint32_t flags) {
-    (void)fs;    // Unused
-    (void)flags; // Unused
+MountFs *VfsMountExt2(FileSystem *fs, const char *device, const char *path, std::uint32_t flags) {
+    (void)fs;     // Unused
+    (void)flags;  // Unused
 
     // Get block device by name
-    block::Device *block_dev = block::find_device(device);
+    block::Device *block_dev = block::FindDevice(device);
     if (!block_dev) {
         tty::printf("VFS: Block device '%s' not found\n", device);
         return nullptr;
     }
 
     // Mount EXT2 file system
-    ext2::Mount *ext2_mount = ext2::mount(block_dev);
+    ext2::MountFs *ext2_mount = ext2::Mount(block_dev);
     if (!ext2_mount) {
         return nullptr;
     }
 
     // Allocate VFS mount point
-    Mount *mount = new Mount();
+    MountFs *mount = new MountFs();
     if (!mount) {
-        ext2::umount(ext2_mount);
+        ext2::Umount(ext2_mount);
         return nullptr;
     }
 
@@ -416,16 +404,16 @@ Mount *vfs_mount_ext2(FileSystem *fs, const char *device, const char *path, uint
 }
 
 // Unmount EXT2 file system
-int vfs_umount_ext2(Mount *mount) {
+int VfsUmountExt2(MountFs *mount) {
     if (!mount || !mount->private_data) {
         return -1;
     }
 
     // Get EXT2 mount point
-    ext2::Mount *ext2_mount = static_cast<ext2::Mount *>(mount->private_data);
+    ext2::MountFs *ext2_mount = static_cast<ext2::MountFs *>(mount->private_data);
 
     // Unmount EXT2 file system
-    int ret = ext2::umount(ext2_mount);
+    int ret = ext2::Umount(ext2_mount);
     if (ret != 0) {
         return ret;
     }
@@ -434,21 +422,22 @@ int vfs_umount_ext2(Mount *mount) {
 }
 
 // Open file in EXT2
-File *vfs_open_ext2(Mount *mount, const char *path, uint32_t flags) {
+File *VfsOpenExt2(MountFs *mount, const char *path, std::uint32_t flags) {
     if (!mount || !mount->private_data || !path) {
         return nullptr;
     }
 
     // Get EXT2 mount point
-    ext2::Mount *ext2_mount = static_cast<ext2::Mount *>(mount->private_data);
+    ext2::MountFs *ext2_mount = static_cast<ext2::MountFs *>(mount->private_data);
 
     // Resolve path to inode number
-    uint32_t inode_num = ext2::resolve_path(ext2_mount, path);
+    std::uint32_t inode_num = ext2::ResolvePath(ext2_mount, path);
 
     // Handle file creation
     if (inode_num == 0) {
         if (flags & O_CREAT) {
-            // For simplicity, we'll just return an error for now since we don't have full file creation support
+            // For simplicity, we'll just return an error for now since we don't have full file
+            // creation support
             return nullptr;
         } else {
             return nullptr;
@@ -456,7 +445,7 @@ File *vfs_open_ext2(Mount *mount, const char *path, uint32_t flags) {
     }
 
     // Open the file using EXT2
-    ext2::File *ext2_file = ext2::open(ext2_mount, inode_num, flags);
+    ext2::File *ext2_file = ext2::Open(ext2_mount, inode_num, flags);
     if (!ext2_file) {
         return nullptr;
     }
@@ -464,7 +453,7 @@ File *vfs_open_ext2(Mount *mount, const char *path, uint32_t flags) {
     // Allocate VFS file
     File *file = new File();
     if (!file) {
-        ext2::close(ext2_file);
+        ext2::Close(ext2_file);
         return nullptr;
     }
 
@@ -477,7 +466,7 @@ File *vfs_open_ext2(Mount *mount, const char *path, uint32_t flags) {
 }
 
 // Close file in EXT2
-int vfs_close_ext2(File *file) {
+int VfsCloseExt2(File *file) {
     if (!file || !file->private_data) {
         return -1;
     }
@@ -486,7 +475,7 @@ int vfs_close_ext2(File *file) {
     ext2::File *ext2_file = static_cast<ext2::File *>(file->private_data);
 
     // Close the file using EXT2
-    int ret = ext2::close(ext2_file);
+    int ret = ext2::Close(ext2_file);
 
     // Free VFS file
     delete file;
@@ -495,7 +484,7 @@ int vfs_close_ext2(File *file) {
 }
 
 // Read from file in EXT2
-ssize_t vfs_read_ext2(File *file, void *buf, size_t count, uint64_t offset) {
+ssize_t VfsReadExt2(File *file, void *buf, size_t count, std::uint64_t offset) {
     if (!file || !file->private_data || !buf || count == 0) {
         return -1;
     }
@@ -509,7 +498,7 @@ ssize_t vfs_read_ext2(File *file, void *buf, size_t count, uint64_t offset) {
     }
 
     // Read from file using EXT2
-    ssize_t ret = ext2::read(ext2_file, buf, count);
+    ssize_t ret = ext2::Read(ext2_file, buf, count);
 
     // Update VFS file position
     if (ret > 0) {
@@ -520,7 +509,7 @@ ssize_t vfs_read_ext2(File *file, void *buf, size_t count, uint64_t offset) {
 }
 
 // Write to file in EXT2
-ssize_t vfs_write_ext2(File *file, const void *buf, size_t count, uint64_t offset) {
+ssize_t VfsWriteExt2(File *file, const void *buf, size_t count, std::uint64_t offset) {
     if (!file || !file->private_data || !buf || count == 0) {
         return -1;
     }
@@ -534,12 +523,12 @@ ssize_t vfs_write_ext2(File *file, const void *buf, size_t count, uint64_t offse
     }
 
     // Write to file using EXT2
-    ssize_t ret = ext2::write(ext2_file, buf, count);
+    ssize_t ret = ext2::Write(ext2_file, buf, count);
 
     if (ret < 0) {
         return ret;
     } else if (ret == 0) {
-        return -1; // Treat 0 bytes written as failure
+        return -1;  // Treat 0 bytes written as failure
     } else {
         // Update VFS file position
         file->position = ext2_file->offset;
@@ -549,65 +538,66 @@ ssize_t vfs_write_ext2(File *file, const void *buf, size_t count, uint64_t offse
 }
 
 // Read directory entries in EXT2
-DirEntry *vfs_readdir_ext2(Mount *mount, const char *path, uint32_t index) {
+DirEntry *VfsReaddirExt2(MountFs *mount, const char *path, std::uint32_t index) {
     if (!mount || !mount->private_data || !path) {
         return nullptr;
     }
 
     // Get EXT2 mount point
-    ext2::Mount *ext2_mount = static_cast<ext2::Mount *>(mount->private_data);
+    ext2::MountFs *ext2_mount = static_cast<ext2::MountFs *>(mount->private_data);
 
     // Resolve path to inode number
-    uint32_t inode_num = ext2::resolve_path(ext2_mount, path);
+    std::uint32_t inode_num = ext2::ResolvePath(ext2_mount, path);
     if (inode_num == 0) {
         return nullptr;
     }
 
     // Open the directory file
-    ext2::File *dir_file = ext2::open(ext2_mount, inode_num, O_RDONLY);
+    ext2::File *dir_file = ext2::Open(ext2_mount, inode_num, O_RDONLY);
     if (!dir_file) {
         return nullptr;
     }
 
     // Check if this is actually a directory
-    if (!(dir_file->inode.i_mode & 0x4000)) { // S_IFDIR flag
-        ext2::close(dir_file);
+    if (!(dir_file->inode.i_mode & 0x4000)) {  // S_IFDIR flag
+        ext2::Close(dir_file);
         return nullptr;
     }
 
     // Allocate buffer for reading directory blocks
     uint8_t *buffer = new uint8_t[ext2_mount->block_size];
     if (!buffer) {
-        ext2::close(dir_file);
+        ext2::Close(dir_file);
         return nullptr;
     }
 
     DirEntry *found_entry   = nullptr;
-    uint32_t current_index  = 0;
-    uint64_t current_offset = 0;
+    std::uint32_t current_index  = 0;
+    std::uint64_t current_offset = 0;
 
     // Iterate through directory blocks
     while (current_offset < dir_file->inode.i_size) {
         // Calculate block number and offset within block
-        uint32_t block_idx    = current_offset / ext2_mount->block_size;
-        uint32_t block_offset = current_offset % ext2_mount->block_size;
+        std::uint32_t block_idx    = current_offset / ext2_mount->block_size;
+        std::uint32_t block_offset = current_offset % ext2_mount->block_size;
 
         // Get block number from inode
-        uint32_t block_num = ext2::get_block(&dir_file->inode, block_idx, ext2_mount);
+    std::uint32_t block_num = ext2::GetBlock(&dir_file->inode, block_idx, ext2_mount);
         if (block_num == 0) {
             break;
         }
 
         // Read block
-        if (ext2::read_block(ext2_mount, block_num, buffer) != 0) {
+    if (ext2::ReadBlock(ext2_mount, block_num, buffer) != 0) {
             break;
         }
 
         // Iterate through directory entries in this block
-        uint32_t entry_offset = block_offset;
+        std::uint32_t entry_offset = block_offset;
         while (entry_offset < ext2_mount->block_size) {
             // Check if we've reached the end of the block or directory
-            if (entry_offset + 8 > ext2_mount->block_size || current_offset >= dir_file->inode.i_size) {
+            if (entry_offset + 8 > ext2_mount->block_size ||
+                current_offset >= dir_file->inode.i_size) {
                 break;
             }
 
@@ -615,7 +605,8 @@ DirEntry *vfs_readdir_ext2(Mount *mount, const char *path, uint32_t index) {
             ext2::DirEntry *ext2_entry = reinterpret_cast<ext2::DirEntry *>(buffer + entry_offset);
 
             // Validate record length to avoid infinite loops
-            if (ext2_entry->rec_len < 8 || ext2_entry->rec_len > (ext2_mount->block_size - entry_offset)) {
+            if (ext2_entry->rec_len < 8 ||
+                ext2_entry->rec_len > (ext2_mount->block_size - entry_offset)) {
                 break;
             }
 
@@ -627,7 +618,8 @@ DirEntry *vfs_readdir_ext2(Mount *mount, const char *path, uint32_t index) {
                     found_entry = new DirEntry();
                     if (found_entry) {
                         // Copy name (limit to 255 characters)
-                        uint32_t name_len = (ext2_entry->name_len < 255) ? ext2_entry->name_len : 255;
+                        std::uint32_t name_len =
+                            (ext2_entry->name_len < 255) ? ext2_entry->name_len : 255;
                         strncpy(found_entry->name, ext2_entry->name, name_len);
                         found_entry->name[name_len] = '\0';
 
@@ -639,7 +631,7 @@ DirEntry *vfs_readdir_ext2(Mount *mount, const char *path, uint32_t index) {
 
                     // Cleanup and return
                     delete[] buffer;
-                    ext2::close(dir_file);
+                    ext2::Close(dir_file);
                     return found_entry;
                 }
                 current_index++;
@@ -656,10 +648,31 @@ DirEntry *vfs_readdir_ext2(Mount *mount, const char *path, uint32_t index) {
 
     // Cleanup
     delete[] buffer;
-    ext2::close(dir_file);
+    ext2::Close(dir_file);
 
     // No entry found at the given index
     return nullptr;
 }
 
-} // namespace vfs
+// Register all built-in file systems
+void RegisterFileSystems() {
+    // Register EXT2 file system
+    static FileSystem ext2_fs;
+    strncpy(ext2_fs.name, "ext2", sizeof(ext2_fs.name) - 1);
+
+    // Map EXT2 operations to VFS operations
+    ext2_fs.ops.mount   = VfsMountExt2;
+    ext2_fs.ops.umount  = VfsUmountExt2;
+    ext2_fs.ops.open    = VfsOpenExt2;
+    ext2_fs.ops.close   = VfsCloseExt2;
+    ext2_fs.ops.read    = VfsReadExt2;
+    ext2_fs.ops.write   = VfsWriteExt2;
+    ext2_fs.ops.mkdir   = nullptr;  // Not implemented yet
+    ext2_fs.ops.rmdir   = nullptr;  // Not implemented yet
+    ext2_fs.ops.readdir = VfsReaddirExt2;
+    ext2_fs.ops.stat    = nullptr;  // Not implemented yet
+
+    RegisterFileSystem(&ext2_fs);
+}
+
+}  // namespace vfs

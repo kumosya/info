@@ -2,6 +2,7 @@
    Each stub preserves registers, sets up arguments as expected by
    C handlers, calls the C handler, restores registers and returns
    with iretq (or halts for boot-time handlers that never return). */
+/* clang-format off */
 
 .section .text
 .global pit_stub

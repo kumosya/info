@@ -38,21 +38,21 @@ namespace ide {
 
 struct Device {
     block::Device block_dev;
-    uint16_t io_base;
-    uint8_t irq;
-    uint8_t drive;
-    uint8_t status;
-    uint64_t lba_address;
+    std::uint16_t io_base;
+    std::uint8_t irq;
+    std::uint8_t drive;
+    std::uint8_t status;
+    std::uint64_t lba_address;
 };
 
 // IDE device operations
-int read(block::Device *dev, uint64_t sector, uint32_t count, void *buf);
-int write(block::Device *dev, uint64_t sector, uint32_t count, const void *buf);
-int ioctl(block::Device *dev, uint32_t cmd, void *arg);
+int Read(block::Device *dev, std::uint64_t sector, std::uint32_t count, void *buf);
+int Write(block::Device *dev, std::uint64_t sector, std::uint32_t count, const void *buf);
+int Ioctl(block::Device *dev, std::uint32_t cmd, void *arg);
 
 // IDE driver initialization
-void init();
+void Init();
 
-} // namespace ide
+}  // namespace ide
 
-#endif // _IDE_H_
+#endif  // _IDE_H_

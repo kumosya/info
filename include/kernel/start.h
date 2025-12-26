@@ -1,5 +1,5 @@
-#ifndef ENTRY_H
-#define ENTRY_H
+#ifndef START_H
+#define START_H
 
 #include "multiboot2.h"
 #include "page.h"
@@ -7,12 +7,10 @@
 #include <cstddef>
 #include <cstdint>
 
-using namespace std;
-
 namespace boot {
 int printf(const char *format, ...);
-void video_init();
-static uint8_t *video_addr;
+void VideoInit();
+static std::uint8_t *video_addr;
 
 static int is_digit(int c);
 static int skip_atoi(const char **s);
@@ -23,15 +21,15 @@ static int vsprintf(char *buf, const char *fmt, va_list args);
 static size_t strlen(const char *s);
 
 namespace mm {
-void *alloc();
-void mapping(pt_entry *pml4, uint64_t virt_addr, uint64_t phys_addr, uint64_t flags);
-void mapping_kernel(pt_entry *pml4, multiboot_tag_elf_sections *elf_sections);
-void mapping_identity(pt_entry *pml4, uint64_t size);
+void *Alloc();
+void Mapping(PTE *pml4, std::uint64_t virt_addr, std::uint64_t phys_addr, std::uint64_t flags);
+void MappingKernel(PTE *pml4, multiboot_tag_elf_sections *elf_sections);
+void MappingIdentity(PTE *pml4, std::uint64_t size);
 
 void *memset(void *dest, int val, size_t len);
-void frame_init(uint64_t start_addr, uint64_t end_addr);
-void init(uint8_t *addr);
-} // namespace mm
-} // namespace boot
+void FrameInit(std::uint64_t start_addr, std::uint64_t end_addr);
+void Init(std::uint8_t *addr);
+}  // namespace mm
+}  // namespace boot
 
-#endif /* ENTRY_H */
+#endif /* START_H */

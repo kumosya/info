@@ -1,12 +1,14 @@
+#  /* clang-format off */
+
 CPP=g++
 CPPFLAGS=-c -m64 -nostdlib -nostdinc -fno-stack-protector -mcmodel=large \
-			-fno-asynchronous-unwind-tables -ffreestanding -fno-exceptions \
+			-ffreestanding -fno-exceptions \
 			-std=c++11 -fno-pie \
             -I ../include/kernel/ \
 			-I ../include/libc/ \
             -I ../include/libc++/
 LD=ld
-LDFLAGS= -nostdlib -static -z noexecstack --no-warn-rwx-segments -no-relax -T ../scripts/kernel.lds -m elf_x86_64 \
+LDFLAGS= -nostdlib -z noexecstack --no-warn-rwx-segments -T ../scripts/kernel.lds -m elf_x86_64 \
 			
 MANGLE_HDR = ../include/kernel/cpp_mangle.h
 
@@ -21,7 +23,7 @@ SRCS:=${wildcard kernel/*/*.cc kernel/*.cc \
 				fs/*/*.cc \
 		}
 OBJS:=$(patsubst %.cc, %.o, $(SRCS))
-AS_OBJS:=kernel/boot/head.o kernel/interrupt.o
+AS_OBJS:=kernel/boot/head.o kernel/interrupt.o task/proc.o
 
 LIBC = ../lib/libc.a
 

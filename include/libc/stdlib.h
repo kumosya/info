@@ -6,9 +6,18 @@
 #include <wchar.h>
 
 /* 定义缺失的类型 */
-typedef struct { int quot; int rem; } div_t;
-typedef struct { long quot; long rem; } ldiv_t;
-typedef struct { long long quot; long long rem; } lldiv_t;
+typedef struct {
+    int quot;
+    int rem;
+} div_t;
+typedef struct {
+    long quot;
+    long rem;
+} ldiv_t;
+typedef struct {
+    long long quot;
+    long long rem;
+} lldiv_t;
 
 /* Memory allocation functions */
 void *malloc(size_t size);
@@ -27,7 +36,7 @@ char *getenv(const char *name);
 int setenv(const char *name, const char *value, int overwrite);
 int unsetenv(const char *name);
 
-/* Numerical conversion functions */   
+/* Numerical conversion functions */
 int atoi(const char *nptr);
 long atol(const char *nptr);
 long long atoll(const char *nptr);
@@ -53,10 +62,8 @@ int system(const char *command);
 char *getpass(const char *prompt);
 
 /* Sorting and searching */
-void qsort(void *base, size_t nmemb, size_t size, 
-           int (*compar)(const void *, const void *));
-void *bsearch(const void *key, const void *base, 
-              size_t nmemb, size_t size, 
+void qsort(void *base, size_t nmemb, size_t size, int (*compar)(const void *, const void *));
+void *bsearch(const void *key, const void *base, size_t nmemb, size_t size,
               int (*compar)(const void *, const void *));
 
 /* Integer arithmetic */

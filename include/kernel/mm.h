@@ -1,25 +1,24 @@
 #ifndef MM_H
 #define MM_H
 
+#include "page.h"
+
 #include <cstddef>
 #include <cstdint>
-#include <page.h>
-
-using namespace std;
 
 namespace mm {
 namespace page {
 /* in mm/page.cc */
-extern frame_mem frame;
-extern pt_entry *kernel_pml4;
+extern FrameMem frame;
+extern PTE *kernel_pml4;
 
-void map(pt_entry *pml4, uint64_t virt_addr, uint64_t phys_addr, uint64_t flags);
-void *alloc(size_t size);
-void free(void *addr);
-} // namespace page
+void Map(PTE *pml4, std::uint64_t virt_addr, std::uint64_t phys_addr, std::uint64_t flags);
+void *Alloc(std::size_t size);
+void Free(void *addr);
+}  // namespace page
 namespace slab {
-void init();
+void Init();
 }
-} // namespace mm
+}  // namespace mm
 
 #endif /* MM_H */

@@ -2,7 +2,7 @@
 #define KEYBOARD_H
 
 namespace keyboard {
-void init();
+void Init();
 }
 
-#endif // KEYBOARD_H
+#endif  // KEYBOARD_H

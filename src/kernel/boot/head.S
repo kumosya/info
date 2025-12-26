@@ -1,3 +1,4 @@
+ /* clang-format off */
 #define ASM_FILE        1
 #include "multiboot2.h"
 #include "page.h"
@@ -55,13 +56,13 @@ multiboot_header_end:
 .section .boot.text
     .code32
     .align 0x1000
-    .extern CPPMAIN
+    .extern CppStart
     .globl _start
 
 _start:
 	mov     $boot_stack_top, %esp
 
-	/* Set the boot information as parameters for CPPMAIN() */
+	/* Set the boot information as parameters for CppStart() */
 	mov     %eax, %edi
 	mov     %ebx, %esi
 
@@ -121,7 +122,7 @@ _start:
 	mov     %ax, %gs
 
 	/* Enter 64-bit world */
-	jmp $(1 << SELECTOR_INDEX), $cppstart
+	jmp $(1 << SELECTOR_INDEX), $CppStart
 
 	/* We shouldn't get here... */
 .loop:

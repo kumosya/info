@@ -1,19 +1,20 @@
 #include "start.h"
+
+#include <cstdint>
+
 #include "cpu.h"
 #include "multiboot2.h"
 #include "tty.h"
 
-#include <cstdint>
+static idt::Entry idt_ety[256];
 
-static idt_entry idt_ety[256];
-
-void kernel_main(uint8_t *addr);
+void KernelMain(std::uint8_t *addr);
 // Stubs implemented in interrupt.S
 extern "C" void gp_fault_stub(void);
 extern "C" void page_fault_stub(void);
 
-static void set_idt_entry(int vec, void *handler, uint16_t sel, uint8_t type_attr) {
-    uint64_t addr            = (uint64_t)handler;
+static void SetIDTEntry(int vec, void *handler, std::uint16_t sel, std::uint8_t type_attr) {
+    std::uint64_t addr       = reinterpret_cast<std::uint64_t>(handler);
     idt_ety[vec].offset_low  = addr & 0xFFFF;
     idt_ety[vec].selector    = sel;
     idt_ety[vec].ist         = 0;
@@ -31,7 +32,7 @@ extern "C" void boot_gp_fault_handler() {
     }
 }
 // C handler called from the assembly stub. Prints CR2 and halts.
-extern "C" void boot_page_fault_handler(uint64_t fault_addr) {
+extern "C" void boot_page_fault_handler(std::uint64_t fault_addr) {
     boot::printf("Page Fault! CR2=0x%lx\n", fault_addr);
     // Halt so user can inspect
     while (true) {
@@ -41,34 +42,32 @@ extern "C" void boot_page_fault_handler(uint64_t fault_addr) {
 
 /*  Check if MAGIC is valid and print the Multiboot information structure
    pointed by ADDR. */
-extern "C" void cppstart(uint32_t magic, uint8_t *addr) {
+extern "C" void CppStart(std::uint32_t magic, std::uint8_t *addr) {
 #if ENABLE_TEXT_OUTPUT == true
-    boot::video_init();
+    boot::videoInit();
 #endif
 
     //  Am I booted by a Multiboot-compliant boot loader?
     if (magic != MULTIBOOT2_BOOTLOADER_MAGIC) {
         boot::printf("Error: Invalid magic number: 0x%x.\n", (unsigned)magic);
-        while (true)
-            ;
+        while (true);
     }
     if (addr[0] & 7) {
         boot::printf("Error: Unaligned mbi: 0x%x.\n", addr);
-        while (true)
-            ;
+        while (true);
     }
     // Install minimal IDT and page-fault handler before enabling mappings
     // zero out idt
     boot::mm::memset(&idt_ety, 0, sizeof(idt_ety));
     // kernel code selector is 0x08 (see gdt setup in boot.S)
     //		boot::printf("handler set for page fault at 0x%lx\n", (uint64_t)page_fault_stub);
-    set_idt_entry(13, (void *)gp_fault_stub, 0x08, 0x8E);
-    set_idt_entry(14, (void *)page_fault_stub, 0x08, 0x8E);
-    idt_ptr_t idtp;
+    SetIDTEntry(13, (void *)gp_fault_stub, 0x08, 0x8E);
+    SetIDTEntry(14, (void *)page_fault_stub, 0x08, 0x8E);
+    idt::Ptr idtp;
     idtp.limit = sizeof(idt_ety) - 1;
-    idtp.base  = (uint64_t)&idt_ety;
+    idtp.base  = reinterpret_cast<std::uint64_t>(&idt_ety);
     asm __volatile__("lidt %0" : : "m"(idtp));
 
-    boot::mm::init(addr);
-    kernel_main(addr);
+    boot::mm::Init(addr);
+    KernelMain(addr);
 }

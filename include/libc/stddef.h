@@ -9,7 +9,7 @@ extern "C" {
 #ifdef __cplusplus
 #define NULL 0L
 #else
-#define NULL ((void*)0)
+#define NULL ((void *)0)
 #endif
 #endif
 
@@ -20,13 +20,14 @@ typedef long ptrdiff_t;
 #if ((defined(__GNUC__) && (__GNUC__ >= 4)) || defined(__clang__))
 #define offsetof(TYPE, MEMBER) __builtin_offsetof(TYPE, MEMBER)
 #else
-#define offsetof(TYPE, MEMBER) ((size_t) &((TYPE *)0)->MEMBER)
+#define offsetof(TYPE, MEMBER) ((size_t)&((TYPE *)0)->MEMBER)
 #endif
 
-#define container_of(ptr, type, member) ({ \
-    const typeof( ((type *)0)->member ) *__mptr = (ptr); \
-    (type *)( (char *)__mptr - offsetof(type,member) ); \
-})
+#define container_of(ptr, type, member)                    \
+    ({                                                     \
+        const typeof(((type *)0)->member) *__mptr = (ptr); \
+        (type *)((char *)__mptr - offsetof(type, member)); \
+    })
 
 #ifdef __cplusplus
 }

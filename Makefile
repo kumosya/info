@@ -1,3 +1,4 @@
+#  /* clang-format off */
 
 DD = dd
 PARTED = parted

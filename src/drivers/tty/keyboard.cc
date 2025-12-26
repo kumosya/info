@@ -1,11 +1,10 @@
-#include "cpu.h"
-#include "io.h"
-#include "tty.h"
 #include "keyboard.h"
 
 #include <cstdint>
 
-using namespace std;
+#include "cpu.h"
+#include "io.h"
+#include "tty.h"
 
 extern "C" void kbd_handler_c();
 
@@ -14,7 +13,7 @@ extern "C" void kbd_stub(void);
 
 extern "C" void kbd_handler_c() {
     // Read scancode from port 0x60
-    uint8_t sc = inb(0x60);
+    std::uint8_t sc = inb(0x60);
     // Print scancode in hex (keep short)
     tty::printf("kbd:%02x\n", sc);
     // Send EOI to PIC
@@ -22,8 +21,8 @@ extern "C" void kbd_handler_c() {
 }
 
 namespace keyboard {
-void init() {
+void Init() {
     // Unmask IRQ1 (keyboard)
-    pic::unmask_irq(1);
+    pic::UnmaskIrq(1);
 }
-} // namespace keyboard
+}  // namespace keyboard

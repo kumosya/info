@@ -3,7 +3,7 @@
 
 /*  The attribute of an character. */
 #define ATTRIBUTE 7
-#define VIDEO_ADDR (uint8_t *)0xb8000
+#define VIDEO_ADDR 0xb8000
 #define VIDEO_WIDTH 80
 #define VIDEO_HEIGHT 25
 
@@ -21,13 +21,12 @@
 
 /* OS Info 显存映射地址 0xffff a000 0000 0000 - 0xffff a010 0000 0000 */
 
-#define FRAMEBUFFER_BASE 0xffffa00000000000ULL // 映射后的显存起始地址
-#define FRAMEBUFFER_LEN 0x1000000000ULL        // 支持的最大显存 (64GiB)
+#define FRAMEBUFFER_BASE 0xffffa00000000000ULL  // 映射后的显存起始地址
+#define FRAMEBUFFER_LEN 0x1000000000ULL         // 支持的最大显存 (64GiB)
 
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
-using namespace std;
 
 /* Here! */
 #define OUTPUT_TO_SERIAL true
@@ -35,18 +34,17 @@ using namespace std;
 
 namespace tty {
 namespace video {
-static uint32_t size;
+static std::uint32_t size;
 
-static uint32_t type;
+static std::uint32_t type;
 
-static uint32_t height;
-static uint32_t width;
+static std::uint32_t height;
+static std::uint32_t width;
 
-void init(uint8_t *addr);
-void putchar(char c, uint8_t color);
-} // namespace video
-static void puts(const char *s, uint8_t color);
+void Init(std::uint8_t *addr);
+void Putchar(char c, std::uint8_t color);
+}  // namespace video
 int printf(const char *format, ...);
-void panic(const char *format, ...);
-} // namespace tty
+void Panic(const char *format, ...);
+}  // namespace tty
 #endif /* _VIDEO_H_ */

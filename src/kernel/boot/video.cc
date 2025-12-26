@@ -1,19 +1,17 @@
-#include "multiboot2.h"
-#include "start.h"
-#include "tty.h"
-
 #include <cstdarg>
 #include <cstdint>
 
-using namespace std;
+#include "multiboot2.h"
+#include "start.h"
+#include "tty.h"
 
 namespace boot {
 static int xpos = 0;
 static int ypos = 0;
 
 /*  Clear the screen and initialize VIDEO, XPOS and YPOS. */
-void video_init() {
-    video_addr = (uint8_t *)VIDEO_ADDR;
+void videoInit() {
+    video_addr = reinterpret_cast<std::uint8_t *>(VIDEO_ADDR);
     int i;
     for (i = 0; i < VIDEO_HEIGHT * VIDEO_WIDTH * 2; i++) {
         *(video_addr + i) = 0;
@@ -28,8 +26,7 @@ void putchar(char c) {
     newline:
         xpos = 0;
         ypos++;
-        if (ypos >= VIDEO_HEIGHT)
-            ypos = 0;
+        if (ypos >= VIDEO_HEIGHT) ypos = 0;
         return;
     }
 
@@ -37,14 +34,12 @@ void putchar(char c) {
     *(video_addr + (xpos + ypos * VIDEO_WIDTH) * 2 + 1) = ATTRIBUTE;
 
     xpos++;
-    if (xpos >= VIDEO_WIDTH)
-        goto newline;
+    if (xpos >= VIDEO_WIDTH) goto newline;
 }
 
 static void puts(const char *s) {
 #if ENABLE_TEXT_OUTPUT == true
-    while (*s)
-        putchar(*s++);
+    while (*s) putchar(*s++);
 #endif
 }
 
@@ -200,21 +195,21 @@ static int vsprintf(char *buf, const char *fmt, va_list args) {
     repeat:
         ++fmt;
         switch (*fmt) {
-        case '-':
-            flags |= LEFT;
-            goto repeat;
-        case '+':
-            flags |= PLUS;
-            goto repeat;
-        case ' ':
-            flags |= SPACE;
-            goto repeat;
-        case '#':
-            flags |= SPECIAL;
-            goto repeat;
-        case '0':
-            flags |= ZEROPAD;
-            goto repeat;
+            case '-':
+                flags |= LEFT;
+                goto repeat;
+            case '+':
+                flags |= PLUS;
+                goto repeat;
+            case ' ':
+                flags |= SPACE;
+                goto repeat;
+            case '#':
+                flags |= SPECIAL;
+                goto repeat;
+            case '0':
+                flags |= ZEROPAD;
+                goto repeat;
         }
 
         field_width = -1;
@@ -236,8 +231,7 @@ static int vsprintf(char *buf, const char *fmt, va_list args) {
             else if (*fmt == '*') {
                 precision = va_arg(args, int);
             }
-            if (precision < 0)
-                precision = 0;
+            if (precision < 0) precision = 0;
         }
 
         qualifier = -1;
@@ -247,66 +241,61 @@ static int vsprintf(char *buf, const char *fmt, va_list args) {
         }
 
         switch (*fmt) {
-        case 'c':
-            if (!(flags & LEFT))
-                while (--field_width > 0)
-                    *str++ = ' ';
-            *str++ = (unsigned char)va_arg(args, int);
-            while (--field_width > 0)
-                *str++ = ' ';
-            break;
-        case 's':
-            s   = va_arg(args, char *);
-            len = strlen(s);
-            if (precision < 0)
-                precision = len;
-            else if (len > precision)
-                len = precision;
-            if (!(flags & LEFT))
-                while (len < field_width--)
-                    *str++ = ' ';
-            for (i = 0; i < len; ++i)
-                *str++ = *s++;
-            while (len < field_width--)
-                *str++ = ' ';
-            break;
-        case 'o':
-            str = number(str, va_arg(args, unsigned long), 8, field_width, precision, flags);
-            break;
-        case 'p':
-            if (field_width == -1) {
-                field_width = 8;
-                flags |= ZEROPAD;
-            }
-            str = number(str, (unsigned long long)va_arg(args, void *), 16, field_width, precision, flags);
-            break;
-        case 'x':
-            flags |= SMALL;
-        case 'X':
-            str = number(str, va_arg(args, unsigned long), 16, field_width, precision, flags);
-            break;
-        case 'd':
-        case 'i':
-            flags |= SIGN;
-        case 'u':
-            str = number(str, va_arg(args, unsigned long), 10, field_width, precision, flags);
-            break;
-        case 'n':
-            ip  = va_arg(args, int *);
-            *ip = (str - buf);
-            break;
-        default:
-            if (*fmt != '%')
-                *str++ = '%';
-            if (*fmt)
-                *str++ = *fmt;
-            else
-                --fmt;
-            break;
+            case 'c':
+                if (!(flags & LEFT))
+                    while (--field_width > 0) *str++ = ' ';
+                *str++ = (unsigned char)va_arg(args, int);
+                while (--field_width > 0) *str++ = ' ';
+                break;
+            case 's':
+                s   = va_arg(args, char *);
+                len = strlen(s);
+                if (precision < 0)
+                    precision = len;
+                else if (len > precision)
+                    len = precision;
+                if (!(flags & LEFT))
+                    while (len < field_width--) *str++ = ' ';
+                for (i = 0; i < len; ++i) *str++ = *s++;
+                while (len < field_width--) *str++ = ' ';
+                break;
+            case 'o':
+                str = number(str, va_arg(args, unsigned long), 8, field_width, precision, flags);
+                break;
+            case 'p':
+                if (field_width == -1) {
+                    field_width = 8;
+                    flags |= ZEROPAD;
+                }
+                str = number(str, (unsigned long long)va_arg(args, void *), 16, field_width,
+                             precision, flags);
+                break;
+            case 'x':
+                flags |= SMALL;
+            case 'X':
+                str = number(str, va_arg(args, unsigned long), 16, field_width, precision, flags);
+                break;
+            case 'd':
+            case 'i':
+                flags |= SIGN;
+            case 'u':
+                str = number(str, va_arg(args, unsigned long), 10, field_width, precision, flags);
+                break;
+            case 'n':
+                ip  = va_arg(args, int *);
+                *ip = (str - buf);
+                break;
+            default:
+                if (*fmt != '%') *str++ = '%';
+                if (*fmt)
+                    *str++ = *fmt;
+                else
+                    --fmt;
+                break;
         }
     }
     *str = '\0';
     return str - buf;
 }
 
-} // namespace boot
+}  // namespace boot

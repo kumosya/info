@@ -19,7 +19,7 @@ extern "C" {
 #endif
 
 /* File descriptor macros */
-#define STDIN_FILENO  0
+#define STDIN_FILENO 0
 #define STDOUT_FILENO 1
 #define STDERR_FILENO 2
 
@@ -100,11 +100,11 @@ char *getlogin(void);
 #define F_OK 0
 
 /* Wait options for waitpid() */
-#define WNOHANG  1
+#define WNOHANG 1
 #define WUNTRACED 2
 
 /* Wait status macros */
-#define WIFEXITED(s)  (((s) & 0xFF) == 0)
+#define WIFEXITED(s) (((s) & 0xFF) == 0)
 #define WEXITSTATUS(s) (((s) >> 8) & 0xFF)
 #define WIFSIGNALED(s) (((s) & 0xFF) != 0 && ((s) & 0xFF) != 0x7F)
 #define WTERMSIG(s) ((s) & 0x7F)

@@ -2,13 +2,13 @@
 #ifndef _STDIO_H
 #define _STDIO_H
 
-#include <stddef.h>
 #include <stdarg.h>
+#include <stddef.h>
 
 /* 标准文件描述符 */
-#define stdin  ((FILE *) 0)
-#define stdout ((FILE *) 1)
-#define stderr ((FILE *) 2)
+#define stdin ((FILE *)0)
+#define stdout ((FILE *)1)
+#define stderr ((FILE *)2)
 
 /* 缓冲区大小 */
 #define BUFSIZ 8192
@@ -33,15 +33,15 @@ typedef struct {
 #define _IONBF 2 /* 无缓冲 */
 
 /* 文件打开标志 */
-#define O_RDONLY  0x000
-#define O_WRONLY  0x001
-#define O_RDWR    0x002
-#define O_APPEND  0x008
-#define O_CREAT   0x020
-#define O_TRUNC   0x040
-#define O_EXCL    0x080
-#define O_TEXT    0x400
-#define O_BINARY  0x800
+#define O_RDONLY 0x000
+#define O_WRONLY 0x001
+#define O_RDWR 0x002
+#define O_APPEND 0x008
+#define O_CREAT 0x020
+#define O_TRUNC 0x040
+#define O_EXCL 0x080
+#define O_TEXT 0x400
+#define O_BINARY 0x800
 
 /* 格式化输出标志 */
 #define SEEK_SET 0

@@ -10,55 +10,55 @@ extern "C" {
 #endif
 
 /* Signal number definitions */
-#define SIGHUP     1
-#define SIGINT     2
-#define SIGQUIT    3
-#define SIGILL     4
-#define SIGTRAP    5
-#define SIGABRT    6
-#define SIGIOT     6
-#define SIGBUS     7
-#define SIGFPE     8
-#define SIGKILL    9
-#define SIGUSR1    10
-#define SIGSEGV    11
-#define SIGUSR2    12
-#define SIGPIPE    13
-#define SIGALRM    14
-#define SIGTERM    15
-#define SIGSTKFLT  16
-#define SIGCHLD    17
-#define SIGCONT    18
-#define SIGSTOP    19
-#define SIGTSTP    20
-#define SIGTTIN    21
-#define SIGTTOU    22
-#define SIGURG     23
-#define SIGXCPU    24
-#define SIGXFSZ    25
-#define SIGVTALRM  26
-#define SIGPROF    27
-#define SIGWINCH   28
-#define SIGIO      29
-#define SIGPOLL    SIGIO
-#define SIGPWR     30
-#define SIGSYS     31
-#define SIGUNUSED  31
+#define SIGHUP 1
+#define SIGINT 2
+#define SIGQUIT 3
+#define SIGILL 4
+#define SIGTRAP 5
+#define SIGABRT 6
+#define SIGIOT 6
+#define SIGBUS 7
+#define SIGFPE 8
+#define SIGKILL 9
+#define SIGUSR1 10
+#define SIGSEGV 11
+#define SIGUSR2 12
+#define SIGPIPE 13
+#define SIGALRM 14
+#define SIGTERM 15
+#define SIGSTKFLT 16
+#define SIGCHLD 17
+#define SIGCONT 18
+#define SIGSTOP 19
+#define SIGTSTP 20
+#define SIGTTIN 21
+#define SIGTTOU 22
+#define SIGURG 23
+#define SIGXCPU 24
+#define SIGXFSZ 25
+#define SIGVTALRM 26
+#define SIGPROF 27
+#define SIGWINCH 28
+#define SIGIO 29
+#define SIGPOLL SIGIO
+#define SIGPWR 30
+#define SIGSYS 31
+#define SIGUNUSED 31
 
 /* Signal action flags */
 #define SA_NOCLDSTOP 1
 #define SA_NOCLDWAIT 2
-#define SA_SIGINFO   4
-#define SA_RESTART   8
-#define SA_ONSTACK   16
+#define SA_SIGINFO 4
+#define SA_RESTART 8
+#define SA_ONSTACK 16
 #define SA_RESETHAND 32
-#define SA_NODEFER   64
-#define SA_NOMASK    SA_NODEFER
+#define SA_NODEFER 64
+#define SA_NOMASK SA_NODEFER
 
 /* Signal mask manipulation */
-#define SIG_BLOCK    0
-#define SIG_UNBLOCK  1
-#define SIG_SETMASK  2
+#define SIG_BLOCK 0
+#define SIG_UNBLOCK 1
+#define SIG_SETMASK 2
 
 /* Signal set operations */
 #define _SIGSET_NWORDS (1024 / (8 * sizeof(unsigned long)))

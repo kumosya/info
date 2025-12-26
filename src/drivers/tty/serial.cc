@@ -1,11 +1,11 @@
-#include "io.h"
-
 #include <cstdint>
+
+#include "io.h"
 
 using namespace std;
 
 namespace serial {
-void init() {
+void Init() {
     // Disable interrupts
     outb(COM1_PORT + 1, 0x00);
     // Enable DLAB (set baud rate divisor)
@@ -21,19 +21,17 @@ void init() {
     outb(COM1_PORT + 4, 0x0B);
 }
 
-static inline int is_transmit_empty() { return inb(COM1_PORT + 5) & 0x20; }
+static inline int IsTransmitEmpty() { return inb(COM1_PORT + 5) & 0x20; }
 
-void putc(char c) {
-    while (!is_transmit_empty())
-        ;
-    outb(COM1_PORT, (uint8_t)c);
+void Putc(char c) {
+    while (!IsTransmitEmpty());
+    outb(COM1_PORT, static_cast<std::uint8_t>(c));
 }
 
-void write(const char *s) {
+void Write(const char *s) {
     while (*s) {
-        if (*s == '\n')
-            putc('\r');
-        putc(*s++);
+        if (*s == '\n') Putc('\r');
+        Putc(*s++);
     }
 }
-} // namespace serial
+}  // namespace serial

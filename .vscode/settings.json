@@ -33,6 +33,11 @@
         "ctime": "cpp",
         "cwchar": "cpp",
         "new": "cpp",
-        "typeinfo": "cpp"
+        "typeinfo": "cpp",
+        "algorithm": "cpp",
+        "interrupt.h": "c",
+        "gate.h": "c",
+        "queue": "cpp",
+        "deque": "cpp"
     }
 }
