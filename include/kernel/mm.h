@@ -7,6 +7,9 @@
 #include <cstdint>
 
 namespace mm {
+
+int Proc(int argc, char *argv[]);
+
 namespace page {
 /* in mm/page.cc */
 extern FrameMem frame;

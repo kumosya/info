@@ -33,6 +33,9 @@
 #define ENABLE_TEXT_OUTPUT false
 
 namespace tty {
+
+int Proc(int argc, char *argv[]);
+
 namespace video {
 static std::uint32_t size;
 

@@ -18,9 +18,9 @@ extern "C" void pit_handler_c() {
     timer::pit_ticks++;
     // send EOI
     outb(PIC1_CMD, 0x20);
-    // Keep interrupt handler short: only print a dot every 100 ticks
-    if (timer::pit_ticks % 10 == 0) {
-        tty::printf(".");
+    // Keep interrupt handler short: only print a dot every 5 tick
+    if (timer::pit_ticks % 5 == 0) {
+        //tty::printf(".");
         task::schedule();
     }
 }

@@ -10,22 +10,19 @@
 #include <cstdint>
 #include <cstring>
 
+char *cmdline;
+
 // 定义init函数，用于初始化系统核心功能
 int SysInit(int argc, char *argv[]) {
-    tty::printf("init task is running, argc: %d, argv[0]: %s\n", argc, argv[0]);
+    tty::printf("boot cmdline:%s\n", cmdline);
 
     // 创建block线程
-    char **block_argv = (char **)mm::page::Alloc(2 * sizeof(char *));
-    block_argv[0] = (char *)mm::page::Alloc(6); // "block" + null terminator
-    strcpy(block_argv[0], "block");
-    block_argv[1] = NULL;
-    task::thread::KernelThread(reinterpret_cast<std::int64_t *>(block::Proc), block_argv, 0);
-    mm::page::Free(block_argv[0]);
-    mm::page::Free(block_argv);
+    task::thread::KernelThread(reinterpret_cast<std::int64_t *>(block::Proc), "block", 0);
+    task::thread::KernelThread(reinterpret_cast<std::int64_t *>(vfs::Proc), "vfs", 0);
+    task::thread::KernelThread(reinterpret_cast<std::int64_t *>(tty::Proc), "tty", 0);
+    task::thread::KernelThread(reinterpret_cast<std::int64_t *>(mm::Proc), "mm", 0);
     
     while (true) {
-        for (int i = 0; i < 0xffffff; i++);
-        tty::printf("I");
     }
     
     return 1;

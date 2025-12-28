@@ -50,12 +50,13 @@ kernel_thread_entry:
 	popq %rax
 	movq %rax, %es
 	popq %rax
-	addq $0x38, %rsp
+
 	movq %rdx, %rdi
 	movq %rcx, %rsi
     
     sti
 	callq *%rbx
+	cli
 
 	movq %rax, %rdi
 	callq do_exit

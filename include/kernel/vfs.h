@@ -63,21 +63,22 @@ struct DirEntry {
     struct DirEntry *next;  // Next entry (for linked list)
 };
 
-
 int Proc(int argc, char *argv[]);
 int RegisterFileSystem(struct FileSystem *fs);
 void RegisterFileSystems();
 int Mount(const char *device, const char *path, const char *fs_type, std::uint32_t flags);
 int Umount(const char *path);
-struct File *Open(const char *path, std::uint32_t flags);
+File *Open(const char *path, std::uint32_t flags);
 int Close(struct File *file);
 ssize_t Read(struct File *file, void *buf, size_t count);
 ssize_t Write(struct File *file, const void *buf, size_t count);
 ssize_t Seek(struct File *file, std::int64_t offset, int whence);
-struct DirEntry *ReadDir(const char *path, std::uint32_t index);
+DirEntry *ReadDir(const char *path, std::uint32_t index);
 MountFs *FindMountPoint(const char *path);
 void ExtractRelativePath(MountFs *mount, const char *full_path, char *rel_path,
                            size_t rel_path_len);
+
+
 }  // namespace vfs
 
 #endif  // VFS_H

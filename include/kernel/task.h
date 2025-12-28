@@ -64,7 +64,6 @@ struct Pcb {
     std::uint64_t priority;
     
     // 任务队列链表指针
-    Pcb *prev;
     Pcb *next;
 
     std::uint64_t argv;
@@ -73,6 +72,8 @@ struct Pcb {
 extern Pcb *current_proc;
 // 任务队列头指针
 extern Pcb *task_queue_head;  
+// 任务队列尾指针
+extern Pcb *task_queue_tail;  
 
 void schedule();
 
@@ -80,14 +81,17 @@ namespace queue {
 
 void Add(Pcb *pcb);
 void Remove(Pcb *pcb);
+void PrintQueue();
 
 }  // namespace queue
 namespace thread {
 
+extern pid_t pid_counter;
+
 std::int64_t Exec(pt_regs *regs);
 std::int64_t Exit(std::int64_t code);
 pid_t Fork(pt_regs *regs, std::uint64_t flags, std::uint64_t stack_base, std::uint64_t stack_size);
-pid_t KernelThread(std::int64_t *func, char *argv[], std::uint64_t flags);
+pid_t KernelThread(std::int64_t *func, const char *arg, std::uint64_t flags);
 void Init();
 
 }  // namespace thread
@@ -124,7 +128,6 @@ int SysInit(int argc, char *argv[]);
             "1:	\n\t"                                                              \
             "popq	%%rax	\n\t"                                                      \
             "popq	%%rbp	\n\t"                                                      \
-            "sti	\n\t"                                                      \
             : "=m"(prev->thread->rsp), "=m"(prev->thread->rip)                     \
             : "m"(next->thread->rsp), "m"(next->thread->rip), "D"(prev), "S"(next) \
             : "memory");                                                           \

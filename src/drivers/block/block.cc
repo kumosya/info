@@ -12,16 +12,12 @@ namespace block {
 
 static Device *device_list = nullptr;
 
-char *argv_vfs[10] = {"vfs", NULL};
 int Proc(int argc, char *argv[]) {
     device_list = nullptr;
     tty::printf("Block device driver initialized.\n");
     
     ide::Init();
-    task::thread::KernelThread(reinterpret_cast<std::int64_t *>(vfs::Proc), argv_vfs, 0);
     while (true) {
-        for (int i = 0; i < 0xffffff; i++);
-        tty::printf("B");
     }
 
     return 1;

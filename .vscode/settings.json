@@ -38,6 +38,7 @@
         "interrupt.h": "c",
         "gate.h": "c",
         "queue": "cpp",
-        "deque": "cpp"
+        "deque": "cpp",
+        "task.h": "c"
     }
 }

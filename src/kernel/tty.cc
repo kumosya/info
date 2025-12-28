@@ -16,7 +16,6 @@ static int xpos = 0;
 static int ypos = 0;
 
 void Init(uint8_t *addr) {
-    multiboot_mmap_entry *mmap;
     multiboot_tag *tag                 = (multiboot_tag *)(addr + 8);
     multiboot_tag_framebuffer *buf_tag = NULL;
     while (tag->type != MULTIBOOT_TAG_TYPE_END) {
