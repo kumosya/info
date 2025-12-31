@@ -105,7 +105,8 @@ extern "C" void double_fault_handler(faultStack_nocode *stack) {
 }
 
 extern "C" void tss_fault_handler(faultStack_code *stack) {
-    tty::printf("#TS Invalid TSS Fault! Error code = 0x%lx\n", stack->error_code);
+    tty::printf("#TS Invalid TSS Fault! Error code = 0x%lx\n",
+                stack->error_code);
     tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
     tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
     tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
@@ -116,7 +117,8 @@ extern "C" void tss_fault_handler(faultStack_code *stack) {
 }
 
 extern "C" void np_fault_handler(faultStack_code *stack) {
-    tty::printf("#NP Segment Not Present! Error code = 0x%lx\n", stack->error_code);
+    tty::printf("#NP Segment Not Present! Error code = 0x%lx\n",
+                stack->error_code);
     tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
     tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
     tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
@@ -138,7 +140,8 @@ extern "C" void ss_fault_handler(faultStack_code *stack) {
 }
 
 extern "C" void gp_fault_handler(faultStack_code *stack) {
-    tty::printf("#GP General Protection Fault! Error code = 0x%lx\n", stack->error_code);
+    tty::printf("#GP General Protection Fault! Error code = 0x%lx\n",
+                stack->error_code);
     tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
     tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
     tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
@@ -234,7 +237,8 @@ namespace idt {
 static Entry idt_table[256];
 Ptr idt_ptr;
 
-static void SetEntry(int vec, void *handler, std::uint16_t sel, std::uint8_t type_attr) {
+static void SetEntry(int vec, void *handler, std::uint16_t sel,
+                     std::uint8_t type_attr) {
     std::uint64_t addr         = reinterpret_cast<std::uint64_t>(handler);
     idt_table[vec].offset_low  = addr & 0xFFFF;
     idt_table[vec].selector    = sel;
@@ -281,10 +285,10 @@ void Init() {
     SetEntry(0x20, (void *)pit_stub, 0x08, 0x8E);
     // Keyboard IRQ1 (PIC remapped to 0x21)
     SetEntry(0x21, (void *)kbd_stub, 0x08, 0x8E);
-    
+
     idt_ptr.limit = sizeof(Entry) * 256 - 1;
     idt_ptr.base  = (std::uint64_t)&idt_table;
-    
+
     asm volatile("lidt %0" : : "m"(idt_ptr));
 }
 

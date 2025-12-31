@@ -24,7 +24,8 @@ struct Device {
 
 // Block device operations
 int Read(Device *dev, std::uint64_t sector, std::uint32_t count, void *buf);
-int Write(Device *dev, std::uint64_t sector, std::uint32_t count, const void *buf);
+int Write(Device *dev, std::uint64_t sector, std::uint32_t count,
+          const void *buf);
 int Ioctl(Device *dev, std::uint32_t cmd, void *arg);
 
 // Block device management

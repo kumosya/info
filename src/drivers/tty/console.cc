@@ -1,11 +1,10 @@
-#include "keyboard.h"
-
 #include <cstdint>
 
 #include "cpu.h"
 #include "io.h"
-#include "tty.h"
+#include "keyboard.h"
 #include "task.h"
+#include "tty.h"
 
 namespace tty {
 
@@ -15,4 +14,4 @@ int Proc(int argc, char *argv[]) {
     return 0;
 }
 
-}
+}  // namespace tty

@@ -17,7 +17,7 @@ ZERO_FILL_SIZE = 32M
 
 QEMU = qemu-system-x86_64
 IMG = build/disk.img
-QEMU_OPTS = -m 512M -hda $(IMG) -serial mon:stdio -boot c
+QEMU_OPTS = -m 512M -cpu core2duo -hda $(IMG) -serial mon:stdio -boot c
 
 ifeq ($(SERIAL), true)
 	QEMU_OPTS += -nographic

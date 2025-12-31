@@ -29,7 +29,8 @@ static void WaitIrq() {
     }
 }
 
-static int Identify(std::uint16_t io_base, std::uint8_t drive, std::uint16_t *buf) {
+static int Identify(std::uint16_t io_base, std::uint8_t drive,
+                    std::uint16_t *buf) {
     outb(io_base + IDE_DEVICE, 0xA0 | (drive << 4));
     outb(io_base + IDE_SECTOR_COUNT, 0);
     outb(io_base + IDE_LBA_LOW, 0);
@@ -58,8 +59,9 @@ static int Identify(std::uint16_t io_base, std::uint8_t drive, std::uint16_t *bu
 }
 
 // IDE device read function
-int Read(block::Device *dev, std::uint64_t sector, std::uint32_t count, void *buf) {
-    Device *ide_dev  = (Device *)dev;
+int Read(block::Device *dev, std::uint64_t sector, std::uint32_t count,
+         void *buf) {
+    Device *ide_dev       = (Device *)dev;
     std::uint16_t *data   = (std::uint16_t *)buf;
     std::uint16_t io_base = ide_dev->io_base;
     std::uint8_t drive    = ide_dev->drive;
@@ -67,7 +69,8 @@ int Read(block::Device *dev, std::uint64_t sector, std::uint32_t count, void *bu
 
     for (std::uint32_t i = 0; i < count; i++) {
         // 设置LBA模式和驱动器
-        outb(io_base + IDE_DEVICE, 0xE0 | (drive << 4) | (((sector + i) >> 24) & 0x0F));
+        outb(io_base + IDE_DEVICE,
+             0xE0 | (drive << 4) | (((sector + i) >> 24) & 0x0F));
         outb(io_base + IDE_ERROR, 0);
         outb(io_base + IDE_SECTOR_COUNT, 1);
         outb(io_base + IDE_LBA_LOW, (sector + i) & 0xFF);
@@ -96,8 +99,9 @@ int Read(block::Device *dev, std::uint64_t sector, std::uint32_t count, void *bu
 }
 
 // IDE device write function
-int Write(block::Device *dev, std::uint64_t sector, std::uint32_t count, const void *buf) {
-    Device *ide_dev      = (Device *)dev;
+int Write(block::Device *dev, std::uint64_t sector, std::uint32_t count,
+          const void *buf) {
+    Device *ide_dev           = (Device *)dev;
     const std::uint16_t *data = (const std::uint16_t *)buf;
     std::uint16_t io_base     = ide_dev->io_base;
     std::uint8_t drive        = ide_dev->drive;
@@ -106,7 +110,8 @@ int Write(block::Device *dev, std::uint64_t sector, std::uint32_t count, const v
 
     for (std::uint32_t i = 0; i < count; i++) {
         // 设置LBA模式和驱动器
-        outb(io_base + IDE_DEVICE, 0xE0 | (drive << 4) | (((sector + i) >> 24) & 0x0F));
+        outb(io_base + IDE_DEVICE,
+             0xE0 | (drive << 4) | (((sector + i) >> 24) & 0x0F));
         outb(io_base + IDE_ERROR, 0);
         outb(io_base + IDE_SECTOR_COUNT, 1);
         outb(io_base + IDE_LBA_LOW, (sector + i) & 0xFF);
@@ -163,17 +168,21 @@ static void DetectDevices(std::uint16_t io_base, std::uint8_t irq) {
             if (identify_data[83] & (1 << 10)) {
                 // 使用LBA48模式，扇区数是64位
                 std::uint64_t sectors =
-                    ((std::uint64_t)identify_data[103] << 48) | ((std::uint64_t)identify_data[102] << 32) |
-                    ((std::uint64_t)identify_data[101] << 16) | (std::uint64_t)identify_data[100];
+                    ((std::uint64_t)identify_data[103] << 48) |
+                    ((std::uint64_t)identify_data[102] << 32) |
+                    ((std::uint64_t)identify_data[101] << 16) |
+                    (std::uint64_t)identify_data[100];
                 dev->sector_count = sectors;
             } else {
                 // 使用LBA28模式，扇区数是32位
-                std::uint32_t sectors  = ((std::uint32_t)identify_data[61] << 16) | identify_data[60];
+                std::uint32_t sectors =
+                    ((std::uint32_t)identify_data[61] << 16) |
+                    identify_data[60];
                 dev->sector_count = sectors;
             }
 
             // 注册块设备
-        block::RegisterDevice(dev);
+            block::RegisterDevice(dev);
         }
     }
 }

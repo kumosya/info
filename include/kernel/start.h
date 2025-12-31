@@ -1,11 +1,12 @@
 #ifndef START_H
 #define START_H
 
-#include "multiboot2.h"
-#include "page.h"
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
+
+#include "multiboot2.h"
+#include "page.h"
 
 namespace boot {
 int printf(const char *format, ...);
@@ -14,7 +15,8 @@ static std::uint8_t *video_addr;
 
 static int is_digit(int c);
 static int skip_atoi(const char **s);
-static char *number(char *str, unsigned long num, int base, int size, int precision, int flags);
+static char *number(char *str, unsigned long num, int base, int size,
+                    int precision, int flags);
 static void putchar(char c);
 static void puts(const char *s);
 static int vsprintf(char *buf, const char *fmt, va_list args);
@@ -22,7 +24,8 @@ static size_t strlen(const char *s);
 
 namespace mm {
 void *Alloc();
-void Mapping(PTE *pml4, std::uint64_t virt_addr, std::uint64_t phys_addr, std::uint64_t flags);
+void Mapping(PTE *pml4, std::uint64_t virt_addr, std::uint64_t phys_addr,
+             std::uint64_t flags);
 void MappingKernel(PTE *pml4, multiboot_tag_elf_sections *elf_sections);
 void MappingIdentity(PTE *pml4, std::uint64_t size);
 

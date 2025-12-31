@@ -2,6 +2,7 @@
 #define IO_H
 
 #include <cstdint>
+
 #include "cpu.h"
 
 /* COM1 port base */
@@ -42,22 +43,44 @@ static inline std::uint16_t inw(std::uint16_t port) {
 }
 
 static inline void wrmsr(std::uint32_t msr, std::uint64_t val) {
-    asm __volatile__("wrmsr" : : "c"(msr), "a"(val >> 32), "d"(val));
+    __asm__ __volatile__("wrmsr	\n\t" ::"d"(val >> 32), "a"(val & 0xffffffff),
+                         "c"(msr)
+                         : "memory");
 }
 
 static inline std::uint64_t rdmsr(std::uint32_t msr) {
-    std::uint64_t ret;
-    asm __volatile__("rdmsr" : "=a"(ret), "=d"(ret) : "c"(msr));
-    return ret;
+    std::uint32_t tmp0 = 0;
+    std::uint32_t tmp1 = 0;
+    __asm__ __volatile__("rdmsr	\n\t"
+                         : "=d"(tmp0), "=a"(tmp1)
+                         : "c"(msr)
+                         : "memory");
+    return static_cast<std::uint64_t>(tmp0) << 32 | tmp1;
+}
+
+static inline void cpuid(std::uint32_t func, std::uint32_t &eax,
+                         std::uint32_t &ebx, std::uint32_t &ecx,
+                         std::uint32_t &edx) {
+    asm __volatile__("cpuid"
+                     : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                     : "a"(func), "c"(0));
+}
+
+static inline void cpuid_ext(std::uint32_t func, std::uint32_t subfunc,
+                             std::uint32_t &eax, std::uint32_t &ebx,
+                             std::uint32_t &ecx, std::uint32_t &edx) {
+    asm __volatile__("cpuid"
+                     : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                     : "a"(func), "c"(subfunc));
 }
 
 inline static void lgdt(gdt::Ptr *gdtr) {
-    asm volatile ("lgdt %0" : : "m"(*gdtr));
+    asm volatile("lgdt %0" : : "m"(*gdtr));
     // Update segment registers
 }
 
 inline static void ltr(std::uint16_t selector) {
-    asm volatile ("ltr %0" : : "r"(selector));
+    asm volatile("ltr %0" : : "r"(selector));
 }
 
 namespace serial {

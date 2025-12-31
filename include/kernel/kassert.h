@@ -1,7 +1,8 @@
 #ifndef KASSERT_H
 #define KASSERT_H
 
-void kassert_fail(const char *expr, const char *file, int line, const char *msg);
+void kassert_fail(const char *expr, const char *file, int line,
+                  const char *msg);
 
 #define KASSERT(expr)                                               \
     do {                                                            \

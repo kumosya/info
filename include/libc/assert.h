@@ -11,10 +11,13 @@ extern "C" {
 #else
 /* Simple assert implementation that halts execution on failure */
 #define assert(condition) \
-    ((void)((condition) ? 0 : __assert_fail(#condition, __FILE__, __LINE__, __func__)))
+    ((void)((condition)   \
+                ? 0       \
+                : __assert_fail(#condition, __FILE__, __LINE__, __func__)))
 
 /* Assert failure handler */
-void __assert_fail(const char *condition, const char *file, int line, const char *function);
+void __assert_fail(const char *condition, const char *file, int line,
+                   const char *function);
 #endif
 
 #ifdef __cplusplus

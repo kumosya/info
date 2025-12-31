@@ -1,11 +1,12 @@
 
+#include "tty.h"
+
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 
 #include "io.h"
 #include "mm.h"
-#include "tty.h"
 #include "multiboot2.h"
 
 using namespace std;
@@ -39,7 +40,8 @@ void Init(uint8_t *addr) {
         }
 
         for (int addr = 0; addr < height * width * size; addr += PAGE_SIZE) {
-            mm::page::Map(mm::page::kernel_pml4, (uint64_t)(FRAMEBUFFER_BASE + addr),
+            mm::page::Map(mm::page::kernel_pml4,
+                          (uint64_t)(FRAMEBUFFER_BASE + addr),
                           (uint64_t)(buf_tag->common.framebuffer_addr + addr),
                           PTE_PRESENT | PTE_WRITABLE);
         }
@@ -51,8 +53,9 @@ void Init(uint8_t *addr) {
         width  = VIDEO_WIDTH;
 
         for (int addr = 0; addr < height * width * size; addr += PAGE_SIZE) {
-            mm::page::Map(mm::page::kernel_pml4, (uint64_t)(FRAMEBUFFER_BASE + addr),
-                          (uint64_t)(VIDEO_ADDR + addr), PTE_PRESENT | PTE_WRITABLE);
+            mm::page::Map(
+                mm::page::kernel_pml4, (uint64_t)(FRAMEBUFFER_BASE + addr),
+                (uint64_t)(VIDEO_ADDR + addr), PTE_PRESENT | PTE_WRITABLE);
         }
     }
 

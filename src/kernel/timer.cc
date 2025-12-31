@@ -3,8 +3,8 @@
 
 #include "cpu.h"
 #include "io.h"
-#include "tty.h"
 #include "task.h"
+#include "tty.h"
 
 using namespace std;
 
@@ -20,7 +20,7 @@ extern "C" void pit_handler_c() {
     outb(PIC1_CMD, 0x20);
     // Keep interrupt handler short: only print a dot every 5 tick
     if (timer::pit_ticks % 5 == 0) {
-        //tty::printf(".");
+        // tty::printf(".");
         task::schedule();
     }
 }

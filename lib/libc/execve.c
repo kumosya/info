@@ -1,10 +1,17 @@
 /* Public domain.  */
 #include <unistd.h>
+#include <kernel/syscall.h>
 
-/* 占位实现 - 用于自制操作系统 */
+
 int execve(const char *filename, char *const argv[], char *const envp[])
 {
-    /* 自制操作系统中，这里应该是系统调用 */
-    /* 暂时返回-1表示错误 */
-    return -1;
+    int ret;
+    __asm__	__volatile__	("movq   %%rdx, %%r8\n"
+                    "leaq	execve_ret(%%rip),	%%rdx	\n"
+					"movq	%%rsp,	%%rcx		\n"
+					"sysenter			\n"
+					"execve_ret:	\n"
+					:"=a"(ret):"a"(SYS_EXECVE_NO), "D"(filename), "S"(argv), "d"(envp):"memory");
+    
+    return ret;
 }

@@ -1,8 +1,33 @@
 
 .global enter_syscall
-EnterSyscall:
-    // TODO
-    //callq system_call_handler
+enter_syscall:
+	sti
+    pushq %rax
+	movq %es, %rax
+	pushq %rax
+	movq %ds, %rax
+	pushq %rax
+	pushq %rbp
+	pushq %rdi
+	pushq %rsi
+	pushq %rdx
+	pushq %rcx
+	pushq %rbx
+	pushq %r8
+	pushq %r9
+	pushq %r10
+	pushq %r11
+	pushq %r12
+	pushq %r13
+	pushq %r14
+	pushq %r15
+
+	movq $0x10, %rdx
+	movq %rdx, %ds
+	movq %rdx, %es
+	movq %rsp, %rdi
+
+	call SyscallMain
 
 .global ret_syscall
 ret_syscall:
@@ -26,8 +51,8 @@ ret_syscall:
 	popq %rax
 	movq %rax, %es
 	popq %rax
-	addq $0x38, %rsp
-	iretq
+	
+	sysexitq
 
 .global kernel_thread_entry
 kernel_thread_entry:

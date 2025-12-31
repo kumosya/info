@@ -81,7 +81,8 @@ static int skip_atoi(const char **s) {
 }
 
 /* 将数字转换为字符串并填充格式 */
-static char *number(char *str, unsigned long num, int base, int size, int precision, int flags) {
+static char *number(char *str, unsigned long num, int base, int size,
+                    int precision, int flags) {
     char c, sign, tmp[66];
     const char *digits = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     int i;
@@ -260,26 +261,29 @@ static int vsprintf(char *buf, const char *fmt, va_list args) {
                 while (len < field_width--) *str++ = ' ';
                 break;
             case 'o':
-                str = number(str, va_arg(args, unsigned long), 8, field_width, precision, flags);
+                str = number(str, va_arg(args, unsigned long), 8, field_width,
+                             precision, flags);
                 break;
             case 'p':
                 if (field_width == -1) {
                     field_width = 8;
                     flags |= ZEROPAD;
                 }
-                str = number(str, (unsigned long long)va_arg(args, void *), 16, field_width,
-                             precision, flags);
+                str = number(str, (unsigned long long)va_arg(args, void *), 16,
+                             field_width, precision, flags);
                 break;
             case 'x':
                 flags |= SMALL;
             case 'X':
-                str = number(str, va_arg(args, unsigned long), 16, field_width, precision, flags);
+                str = number(str, va_arg(args, unsigned long), 16, field_width,
+                             precision, flags);
                 break;
             case 'd':
             case 'i':
                 flags |= SIGN;
             case 'u':
-                str = number(str, va_arg(args, unsigned long), 10, field_width, precision, flags);
+                str = number(str, va_arg(args, unsigned long), 10, field_width,
+                             precision, flags);
                 break;
             case 'n':
                 ip  = va_arg(args, int *);

@@ -128,10 +128,12 @@ long double wcstold(const wchar_t *nptr, wchar_t **endptr);
 long int wcstol(const wchar_t *nptr, wchar_t **endptr, int base);
 long long int wcstoll(const wchar_t *nptr, wchar_t **endptr, int base);
 unsigned long int wcstoul(const wchar_t *nptr, wchar_t **endptr, int base);
-unsigned long long int wcstoull(const wchar_t *nptr, wchar_t **endptr, int base);
+unsigned long long int wcstoull(const wchar_t *nptr, wchar_t **endptr,
+                                int base);
 
 /* Date and time functions with wide characters */
-wchar_t *wcsftime(wchar_t *s, size_t maxsize, const wchar_t *format, const struct tm *timeptr);
+wchar_t *wcsftime(wchar_t *s, size_t maxsize, const wchar_t *format,
+                  const struct tm *timeptr);
 
 #ifdef __cplusplus
 }

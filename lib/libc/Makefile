@@ -1,6 +1,6 @@
 CC=gcc
 CFLAGS=-c -m64 -fno-builtin -fno-stack-protector -nostartfiles -nostdinc -nostdlib  -Wall -Wextra -Werror=implicit-function-declaration \
-	-I ../../include/libc
+	-I ../../include/libc -I ../../include
 AR=ar
 ARFLAGS=rcs
 

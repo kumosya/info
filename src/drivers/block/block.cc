@@ -1,12 +1,13 @@
 #include "block.h"
 
-#include <cstring>
 #include <stddef.h>
 
+#include <cstring>
+
 #include "ide.h"
+#include "task.h"
 #include "tty.h"
 #include "vfs.h"
-#include "task.h"
 
 namespace block {
 
@@ -15,7 +16,7 @@ static Device *device_list = nullptr;
 int Proc(int argc, char *argv[]) {
     device_list = nullptr;
     tty::printf("Block device driver initialized.\n");
-    
+
     ide::Init();
     while (true) {
     }
@@ -66,7 +67,8 @@ int Read(Device *dev, std::uint64_t sector, std::uint32_t count, void *buf) {
 }
 
 // Write sectors to block device
-int Write(Device *dev, std::uint64_t sector, std::uint32_t count, const void *buf) {
+int Write(Device *dev, std::uint64_t sector, std::uint32_t count,
+          const void *buf) {
     if (!dev || !buf) {
         return -1;
     }

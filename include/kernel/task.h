@@ -1,6 +1,7 @@
 #ifndef TASK_H
 #define TASK_H
 #include <cstdint>
+
 #include "cpu.h"
 #include "io.h"
 #include "page.h"
@@ -12,7 +13,7 @@
 #define USER_CS 0x28
 #define USER_DS 0x30
 
-#define THREAD_KERNEL (1<<3)
+#define THREAD_KERNEL (1 << 3)
 
 namespace task {
 
@@ -62,7 +63,7 @@ struct Pcb {
     std::uint64_t time_used;
     std::int64_t exit_code;
     std::uint64_t priority;
-    
+
     // 任务队列链表指针
     Pcb *next;
 
@@ -71,9 +72,9 @@ struct Pcb {
 
 extern Pcb *current_proc;
 // 任务队列头指针
-extern Pcb *task_queue_head;  
+extern Pcb *task_queue_head;
 // 任务队列尾指针
-extern Pcb *task_queue_tail;  
+extern Pcb *task_queue_tail;
 
 void schedule();
 
@@ -90,7 +91,8 @@ extern pid_t pid_counter;
 
 std::int64_t Exec(pt_regs *regs);
 std::int64_t Exit(std::int64_t code);
-pid_t Fork(pt_regs *regs, std::uint64_t flags, std::uint64_t stack_base, std::uint64_t stack_size);
+pid_t Fork(pt_regs *regs, std::uint64_t flags, std::uint64_t stack_base,
+           std::uint64_t stack_size);
 pid_t KernelThread(std::int64_t *func, const char *arg, std::uint64_t flags);
 void Init();
 
@@ -98,12 +100,15 @@ void Init();
 
 inline Pcb *GetCurrent(void) {
     Pcb *current;
-    __asm__ __volatile__("andq %%rsp, %0 \n\t" : "=r"(current) : "0"(~0x7fffUL));
+    __asm__ __volatile__("andq %%rsp, %0 \n\t"
+                         : "=r"(current)
+                         : "0"(~0x7fffUL));
     return current;
 }
 
 inline void SwitchTable(Pcb *prev, Pcb *next) {
-    __asm__ __volatile__("movq	%0,	%%cr3	\n\t" ::"r"(next->mm.pml4) : "memory");
+    __asm__ __volatile__("movq	%0,	%%cr3	\n\t" ::"r"(next->mm.pml4)
+                         : "memory");
 }
 
 }  // namespace task
@@ -114,23 +119,24 @@ extern "C" void kernel_thread_entry(void);
 extern "C" void __switch_to(task::Pcb *prev, task::Pcb *next);
 int SysInit(int argc, char *argv[]);
 
-#define SwitchContext(prev, next)     \
-    do {                              \
-        __asm__ __volatile__(                                                      \
-            "pushq	%%rbp	\n\t"                                                     \
-            "pushq	%%rax	\n\t"                                                     \
-            "movq	%%rsp,	%0	\n\t"                                                  \
-            "movq	%2,	%%rsp	\n\t"                                                  \
-            "leaq	1f(%%rip),	%%rax	\n\t"                                   \
-            "movq	%%rax,	%1	\n\t"                                                  \
-            "pushq	%3		\n\t"                                                       \
-            "jmp	__switch_to	\n\t"                                                 \
-            "1:	\n\t"                                                              \
-            "popq	%%rax	\n\t"                                                      \
-            "popq	%%rbp	\n\t"                                                      \
-            : "=m"(prev->thread->rsp), "=m"(prev->thread->rip)                     \
-            : "m"(next->thread->rsp), "m"(next->thread->rip), "D"(prev), "S"(next) \
-            : "memory");                                                           \
+#define SwitchContext(prev, next)                                        \
+    do {                                                                 \
+        __asm__ __volatile__(                                            \
+            "pushq	%%rbp	\n\t"                                           \
+            "pushq	%%rax	\n\t"                                           \
+            "movq	%%rsp,	%0	\n\t"                                        \
+            "movq	%2,	%%rsp	\n\t"                                        \
+            "leaq	1f(%%rip),	%%rax	\n\t"                                 \
+            "movq	%%rax,	%1	\n\t"                                        \
+            "pushq	%3		\n\t"                                             \
+            "jmp	__switch_to	\n\t"                                       \
+            "1:	\n\t"                                                    \
+            "popq	%%rax	\n\t"                                            \
+            "popq	%%rbp	\n\t"                                            \
+            : "=m"(prev->thread->rsp), "=m"(prev->thread->rip)           \
+            : "m"(next->thread->rsp), "m"(next->thread->rip), "D"(prev), \
+              "S"(next)                                                  \
+            : "memory");                                                 \
     } while (false)
 
 #endif  // TASK_H

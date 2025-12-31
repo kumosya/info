@@ -1,11 +1,13 @@
-#include "task.h"
-#include "tty.h"
-#include "mm.h"
-#include "page.h"
-#include "cpu.h"
+#include <stddef.h>
+
 #include <cstdint>
 #include <cstring>
-#include <stddef.h>
+
+#include "cpu.h"
+#include "mm.h"
+#include "page.h"
+#include "task.h"
+#include "tty.h"
 
 extern "C" std::int64_t do_exit(std::int64_t code) {
     return task::thread::Exit(code);
@@ -13,9 +15,9 @@ extern "C" std::int64_t do_exit(std::int64_t code) {
 
 namespace task::thread {
 std::int64_t Exit(std::int64_t code) {
-    //tty::printf("Thread %d exit with code: 0x%lx\n", current_proc->pid, code);
+    tty::printf("Thread %d exit with code: 0x%lx\n", current_proc->pid, code);
     current_proc->exit_code = code;
-    current_proc->stat = Dead;
+    current_proc->stat      = Dead;
 
     // 释放argv内存
     if (current_proc->argv != 0) {
@@ -27,14 +29,14 @@ std::int64_t Exit(std::int64_t code) {
         // 释放argv数组本身
         mm::page::Free(argv);
     }
-    
+
     // 将当前进程从任务队列中移除
     queue::Remove(current_proc);
-    
+
     // 切换到下一个线程
     task::schedule();
-    
+
     return 0;
 }
 
-}   // task::thread
+}  // namespace task::thread

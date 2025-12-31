@@ -95,18 +95,20 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
 int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 ssize_t send(int sockfd, const void *buf, size_t len, int flags);
 ssize_t recv(int sockfd, void *buf, size_t len, int flags);
-ssize_t sendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *addr,
-               socklen_t addrlen);
-ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *addr,
-                 socklen_t *addrlen);
+ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
+               const struct sockaddr *addr, socklen_t addrlen);
+ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
+                 struct sockaddr *addr, socklen_t *addrlen);
 ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags);
 ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags);
 int close(int sockfd);
 int shutdown(int sockfd, int how);
 int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
 int getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
-int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen);
-int getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optlen);
+int setsockopt(int sockfd, int level, int optname, const void *optval,
+               socklen_t optlen);
+int getsockopt(int sockfd, int level, int optname, void *optval,
+               socklen_t *optlen);
 
 /* Send/recv flags */
 #define MSG_OOB 0x0001

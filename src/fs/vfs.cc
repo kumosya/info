@@ -17,8 +17,8 @@ static MountFs *mount_points = nullptr;
 
 // VFS initialization
 int Proc(int argc, char *argv[]) {
-    // 查找第一个IDE设备
-    block::Device *dev = block::FindDevice("hda");
+    // 查找第一个Block设备
+    /*block::Device *dev = block::FindDevice("hda");
     if (dev) {
         registered_filesystems = nullptr;
         mount_points           = nullptr;
@@ -41,9 +41,8 @@ int Proc(int argc, char *argv[]) {
     } else {
         tty::Panic("hda not found.");
         return -1;
-    }
+    }*/
 
-    
     while (true) {
     }
 
@@ -90,7 +89,8 @@ FileSystem *GetFileSystem(const char *name) {
 }
 
 // Mount a file system
-int Mount(const char *device, const char *path, const char *fs_type, std::uint32_t flags) {
+int Mount(const char *device, const char *path, const char *fs_type,
+          std::uint32_t flags) {
     if (!device || !path || !fs_type) {
         return -1;
     }
@@ -249,41 +249,7 @@ ssize_t Seek(File *file, std::int64_t offset, int whence) {
         return -1;
     }
 
-    std::uint64_t new_pos = file->position;
-
-    // For EXT2 files, we can access the inode directly through the private_data
-    if (file->private_data) {
-        ext2::File *ext2_file = static_cast<ext2::File *>(file->private_data);
-        std::uint64_t file_size    = ext2_file->inode.i_size;
-
-        // Calculate new position based on whence
-        switch (whence) {
-            case SEEK_SET:
-                new_pos = static_cast<std::uint64_t>(offset);
-                break;
-            case SEEK_CUR:
-                new_pos += offset;
-                break;
-            case SEEK_END:
-                new_pos = file_size + offset;
-                break;
-            default:
-                return -1;
-        }
-
-        // Ensure the new position is within bounds (0 <= new_pos)
-        if (new_pos < 0) {
-            new_pos = 0;
-        }
-
-        // Update positions in both VFS file and underlying EXT2 file
-        file->position    = new_pos;
-        ext2_file->offset = new_pos;
-
-        return new_pos;
-    }
-
-    // Fallback if we can't access the file system specific data
+    /* TODO */
     return -1;
 }
 
@@ -318,7 +284,7 @@ MountFs *FindMountPoint(const char *path) {
     }
 
     MountFs *best_match = nullptr;
-    size_t best_len   = 0;
+    size_t best_len     = 0;
 
     MountFs *current = mount_points;
     while (current) {
@@ -341,7 +307,7 @@ MountFs *FindMountPoint(const char *path) {
 
 // Helper function to extract relative path after mount point
 void ExtractRelativePath(MountFs *mount, const char *full_path, char *rel_path,
-                           size_t rel_path_len) {
+                         size_t rel_path_len) {
     if (!mount || !full_path || !rel_path) {
         return;
     }
@@ -350,7 +316,8 @@ void ExtractRelativePath(MountFs *mount, const char *full_path, char *rel_path,
     size_t mount_len       = strlen(mount_path);
     size_t full_len        = strlen(full_path);
 
-    // If the mount path is '/' and the full path is also '/', the relative path is '/' or empty
+    // If the mount path is '/' and the full path is also '/', the relative path
+    // is '/' or empty
     if (mount_len == 1 && mount_path[0] == '/' && full_len == 1) {
         strncpy(rel_path, "/", rel_path_len - 1);
         return;
@@ -372,6 +339,5 @@ void ExtractRelativePath(MountFs *mount, const char *full_path, char *rel_path,
     // Ensure null termination
     rel_path[rel_path_len - 1] = '\0';
 }
-
 
 }  // namespace vfs

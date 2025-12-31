@@ -13,7 +13,8 @@ void KernelMain(std::uint8_t *addr);
 extern "C" void gp_fault_stub(void);
 extern "C" void page_fault_stub(void);
 
-static void SetIDTEntry(int vec, void *handler, std::uint16_t sel, std::uint8_t type_attr) {
+static void SetIDTEntry(int vec, void *handler, std::uint16_t sel,
+                        std::uint8_t type_attr) {
     std::uint64_t addr       = reinterpret_cast<std::uint64_t>(handler);
     idt_ety[vec].offset_low  = addr & 0xFFFF;
     idt_ety[vec].selector    = sel;
@@ -60,7 +61,8 @@ extern "C" void CppStart(std::uint32_t magic, std::uint8_t *addr) {
     // zero out idt
     boot::mm::memset(&idt_ety, 0, sizeof(idt_ety));
     // kernel code selector is 0x08 (see gdt setup in boot.S)
-    //		boot::printf("handler set for page fault at 0x%lx\n", (uint64_t)page_fault_stub);
+    //		boot::printf("handler set for page fault at 0x%lx\n",
+    //(uint64_t)page_fault_stub);
     SetIDTEntry(13, (void *)gp_fault_stub, 0x08, 0x8E);
     SetIDTEntry(14, (void *)page_fault_stub, 0x08, 0x8E);
     idt::Ptr idtp;

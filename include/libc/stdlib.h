@@ -19,6 +19,10 @@ typedef struct {
     long long rem;
 } lldiv_t;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Memory allocation functions */
 void *malloc(size_t size);
 void *calloc(size_t nmemb, size_t size);
@@ -62,7 +66,8 @@ int system(const char *command);
 char *getpass(const char *prompt);
 
 /* Sorting and searching */
-void qsort(void *base, size_t nmemb, size_t size, int (*compar)(const void *, const void *));
+void qsort(void *base, size_t nmemb, size_t size,
+           int (*compar)(const void *, const void *));
 void *bsearch(const void *key, const void *base, size_t nmemb, size_t size,
               int (*compar)(const void *, const void *));
 
@@ -79,6 +84,10 @@ int wctomb(char *s, wchar_t wc);
 /* String conversion to wide string */
 size_t mbstowcs(wchar_t *pwcs, const char *s, size_t n);
 size_t wcstombs(char *s, const wchar_t *pwcs, size_t n);
+
+#ifdef __cplusplus
+}
+#endif
 
 /* Memory allocation macros */
 #define EXIT_SUCCESS 0

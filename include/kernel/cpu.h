@@ -47,7 +47,8 @@ struct Ptr {
 } __attribute__((packed));
 
 void Init();
-static void SetEntry(int vec, void *handler, std::uint16_t sel, std::uint8_t type_attr);
+static void SetEntry(int vec, void *handler, std::uint16_t sel,
+                     std::uint8_t type_attr);
 }  // namespace idt
 
 namespace gdt {
@@ -75,9 +76,9 @@ struct TssEntry {
     std::uint16_t iomap_base;
 } __attribute__((packed));
 
-
 extern TssEntry tss;
-void SetEntry(int index, std::uint64_t base, std::uint64_t limit, std::uint8_t access, std::uint8_t gran);
+void SetEntry(int index, std::uint64_t base, std::uint64_t limit,
+              std::uint8_t access, std::uint8_t gran);
 void SetTss(int index, std::uint64_t tss_base, std::uint8_t access);
 void Init();
 }  // namespace gdt
@@ -106,6 +107,34 @@ extern "C" void mc_stub();
 extern "C" void xm_stub();
 extern "C" void ve_stub();
 extern "C" void cp_stub();
+
+// CPUID相关结构和函数声明
+namespace cpu_id {
+
+// CPU信息结构
+struct CpuInfo {
+    char vendor_id[13];          // 厂商ID
+    char brand_string[49];       // CPU品牌字符串
+    std::uint32_t family;        // CPU系列
+    std::uint32_t model;         // CPU型号
+    std::uint32_t stepping;      // 步进
+    std::uint32_t features;      // 特性标志
+    std::uint32_t ext_features;  // 扩展特性标志
+};
+
+// 获取CPU信息
+void GetInfo(CpuInfo *info);
+
+// 检测CPU特性
+bool HasFeature(std::uint32_t feature_bit);
+
+// 检测扩展CPU特性
+bool HasExtFeature(std::uint32_t feature_bit);
+
+// 打印CPU信息
+void PrintInfo();
+
+}  // namespace cpu_id
 
 #endif /* ASM_FILE */
 
