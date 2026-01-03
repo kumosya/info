@@ -1,10 +1,10 @@
 #include <cstdint>
 
-#include "io.h"
-#include "keyboard.h"
-#include "mm.h"
-#include "task.h"
-#include "tty.h"
+#include "kernel/io.h"
+#include "kernel/keyboard.h"
+#include "kernel/mm.h"
+#include "kernel/task.h"
+#include "kernel/tty.h"
 
 namespace mm {
 

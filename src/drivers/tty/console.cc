@@ -1,10 +1,10 @@
 #include <cstdint>
 
-#include "cpu.h"
-#include "io.h"
-#include "keyboard.h"
-#include "task.h"
-#include "tty.h"
+#include "kernel/cpu.h"
+#include "kernel/io.h"
+#include "kernel/keyboard.h"
+#include "kernel/task.h"
+#include "kernel/tty.h"
 
 namespace tty {
 

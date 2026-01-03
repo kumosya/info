@@ -1,8 +1,8 @@
-#ifndef KEYBOARD_H
-#define KEYBOARD_H
+#ifndef INFO_KERNEL_KEYBOARD_H_
+#define INFO_KERNEL_KEYBOARD_H_
 
 namespace keyboard {
 void Init();
 }
 
-#endif  // KEYBOARD_H
+#endif  // INFO_KERNEL_KEYBOARD_H_

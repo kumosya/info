@@ -1,14 +1,14 @@
 #include <cstdint>
 #include <cstring>
 
-#include "cpu.h"
-#include "io.h"
-#include "mm.h"
-#include "task.h"
+#include "kernel/cpu.h"
+#include "kernel/io.h"
+#include "kernel/mm.h"
+#include "kernel/task.h"
 
 namespace gdt {
 
-std::uint64_t gdt_table[11];
+std::uint64_t gdt_table[12];
 TssEntry tss;
 Ptr gdtr;
 
@@ -31,20 +31,30 @@ void SetEntry(int index, std::uint64_t base, std::uint64_t limit,
 }
 
 void SetTss(int index, std::uint64_t tss_base, std::uint8_t access) {
-    std::uint64_t descriptor;
+    // 64位TSS的大小是sizeof(TssEntry) - 1 (其实就是0x67)
+    std::uint64_t tss_limit = sizeof(TssEntry) - 1;
+    
+    std::uint64_t descriptor = 0;
 
-    // Create the high 32 bits of the descriptor
-    descriptor |= static_cast<std::uint64_t>(access & 0xFF)
-                  << 40;                             // Access byte
-    descriptor |= (tss_base & 0xFF000000ULL) >> 24;  // Base bits 24-31
-
-    // Create the low 32 bits of the descriptor
-    descriptor |= (tss_base & 0x00FFFFFFULL) << 16;  // Base bits 0-23
-
-    descriptor += 103;
+    // x86-64 TSS描述符格式（低64位）：
+    // bits 0-15: limit[15:0]
+    // bits 16-31: base[15:0]  
+    // bits 32-39: access byte (type attributes)
+    // bits 40-43: limit[19:16]
+    // bits 44-47: flags (G=granularity, AVL, etc)
+    // bits 48-55: base[23:16]
+    // bits 56-63: base[31:24]
+    
+    descriptor |= (tss_limit & 0xFFFFULL);                           // Limit bits 0-15
+    descriptor |= (tss_base & 0xFFFFULL) << 16;                      // Base bits 0-15
+    descriptor |= static_cast<std::uint64_t>(access & 0xFF) << 40;   // Access byte (bits 32-39)
+    descriptor |= ((tss_limit >> 16) & 0xFULL) << 48;               // Limit bits 16-19 (bits 40-43)
+    // flags (bits 44-47): G=0 (byte granularity), AVL=0, L=0, D/B=0
+    descriptor |= (tss_base & 0xFF0000ULL) << 32;                    // Base bits 16-23 (bits 48-55)
+    descriptor |= (tss_base & 0xFF000000ULL) << 32;                 // Base bits 24-31 (bits 56-63)
 
     gdt_table[index]     = descriptor;
-    gdt_table[index + 1] = tss_base >> 32;
+    gdt_table[index + 1] = tss_base >> 32;  // Base bits 32-63
 }
 
 void Init() {
@@ -75,10 +85,10 @@ void Init() {
     SetEntry(8, 0, 0xfffff, 0x92, 0);
 
     void *stack = mm::page::Alloc(STACK_SIZE);
-    tss.rsp0 = tss.rsp1 = tss.rsp2 =
-        reinterpret_cast<std::uint64_t>(stack) + STACK_SIZE;
+    tss.rsp0 = reinterpret_cast<std::uint64_t>(stack) + STACK_SIZE;
 
-    SetTss(9, reinterpret_cast<std::uint64_t>(&tss), 0x89);
+    std::uint64_t tss_addr = reinterpret_cast<std::uint64_t>(&tss);
+    SetTss(10, tss_addr, 0x89);
 
     gdtr.limit = sizeof(gdt_table) - 1;
     gdtr.base  = reinterpret_cast<std::uint64_t>(&gdt_table);
@@ -86,6 +96,6 @@ void Init() {
     lgdt(&gdtr);
 
     // Load TSS
-    ltr(9 * 8);
+    ltr(10 * 8);
 }
 }  // namespace gdt

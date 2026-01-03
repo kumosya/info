@@ -1,5 +1,5 @@
-#ifndef VFS_H
-#define VFS_H
+#ifndef INFO_KERNEL_VFS_H_
+#define INFO_KERNEL_VFS_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -10,24 +10,18 @@
 #define SEEK_CUR 1  // Seek from current position
 #define SEEK_END 2  // Seek from end of file
 
-namespace vfs {
-
 // Forward declarations
-struct File;
-struct DirEntry;
-struct MountFs;
-struct FileSystem;
+class File;
+class DirEntry;
+class MountFs;
+class FileSystem;
 
-// Mount point structure
-struct MountFs {
-    char path[64];          // Mount path (e.g., "/")
-    struct FileSystem *fs;  // Associated file system
-    void *private_data;     // File system-specific data
-    MountFs *next;          // Next mount point in the list
-};
+// File system structure
+class FileSystem {
+   public:
+    int RegisterFileSystem();
+    FileSystem *GetFileSystem(const char *name);
 
-// File system operations
-struct FileSystemOps {
     MountFs *(*mount)(FileSystem *fs, const char *device, const char *path,
                       std::uint32_t flags);
     int (*umount)(MountFs *mount);
@@ -41,17 +35,36 @@ struct FileSystemOps {
     int (*rmdir)(MountFs *mount, const char *path);
     DirEntry *(*readdir)(MountFs *mount, const char *path, std::uint32_t index);
     int (*stat)(MountFs *mount, const char *path, void *statbuf);
+
+   private:
+    char name[16];     // File system name (e.g., "ext2")
+    FileSystem *next;  // Next file system in the list
 };
 
-// File system structure
-struct FileSystem {
-    char name[16];             // File system name (e.g., "ext2")
-    struct FileSystemOps ops;  // File system operations
-    struct FileSystem *next;   // Next file system in the list
+// Mount point
+class MountFs : public FileSystem {
+   public:
+    int Mount(const char *device, const char *path, const char *fs_type,
+              std::uint32_t flags);
+    int Umount(const char *path);
+
+    char *GetPath() { return path; }
+    MountFs *next;  // Next mount point in the list
+   protected:
+    char path[64];       // Mount path (e.g., "/")
+    void *private_data;  // File system-specific data
 };
 
 // File structure
-struct File {
+class File {
+   public:
+    File *Open(const char *path, std::uint32_t flags);
+    int Close();
+    ssize_t Read(void *buf, size_t count);
+    ssize_t Write(const void *buf, size_t count);
+    ssize_t Seek(std::int64_t offset, int whence);
+
+   protected:
     std::uint32_t flags;     // File flags (read/write mode)
     std::uint64_t position;  // Current file position
     MountFs *mount;          // Mount point of this file
@@ -66,22 +79,15 @@ struct DirEntry {
     struct DirEntry *next;  // Next entry (for linked list)
 };
 
-int Proc(int argc, char *argv[]);
-int RegisterFileSystem(struct FileSystem *fs);
+namespace vfs {
+
 void RegisterFileSystems();
-int Mount(const char *device, const char *path, const char *fs_type,
-          std::uint32_t flags);
-int Umount(const char *path);
-File *Open(const char *path, std::uint32_t flags);
-int Close(struct File *file);
-ssize_t Read(struct File *file, void *buf, size_t count);
-ssize_t Write(struct File *file, const void *buf, size_t count);
-ssize_t Seek(struct File *file, std::int64_t offset, int whence);
-DirEntry *ReadDir(struct File *dir, struct DirEntry *dirent);
+int Proc(int argc, char *argv[]);
+DirEntry *ReadDir(File *dir, DirEntry *dirent);
 MountFs *FindMountPoint(const char *path);
 void ExtractRelativePath(MountFs *mount, const char *full_path, char *rel_path,
                          size_t rel_path_len);
 
 }  // namespace vfs
 
-#endif  // VFS_H
+#endif  // INFO_KERNEL_VFS_H_

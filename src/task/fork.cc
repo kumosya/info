@@ -1,27 +1,26 @@
-#include <stddef.h>
-
 #include <cstdint>
 #include <cstring>
 
-#include "cpu.h"
-#include "mm.h"
-#include "page.h"
-#include "task.h"
-#include "tty.h"
+#include "kernel/cpu.h"
+#include "kernel/mm.h"
+#include "kernel/page.h"
+#include "kernel/task.h"
+#include "kernel/tty.h"
 
 namespace task::thread {
 
 static pid_t NewPid() { return pid_counter++; }
 
-pid_t Fork(task::pt_regs *regs, std::uint64_t flags, std::uint64_t stack_start,
+pid_t Fork(task::Registers *regs, std::uint64_t flags, std::uint64_t stack_start,
            std::uint64_t stack_size) {
-    // 分配新的进程控制块
-    Pcb *child = reinterpret_cast<Pcb *>(mm::page::Alloc(sizeof(Pcb)));
+    // 分配新的进程控制块，需要包含栈空间
+    // 栈在Pcb之后，分配 Pcb + STACK_SIZE 大小的内存
+    Pcb *child = reinterpret_cast<Pcb *>(mm::page::Alloc(sizeof(Pcb) + STACK_SIZE));
     if (child == nullptr) {
         return -1;
     }
 
-    std::memset(child, 0, sizeof(Pcb));
+    std::memset(child, 0, sizeof(Pcb) + STACK_SIZE);
 
     // 如果current_proc为nullptr（创建第一个进程时），直接初始化
     if (current_proc != nullptr) {
@@ -47,14 +46,14 @@ pid_t Fork(task::pt_regs *regs, std::uint64_t flags, std::uint64_t stack_start,
     child->thread = thread;
 
     // 设置内核栈指针
-    thread->rsp0 = reinterpret_cast<std::uint64_t>(child) + STACK_SIZE;
+    thread->rsp0 = reinterpret_cast<std::uint64_t>(child) + sizeof(Pcb) + STACK_SIZE;
 
     // 如果有regs参数，复制寄存器状态到新进程的栈中
     if (regs != nullptr) {
         // 将寄存器状态复制到新进程的栈顶
-        task::pt_regs *rsp = reinterpret_cast<task::pt_regs *>(
-            thread->rsp0 - sizeof(task::pt_regs));
-        std::memcpy(rsp, regs, sizeof(task::pt_regs));
+        task::Registers *rsp = reinterpret_cast<task::Registers *>(
+            thread->rsp0 - sizeof(task::Registers));
+        std::memcpy(rsp, regs, sizeof(task::Registers));
 
         thread->rsp = reinterpret_cast<std::uint64_t>(rsp);
         thread->rip = regs->rip;
@@ -65,6 +64,8 @@ pid_t Fork(task::pt_regs *regs, std::uint64_t flags, std::uint64_t stack_start,
         thread->rsp = thread->rsp0;
     }
 
+    // 设置页表
+    child->mm.pml4 = mm::page::kernel_pml4;
     child->stat = task::Ready;
 
     // 将新创建的进程添加到任务队列

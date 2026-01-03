@@ -1,13 +1,12 @@
-#include <stddef.h>
 
 #include <cstdint>
 #include <cstring>
 
-#include "cpu.h"
-#include "mm.h"
-#include "page.h"
-#include "task.h"
-#include "tty.h"
+#include "kernel/cpu.h"
+#include "kernel/mm.h"
+#include "kernel/page.h"
+#include "kernel/task.h"
+#include "kernel/tty.h"
 
 extern "C" std::int64_t do_exit(std::int64_t code) {
     return task::thread::Exit(code);
@@ -28,6 +27,12 @@ std::int64_t Exit(std::int64_t code) {
         }
         // 释放argv数组本身
         mm::page::Free(argv);
+    }
+
+    if (!(current_proc->stat & THREAD_KERNEL)) {
+        // TODO
+        // 在这之前其实要把用户层的各级页表umap的
+        mm::page::Free(current_proc->mm.pml4);
     }
 
     // 将当前进程从任务队列中移除

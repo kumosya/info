@@ -2,9 +2,9 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "block.h"
-#include "fs/ext2.h"
-#include "tty.h"
-#include "vfs.h"
+#include "kernel/block.h"
+#include "kernel/fs/ext2.h"
+#include "kernel/tty.h"
+#include "kernel/vfs.h"
 
 namespace ext2 {}

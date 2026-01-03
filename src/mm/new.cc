@@ -1,8 +1,8 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "mm.h"
-#include "page.h"
+#include "kernel/mm.h"
+#include "kernel/page.h"
 
 // Simple kernel operator new/delete backed by page allocator.
 // Allocation stores the page count in the first 8 bytes of the allocation.

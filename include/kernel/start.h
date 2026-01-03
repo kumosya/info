@@ -1,12 +1,12 @@
-#ifndef START_H
-#define START_H
+#ifndef INFO_KERNEL_START_H
+#define INFO_KERNEL_START_H
 
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
 
-#include "multiboot2.h"
-#include "page.h"
+#include "kernel/multiboot2.h"
+#include "kernel/page.h"
 
 namespace boot {
 int printf(const char *format, ...);
@@ -35,4 +35,4 @@ void Init(std::uint8_t *addr);
 }  // namespace mm
 }  // namespace boot
 
-#endif /* START_H */
+#endif /* INFO_KERNEL_START_H */

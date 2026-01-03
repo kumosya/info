@@ -1,8 +1,8 @@
  /* clang-format off */
 #define ASM_FILE        1
-#include "multiboot2.h"
-#include "page.h"
-#include "cpu.h"
+#include "kernel/multiboot2.h"
+#include "kernel/page.h"
+#include "kernel/cpu.h"
 
 /*  C++ symbol format. HAVE_ASM_USCORE is defined by configure. */
 #ifdef HAVE_ASM_USCORE
@@ -35,7 +35,8 @@ entry_address_tag_start:
 	/*  entry_addr */
 	.long _start
 entry_address_tag_end:
-
+#ifdef ENABLE_TEXT_OUTPUT
+#else
 tag_frame_buffer:
 	.align 8
 	.short MULTIBOOT_HEADER_TAG_FRAMEBUFFER
@@ -44,6 +45,7 @@ tag_frame_buffer:
 	.long 1024
 	.long 768
 	.long 32
+#endif
 
 end_tag_start:
 	.align  8

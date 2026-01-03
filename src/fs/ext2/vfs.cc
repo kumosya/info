@@ -1,10 +1,11 @@
-#include "vfs.h"
+
+#include "kernel/vfs.h"
 
 #include <cstdint>
 #include <cstring>
 
-#include "block.h"
-#include "fs/ext2.h"
-#include "tty.h"
+#include "kernel/block.h"
+#include "kernel/fs/ext2.h"
+#include "kernel/tty.h"
 
 namespace vfs {}  // namespace vfs

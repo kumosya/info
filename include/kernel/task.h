@@ -1,10 +1,11 @@
-#ifndef TASK_H
-#define TASK_H
+#ifndef INFO_KERNEL_TASK_H_
+#define INFO_KERNEL_TASK_H_
 #include <cstdint>
 
-#include "cpu.h"
-#include "io.h"
-#include "page.h"
+#include "kernel/cpu.h"
+#include "kernel/io.h"
+#include "kernel/page.h"
+#include "kernel/mm.h"
 
 #define STACK_SIZE 0x8000
 
@@ -26,6 +27,13 @@ enum State {
     Dead,
 };
 
+struct Registers {
+    std::uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
+    std::uint64_t rbx, rcx, rdx, rsi, rdi, rbp;
+    std::uint64_t ds, es, rax;
+    std::uint64_t rip, cs, rflags, rsp, ss;
+} __attribute__((packed));
+
 struct Mem {
     PTE *pml4;
 
@@ -36,13 +44,6 @@ struct Mem {
     std::uint64_t heap_start, heap_end;
     std::uint64_t stack_base;
 };
-
-struct pt_regs {
-    std::uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
-    std::uint64_t rbx, rcx, rdx, rsi, rdi, rbp;
-    std::uint64_t ds, es, rax;
-    std::uint64_t rip, cs, rflags, rsp, ss;
-} __attribute__((packed));
 
 struct Tcb {
     std::uint64_t rsp0, rip, rsp;
@@ -78,25 +79,24 @@ extern Pcb *task_queue_tail;
 
 void schedule();
 
-namespace queue {
-
-void Add(Pcb *pcb);
-void Remove(Pcb *pcb);
-void PrintQueue();
-
-}  // namespace queue
 namespace thread {
 
 extern pid_t pid_counter;
 
-std::int64_t Exec(pt_regs *regs);
+std::int64_t Exec(Registers *regs);
 std::int64_t Exit(std::int64_t code);
-pid_t Fork(pt_regs *regs, std::uint64_t flags, std::uint64_t stack_base,
+pid_t Fork(Registers *regs, std::uint64_t flags, std::uint64_t stack_base,
            std::uint64_t stack_size);
 pid_t KernelThread(std::int64_t *func, const char *arg, std::uint64_t flags);
 void Init();
 
 }  // namespace thread
+
+
+namespace queue {
+void Add(Pcb *pcb);
+void Remove(Pcb *pcb);
+}
 
 inline Pcb *GetCurrent(void) {
     Pcb *current;
@@ -107,8 +107,9 @@ inline Pcb *GetCurrent(void) {
 }
 
 inline void SwitchTable(Pcb *prev, Pcb *next) {
-    __asm__ __volatile__("movq	%0,	%%cr3	\n\t" ::"r"(next->mm.pml4)
+    __asm__ __volatile__("movq	%0,	%%cr3	\n\t" ::"r"(mm::Vir2Phy((std::uint64_t)next->mm.pml4))
                          : "memory");
+    
 }
 
 }  // namespace task
@@ -122,21 +123,21 @@ int SysInit(int argc, char *argv[]);
 #define SwitchContext(prev, next)                                        \
     do {                                                                 \
         __asm__ __volatile__(                                            \
-            "pushq	%%rbp	\n\t"                                           \
-            "pushq	%%rax	\n\t"                                           \
-            "movq	%%rsp,	%0	\n\t"                                        \
-            "movq	%2,	%%rsp	\n\t"                                        \
-            "leaq	1f(%%rip),	%%rax	\n\t"                                 \
-            "movq	%%rax,	%1	\n\t"                                        \
-            "pushq	%3		\n\t"                                             \
-            "jmp	__switch_to	\n\t"                                       \
+            "pushq	%%rbp\n"                                              \
+            "pushq	%%rax\n"                                              \
+            "movq	%%rsp, %0\n"                                           \
+            "movq	%2,	%%rsp\n"                                           \
+            "leaq	1f(%%rip), %%rax\n"                                    \
+            "movq	%%rax, %1\n"                                           \
+            "pushq	%3 \n"                                                \
+            "jmp	__switch_to	\n"                                         \
             "1:	\n\t"                                                    \
-            "popq	%%rax	\n\t"                                            \
-            "popq	%%rbp	\n\t"                                            \
+            "popq	%%rax	\n"                                              \
+            "popq	%%rbp	\n"                                              \
             : "=m"(prev->thread->rsp), "=m"(prev->thread->rip)           \
             : "m"(next->thread->rsp), "m"(next->thread->rip), "D"(prev), \
               "S"(next)                                                  \
             : "memory");                                                 \
     } while (false)
 
-#endif  // TASK_H
+#endif  // INFO_KERNEL_TASK_H_

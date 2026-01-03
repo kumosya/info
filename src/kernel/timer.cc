@@ -1,10 +1,10 @@
 
 #include <cstdint>
 
-#include "cpu.h"
-#include "io.h"
-#include "task.h"
-#include "tty.h"
+#include "kernel/cpu.h"
+#include "kernel/io.h"
+#include "kernel/task.h"
+#include "kernel/tty.h"
 
 using namespace std;
 
@@ -18,11 +18,8 @@ extern "C" void pit_handler_c() {
     timer::pit_ticks++;
     // send EOI
     outb(PIC1_CMD, 0x20);
-    // Keep interrupt handler short: only print a dot every 5 tick
-    if (timer::pit_ticks % 5 == 0) {
-        // tty::printf(".");
-        task::schedule();
-    }
+    // tty::printf(".");
+    task::schedule();
 }
 
 namespace timer {

@@ -1,5 +1,5 @@
-#ifndef CPU_H
-#define CPU_H
+#ifndef INFO_KERNEL_CPU_H_
+#define INFO_KERNEL_CPU_H_
 
 /* CR0 */
 #define CR0_PG (1 << 31)
@@ -63,18 +63,18 @@ struct TssEntry {
     std::uint64_t rsp0;
     std::uint64_t rsp1;
     std::uint64_t rsp2;
-    std::uint32_t reserved1;
-    std::uint32_t ist1;
-    std::uint32_t ist2;
-    std::uint32_t ist3;
-    std::uint32_t ist4;
-    std::uint32_t ist5;
-    std::uint32_t ist6;
-    std::uint32_t ist7;
-    std::uint32_t reserved2;
+    std::uint64_t reserved1;
+    std::uint64_t ist1;
+    std::uint64_t ist2;
+    std::uint64_t ist3;
+    std::uint64_t ist4;
+    std::uint64_t ist5;
+    std::uint64_t ist6;
+    std::uint64_t ist7;
+    std::uint64_t reserved2;
     std::uint16_t reserved3;
     std::uint16_t iomap_base;
-} __attribute__((packed));
+} __attribute__((packed, aligned(16)));
 
 extern TssEntry tss;
 void SetEntry(int index, std::uint64_t base, std::uint64_t limit,
@@ -108,11 +108,28 @@ extern "C" void xm_stub();
 extern "C" void ve_stub();
 extern "C" void cp_stub();
 
-// CPUID相关结构和函数声明
-namespace cpu_id {
-
 // CPU信息结构
-struct CpuInfo {
+class CpuId {
+   public:
+    // 获取CPU信息
+    void GetInfo();
+    // 检测CPU特性
+    bool HasFeature(std::uint32_t feature_bit);
+    // 检测扩展CPU特性
+    bool HasExtFeature(std::uint32_t feature_bit);
+    // 打印CPU信息
+    void PrintInfo();
+
+    char *GetVendorId();
+    char *GetBrandString();
+    std::uint32_t GetFamily();
+    std::uint32_t GetModel();
+    std::uint32_t GetStepping();
+
+   private:
+    void Init();
+    bool initialized = false;
+
     char vendor_id[13];          // 厂商ID
     char brand_string[49];       // CPU品牌字符串
     std::uint32_t family;        // CPU系列
@@ -122,20 +139,6 @@ struct CpuInfo {
     std::uint32_t ext_features;  // 扩展特性标志
 };
 
-// 获取CPU信息
-void GetInfo(CpuInfo *info);
-
-// 检测CPU特性
-bool HasFeature(std::uint32_t feature_bit);
-
-// 检测扩展CPU特性
-bool HasExtFeature(std::uint32_t feature_bit);
-
-// 打印CPU信息
-void PrintInfo();
-
-}  // namespace cpu_id
-
 #endif /* ASM_FILE */
 
-#endif /* CPU_H */
+#endif /* INFO_KERNEL_CPU_H_ */

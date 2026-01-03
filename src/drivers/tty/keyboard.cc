@@ -1,10 +1,10 @@
-#include "keyboard.h"
 
 #include <cstdint>
 
-#include "cpu.h"
-#include "io.h"
-#include "tty.h"
+#include "kernel/cpu.h"
+#include "kernel/keyboard.h"
+#include "kernel/io.h"
+#include "kernel/tty.h"
 
 extern "C" void kbd_handler_c();
 

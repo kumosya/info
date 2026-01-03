@@ -1,5 +1,5 @@
-#ifndef _TTY_H_
-#define _TTY_H_
+#ifndef INFO_KERNEL_TTY_H_
+#define INFO_KERNEL_TTY_H_
 
 /*  The attribute of an character. */
 #define ATTRIBUTE 7
@@ -28,9 +28,13 @@
 #include <cstddef>
 #include <cstdint>
 
-/* Here! */
+#ifndef OUTPUT_TO_SERIAL
 #define OUTPUT_TO_SERIAL true
+#endif
+
+#ifndef ENABLE_TEXT_OUTPUT
 #define ENABLE_TEXT_OUTPUT false
+#endif
 
 namespace tty {
 
@@ -50,4 +54,4 @@ void Putchar(char c, std::uint8_t color);
 int printf(const char *format, ...);
 void Panic(const char *format, ...);
 }  // namespace tty
-#endif /* _VIDEO_H_ */
+#endif /* INFO_KERNEL_TTY_H_ */

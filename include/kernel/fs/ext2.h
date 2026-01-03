@@ -1,12 +1,11 @@
-#ifndef _FS_EXT2_H_
-#define _FS_EXT2_H_
-
-#include <stdint.h>
+#ifndef INFO_KERNEL_FS_EXT2_H_
+#define INFO_KERNEL_FS_EXT2_H_
 
 #include <cstddef>
+#include <stdint.h>
 
-#include "block.h"
+#include "kernel/block.h"
 
 namespace ext2 {}  // namespace ext2
 
-#endif  // _FS_EXT2_H_
+#endif  // INFO_KERNEL_FS_EXT2_H_

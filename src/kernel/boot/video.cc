@@ -1,16 +1,16 @@
 #include <cstdarg>
 #include <cstdint>
 
-#include "multiboot2.h"
-#include "start.h"
-#include "tty.h"
+#include "kernel/multiboot2.h"
+#include "kernel/start.h"
+#include "kernel/tty.h"
 
 namespace boot {
 static int xpos = 0;
 static int ypos = 0;
 
 /*  Clear the screen and initialize VIDEO, XPOS and YPOS. */
-void videoInit() {
+void VideoInit() {
     video_addr = reinterpret_cast<std::uint8_t *>(VIDEO_ADDR);
     int i;
     for (i = 0; i < VIDEO_HEIGHT * VIDEO_WIDTH * 2; i++) {
@@ -21,7 +21,7 @@ void videoInit() {
 }
 
 /*  Put a character on the screen. */
-void putchar(char c) {
+void Putchar(char c, std::uint8_t color) {
     if (c == '\n' || c == '\r') {
     newline:
         xpos = 0;
@@ -31,7 +31,7 @@ void putchar(char c) {
     }
 
     *(video_addr + (xpos + ypos * VIDEO_WIDTH) * 2)     = c & 0xFF;
-    *(video_addr + (xpos + ypos * VIDEO_WIDTH) * 2 + 1) = ATTRIBUTE;
+    *(video_addr + (xpos + ypos * VIDEO_WIDTH) * 2 + 1) = color;
 
     xpos++;
     if (xpos >= VIDEO_WIDTH) goto newline;
@@ -39,7 +39,7 @@ void putchar(char c) {
 
 static void puts(const char *s) {
 #if ENABLE_TEXT_OUTPUT == true
-    while (*s) putchar(*s++);
+    while (*s) Putchar(*s++, ATTRIBUTE);
 #endif
 }
 

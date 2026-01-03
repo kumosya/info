@@ -1,16 +1,24 @@
 #include <cstdint>
 
-#include "multiboot2.h"
-#include "page.h"
-#include "start.h"
+#include "kernel/multiboot2.h"
+#include "kernel/page.h"
+#include "kernel/start.h"
 
 FrameMem pm;
 
 namespace boot::mm {
 
+static std::uint64_t Vir2Phy(std::uint64_t virt) {
+    return virt - IDENTITY_BASE;
+}
+
+static std::uint64_t Phy2Vir(std::uint64_t phy) {
+    return phy + IDENTITY_BASE;
+}
+
 void frameInit(std::uint64_t start_addr, std::uint64_t end_addr) {
     //			boot::printf("Frame init: 0x%lx - 0x%lx\n", start_addr,
-    //end_addr);
+    // end_addr);
     pm.start_addr             = start_addr;
     std::uint64_t region_size = end_addr - start_addr;
     std::uint64_t max_pages   = region_size / PAGE_SIZE;
@@ -89,7 +97,7 @@ void mapping(PTE *pml4, std::uint64_t virt_addr, std::uint64_t phys_addr,
         PTE *pdpt = (PTE *)Alloc();
         memset(pdpt, 0, PAGE_SIZE);
         pml4[pml4_idx].value = ((std::uint64_t)pdpt & PAGE_MASK) | PTE_PRESENT |
-                               PTE_WRITABLE | PTE_USER;
+                               PTE_WRITABLE | flags;
     }
 
     PTE *pdpt = (PTE *)(pml4[pml4_idx].value & PAGE_MASK);
@@ -98,7 +106,7 @@ void mapping(PTE *pml4, std::uint64_t virt_addr, std::uint64_t phys_addr,
         PTE *pd = (PTE *)Alloc();
         memset(pd, 0, PAGE_SIZE);
         pdpt[pdpt_idx].value = ((std::uint64_t)pd & PAGE_MASK) | PTE_PRESENT |
-                               PTE_WRITABLE | PTE_USER;
+                               PTE_WRITABLE | flags;
     }
     PTE *pd = (PTE *)(pdpt[pdpt_idx].value & PAGE_MASK);
 
@@ -107,12 +115,12 @@ void mapping(PTE *pml4, std::uint64_t virt_addr, std::uint64_t phys_addr,
         PTE *pt = (PTE *)Alloc();
         memset(pt, 0, PAGE_SIZE);
         pd[pd_idx].value = ((std::uint64_t)pt & PAGE_MASK) | PTE_PRESENT |
-                           PTE_WRITABLE | PTE_USER;
+                           PTE_WRITABLE | flags;
     }
     PTE *pt = (PTE *)(pd[pd_idx].value & PAGE_MASK);
 
     // PT
-    pt[pt_idx].value = (phys_addr & PAGE_MASK) | flags | PTE_USER;
+    pt[pt_idx].value = (phys_addr & PAGE_MASK) | flags;
 }
 
 // 映射内核段
@@ -128,8 +136,9 @@ void MappingKernel(PTE *pml4, multiboot_tag_elf_sections *elf_sections) {
             vaddr == (std::uint64_t)__rodata_start ||
             vaddr == (std::uint64_t)__data_start ||
             vaddr == (std::uint64_t)__bss_start) {
-            //					boot::printf("ELF Section '%d':
-            //Vir: 0x%lx Off: 0x%lx Size: %d B\n", i, vaddr, offset, size);
+            //					boot::printf("ELF Section '%d':"
+            // "Vir: 0x%lx Off: 0x%lx Size: %d B\n", i, vaddr, offset, size);
+            // boot::printf("0x%x->0x%x\n", vaddr, 0x100000 - 0x1000 + offset);
             for (std::uint64_t addr = 0; addr <= offset; addr += PAGE_SIZE) {
                 mapping(pml4, vaddr + addr, 0x100000 - 0x1000 + offset + addr,
                         PTE_PRESENT | PTE_WRITABLE);
@@ -139,8 +148,11 @@ void MappingKernel(PTE *pml4, multiboot_tag_elf_sections *elf_sections) {
 }
 
 void MappingIdentity(PTE *pml4, std::uint64_t size) {
-    for (std::uint64_t addr = 0; addr < size; addr += PAGE_SIZE) {
+    for (std::uint64_t addr = 0x100000; addr < 0xf00000; addr += PAGE_SIZE) {
         mapping(pml4, addr, addr, PTE_PRESENT | PTE_WRITABLE);
+    }
+    for (std::uint64_t addr = 0; addr < size && size < 0xfffffffffff; addr += PAGE_SIZE) {
+        mapping(pml4, IDENTITY_BASE + addr, addr, PTE_PRESENT | PTE_WRITABLE);
     }
 }
 
@@ -182,7 +194,7 @@ void Init(std::uint8_t *addr) {
         if (mmap->type == MULTIBOOT_MEMORY_AVAILABLE &&
             mmap->addr >= 0x100000) {
             //				boot::printf("Available Memory: Addr:
-            //0x%lx, Len: 0x%lx\n", mmap->addr, mmap->len);
+            // 0x%lx, Len: 0x%lx\n", mmap->addr, mmap->len);
             mm::frameInit(mmap->addr + 0x100000, mmap->addr + mmap->len);
             break;
         }

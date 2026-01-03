@@ -1,12 +1,13 @@
-#include "ide.h"
+
 
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 
-#include "block.h"
-#include "io.h"
-#include "tty.h"
+#include "kernel/block.h"
+#include "kernel/ide.h"
+#include "kernel/io.h"
+#include "kernel/tty.h"
 
 namespace ide {
 
@@ -59,8 +60,7 @@ static int Identify(std::uint16_t io_base, std::uint8_t drive,
 }
 
 // IDE device read function
-int Read(block::Device *dev, std::uint64_t sector, std::uint32_t count,
-         void *buf) {
+int Read(Block *dev, std::uint64_t sector, std::uint32_t count, void *buf) {
     Device *ide_dev       = (Device *)dev;
     std::uint16_t *data   = (std::uint16_t *)buf;
     std::uint16_t io_base = ide_dev->io_base;
@@ -99,7 +99,7 @@ int Read(block::Device *dev, std::uint64_t sector, std::uint32_t count,
 }
 
 // IDE device write function
-int Write(block::Device *dev, std::uint64_t sector, std::uint32_t count,
+int Write(Block *dev, std::uint64_t sector, std::uint32_t count,
           const void *buf) {
     Device *ide_dev           = (Device *)dev;
     const std::uint16_t *data = (const std::uint16_t *)buf;
@@ -134,7 +134,7 @@ int Write(block::Device *dev, std::uint64_t sector, std::uint32_t count,
 }
 
 // IDE device ioctl function
-int Ioctl(block::Device *dev, std::uint32_t cmd, void *arg) {
+int Ioctl(Block *dev, std::uint32_t cmd, void *arg) {
     // 暂时没有实现
     return -1;
 }
@@ -145,8 +145,8 @@ static void DetectDevices(std::uint16_t io_base, std::uint8_t irq) {
         int ret = Identify(io_base, drive, identify_data);
 
         if (ret == 0) {
-            Device *ide_dev    = &devices[device_count++];
-            block::Device *dev = &ide_dev->block_dev;
+            Device *ide_dev = &devices[device_count++];
+            Block *dev      = &ide_dev->block_dev;
 
             // 初始化设备信息
             ide_dev->io_base = io_base;
@@ -157,12 +157,11 @@ static void DetectDevices(std::uint16_t io_base, std::uint8_t irq) {
             // 设置块设备信息
             char s[16];
             snprintf(s, 16, "hd%c", 'a' + (device_count - 1));
-            strncpy(dev->name, s, sizeof(dev->name) - 1);
-            dev->name[sizeof(dev->name) - 1] = '\0';
+            dev->SetName(s);
 
             // 从识别数据中获取扇区数和扇区大小
-            dev->sector_size = 512;
-            dev->type        = block::DEVICE_TYPE_IDE;
+            dev->SetSectorSize(512);
+            dev->SetType(block::DEVICE_TYPE_IDE);
 
             // 检查是否支持LBA48
             if (identify_data[83] & (1 << 10)) {
@@ -172,17 +171,17 @@ static void DetectDevices(std::uint16_t io_base, std::uint8_t irq) {
                     ((std::uint64_t)identify_data[102] << 32) |
                     ((std::uint64_t)identify_data[101] << 16) |
                     (std::uint64_t)identify_data[100];
-                dev->sector_count = sectors;
+                dev->SetSectorCount(sectors);
             } else {
                 // 使用LBA28模式，扇区数是32位
                 std::uint32_t sectors =
                     ((std::uint32_t)identify_data[61] << 16) |
                     identify_data[60];
-                dev->sector_count = sectors;
+                dev->SetSectorCount(sectors);
             }
 
             // 注册块设备
-            block::RegisterDevice(dev);
+            dev->RegisterDevice();
         }
     }
 }

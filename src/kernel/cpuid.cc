@@ -1,33 +1,22 @@
 #include <cstdint>
 #include <cstring>
 
-#include "cpu.h"
-#include "io.h"
-#include "tty.h"
-
-namespace cpu_id {
-
-static CpuInfo cpu_info;
-static bool initialized = false;
-
-// 初始化CPU信息
-void Init() {
-    GetInfo(&cpu_info);
-    initialized = true;
-}
+#include "kernel/cpu.h"
+#include "kernel/io.h"
+#include "kernel/tty.h"
 
 // 获取CPU信息
-void GetInfo(CpuInfo *info) {
+void CpuId::GetInfo() {
     std::uint32_t eax, ebx, ecx, edx;
 
     // 获取厂商ID (CPUID功能0)
     cpuid(0, eax, ebx, ecx, edx);
 
     // 拼接厂商ID字符串
-    *(std::uint32_t *)&info->vendor_id[0] = ebx;
-    *(std::uint32_t *)&info->vendor_id[4] = edx;
-    *(std::uint32_t *)&info->vendor_id[8] = ecx;
-    info->vendor_id[12]                   = '\0';
+    *(std::uint32_t *)&vendor_id[0] = ebx;
+    *(std::uint32_t *)&vendor_id[4] = edx;
+    *(std::uint32_t *)&vendor_id[8] = ecx;
+    vendor_id[12]                   = '\0';
 
     // 获取CPU品牌字符串 (CPUID功能0x80000002-0x80000004)
     char brand_str[48] = {0};
@@ -51,57 +40,49 @@ void GetInfo(CpuInfo *info) {
     *(std::uint32_t *)&brand_str[44] = edx;
 
     // 复制品牌字符串到info结构
-    strncpy(info->brand_string, brand_str, sizeof(info->brand_string) - 1);
-    info->brand_string[sizeof(info->brand_string) - 1] = '\0';
+    strncpy(brand_string, brand_str, sizeof(brand_string) - 1);
+    brand_string[sizeof(brand_string) - 1] = '\0';
 
     // 获取CPU特性 (CPUID功能1)
     cpuid(1, eax, ebx, ecx, edx);
 
     // 提取系列、型号和步进
-    info->stepping = eax & 0xF;
-    info->model    = (eax >> 4) & 0xF;
-    info->family   = (eax >> 8) & 0xF;
+    stepping = eax & 0xF;
+    model    = (eax >> 4) & 0xF;
+    family   = (eax >> 8) & 0xF;
 
     // 处理扩展系列和型号
-    if (info->family == 6 || info->family == 15) {
-        info->model |= ((eax >> 16) & 0xF) << 4;
-        info->family += (eax >> 20) & 0xFF;
+    if (family == 6 || family == 15) {
+        model |= ((eax >> 16) & 0xF) << 4;
+        family += (eax >> 20) & 0xFF;
     }
 
     // 保存特性标志
-    info->features     = edx;
-    info->ext_features = ecx;
+    features     = edx;
+    ext_features = ecx;
 }
 
 // 检测CPU特性
-bool HasFeature(std::uint32_t feature_bit) {
-    if (!initialized) {
-        Init();
-    }
-
-    return (cpu_info.features & (1 << feature_bit)) != 0;
+bool CpuId::HasFeature(std::uint32_t feature_bit) {
+    return (features & (1 << feature_bit)) != 0;
 }
 
 // 检测扩展CPU特性
-bool HasExtFeature(std::uint32_t feature_bit) {
-    if (!initialized) {
-        Init();
-    }
-
-    return (cpu_info.ext_features & (1 << feature_bit)) != 0;
+bool CpuId::HasExtFeature(std::uint32_t feature_bit) {
+    return (ext_features & (1 << feature_bit)) != 0;
 }
 
 // 打印CPU信息
-void PrintInfo() {
+void CpuId::PrintInfo() {
     if (!initialized) {
         Init();
     }
 
     tty::printf("CPU Information:\n");
-    tty::printf("Vendor: %s\n", cpu_info.vendor_id);
-    tty::printf("Brand: %s\n", cpu_info.brand_string);
-    tty::printf("Family: %d, Model: %d, Stepping: %d\n", cpu_info.family,
-                cpu_info.model, cpu_info.stepping);
+    tty::printf("Vendor: %s\n", vendor_id);
+    tty::printf("Brand: %s\n", brand_string);
+    tty::printf("Family: %d, Model: %d, Stepping: %d\n", family, model,
+                stepping);
 
     tty::printf("Features: ");
     // 打印一些常见特性
@@ -117,4 +98,23 @@ void PrintInfo() {
     tty::printf("\n");
 }
 
-}  // namespace cpu_id
+// 获取厂商ID
+char *CpuId::GetVendorId() { return vendor_id; }
+
+// 获取CPU品牌字符串
+char *CpuId::GetBrandString() { return brand_string; }
+
+// 获取CPU系列
+std::uint32_t CpuId::GetFamily() { return family; }
+
+// 获取CPU型号
+std::uint32_t CpuId::GetModel() { return model; }
+
+// 获取CPU步进
+std::uint32_t CpuId::GetStepping() { return stepping; }
+
+// 初始化CPU信息
+void CpuId::Init() {
+    GetInfo();
+    initialized = true;
+}

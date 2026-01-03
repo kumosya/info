@@ -1,9 +1,9 @@
 #include <cstdint>
 #include <cstring>
 
-#include "mm.h"
-#include "page.h"
-#include "tty.h"
+#include "kernel/mm.h"
+#include "kernel/page.h"
+#include "kernel/tty.h"
 
 namespace mm::slab {
 void Init() {

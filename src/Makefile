@@ -4,9 +4,7 @@ CPP=g++
 CPPFLAGS=-c -m64 -nostdlib -nostdinc -fno-stack-protector -mcmodel=large \
 			-ffreestanding -fno-exceptions \
 			-std=c++11 -fno-pie \
-            -I ../include/kernel/ \
-			-I ../include/libc/ \
-            -I ../include/libc++/
+            -I ../include/
 LD=ld
 LDFLAGS= -nostdlib -z noexecstack --no-warn-rwx-segments -T ../scripts/kernel.lds -m elf_x86_64 \
 			
@@ -14,7 +12,7 @@ MANGLE_HDR = ../include/kernel/cpp_mangle.h
 
 KERNEL_ELF = ../build/kernel.elf
 
-SRCS:=${wildcard kernel/*/*.cc kernel/*.cc \
+SRCS:=${wildcard kernel/*.cc kernel/*/*.cc \
 				mm/*.cc \
 				task/*.cc \
 				drivers/*.cc \
@@ -26,6 +24,15 @@ OBJS:=$(patsubst %.cc, %.o, $(SRCS))
 AS_OBJS:=kernel/boot/head.o kernel/interrupt.o task/proc.o
 
 LIBC = ../lib/libc.a
+
+ifeq ($(ENABLE_TEXT_OUTPUT), true)
+	CPPFLAGS += -D ENABLE_TEXT_OUTPUT=true
+endif
+ifeq ($(OUTPUT_TO_SERIAL), true)
+	CPPFLAGS += -D OUTPUT_TO_SERIAL=true
+else ifeq ($(OUTPUT_TO_SERIAL), false)
+	CPPFLAGS += -D OUTPUT_TO_SERIAL=false
+endif
 
 all: $(KERNEL_ELF)
 

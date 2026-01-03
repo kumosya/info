@@ -1,9 +1,9 @@
-#ifndef IO_H
-#define IO_H
+#ifndef INFO_KERNEL_IO_H_
+#define INFO_KERNEL_IO_H_
 
 #include <cstdint>
 
-#include "cpu.h"
+#include "kernel/cpu.h"
 
 /* COM1 port base */
 #define COM1_PORT 0x3F8
@@ -103,4 +103,4 @@ void Init(std::uint32_t freq);
 std::uint64_t GetTicks();
 }  // namespace timer
 
-#endif  // IO_H
+#endif  // INFO_KERNEL_IO_H_

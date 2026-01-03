@@ -3,3 +3,12 @@ IndentWidth: 4
 ColumnLimit: 80
 AlignConsecutiveAssignments: true
 AlignTrailingComments: true
+IncludeCategories:
+  - Regex: '<[[:alnum:].h]+>'
+    Priority: 1
+  - Regex: '<[[:alnum:]]+>'
+    Priority: 2
+  - Regex: '.*'
+    Priority: 3
+  - Regex: '^"(kernel)/'
+    Priority: 4

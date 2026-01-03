@@ -1,0 +1,29 @@
+#ifndef LIBCPP_CSTDLIB_H
+#define LIBCPP_CSTDLIB_H
+
+/* Minimal <cstdlib> for freestanding builds.
+   Includes <stdlib.h> and brings a few common types and functions
+   into namespace std for convenience. */
+
+#include <stdlib.h>
+
+#ifdef __cplusplus
+namespace std {
+using ::size_t;
+using ::div_t;
+using ::ldiv_t;
+using ::abort;
+using ::exit;
+using ::getenv;
+using ::malloc;
+using ::free;
+using ::realloc;
+using ::calloc;
+using ::atexit;
+using ::atoi;
+using ::atol;
+using ::atoll;
+}
+#endif /* __cplusplus */
+
+#endif /* LIBCPP_CSTDLIB_H */

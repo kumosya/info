@@ -1,5 +1,5 @@
-#ifndef _PAGE_H_
-#define _PAGE_H_
+#ifndef INFO_KERNEL_PAGE_H_
+#define INFO_KERNEL_PAGE_H_
 
 // 页表条目标志位
 #define PTE_PRESENT (1 << 0)         // 页存在标志
@@ -40,6 +40,9 @@
 #define PDPT_ENTRY(addr) ((addr >> PDPT_OFFSET) & PT_ENTRY_MASK)
 #define PML4_ENTRY(addr) ((addr >> PML4_OFFSET) & PT_ENTRY_MASK)
 
+#define IDENTITY_BASE   0xfffff00000000000ULL
+
+
 /* for C++ code */
 
 #ifndef ASM_FILE
@@ -48,6 +51,8 @@
 #include <cstdint>
 
 #define PAGE_ALIGN(addr) ((((std::size_t)addr) + (PAGE_SIZE - 1)) & PAGE_MASK)
+
+extern char __boot_end[];
 
 extern char __kernel_start[];
 extern char __kernel_end[];
@@ -105,4 +110,4 @@ extern FrameMem pm;
 
 #endif
 
-#endif /* _PAGE_H_ */
+#endif /* INFO_KERNEL_PAGE_H_ */

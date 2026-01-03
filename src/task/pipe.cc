@@ -1,14 +1,11 @@
 
-#include <stddef.h>
-
 #include <cstdint>
 #include <cstring>
 
-#include "block.h"
-#include "cpu.h"
-#include "io.h"
-#include "mm.h"
-#include "page.h"
-#include "task.h"
-#include "tty.h"
-#include "vfs.h"
+#include "kernel/block.h"
+#include "kernel/cpu.h"
+#include "kernel/io.h"
+#include "kernel/mm.h"
+#include "kernel/page.h"
+#include "kernel/task.h"
+#include "kernel/tty.h"

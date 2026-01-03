@@ -1,5 +1,5 @@
-#ifndef KASSERT_H
-#define KASSERT_H
+#ifndef INFO_KERNEL_KASSERT_H_
+#define INFO_KERNEL_KASSERT_H_
 
 void kassert_fail(const char *expr, const char *file, int line,
                   const char *msg);
@@ -14,4 +14,4 @@ void kassert_fail(const char *expr, const char *file, int line,
         if (!(expr)) kassert_fail(#expr, __FILE__, __LINE__, (msg)); \
     } while (false)
 
-#endif  // KASSERT_H
+#endif  // INFO_KERNEL_KASSERT_H_

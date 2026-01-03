@@ -1,6 +1,6 @@
 #include <cstdint>
 
-#include "io.h"
+#include "kernel/io.h"
 
 namespace pic {
 void Remap(int offset1, int offset2) {
@@ -37,8 +37,8 @@ void Mask(std::uint8_t master_mask, std::uint8_t slave_mask) {
 void Init() {
     // Remap PIC to avoid conflicts with CPU exceptions (0x20..)
     Remap(0x20, 0x28);
-    // Mask all IRQs by default
-    Mask(0xFF, 0xFF);
+    // Mask IRQs
+    Mask(0xfd, 0xff);
 
     /* Enable hardware interrupts now that PIC and IDT are set up */
     asm volatile("sti");

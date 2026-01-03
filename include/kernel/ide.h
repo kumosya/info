@@ -1,7 +1,7 @@
-#ifndef _IDE_H_
-#define _IDE_H_
+#ifndef INFO_KERNEL_IDE_H_
+#define INFO_KERNEL_IDE_H_
 
-#include "block.h"
+#include "kernel/block.h"
 
 namespace ide {
 
@@ -37,7 +37,7 @@ namespace ide {
 #define IDE_STATUS_DRQ 0x08
 
 struct Device {
-    block::Device block_dev;
+    Block block_dev;
     std::uint16_t io_base;
     std::uint8_t irq;
     std::uint8_t drive;
@@ -46,15 +46,14 @@ struct Device {
 };
 
 // IDE device operations
-int Read(block::Device *dev, std::uint64_t sector, std::uint32_t count,
-         void *buf);
-int Write(block::Device *dev, std::uint64_t sector, std::uint32_t count,
+int Read(Block *dev, std::uint64_t sector, std::uint32_t count, void *buf);
+int Write(Block *dev, std::uint64_t sector, std::uint32_t count,
           const void *buf);
-int Ioctl(block::Device *dev, std::uint32_t cmd, void *arg);
+int Ioctl(Block *dev, std::uint32_t cmd, void *arg);
 
 // IDE driver initialization
 void Init();
 
 }  // namespace ide
 
-#endif  // _IDE_H_
+#endif  // INFO_KERNEL_IDE_H_

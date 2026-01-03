@@ -1,5 +1,5 @@
-#include "kassert.h"
-#include "tty.h"
+#include "kernel/kassert.h"
+#include "kernel/tty.h"
 
 void kassert_fail(const char *expr, const char *file, int line,
                   const char *msg) {

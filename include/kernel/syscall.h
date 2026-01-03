@@ -1,5 +1,5 @@
-#ifndef _SYSCALL_H_
-#define _SYSCALL_H_
+#ifndef INFO_KERNEL_SYSCALL_H_
+#define INFO_KERNEL_SYSCALL_H_
 
 #ifdef __cplusplus
 extern "C" {
@@ -16,4 +16,4 @@ extern "C" {
 }  // extern "C"
 #endif
 
-#endif /* _SYSCALL_H_ */
+#endif /* INFO_KERNEL_SYSCALL_H_ */

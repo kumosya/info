@@ -1,17 +1,15 @@
-#include <stddef.h>
-
 #include <cstdint>
 #include <cstring>
 
-#include "block.h"
-#include "cpu.h"
-#include "io.h"
-#include "mm.h"
-#include "multiboot2.h"
-#include "page.h"
-#include "task.h"
-#include "tty.h"
-#include "vfs.h"
+#include "kernel/block.h"
+#include "kernel/cpu.h"
+#include "kernel/io.h"
+#include "kernel/mm.h"
+#include "kernel/multiboot2.h"
+#include "kernel/page.h"
+#include "kernel/task.h"
+#include "kernel/tty.h"
+#include "kernel/vfs.h"
 
 namespace task {
 
@@ -108,7 +106,7 @@ static std::uint64_t ParseArgs(const char *arg, char ***argv) {
     return argc;
 }
 
-std::int64_t Exec(task::pt_regs *regs) {
+std::int64_t Exec(task::Registers *regs) {
     /* TODO */
 
     return 0;
@@ -116,7 +114,7 @@ std::int64_t Exec(task::pt_regs *regs) {
 
 // 内核线程创建函数，使用pt_regs来设置线程上下文
 pid_t KernelThread(std::int64_t *fn, const char *arg, std::uint64_t flags) {
-    task::pt_regs regs;
+    task::Registers regs;
     std::memset(&regs, 0, sizeof(regs));
 
     std::uint64_t argc = 0;
@@ -151,13 +149,13 @@ void Init() {
     pid_counter = 0;
     wrmsr(0x174, KERNEL_CS);
 
-    // 分配新的进程控制块
-    Pcb *idle = reinterpret_cast<Pcb *>(mm::page::Alloc(sizeof(Pcb)));
+    // 分配新的进程控制块，需要包含栈空间
+    Pcb *idle = reinterpret_cast<Pcb *>(mm::page::Alloc(sizeof(Pcb) + STACK_SIZE));
     if (!idle) {
         tty::Panic("Failed to allocate memory for idle process.\n");
     }
 
-    std::memset(idle, 0, sizeof(Pcb));
+    std::memset(idle, 0, sizeof(Pcb) + STACK_SIZE);
 
     // 初始化第一个进程
     idle->parent = nullptr;
@@ -176,10 +174,12 @@ void Init() {
     idle->thread = thread;
 
     // 设置内核栈指针
-    thread->rsp0 = reinterpret_cast<std::uint64_t>(idle) + STACK_SIZE;
+    thread->rsp0 = reinterpret_cast<std::uint64_t>(idle) + sizeof(Pcb) + STACK_SIZE;
     // 设置idle线程的指令指针和栈指针
     thread->rip = reinterpret_cast<std::uint64_t>(kernel_thread_entry);
     thread->rsp = thread->rsp0;
+
+    idle->mm.pml4 = mm::page::kernel_pml4;
 
     idle->stat = task::Ready;
 

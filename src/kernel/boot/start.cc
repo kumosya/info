@@ -1,10 +1,11 @@
-#include "start.h"
+
+#include "kernel/start.h"
 
 #include <cstdint>
 
-#include "cpu.h"
-#include "multiboot2.h"
-#include "tty.h"
+#include "kernel/cpu.h"
+#include "kernel/multiboot2.h"
+#include "kernel/tty.h"
 
 static idt::Entry idt_ety[256];
 
@@ -45,7 +46,7 @@ extern "C" void boot_page_fault_handler(std::uint64_t fault_addr) {
    pointed by ADDR. */
 extern "C" void CppStart(std::uint32_t magic, std::uint8_t *addr) {
 #if ENABLE_TEXT_OUTPUT == true
-    boot::videoInit();
+    boot::VideoInit();
 #endif
 
     //  Am I booted by a Multiboot-compliant boot loader?

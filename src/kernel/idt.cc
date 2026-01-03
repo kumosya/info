@@ -1,18 +1,25 @@
 #include <cstdint>
 #include <cstring>
 
-#include "cpu.h"
-#include "mm.h"
-#include "tty.h"
+#include "kernel/cpu.h"
+#include "kernel/mm.h"
+#include "kernel/page.h"
+#include "kernel/tty.h"
+#include "kernel/task.h"
 
 extern "C" void de_fault_handler(faultStack_nocode *stack) {
-    tty::printf("#DE Divide Fault!\n");
-    tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-    tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-    tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
+    if (stack->cs == KERNEL_CS) {
+        tty::printf("#DE Divide Fault!\n");
+        tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+        tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+        tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
 
-    while (true) {
-        asm volatile("hlt");
+        while (true) {
+            asm volatile("hlt");
+        }
+    } else {
+        tty::printf("Math Error.\n");
+        task::thread::Exit(0xc0000094);
     }
 }
 
@@ -140,14 +147,19 @@ extern "C" void ss_fault_handler(faultStack_code *stack) {
 }
 
 extern "C" void gp_fault_handler(faultStack_code *stack) {
-    tty::printf("#GP General Protection Fault! Error code = 0x%lx\n",
-                stack->error_code);
-    tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-    tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-    tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
+    if (stack->cs == KERNEL_CS) {
+        tty::printf("#GP General Protection Fault! Error code = 0x%lx\n",
+                    stack->error_code);
+        tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+        tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+        tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
 
-    while (true) {
-        asm volatile("hlt");
+        while (true) {
+            asm volatile("hlt");
+        }
+    } else {
+        tty::printf("Segmentation Fault.\n");
+        task::thread::Exit(0xc0000096);
     }
 }
 
@@ -155,13 +167,24 @@ extern "C" void page_fault_handler(faultStack_code *stack) {
     std::uint64_t cr3, cr2;
     asm volatile("mov %%cr2, %0" : "=r"(cr2));
     asm volatile("mov %%cr3, %0" : "=r"(cr3));
-    tty::printf("Page Fault. Error code = 0x%lx\n", stack->error_code);
-    tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-    tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-    tty::printf(" RFLAGS=0x%lx CR2=0x%lx\n", stack->rflags, cr2);
-    tty::printf(" CR3=0x%lx\n", cr3);
-    while (true) {
-        asm volatile("hlt");
+    if (stack->cs == KERNEL_CS) {
+        tty::printf("Page Fault. Error code = 0x%lx\n", stack->error_code);
+        tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+        tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+        tty::printf(" RFLAGS=0x%lx CR2=0x%lx\n", stack->rflags, cr2);
+        tty::printf(" CR3=0x%lx\n", cr3);
+        while (true) {
+            asm volatile("hlt");
+        }
+    } else {
+        tty::printf("Segmentation Fault.\n");
+        tty::printf(" Error code = 0x%lx\n", stack->error_code);
+        tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+        tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+        tty::printf(" RFLAGS=0x%lx CR2=0x%lx\n", stack->rflags, cr2);
+        tty::printf(" CR3=0x%lx\n", cr3);
+
+        task::thread::Exit(0xc0000005);
     }
 }
 

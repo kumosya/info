@@ -61,6 +61,7 @@ SECTIONS
     . = ALIGN(4096);
 
     __end = .;
+    __boot_end = .;
 
     /* 64位C内核 */
     . = KERM_VADDR;

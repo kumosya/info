@@ -1,17 +1,16 @@
-#include "block.h"
 
-#include <stddef.h>
 
 #include <cstring>
 
-#include "ide.h"
-#include "task.h"
-#include "tty.h"
-#include "vfs.h"
+#include "kernel/ide.h"
+#include "kernel/task.h"
+#include "kernel/tty.h"
+#include "kernel/vfs.h"
+#include "kernel/block.h"
 
 namespace block {
 
-static Device *device_list = nullptr;
+static Block *device_list = nullptr;
 
 int Proc(int argc, char *argv[]) {
     device_list = nullptr;
@@ -24,27 +23,10 @@ int Proc(int argc, char *argv[]) {
     return 1;
 }
 
-int RegisterDevice(Device *dev) {
-    if (!dev) {
-        return -1;
-    }
-
-    // Set default sector size if not specified
-    if (dev->sector_size == 0) {
-        dev->sector_size = 512;
-    }
-
-    // Add device to list
-    dev->next   = device_list;
-    device_list = dev;
-
-    return 0;
-}
-
-Device *FindDevice(const char *name) {
-    Device *dev = device_list;
+Block *FindDevice(const char *name) {
+    Block *dev = device_list;
     while (dev) {
-        if (strcmp(dev->name, name) == 0) {
+        if (strcmp(dev->GetName(), name) == 0) {
             return dev;
         }
         dev = dev->next;
@@ -52,47 +34,59 @@ Device *FindDevice(const char *name) {
     return nullptr;
 }
 
+}  // namespace block
+
+int Block::RegisterDevice() {
+    // Set default sector size if not specified
+    if (sector_size == 0) {
+        sector_size = 512;
+    }
+
+    // Add device to list
+    next               = block::device_list;
+    block::device_list = this;
+
+    return 0;
+}
+
 // Read sectors from block device
-int Read(Device *dev, std::uint64_t sector, std::uint32_t count, void *buf) {
-    if (!dev || !buf) {
+int Block::Read(std::uint64_t sector, std::uint32_t count, void *buf) {
+    if (!buf) {
         return -1;
     }
 
-    switch (dev->type) {
-        case DEVICE_TYPE_IDE:
-            return ide::Read(dev, sector, count, buf);
+    switch (type) {
+        case block::DEVICE_TYPE_IDE:
+            return ide::Read(this, sector, count, buf);
         default:
             return -2;  // Unsupported device type
     }
 }
 
 // Write sectors to block device
-int Write(Device *dev, std::uint64_t sector, std::uint32_t count,
-          const void *buf) {
-    if (!dev || !buf) {
+int Block::Write(std::uint64_t sector, std::uint32_t count, const void *buf) {
+    if (!buf) {
         return -1;
     }
 
-    switch (dev->type) {
-        case DEVICE_TYPE_IDE:
-            return ide::Write(dev, sector, count, buf);
+    switch (type) {
+        case block::DEVICE_TYPE_IDE:
+            return ide::Write(this, sector, count, buf);
         default:
             return -2;  // Unsupported device type
     }
 }
 
 // Control device with ioctl
-int Ioctl(Device *dev, std::uint32_t cmd, void *arg) {
-    if (!dev) {
+int Block::Ioctl(std::uint32_t cmd, void *arg) {
+    if (!arg) {
         return -1;
     }
 
-    switch (dev->type) {
-        case DEVICE_TYPE_IDE:
-            return ide::Ioctl(dev, cmd, arg);
+    switch (type) {
+        case block::DEVICE_TYPE_IDE:
+            return ide::Ioctl(this, cmd, arg);
         default:
             return -2;  // Unsupported device type
     }
 }
-
-}  // namespace block
