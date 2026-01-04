@@ -26,7 +26,7 @@ void KernelMain(std::uint8_t *addr) {
 
     keyboard::Init();
     serial::Init();
-    timer::Init(50);
+    timer::Init(100);
 
     multiboot_tag_string *str = nullptr;
     multiboot_tag *tag        = reinterpret_cast<multiboot_tag *>((std::uint8_t *)mm::Phy2Vir((std::uint64_t)addr) + 8);

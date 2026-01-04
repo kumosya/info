@@ -72,8 +72,7 @@ void Map(PTE *pml4, std::uint64_t virt_addr, std::uint64_t phys_addr,
     int pdpt_idx = PDPT_ENTRY(virt_addr);
     int pd_idx   = PD_ENTRY(virt_addr);
     int pt_idx   = PT_ENTRY(virt_addr);
-
-    // PML4
+    // PML4 -> PDPT
     if (!(pml4[pml4_idx].value & PTE_PRESENT)) {
         PTE *pdpt = reinterpret_cast<PTE *>(AllocPages(1));
         memset(pdpt, 0, PAGE_SIZE);
@@ -85,7 +84,7 @@ void Map(PTE *pml4, std::uint64_t virt_addr, std::uint64_t phys_addr,
         pdpt = (PTE *)Phy2Vir((std::uint64_t)pdpt);
     }
 
-    // PDPT
+    // PDPT -> PD
     if (!(pdpt[pdpt_idx].value & PTE_PRESENT)) {
         PTE *pd = reinterpret_cast<PTE *>(AllocPages(1));
         memset(pd, 0, PAGE_SIZE);
@@ -97,7 +96,7 @@ void Map(PTE *pml4, std::uint64_t virt_addr, std::uint64_t phys_addr,
         pd = (PTE *)Phy2Vir((std::uint64_t)pd);
     }
 
-    // PD
+    // PD -> PT
     if (!(pd[pd_idx].value & PTE_PRESENT)) {
         PTE *pt = reinterpret_cast<PTE *>(AllocPages(1));
         memset(pt, 0, PAGE_SIZE);
@@ -111,7 +110,6 @@ void Map(PTE *pml4, std::uint64_t virt_addr, std::uint64_t phys_addr,
 
     // PT
     pt[pt_idx].value = (phys_addr & PAGE_MASK) | flags;
-    //tty::printf("0x%x 0x%x 0x%lx\n", pt, &pt[pt_idx], pt[pt_idx].value);
 }
 
 void *Alloc(std::size_t size) {

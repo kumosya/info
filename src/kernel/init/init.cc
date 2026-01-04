@@ -11,6 +11,7 @@
 #include "kernel/task.h"
 #include "kernel/tty.h"
 #include "kernel/vfs.h"
+#include "kernel/syscall.h"
 
 extern char *cmdline;
 
@@ -19,9 +20,16 @@ static void *user_ptr;
 void user() {
     int i = 10, ret;
     i++;
-    //asm volatile("cli");
-    while (true);
-    std::exit(i);
+    asm volatile("cli");
+    // schedule有问题，从用户态切换到内核态进程没事，从内核态进程切换到用户态进程就寄了
+    //while (true);
+
+    __asm__	__volatile__	(	"leaq	__exit_ret(%%rip),	%%rdx	\n"
+					"movq	%%rsp,	%%rcx		\n"
+					"sysenter			\n"
+					"__exit_ret:	\n"
+					:"=a"(ret):"a"(SYS_EXIT_NO), "D"(0):"memory");
+    
 }
 
 extern "C" std::uint64_t do_execve(task::Registers *regs) {
@@ -30,11 +38,9 @@ extern "C" std::uint64_t do_execve(task::Registers *regs) {
     mm::page::Map(task::current_proc->mm.pml4, mm::Vir2Phy((std::uint64_t)start_addr) + 0x1000, mm::Vir2Phy((std::uint64_t)start_addr) + 0x1000, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
 
     regs->rdx = reinterpret_cast<std::uint64_t>(mm::Vir2Phy((std::uint64_t)user_ptr));    // vaddr of user
-    regs->rcx = reinterpret_cast<std::uint64_t>(mm::Vir2Phy((std::uint64_t)start_addr));    // stack addr
+    regs->rcx = reinterpret_cast<std::uint64_t>(mm::Vir2Phy((std::uint64_t)start_addr)) + 0x2000;    // stack addr
     regs->rax = 1;
     regs->ds = regs->es = 0;
-    
-    mm::page::AnalyzePageTable(task::current_proc->mm.pml4, mm::Vir2Phy((std::uint64_t)user_ptr));
 
     __asm__ __volatile__("movq	%0,	%%cr3	\n\t" ::"r"(mm::Vir2Phy((std::uint64_t)task::current_proc->mm.pml4))
     : "memory");
@@ -81,9 +87,9 @@ int SysInit(int argc, char *argv[]) {
     user_ptr = mm::page::Alloc(0x2000);
     memcpy(user_ptr, (void *)user, 0x2000);
     
-    mm::page::Map(user_pml4, 0x10000, mm::Vir2Phy((std::uint64_t)user_ptr), PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+    mm::page::Map(user_pml4, mm::Vir2Phy((std::uint64_t)user_ptr), mm::Vir2Phy((std::uint64_t)user_ptr), PTE_PRESENT | PTE_WRITABLE | PTE_USER);
     mm::page::Map(user_pml4, 0x11000, mm::Vir2Phy((std::uint64_t)user_ptr) + 0x1000, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
-    tty::printf("0x10000(0x%x)->0x%x\n", user_ptr, mm::Vir2Phy((std::uint64_t)user_ptr));
+    tty::printf("0x%x(0x%x)->0x%x\n", mm::Vir2Phy((std::uint64_t)user_ptr), user_ptr, mm::Vir2Phy((std::uint64_t)user_ptr));
     task::current_proc->mm.pml4 = user_pml4;
 
     task::current_proc->flags ^= THREAD_KERNEL;
