@@ -14,10 +14,7 @@
 namespace task {
 
 Pcb *current_proc = nullptr;
-// 任务队列头指针
-Pcb *task_queue_head = nullptr;
-// 任务队列尾指针
-Pcb *task_queue_tail = nullptr;
+Pcb *idle = nullptr;
 
 namespace thread {
 
@@ -101,7 +98,7 @@ static std::uint64_t ParseArgs(const char *arg, char ***argv) {
     // 更新实际argc
     argc = arg_index;
 
-    // tty::printf("ParseArgs: argc=%d, argv[0]=%s\n", argc, (*argv)[0]);
+    // tty::printk("ParseArgs: argc=%d, argv[0]=%s\n", argc, (*argv)[0]);
 
     return argc;
 }
@@ -113,7 +110,7 @@ std::int64_t Exec(task::Registers *regs) {
 }
 
 // 内核线程创建函数，使用pt_regs来设置线程上下文
-pid_t KernelThread(std::int64_t *fn, const char *arg, std::uint64_t flags) {
+pid_t KernelThread(std::int64_t *fn, const char *arg, std::int32_t nice, std::uint64_t flags) {
     task::Registers regs;
     std::memset(&regs, 0, sizeof(regs));
 
@@ -140,7 +137,7 @@ pid_t KernelThread(std::int64_t *fn, const char *arg, std::uint64_t flags) {
     // 设置线程入口点为kernel_thread_entry包装器
     regs.rip = reinterpret_cast<std::uint64_t>(kernel_thread_entry);
 
-    pid_t pid = Fork(&regs, flags | THREAD_KERNEL, 0, 0);
+    pid_t pid = Fork(&regs, flags | THREAD_KERNEL, 0, 0, nice);
 
     return pid;
 }
@@ -149,8 +146,10 @@ void Init() {
     pid_counter = 0;
     wrmsr(0x174, KERNEL_CS);
 
+    task::SchedInit();
+
     // 分配新的进程控制块，需要包含栈空间
-    Pcb *idle = reinterpret_cast<Pcb *>(mm::page::Alloc(sizeof(Pcb) + STACK_SIZE));
+    idle = reinterpret_cast<Pcb *>(mm::page::Alloc(sizeof(Pcb) + STACK_SIZE));
     if (!idle) {
         tty::Panic("Failed to allocate memory for idle process.\n");
     }
@@ -181,24 +180,41 @@ void Init() {
 
     idle->mm.pml4 = mm::page::kernel_pml4;
 
-    idle->stat = task::Ready;
+    idle->weight = cfs::PRIO_TO_WEIGHT[20 + IDLE_NICE];  // 默认 nice=0，权重=1024
+    idle->vruntime = 0;
+    idle->sum_exec_runtime = 0;
+    idle->min_vruntime = 0;
 
-    // 将新创建的进程添加到任务队列
-    queue::Add(idle);
+    idle->stat = task::Ready;
+    idle->flags = THREAD_KERNEL;
+    idle->weight = cfs::PRIO_TO_WEIGHT[20];
+    idle->vruntime = 0;
+    idle->sum_exec_runtime = 0;
+    idle->min_vruntime = 0;
+
+    // 将 idle 进程添加到 CFS 调度队列
+    cfs::Enqueue(idle);
 
     current_proc = idle;
-    // tty::printf("Set first process (PID: %d) as current_proc\n", idle->pid);
-
-    // 创建init线程
-    KernelThread(reinterpret_cast<std::int64_t *>(SysInit), "init", 0);
+    // tty::printk("Set first process (PID: %d) as current_proc\n", idle->pid);
 
     wrmsr(0x175, current_proc->thread->rsp0);
     // 初始化系统调用
     wrmsr(0x176, reinterpret_cast<std::uint64_t>(enter_syscall));
 
-    // 调用schedule函数进行第一次任务调度
-    schedule();
-}
+    // 创建init线程
+    KernelThread(reinterpret_cast<std::int64_t *>(SysInit), "init", 0, 0);
 
+    KernelThread(reinterpret_cast<std::int64_t *>(block::Service), "block", -2, 0);
+    KernelThread(reinterpret_cast<std::int64_t *>(vfs::Service), "vfs", -10, 0);
+    KernelThread(reinterpret_cast<std::int64_t *>(tty::Service), "tty", 0, 0);
+    KernelThread(reinterpret_cast<std::int64_t *>(mm::Service), "mm", 0, 0);
+    KernelThread(reinterpret_cast<std::int64_t *>(Service), "task", 0, 0);
+
+    asm volatile("sti");
+    
+    // 调用schedule函数进行第一次任务调度
+    Schedule();
+}
 }  // namespace thread
 }  // namespace task

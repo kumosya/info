@@ -14,6 +14,19 @@
 #define SELECTOR_TI (2)
 #define SELECTOR_INDEX (3)
 
+#define GDT_TYPE_ACCESSED (1 << 0)
+#define GDT_TYPE_RW (1 << 1)
+#define GDT_TYPE_CONFORMING (1 << 2)
+#define GDT_TYPE_EXPAND_DOWN (1 << 2)
+
+#define GDT_TYPE_CODE (1 << 3 | 1 << 4)
+#define GDT_TYPE_DATA (1 << 4)
+
+#define GDT_DPL_RING0 (0 << 5)
+#define GDT_DPL_RING3 (3 << 5)
+
+#define GDT_PRESENT (1 << 7)
+
 #ifndef ASM_FILE
 
 #include <cstdint>
@@ -76,7 +89,7 @@ struct TssEntry {
     std::uint16_t iomap_base;
 } __attribute__((packed, aligned(16)));
 
-extern TssEntry tss;
+extern TssEntry *tss;
 void SetEntry(int index, std::uint64_t base, std::uint64_t limit,
               std::uint8_t access, std::uint8_t gran);
 void SetTss(int index, std::uint64_t tss_base, std::uint8_t access);

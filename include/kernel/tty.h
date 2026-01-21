@@ -24,9 +24,17 @@
 #define FRAMEBUFFER_BASE 0xffffa00000000000ULL  // 映射后的显存起始地址
 #define FRAMEBUFFER_LEN 0x1000000000ULL         // 支持的最大显存 (64GiB)
 
+#define DEFAULT_COLOR 0x8f8f8f
+#define DEFAULT_BG_COLOR 0x121212
+
+#define NUM_TTYS 6
+
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
+
+#include "kernel/font.h"
+#include "kernel/mm.h"
 
 #ifndef OUTPUT_TO_SERIAL
 #define OUTPUT_TO_SERIAL true
@@ -38,20 +46,72 @@
 
 namespace tty {
 
-int Proc(int argc, char *argv[]);
+int Service(int argc, char *argv[]);
+
+extern FontData *fontdata;
 
 namespace video {
-static std::uint32_t size;
+extern std::uint32_t size;
 
-static std::uint32_t type;
+extern std::uint32_t type;
 
-static std::uint32_t height;
-static std::uint32_t width;
+extern std::uint32_t height;
+extern std::uint32_t width;
 
 void Init(std::uint8_t *addr);
 void Putchar(char c, std::uint8_t color);
 }  // namespace video
-int printf(const char *format, ...);
+
+class Console {
+public:
+    void Init();
+    void SetFont(FontData *font);
+    void PutChar(int tty_num, char c, std::uint32_t color);
+    void Puts(int tty_num, const char *str, std::uint32_t color);
+    void SwitchTTY(int tty_num);
+    void Redraw();
+
+    bool IsAltPressed() const { return alt_pressed_; }
+    void SetAltPressed(bool pressed) { alt_pressed_ = pressed; }
+
+private:
+    void TTYSwitchHandler(int tty_num) {
+        SwitchTTY(tty_num);
+    }
+    class TTYState {
+        public:
+        int xpos = 0;
+        int ypos = 0;
+        std::uint32_t *screen_buffer = nullptr;
+        bool need_redraw = false;
+
+        TTYState() {
+            screen_buffer = reinterpret_cast<std::uint32_t *>(mm::page::Alloc(video::width * video::height * video::size));
+        }
+
+        ~TTYState() {
+            if (screen_buffer) {
+                mm::page::Free(screen_buffer);
+                screen_buffer = nullptr;
+            }
+        }
+
+        TTYState(const TTYState &) = delete;
+        TTYState &operator=(const TTYState &) = delete;
+
+        TTYState(TTYState &&) = delete;
+        TTYState &operator=(TTYState &&) = delete;
+    };
+
+    //Console() = default;
+
+    TTYState ttys_[NUM_TTYS];
+    int current_tty_ = 1;
+    bool alt_pressed_ = false;
+    FontData *fontdata_ = nullptr;
+};
+
+int printk(const char *format, ...);
 void Panic(const char *format, ...);
 }  // namespace tty
 #endif /* INFO_KERNEL_TTY_H_ */

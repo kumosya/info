@@ -11,8 +11,8 @@ namespace task::thread {
 
 static pid_t NewPid() { return pid_counter++; }
 
-pid_t Fork(task::Registers *regs, std::uint64_t flags, std::uint64_t stack_start,
-           std::uint64_t stack_size) {
+pid_t Fork(Registers *regs, std::uint64_t flags, std::uint64_t stack_base,
+           std::uint64_t stack_size, int nice) {
     // 分配新的进程控制块，需要包含栈空间
     // 栈在Pcb之后，分配 Pcb + STACK_SIZE 大小的内存
     Pcb *child = reinterpret_cast<Pcb *>(mm::page::Alloc(sizeof(Pcb) + STACK_SIZE));
@@ -34,6 +34,15 @@ pid_t Fork(task::Registers *regs, std::uint64_t flags, std::uint64_t stack_start
     child->pid   = NewPid();
     child->stat  = task::Blocked;
     child->flags = flags;
+
+    // 根据 nice 值设置 CFS 权重
+    std::int32_t n = nice;
+    if (n < -20) n = -20;
+    if (n > 19) n = 19;
+    child->weight = cfs::PRIO_TO_WEIGHT[n + 20];
+    child->vruntime = 0;
+    child->sum_exec_runtime = 0;
+    child->min_vruntime = 0;
 
     // 创建线程控制块
     Tcb *thread = reinterpret_cast<Tcb *>(mm::page::Alloc(sizeof(Tcb)));
@@ -68,10 +77,9 @@ pid_t Fork(task::Registers *regs, std::uint64_t flags, std::uint64_t stack_start
     child->mm.pml4 = mm::page::kernel_pml4;
     child->stat = task::Ready;
 
-    // 将新创建的进程添加到任务队列
-    queue::Add(child);
+    // 将新创建的进程添加到 CFS 调度队列
+    cfs::Enqueue(child);
 
     return child->pid;
 }
-
 }  // namespace task::thread

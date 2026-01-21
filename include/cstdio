@@ -23,4 +23,32 @@ using ::stderr;
 }
 #endif /* __cplusplus */
 
+namespace std {
+using ::fclose;
+using ::fflush;
+using ::fgetc;
+using ::fgets;
+using ::fopen;
+using ::fprintf;
+using ::fputc;
+using ::fputs;
+using ::fread;
+using ::fscanf;
+using ::fseek;
+using ::ftell;
+using ::fwrite;
+using ::scanf;
+using ::printf;
+using ::vsprintf;
+using ::sprintf;
+using ::putc;
+using ::puts;
+using ::fread;
+using ::rewind;
+using ::scanf;
+using ::fseek;
+using ::ftell;
+using ::fwrite;
+}
+
 #endif /* LIBCPP_CSTDIO_H */

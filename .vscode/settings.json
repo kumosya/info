@@ -39,6 +39,22 @@
         "gate.h": "c",
         "queue": "cpp",
         "deque": "cpp",
-        "task.h": "c"
+        "task.h": "c",
+        "iostream": "cpp",
+        "ios": "cpp",
+        "xiosbase": "cpp",
+        "xlocale": "cpp",
+        "clocale": "cpp",
+        "cmath": "cpp",
+        "istream": "cpp",
+        "iterator": "cpp",
+        "ostream": "cpp",
+        "stdexcept": "cpp",
+        "streambuf": "cpp",
+        "system_error": "cpp",
+        "xfacet": "cpp",
+        "xlocinfo": "cpp",
+        "xlocnum": "cpp",
+        "list": "cpp"
     }
 }

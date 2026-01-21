@@ -18,16 +18,17 @@ void KernelMain(std::uint8_t *addr) {
     asm __volatile__("mov %%cr3, %0" : "=r"(mm::page::kernel_pml4));
     mm::page::kernel_pml4 = (PTE *)mm::Phy2Vir((std::uint64_t)mm::page::kernel_pml4);
     mm::page::frame = pm;
+    
     tty::video::Init((std::uint8_t *)mm::Phy2Vir((std::uint64_t)addr));
-
+    
     pic::Init();
     gdt::Init();
     idt::Init();
 
-    keyboard::Init();
     serial::Init();
-    timer::Init(100);
+    timer::Init(TIMER_FREQUENCY);
 
+    asm volatile("cli");
     multiboot_tag_string *str = nullptr;
     multiboot_tag *tag        = reinterpret_cast<multiboot_tag *>((std::uint8_t *)mm::Phy2Vir((std::uint64_t)addr) + 8);
     while (tag->type != MULTIBOOT_TAG_TYPE_END) {
@@ -42,7 +43,12 @@ void KernelMain(std::uint8_t *addr) {
     strcpy(cmdline, str->string);
 
     task::thread::Init();
-    task::thread::Exit(0);
+
+    asm volatile("sti");
+    while (true) {
+        //asm volatile("hlt");
+    }
+    //task::thread::Exit(0);
 }
 
 void* __dso_handle = nullptr;
@@ -50,3 +56,5 @@ void* __dso_handle = nullptr;
 extern "C" int __cxa_atexit(void (*)(void*), void*, void*) {
     return 0;
 }
+
+

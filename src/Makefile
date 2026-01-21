@@ -3,6 +3,7 @@
 CPP=g++
 CPPFLAGS=-c -m64 -nostdlib -nostdinc -fno-stack-protector -mcmodel=large \
 			-ffreestanding -fno-exceptions \
+			-fno-rtti \
 			-std=c++11 -fno-pie \
             -I ../include/
 LD=ld

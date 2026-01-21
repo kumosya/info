@@ -5,6 +5,8 @@
 
 #include "kernel/cpu.h"
 
+#define TIMER_FREQUENCY 100
+
 /* COM1 port base */
 #define COM1_PORT 0x3F8
 

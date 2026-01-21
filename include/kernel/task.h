@@ -16,7 +16,11 @@
 
 #define THREAD_KERNEL (1 << 3)
 
+#define IDLE_NICE 19
+
 namespace task {
+
+struct Pcb;
 
 using pid_t = std::int64_t;
 enum State {
@@ -51,6 +55,88 @@ struct Tcb {
     std::uint64_t cr2, trap_nr, error_code;
 };
 
+namespace thread {
+
+extern pid_t pid_counter;
+
+std::int64_t Exec(Registers *regs);
+std::int64_t Exit(std::int64_t code);
+std::int64_t Kill(Pcb *proc, std::int64_t code);
+pid_t Fork(Registers *regs, std::uint64_t flags, std::uint64_t stack_base,
+           std::uint64_t stack_size, int nice = 0);
+pid_t KernelThread(std::int64_t *func, const char *arg, std::int32_t nice, std::uint64_t flags);
+void Init();
+
+}  // namespace thread
+
+class SpinLock {
+public:
+    SpinLock();
+    ~SpinLock();
+
+    void lock();
+    void unlock();
+    bool try_lock();
+
+private:
+    std::uint32_t state;
+};
+
+class Sem {
+public:
+    Sem(std::int32_t value);
+    ~Sem();
+
+    void wait();
+    void signal();
+    std::int32_t get_value() const;
+
+private:
+    std::int32_t value;
+    Pcb *wait_queue;
+    SpinLock lock;
+};
+
+namespace ipc {
+
+struct Message {
+    Pcb *sender;
+    std::uint64_t dst_pid;
+    std::uint64_t type;
+    std::uint64_t size;
+
+    union {
+        char data[256];
+        std::uint64_t num[32];
+        struct {
+            char str[240];
+            std::uint64_t arg;
+        } s;
+    };
+};
+
+struct Pipe {
+    char buffer[4096];
+    std::uint64_t read_pos;
+    std::uint64_t write_pos;
+    std::uint64_t buffer_size;
+    SpinLock lock;
+    Sem *readable;
+    Sem *writable;
+    Pcb *reader;
+    Pcb *writer;
+    bool is_closed;
+};
+
+std::int64_t Send(Message *msg);
+bool Receive(Message *msg);
+std::int64_t PipeCreate(int pipefd[2]);
+std::int64_t PipeRead(int fd, void *buf, std::uint64_t size);
+std::int64_t PipeWrite(int fd, const void *buf, std::uint64_t size);
+void PipeClose(int fd);
+
+}
+
 struct Pcb {
     pid_t pid;
     enum State stat;
@@ -60,53 +146,99 @@ struct Pcb {
     Tcb *thread;
     Mem mm;
 
-    std::int64_t time_slice;
+    std::uint64_t argv;
+
+    ipc::Message *msg;
+
+    std::uint64_t tty;
+
     std::uint64_t time_used;
     std::int64_t exit_code;
     std::uint64_t priority;
 
-    // 任务队列链表指针
-    Pcb *next;
-
-    std::uint64_t argv;
+    // CFS相关字段
+    std::uint64_t vruntime;
+    std::uint64_t sum_exec_runtime;
+    std::uint64_t weight;
+    std::uint64_t min_vruntime;
+    Pcb *rb_left;
+    Pcb *rb_right;
+    Pcb *rb_parent;
+    bool rb_is_red;
 };
 
 extern Pcb *current_proc;
-// 任务队列头指针
-extern Pcb *task_queue_head;
-// 任务队列尾指针
-extern Pcb *task_queue_tail;
+extern Pcb *idle;
+extern SpinLock run_queue_lock;
 
-void schedule();
+void Schedule();
+void SchedInit();
 
-namespace thread {
+int Service(int argc, char *argv[]);
 
-extern pid_t pid_counter;
+#define SYSCTL_SCHED_LATENCY 20000000ULL
+#define SYSCTL_SCHED_MIN_GRANULARITY 4000000ULL
+#define SYSCTL_SCHED_WAKEUP_GRANULARITY 2000000ULL
 
-std::int64_t Exec(Registers *regs);
-std::int64_t Exit(std::int64_t code);
-pid_t Fork(Registers *regs, std::uint64_t flags, std::uint64_t stack_base,
-           std::uint64_t stack_size);
-pid_t KernelThread(std::int64_t *func, const char *arg, std::uint64_t flags);
-void Init();
+namespace cfs {
 
-}  // namespace thread
+static const std::uint32_t PRIO_TO_WEIGHT[40] = {
+     88761,     71755,     56483,     46273,     36291,
+     29154,     23254,     18705,     14949,     11916,
+      9548,      7620,      6070,      4854,      3890,
+      3121,      2501,      2008,      1607,      1285,
+      1024,       820,       655,       526,       423,
+       335,       272,       215,       172,       137,
+       110,        87,        70,        56,        45,
+        36,        29,        23,        18,        15,
+};
 
+static const std::uint32_t PRIO_TO_INV_WEIGHT[40] = {
+     82982,     98370,    125693,    155708,    200929,
+    248041,    317246,    388135,    478052,    595891,
+    740742,    922450,   1181682,   1475697,   1861631,
+   2317688,   2893871,   3610940,   4522467,   5682162,
+   7084980,   8786910,  10938093,  13700946,  17116283,
+  21558656,  26815000,  33538007,  42070292,  52958222,
+  66630628,  84254597, 105380904, 131291284, 164756170,
+ 207791506, 261200000, 330926701, 419417000, 525518802,
+};
 
-namespace queue {
-void Add(Pcb *pcb);
-void Remove(Pcb *pcb);
-}
+struct CfsRq {
+    task::Pcb *rb_root;
+    task::Pcb *leftmost;
+    std::uint64_t min_vruntime;
+    std::uint32_t nr_running;
+    std::uint64_t curr_vruntime;
+};
 
-inline Pcb *GetCurrent(void) {
-    Pcb *current;
-    __asm__ __volatile__("andq %%rsp, %0 \n\t"
-                         : "=r"(current)
-                         : "0"(~0x7fffUL));
-    return current;
-}
+struct CfsSched {
+    CfsRq cfs_rq;
+    task::SpinLock lock;
+    task::Pcb *current;
+    std::uint64_t clock;
+    std::uint64_t clock_task;
+};
 
-inline void SwitchTable(Pcb *prev, Pcb *next) {
+extern CfsSched sched;
+
+void Enqueue(Pcb *pcb);
+void Dequeue(Pcb *pcb);
+Pcb *PickNextTask();
+void UpdateClock(std::uint64_t delta);
+void UpdateVruntimeCurrent(std::uint64_t delta);
+bool NeedsPreempt(Pcb *pcb);
+std::uint64_t TimeSlice();
+std::uint32_t NrRunning();
+Pcb *GetLeftmost();
+
+void RbPrintTree();
+void RbInsert(Pcb *node);
+void RbErase(Pcb *node);
+
+}  // namespace cfs
+
+inline void SwitchTable(Pcb *next) {
     __asm__ __volatile__("movq	%0,	%%cr3	\n\t" ::"r"(mm::Vir2Phy((std::uint64_t)next->mm.pml4))
                          : "memory");
     

@@ -78,24 +78,24 @@ void CpuId::PrintInfo() {
         Init();
     }
 
-    tty::printf("CPU Information:\n");
-    tty::printf("Vendor: %s\n", vendor_id);
-    tty::printf("Brand: %s\n", brand_string);
-    tty::printf("Family: %d, Model: %d, Stepping: %d\n", family, model,
+    tty::printk("CPU Information:\n");
+    tty::printk("Vendor: %s\n", vendor_id);
+    tty::printk("Brand: %s\n", brand_string);
+    tty::printk("Family: %d, Model: %d, Stepping: %d\n", family, model,
                 stepping);
 
-    tty::printf("Features: ");
+    tty::printk("Features: ");
     // 打印一些常见特性
-    if (HasFeature(3)) tty::printf("PSE ");       // Page Size Extension
-    if (HasFeature(6)) tty::printf("PAE ");       // Physical Address Extension
-    if (HasFeature(23)) tty::printf("MMX ");      // MMX
-    if (HasFeature(25)) tty::printf("SSE ");      // SSE
-    if (HasFeature(26)) tty::printf("SSE2 ");     // SSE2
-    if (HasExtFeature(0)) tty::printf("SSE3 ");   // SSE3
-    if (HasExtFeature(9)) tty::printf("SSSE3 ");  // SSSE3
-    if (HasExtFeature(19)) tty::printf("SSE4.1 ");  // SSE4.1
-    if (HasExtFeature(20)) tty::printf("SSE4.2 ");  // SSE4.2
-    tty::printf("\n");
+    if (HasFeature(3)) tty::printk("PSE ");       // Page Size Extension
+    if (HasFeature(6)) tty::printk("PAE ");       // Physical Address Extension
+    if (HasFeature(23)) tty::printk("MMX ");      // MMX
+    if (HasFeature(25)) tty::printk("SSE ");      // SSE
+    if (HasFeature(26)) tty::printk("SSE2 ");     // SSE2
+    if (HasExtFeature(0)) tty::printk("SSE3 ");   // SSE3
+    if (HasExtFeature(9)) tty::printk("SSSE3 ");  // SSSE3
+    if (HasExtFeature(19)) tty::printk("SSE4.1 ");  // SSE4.1
+    if (HasExtFeature(20)) tty::printk("SSE4.2 ");  // SSE4.2
+    tty::printk("\n");
 }
 
 // 获取厂商ID

@@ -9,25 +9,25 @@
 
 extern "C" void de_fault_handler(faultStack_nocode *stack) {
     if (stack->cs == KERNEL_CS) {
-        tty::printf("#DE Divide Fault!\n");
-        tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-        tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-        tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
+        tty::printk("#DE Divide Fault!\n");
+        tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+        tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+        tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
 
         while (true) {
             asm volatile("hlt");
         }
     } else {
-        tty::printf("Math Error.\n");
+        tty::printk("Math Error.\n");
         task::thread::Exit(0xc0000094);
     }
 }
 
 extern "C" void debug_trap_handler(faultStack_nocode *stack) {
-    tty::printf("#DB Debug.\n");
-    tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-    tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-    tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
+    tty::printk("#DB Debug.\n");
+    tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+    tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+    tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
 
     while (true) {
         asm volatile("hlt");
@@ -35,10 +35,10 @@ extern "C" void debug_trap_handler(faultStack_nocode *stack) {
 }
 
 extern "C" void nmi_handler(faultStack_nocode *stack) {
-    tty::printf("NMI Interrupt.\n");
-    tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-    tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-    tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
+    tty::printk("NMI Interrupt.\n");
+    tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+    tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+    tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
 
     while (true) {
         asm volatile("hlt");
@@ -46,10 +46,10 @@ extern "C" void nmi_handler(faultStack_nocode *stack) {
 }
 
 extern "C" void bp_trap_handler(faultStack_nocode *stack) {
-    tty::printf("Breakpoint.\n");
-    tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-    tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-    tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
+    tty::printk("Breakpoint.\n");
+    tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+    tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+    tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
 
     while (true) {
         asm volatile("hlt");
@@ -57,10 +57,10 @@ extern "C" void bp_trap_handler(faultStack_nocode *stack) {
 }
 
 extern "C" void of_trap_handler(faultStack_nocode *stack) {
-    tty::printf("Overflow.\n");
-    tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-    tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-    tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
+    tty::printk("Overflow.\n");
+    tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+    tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+    tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
 
     while (true) {
         asm volatile("hlt");
@@ -68,10 +68,10 @@ extern "C" void of_trap_handler(faultStack_nocode *stack) {
 }
 
 extern "C" void br_fault_handler(faultStack_nocode *stack) {
-    tty::printf("#BR BOUND Range Exceeded!\n");
-    tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-    tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-    tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
+    tty::printk("#BR BOUND Range Exceeded!\n");
+    tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+    tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+    tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
 
     while (true) {
         asm volatile("hlt");
@@ -79,10 +79,10 @@ extern "C" void br_fault_handler(faultStack_nocode *stack) {
 }
 
 extern "C" void ud_fault_handler(faultStack_nocode *stack) {
-    tty::printf("#UD Invalid Opcode!\n");
-    tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-    tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-    tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
+    tty::printk("#UD Invalid Opcode!\n");
+    tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+    tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+    tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
 
     while (true) {
         asm volatile("hlt");
@@ -90,10 +90,10 @@ extern "C" void ud_fault_handler(faultStack_nocode *stack) {
 }
 
 extern "C" void nm_fault_handler(faultStack_nocode *stack) {
-    tty::printf("#NM Device Not Available!\n");
-    tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-    tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-    tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
+    tty::printk("#NM Device Not Available!\n");
+    tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+    tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+    tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
 
     while (true) {
         asm volatile("hlt");
@@ -101,10 +101,10 @@ extern "C" void nm_fault_handler(faultStack_nocode *stack) {
 }
 
 extern "C" void double_fault_handler(faultStack_nocode *stack) {
-    tty::printf("#DF Double Fault!\n");
-    tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-    tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-    tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
+    tty::printk("#DF Double Fault!\n");
+    tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+    tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+    tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
 
     while (true) {
         asm volatile("hlt");
@@ -112,11 +112,11 @@ extern "C" void double_fault_handler(faultStack_nocode *stack) {
 }
 
 extern "C" void tss_fault_handler(faultStack_code *stack) {
-    tty::printf("#TS Invalid TSS Fault! Error code = 0x%lx\n",
+    tty::printk("#TS Invalid TSS Fault! Error code = 0x%lx\n",
                 stack->error_code);
-    tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-    tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-    tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
+    tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+    tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+    tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
 
     while (true) {
         asm volatile("hlt");
@@ -124,11 +124,11 @@ extern "C" void tss_fault_handler(faultStack_code *stack) {
 }
 
 extern "C" void np_fault_handler(faultStack_code *stack) {
-    tty::printf("#NP Segment Not Present! Error code = 0x%lx\n",
+    tty::printk("#NP Segment Not Present! Error code = 0x%lx\n",
                 stack->error_code);
-    tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-    tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-    tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
+    tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+    tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+    tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
 
     while (true) {
         asm volatile("hlt");
@@ -136,10 +136,10 @@ extern "C" void np_fault_handler(faultStack_code *stack) {
 }
 
 extern "C" void ss_fault_handler(faultStack_code *stack) {
-    tty::printf("Segment Fault.\nError code = 0x%lx,", stack->error_code);
-    tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-    tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-    tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
+    tty::printk("Segment Fault.\nError code = 0x%lx,", stack->error_code);
+    tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+    tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+    tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
 
     while (true) {
         asm volatile("hlt");
@@ -148,17 +148,17 @@ extern "C" void ss_fault_handler(faultStack_code *stack) {
 
 extern "C" void gp_fault_handler(faultStack_code *stack) {
     if (stack->cs == KERNEL_CS) {
-        tty::printf("#GP General Protection Fault! Error code = 0x%lx\n",
+        tty::printk("#GP General Protection Fault! Error code = 0x%lx\n",
                     stack->error_code);
-        tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-        tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-        tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
+        tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+        tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+        tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
 
         while (true) {
             asm volatile("hlt");
         }
     } else {
-        tty::printf("Segmentation Fault.\n");
+        tty::printk("Segmentation Fault.\n");
         task::thread::Exit(0xc0000096);
     }
 }
@@ -168,31 +168,31 @@ extern "C" void page_fault_handler(faultStack_code *stack) {
     asm volatile("mov %%cr2, %0" : "=r"(cr2));
     asm volatile("mov %%cr3, %0" : "=r"(cr3));
     if (stack->cs == KERNEL_CS) {
-        tty::printf("Page Fault. Error code = 0x%lx\n", stack->error_code);
-        tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-        tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-        tty::printf(" RFLAGS=0x%lx CR2=0x%lx\n", stack->rflags, cr2);
-        tty::printf(" CR3=0x%lx\n", cr3);
+        tty::printk("Page Fault. Error code = 0x%lx\n", stack->error_code);
+        tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+        tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+        tty::printk(" RFLAGS=0x%lx CR2=0x%lx\n", stack->rflags, cr2);
+        tty::printk(" CR3=0x%lx\n", cr3);
         while (true) {
             asm volatile("hlt");
         }
     } else {
-        tty::printf("Segmentation Fault.\n");
-        tty::printf(" Error code = 0x%lx\n", stack->error_code);
-        tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-        tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-        tty::printf(" RFLAGS=0x%lx CR2=0x%lx\n", stack->rflags, cr2);
-        tty::printf(" CR3=0x%lx\n", cr3);
+        tty::printk("Segmentation Fault.\n");
+        tty::printk(" Error code = 0x%lx\n", stack->error_code);
+        tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+        tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+        tty::printk(" RFLAGS=0x%lx CR2=0x%lx\n", stack->rflags, cr2);
+        tty::printk(" CR3=0x%lx\n", cr3);
 
         task::thread::Exit(0xc0000005);
     }
 }
 
 extern "C" void mf_fault_handler(faultStack_nocode *stack) {
-    tty::printf("#MF x87 FPU Floating-Point Error!\n");
-    tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-    tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-    tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
+    tty::printk("#MF x87 FPU Floating-Point Error!\n");
+    tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+    tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+    tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
 
     while (true) {
         asm volatile("hlt");
@@ -200,10 +200,10 @@ extern "C" void mf_fault_handler(faultStack_nocode *stack) {
 }
 
 extern "C" void ac_fault_handler(faultStack_nocode *stack) {
-    tty::printf("#AC Alignment Check.\n");
-    tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-    tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-    tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
+    tty::printk("#AC Alignment Check.\n");
+    tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+    tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+    tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
 
     while (true) {
         asm volatile("hlt");
@@ -211,10 +211,10 @@ extern "C" void ac_fault_handler(faultStack_nocode *stack) {
 }
 
 extern "C" void mc_abort_handler(faultStack_nocode *stack) {
-    tty::printf("#MC Machine Check.\n");
-    tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-    tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-    tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
+    tty::printk("#MC Machine Check.\n");
+    tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+    tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+    tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
 
     while (true) {
         asm volatile("hlt");
@@ -222,10 +222,10 @@ extern "C" void mc_abort_handler(faultStack_nocode *stack) {
 }
 
 extern "C" void xm_fault_handler(faultStack_nocode *stack) {
-    tty::printf("#XM SIMD Floating-Point Exception!\n");
-    tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-    tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-    tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
+    tty::printk("#XM SIMD Floating-Point Exception!\n");
+    tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+    tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+    tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
 
     while (true) {
         asm volatile("hlt");
@@ -233,10 +233,10 @@ extern "C" void xm_fault_handler(faultStack_nocode *stack) {
 }
 
 extern "C" void ve_fault_handler(faultStack_nocode *stack) {
-    tty::printf("#VE Virtualization Exception!\n");
-    tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-    tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-    tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
+    tty::printk("#VE Virtualization Exception!\n");
+    tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+    tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+    tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
 
     while (true) {
         asm volatile("hlt");
@@ -244,11 +244,11 @@ extern "C" void ve_fault_handler(faultStack_nocode *stack) {
 }
 
 extern "C" void cp_fault_handler(faultStack_code *stack) {
-    tty::printf("#CP Control Protection Exception!");
-    tty::printf(" Error code=0x%lx\n", stack->error_code);
-    tty::printf(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-    tty::printf(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-    tty::printf(" RFLAGS=0x%lx\n", stack->rflags);
+    tty::printk("#CP Control Protection Exception!");
+    tty::printk(" Error code=0x%lx\n", stack->error_code);
+    tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+    tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+    tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
 
     while (true) {
         asm volatile("hlt");
@@ -257,7 +257,7 @@ extern "C" void cp_fault_handler(faultStack_code *stack) {
 
 namespace idt {
 
-static Entry idt_table[256];
+Entry idt_table[256];
 Ptr idt_ptr;
 
 static void SetEntry(int vec, void *handler, std::uint16_t sel,
@@ -273,7 +273,7 @@ static void SetEntry(int vec, void *handler, std::uint16_t sel,
 }
 
 void Init() {
-    memset(&idt_table, 0, sizeof(Entry));
+    memset(&idt_table, 0, sizeof(idt_table));
 
     // Set up minimal IDT with page fault handler
     for (int i = 0; i < 256; i++) {

@@ -3,71 +3,330 @@
 #include <cstdint>
 #include <cstring>
 
-
 #include "kernel/vfs.h"
 #include "kernel/block.h"
 #include "kernel/fs/ext2.h"
 #include "kernel/tty.h"
+#include "kernel/task.h"
+#include "kernel/syscall.h"
 
 namespace vfs {
 
-// Global file systems list
 FileSystem *registered_filesystems = nullptr;
-
-// Global mount points list
 MountFs *mount_points = nullptr;
 
-// VFS initialization
-int Proc(int argc, char *argv[]) {
-    // 查找第一个Block设备
-    /*block::Device *dev = block::FindDevice("hda");
-    if (dev) {
-        registered_filesystems = nullptr;
-        mount_points           = nullptr;
+int Service(int argc, char *argv[]) {
+    RegisterFileSystems();
+    
+    // Wait for block devices to initialize
+    task::ipc::Message msg;
+    msg.dst_pid = 2;
+    msg.type = SYS_BLOCK_GET;
+    strcpy(msg.data, "hda");
+    task::ipc::Send(&msg);
+    task::ipc::Receive(&msg);
 
-        // Register built-in file systems
-        RegisterFileSystems();
-        int i = 0;
-        while (++i) {
-            // Mount root filesystem (ext2) on /
-            int ret = Mount("hda", "/", "ext2", 0);
-            if (ret != 0 && i > 10) {
-                // Failed to mount root filesystem
-                tty::Panic("Failed to mount root filesystem on /");
-                return -2;
-            }
-            if (ret == 0) {
-                break;
-            }
-        }
-    } else {
-        tty::Panic("hda not found.");
+    if (msg.num[0] == 0) {
+        tty::printk("VFS: Failed to get device info from IPC response\n");
         return -1;
-    }*/
-
-    while (true) {
+    }
+    block::BlockDevice *dev = reinterpret_cast<block::BlockDevice *>(msg.num[0]);
+    
+    if (!dev) {
+        tty::printk("VFS: Device 'hda' not found.\n");
+        return -1;
     }
 
-    return 1;
+    FileSystem *fs = GetFileSystem("ext2");
+    if (!fs) {
+        tty::printk("VFS: ext2 filesystem not registered\n");
+        return -2;
+    }
+
+    MountFs *root = fs->mount(fs, "hda1", "/", 0);
+    if (!root) {
+        tty::printk("VFS: Failed to mount root filesystem\n");
+        return -3;
+    }
+
+    mount_points = root;
+
+    tty::printk("VFS: Root filesystem mounted successfully\n");
+
+    msg.dst_pid = 1;
+    msg.type = 0xa00;
+    task::ipc::Send(&msg);
+
+    bool reply;
+    while (true) {
+        reply = true;
+        if (task::ipc::Receive(&msg)) {
+            switch (msg.type) {
+                case SYS_FS_OPEN:
+                    msg.num[0] = reinterpret_cast<uint64_t>(Open(msg.s.str, msg.s.arg));
+                    break;
+                case SYS_FS_READ:
+                    msg.num[0] = static_cast<uint64_t>(
+                        Read(reinterpret_cast<File *>(msg.num[0]), 
+                            reinterpret_cast<void *>(msg.num[1]), 
+                            static_cast<std::uint64_t>(msg.num[2])));
+                    break;
+                case SYS_FS_WRITE:
+                    msg.num[0] = static_cast<uint64_t>(
+                        Write(reinterpret_cast<File *>(msg.num[0]), 
+                            reinterpret_cast<const void *>(msg.num[1]), 
+                            static_cast<std::uint64_t>(msg.num[2])));
+                    break;
+                case SYS_FS_CLOSE:
+                    msg.num[0] = static_cast<uint64_t>(
+                        Close(reinterpret_cast<File *>(msg.num[0])));
+                    break;
+                case SYS_FS_ISEEK:
+                    // todo
+                    break;
+                case SYS_FS_READDIR:
+                    msg.num[0] = reinterpret_cast<uint64_t>(Readdir(msg.s.str, msg.s.arg));
+                    break;
+                default:
+                    tty::printk("VFS: Unknown message type: %d\n", msg.type);
+                    reply = false;
+                    break;
+            }
+            if (reply) {
+                msg.dst_pid = msg.sender->pid;
+                msg.sender = task::current_proc;
+                task::ipc::Send(&msg);
+            }
+        }
+    }
+    return 0;
 }
 
-// List directory entries
+int RegisterFileSystem(FileSystem *fs) {
+    if (fs == nullptr || strlen(fs->name) == 0) {
+        return -1;
+    }
+    
+    FileSystem *current = registered_filesystems;
+    
+    while (registered_filesystems != nullptr) {
+        if (strcmp(current->name, fs->name) == 0) {
+            return -2;
+        }
+        current = current->next;
+    }
+    
+    fs->next = registered_filesystems;
+    registered_filesystems = fs;
+    
+    return 0;
+}
+
+FileSystem *GetFileSystem(const char *name) {
+    if (!name) {
+        return nullptr;
+    }
+
+    FileSystem *current = registered_filesystems;
+    while (current != nullptr) {
+        if (strcmp(current->name, name) == 0) {
+            return current;
+        }
+        current = current->next;
+    }
+
+    return nullptr;
+}
+
+int Mount(const char *device, const char *path, const char *fs_type,
+           std::uint32_t flags) {
+    if (!device || !path || !fs_type) {
+        return -1;
+    }
+
+    FileSystem *fs = GetFileSystem(fs_type);
+    if (!fs || !fs->mount) {
+        return -2;
+    }
+
+    MountFs *current = mount_points;
+    while (current != nullptr) {
+        if (strcmp(current->GetPath(), path) == 0) {
+            return -3;
+        }
+        current = current->next;
+    }
+
+    MountFs *mount = fs->mount(fs, device, path, flags);
+    if (!mount) {
+        return -4;
+    }
+
+    mount->next = mount_points;
+    mount_points = mount;
+
+    return 0;
+}
+
+int Umount(const char *path) {
+    if (!path) {
+        return -1;
+    }
+
+    MountFs *mount = nullptr;
+    MountFs *prev = nullptr;
+
+    if (mount_points != nullptr && strcmp(mount_points->GetPath(), path) == 0) {
+        mount = mount_points;
+        mount_points = mount->next;
+    } else {
+        prev = mount_points;
+        while (prev != nullptr && prev->next != nullptr) {
+            if (strcmp(prev->next->GetPath(), path) == 0) {
+                mount = prev->next;
+                prev->next = mount->next;
+                break;
+            }
+            prev = prev->next;
+        }
+    }
+
+    if (!mount) {
+        tty::printk("VFS: Path '%s' is not mounted\n", path);
+        return -2;
+    }
+
+    if (mount->umount) {
+        mount->umount(mount);
+    }
+
+    delete mount;
+
+    tty::printk("VFS: Unmounted '%s'\n", path);
+    return 0;
+}
+
+File *Open(const char *path, std::uint32_t flags) {
+    if (!path) {
+        return nullptr;
+    }
+
+    MountFs *mount = FindMountPoint(path);
+    if (!mount) {
+        tty::printk("VFS: No mount point for path '%s'\n", path);
+        return nullptr;
+    }
+
+    char rel_path[256];
+    ExtractRelativePath(mount, path, rel_path, sizeof(rel_path));
+
+    if (!mount->open) {
+        tty::printk("VFS: open() not supported\n");
+        return nullptr;
+    }
+
+    File *file = mount->open(mount, rel_path, flags);
+    if (!file) {
+        tty::printk("VFS: Failed to open file '%s'\n", path);
+        return nullptr;
+    }
+
+    file->mount = mount;
+
+    return file;
+}
+
+int Close(File *file) {
+    if (!file) {
+        return -1;
+    }
+
+    MountFs *mount = file->mount;
+    if (!mount || !mount->close) {
+        return -2;
+    }
+
+    return mount->close(file);
+}
+
+ssize_t Read(File *file, void *buf, std::size_t count) {
+    if (!file || !buf || count == 0) {
+        return -1;
+    }
+
+    MountFs *mount = file->mount;
+    if (!mount || !mount->read) {
+        return -2;
+    }
+
+    ssize_t ret = mount->read(file, buf, count, file->position);
+    if (ret > 0) {
+        file->position += ret;
+    }
+
+    return ret;
+}
+
+ssize_t Write(File *file, const void *buf, std::size_t count) {
+    if (!file || !buf || count == 0) {
+        return -1;
+    }
+
+    MountFs *mount = file->mount;
+    if (!mount || !mount->write) {
+        return -2;
+    }
+
+    ssize_t ret = mount->write(file, buf, count, file->position);
+    if (ret > 0) {
+        file->position += ret;
+    }
+
+    return ret;
+}
+
+ssize_t Seek(File *file, std::int64_t offset, int whence) {
+    if (!file) {
+        return -1;
+    }
+
+    std::int64_t new_pos;
+    
+    switch (whence) {
+        case SEEK_SET:
+            new_pos = offset;
+            break;
+        case SEEK_CUR:
+            new_pos = file->position + offset;
+            break;
+        case SEEK_END:
+            new_pos = -1;
+            break;
+        default:
+            return -3;
+    }
+
+    if (new_pos < 0) {
+        return -4;
+    }
+
+    file->position = new_pos;
+    return file->position;
+}
+
 DirEntry *Readdir(const char *path, std::uint32_t index) {
     if (!path) {
         return nullptr;
     }
 
-    // Find the mount point for this path
     MountFs *mount = FindMountPoint(path);
     if (!mount) {
         return nullptr;
     }
 
-    // Extract the relative path (after mount point)
     char rel_path[256];
     ExtractRelativePath(mount, path, rel_path, sizeof(rel_path));
 
-    // Call file system-specific readdir
     if (!mount->readdir) {
         return nullptr;
     }
@@ -75,24 +334,21 @@ DirEntry *Readdir(const char *path, std::uint32_t index) {
     return mount->readdir(mount, rel_path, index);
 }
 
-// Helper function to find mount point for a path
 MountFs *FindMountPoint(const char *path) {
     if (!path || path[0] != '/') {
         return nullptr;
     }
 
     MountFs *best_match = nullptr;
-    size_t best_len     = 0;
+    size_t best_len = 0;
 
     MountFs *current = mount_points;
     while (current) {
         size_t mount_len = strlen(current->GetPath());
 
-        // Check if the path starts with the mount point path
         if (strncmp(path, current->GetPath(), mount_len) == 0) {
-            // Check if this is a better match than the current best
             if (mount_len > best_len) {
-                best_len   = mount_len;
+                best_len = mount_len;
                 best_match = current;
             }
         }
@@ -103,7 +359,6 @@ MountFs *FindMountPoint(const char *path) {
     return best_match;
 }
 
-// Helper function to extract relative path after mount point
 void ExtractRelativePath(MountFs *mount, const char *full_path, char *rel_path,
                          size_t rel_path_len) {
     if (!mount || !full_path || !rel_path) {
@@ -111,231 +366,30 @@ void ExtractRelativePath(MountFs *mount, const char *full_path, char *rel_path,
     }
 
     const char *mount_path = mount->GetPath();
-    size_t mount_len       = strlen(mount_path);
-    size_t full_len        = strlen(full_path);
+    size_t mount_len = strlen(mount_path);
+    size_t full_len = strlen(full_path);
 
-    // If the mount path is '/' and the full path is also '/', the relative path
-    // is '/' or empty
     if (mount_len == 1 && mount_path[0] == '/' && full_len == 1) {
         strncpy(rel_path, "/", rel_path_len - 1);
         return;
     }
 
-    // Extract the part after the mount path
     const char *rel = full_path + mount_len;
     if (*rel == '/') {
         rel++;
     }
 
-    // If the relative path is empty, set it to '/'
     if (*rel == '\0') {
-        strncpy(rel_path, "/", rel_path_len - 1);
+        rel_path[0] = '/';
+        rel_path[1] = '\0';
     } else {
-        strncpy(rel_path, rel, rel_path_len - 1);
-    }
-
-    // Ensure null termination
-    rel_path[rel_path_len - 1] = '\0';
-}
-
-}  // namespace vfs
-
-// Register a new file system
-int FileSystem::RegisterFileSystem() {
-    if (strlen(name) == 0) {
-        return -1;
-    }
-
-    // Check if already registered
-    FileSystem *current = vfs::registered_filesystems;
-    while (current) {
-        if (strcmp(current->name, name) == 0) {
-            return -2;  // Already registered
+        size_t copy_len = rel_path_len - 1;
+        if (strlen(rel) < copy_len) {
+            copy_len = strlen(rel);
         }
-        current = current->next;
+        memcpy(rel_path, rel, copy_len);
+        rel_path[copy_len] = '\0';
     }
-
-    // Add to list
-    next                        = vfs::registered_filesystems;
-    vfs::registered_filesystems = this;
-
-    return 0;
 }
 
-// Find a registered file system by name
-FileSystem *FileSystem::GetFileSystem(const char *name) {
-    if (!name) {
-        return nullptr;
-    }
-
-    FileSystem *current = vfs::registered_filesystems;
-    while (current) {
-        if (strcmp(current->name, name) == 0) {
-            return current;
-        }
-        current = current->next;
-    }
-
-    return nullptr;
-}
-
-// Mount a file system
-int MountFs::Mount(const char *device, const char *path, const char *fs_type,
-                   std::uint32_t flags) {
-    if (!device || !path || !fs_type) {
-        return -1;
-    }
-
-    // Find file system
-    FileSystem *fs = GetFileSystem(fs_type);
-    if (!fs || !fs->mount) {
-        return -2;
-    }
-
-    // Check if path is already mounted
-    MountFs *current = vfs::mount_points;
-    while (current) {
-        if (strcmp(current->GetPath(), path) == 0) {
-            return -3;
-        }
-        current = current->next;
-    }
-
-    // Call file system-specific mount
-    MountFs *mount = fs->mount(fs, device, path, flags);
-    if (!mount) {
-        return -4;
-    }
-
-    // Add to mount points list
-    // mount->fs    = fs;
-    mount->next       = vfs::mount_points;
-    vfs::mount_points = mount;
-
-    return 0;
-}
-
-// Unmount a file system
-int MountFs::Umount(const char *path) {
-    if (!path) {
-        return -1;
-    }
-
-    // Find mount point
-    MountFs *mount = nullptr;
-    MountFs *prev  = nullptr;
-
-    if (vfs::mount_points && strcmp(vfs::mount_points->path, path) == 0) {
-        mount             = vfs::mount_points;
-        vfs::mount_points = mount->next;
-    } else {
-        prev = vfs::mount_points;
-        while (prev && prev->next) {
-            if (strcmp(prev->next->GetPath(), path) == 0) {
-                mount      = prev->next;
-                prev->next = mount->next;
-                break;
-            }
-            prev = prev->next;
-        }
-    }
-
-    if (!mount) {
-        tty::printf("VFS: Path '%s' is not mounted\n", path);
-        return -2;
-    }
-
-    // Call file system-specific umount
-    if (mount->umount) {
-        mount->umount(mount);
-    }
-
-    // Free mount point
-    delete mount;
-
-    tty::printf("VFS: Unmounted '%s'\n", path);
-    return 0;
-}
-
-// Open a file
-File *File::Open(const char *path, std::uint32_t flags) {
-    if (!path) {
-        return nullptr;
-    }
-
-    // Find the mount point for this path
-    MountFs *mount = vfs::FindMountPoint(path);
-    if (!mount) {
-        tty::printf("VFS: No mount point for path '%s'\n", path);
-        return nullptr;
-    }
-
-    // Extract the relative path (after mount point)
-    char rel_path[256];
-    vfs::ExtractRelativePath(mount, path, rel_path, sizeof(rel_path));
-
-    // Call file system-specific open
-    if (!mount->open) {
-        tty::printf("VFS: open() not supported by file system\n");
-        return nullptr;
-    }
-
-    File *file = mount->open(mount, rel_path, flags);
-    if (!file) {
-        tty::printf("VFS: Failed to open file '%s'\n", path);
-        return nullptr;
-    }
-
-    // Set file mount point
-    file->mount = mount;
-
-    return file;
-}
-
-// Close a file
-int File::Close() {
-    MountFs *mount = mount;
-    if (!mount || !mount->close) {
-        return -2;
-    }
-
-    return mount->close(this);
-}
-
-// Read from a file
-ssize_t File::Read(void *buf, size_t count) {
-    if (!buf || count == 0) {
-        return -1;
-    }
-
-    MountFs *mount = mount;
-    if (!mount || !mount->read) {
-        return -2;
-    }
-
-    return mount->read(this, buf, count, position);
-}
-
-// Write to a file
-ssize_t File::Write(const void *buf, size_t count) {
-    if (!buf || count == 0) {
-        return -1;
-    }
-
-    MountFs *mount = mount;
-    if (!mount || !mount->write) {
-        return -2;
-    }
-
-    return mount->write(this, buf, count, position);
-}
-
-// Seek in a file
-ssize_t File::Seek(std::int64_t offset, int whence) {
-    if (!mount) {
-        return -1;
-    }
-
-    /* TODO */
-    return -1;
 }

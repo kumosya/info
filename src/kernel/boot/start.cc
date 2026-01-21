@@ -70,7 +70,7 @@ extern "C" void CppStart(std::uint32_t magic, std::uint8_t *addr) {
     idtp.limit = sizeof(idt_ety) - 1;
     idtp.base  = reinterpret_cast<std::uint64_t>(&idt_ety);
     asm __volatile__("lidt %0" : : "m"(idtp));
-
+    
     boot::mm::Init(addr);
     KernelMain(addr);
 }

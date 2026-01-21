@@ -8,7 +8,7 @@
 
 namespace mm {
 
-int Proc(int argc, char *argv[]);
+int Service(int argc, char *argv[]);
 
 inline static std::uint64_t Vir2Phy(std::uint64_t virt) {
     return virt - IDENTITY_BASE;
@@ -28,6 +28,7 @@ void Map(PTE *pml4, std::uint64_t virt_addr, std::uint64_t phys_addr,
          std::uint64_t flags);
 void *Alloc(std::size_t size);
 void Free(void *addr);
+void UpdateKernelPml4(PTE *user_pml4);
 
 std::uint64_t AnalyzePageTable(PTE* pml4, std::uint64_t virt_addr);
 }  // namespace page

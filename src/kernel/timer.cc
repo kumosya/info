@@ -14,12 +14,17 @@ extern "C" void pit_handler_c();
 extern "C" void pit_stub(void);
 
 extern "C" void pit_handler_c() {
-    // increment tick
     timer::pit_ticks++;
-    // send EOI
+    
+    if (task::current_proc) {
+        task::current_proc->time_used++;
+    }
+    
+    // 更新 CFS vruntime（每个 tick 约 10ms）
+    task::cfs::UpdateVruntimeCurrent(10);
+    
     outb(PIC1_CMD, 0x20);
-    // tty::printf(".");
-    task::schedule();
+    task::Schedule();
 }
 
 namespace timer {

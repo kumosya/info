@@ -10,14 +10,14 @@ UMOUNT = umount
 
 KERNEL_ELF = build/kernel.elf
 ROOTFS = build/rootfs
-LOOP_DEV = /dev/loop7
+LOOP_DEV = /dev/loop5
 PARTED_DEV = $(LOOP_DEV)p1
 MOUNT_POINT = /mnt/disk
-ZERO_FILL_SIZE = 32M
+ZERO_FILL_SIZE = 32
 
 QEMU = qemu-system-x86_64
 IMG = build/disk.img
-QEMU_OPTS = -m 512M -cpu core2duo -hda $(IMG) -serial mon:stdio -boot c
+QEMU_OPTS = -m 512M -cpu core2duo -hda $(IMG) -serial mon:stdio -boot c -d cpu_reset -D build/qemu.log
 
 ifeq ($(SERIAL), true)
 	QEMU_OPTS += -nographic
@@ -54,7 +54,7 @@ mkdirs:
 lib:
 	@cd lib/libc && $(MAKE) all
 
-all: clean
+all: # clean
 	# @$(MAKE) lib
 	@$(MAKE) -C src all
 
@@ -96,3 +96,8 @@ cpfiles: mkdirs
 qemu: 
 	@echo -e '\e[34m[QEMU]\e[0m Running QEMU ...'
 	@$(QEMU) $(QEMU_OPTS)
+
+vmdk:
+	@echo -e '\e[34m[VMDK]\e[0m Creating vmdk ...'
+	@qemu-img convert -f raw -O vmdk $(IMG) build/disk.vmdk
+
