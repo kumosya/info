@@ -1,3 +1,8 @@
+/**
+ * @file proc.S
+ * @brief Process entry and system calls
+ * @author Kumosya, 2025-2026
+ **/
 
 .global enter_syscall
 enter_syscall:
@@ -47,8 +52,8 @@ ret_syscall:
 	popq %rdi
 	popq %rbp
 	popq %rax
+	movq $0x30, %rax
 	movq %rax, %ds
-	popq %rax
 	movq %rax, %es
 	popq %rax
 	

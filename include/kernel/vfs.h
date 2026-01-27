@@ -10,6 +10,7 @@
 #define SEEK_CUR 1  // Seek from current position
 #define SEEK_END 2  // Seek from end of file
 
+namespace vfs {
 // Forward declarations
 class File;
 class DirEntry;
@@ -41,7 +42,7 @@ class FileSystem {
 class MountFs : public FileSystem {
    public:
     char path[64];       // Mount path (e.g., "/")
-    MountFs *next;  // Next mount point in the list
+    MountFs *next;       // Next mount point in the list
     void *private_data;  // File system-specific data
 
     char *GetPath() { return path; }
@@ -56,6 +57,40 @@ class File {
     void *private_data;      // File system-specific file data
 };
 
+#define MAX_FD 64
+
+struct FileDescriptor {
+    bool used;
+    File *file;
+    std::uint32_t flags;
+};
+
+class FileDescriptorTable {
+   public:
+    FileDescriptor fds[MAX_FD];
+    FileDescriptorTable() {
+        for (std::uint32_t i = 0; i < MAX_FD; i++) {
+            fds[i].used  = false;
+            fds[i].file  = nullptr;
+            fds[i].flags = 0;
+        }
+        fds[0].used = true;
+        fds[0].file = nullptr;
+        fds[1].used = true;
+        fds[1].file = nullptr;
+    }
+    int Alloc(File *file, std::uint32_t flags);
+    int Free(int fd);
+    File *Get(int fd);
+    int SetFlags(int fd, std::uint32_t flags);
+};
+
+int FdAlloc(File *file, std::uint32_t flags);
+int FdFree(int fd);
+File *FdGet(int fd);
+int FdDup(int oldfd);
+int FdDup2(int oldfd, int newfd);
+
 // Directory entry structure
 struct DirEntry {
     char name[256];         // Entry name
@@ -63,8 +98,6 @@ struct DirEntry {
     std::uint32_t type;     // Entry type (file, directory, etc.)
     struct DirEntry *next;  // Next entry (for linked list)
 };
-
-namespace vfs {
 
 void RegisterFileSystems();
 int Service(int argc, char *argv[]);
@@ -76,7 +109,7 @@ void ExtractRelativePath(MountFs *mount, const char *full_path, char *rel_path,
 int RegisterFileSystem(FileSystem *fs);
 FileSystem *GetFileSystem(const char *name);
 int Mount(const char *device, const char *path, const char *fs_type,
-           std::uint32_t flags);
+          std::uint32_t flags);
 int Umount(const char *path);
 File *Open(const char *path, std::uint32_t flags);
 int Close(File *file);
@@ -84,14 +117,14 @@ ssize_t Read(File *file, void *buf, std::size_t count);
 ssize_t Write(File *file, const void *buf, std::size_t count);
 ssize_t Seek(File *file, std::int64_t offset, int whence);
 
-MountFs *Ext2Mount(class FileSystem *fs, const char *device, const char *path, 
-                    std::uint32_t flags);
+MountFs *Ext2Mount(class FileSystem *fs, const char *device, const char *path,
+                   std::uint32_t flags);
 int Ext2Umount(MountFs *mount);
 File *Ext2Open(MountFs *mount, const char *path, std::uint32_t flags);
 int Ext2Close(File *file);
-ssize_t Ext2Read(File *file, void *buf, std::size_t count, 
+ssize_t Ext2Read(File *file, void *buf, std::size_t count,
                  std::uint64_t offset);
-ssize_t Ext2Write(File *file, const void *buf, std::size_t count, 
+ssize_t Ext2Write(File *file, const void *buf, std::size_t count,
                   std::uint64_t offset);
 int Ext2Mkdir(MountFs *mount, const char *path);
 int Ext2Rmdir(MountFs *mount, const char *path);

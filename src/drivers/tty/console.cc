@@ -4,6 +4,7 @@
 #include "kernel/cpu.h"
 #include "kernel/io.h"
 #include "kernel/keyboard.h"
+#include "kernel/syscall.h"
 #include "kernel/task.h"
 #include "kernel/tty.h"
 
@@ -30,30 +31,35 @@ int Service(int argc, char *argv[]) {
         bool status, reply;
         task::ipc::Message msg;
         if (task::ipc::Receive(&msg)) {
-            reply = true;
+            reply  = true;
             status = false;
-            
+
             switch (msg.type) {
-            case 0:
-                con.Puts(msg.sender->tty, msg.data, DEFAULT_COLOR);
-                reply = false;
-                break;
-            case 1:
-                while (true) {
-                    status = keyboard::kbd_buffer.Peek(&c);
-                    if (status) {
-                        msg.dst_pid = msg.sender->pid;
-                        msg.sender = task::current_proc;
-                        msg.type = 0;
-                        msg.num[0] = c;
-                        msg.num[1] = status;
-                        break;
+                case SYS_CHAR_PUTCHAR:
+                    con.PutChar(msg.sender->tty, static_cast<char>(msg.num[0]),
+                                DEFAULT_COLOR);
+                    reply = false;
+                    break;
+                case SYS_CHAR_PUTS:
+                    con.Puts(msg.sender->tty, msg.data, DEFAULT_COLOR);
+                    reply = false;
+                    break;
+                case SYS_CHAR_GETCHAR:
+                    while (true) {
+                        status = keyboard::kbd_buffer.Peek(&c);
+                        if (status) {
+                            msg.dst_pid = msg.sender->pid;
+                            msg.sender  = task::current_proc;
+                            msg.type    = 0;
+                            msg.num[0]  = c;
+                            msg.num[1]  = status;
+                            break;
+                        }
                     }
-                }
-                break;
-            default:
-                tty::Panic("Unknown message type: %d\n", msg.type);
-                break;
+                    break;
+                default:
+                    tty::Panic("Unknown message type: %d\n", msg.type);
+                    break;
             }
             if (reply) {
                 task::ipc::Send(&msg);
@@ -88,9 +94,7 @@ void Console::Init() {
     Redraw();
 }
 
-void Console::SetFont(FontData *font) {
-    fontdata_ = font;
-}
+void Console::SetFont(FontData *font) { fontdata_ = font; }
 
 void Console::SwitchTTY(int tty_num) {
     tty_lock.lock();
@@ -98,7 +102,7 @@ void Console::SwitchTTY(int tty_num) {
     if (tty_num == current_tty_) return;
 
     ttys_[current_tty_ - 1].need_redraw = true;
-    current_tty_ = tty_num;
+    current_tty_                        = tty_num;
     ttys_[current_tty_ - 1].need_redraw = true;
 
     tty_lock.unlock();
@@ -109,8 +113,8 @@ void Console::SwitchTTY(int tty_num) {
 void Console::Redraw() {
     tty_lock.lock();
     std::uint32_t *fb = (std::uint32_t *)FRAMEBUFFER_BASE;
-    TTYState &tty = ttys_[current_tty_ - 1];
-    
+    TTYState &tty     = ttys_[current_tty_ - 1];
+
     if (tty.screen_buffer) {
         for (int i = 0; i < video::width * video::height; i++) {
             fb[i] = tty.screen_buffer[i];
@@ -129,7 +133,7 @@ void Console::PutChar(int tty_num, char c, std::uint32_t color) {
     } else if (tty_num == 0) {
         n = current_tty_ - 1;
     }
-    TTYState &tty = ttys_[n];
+    TTYState &tty     = ttys_[n];
     std::uint32_t *fb = (std::uint32_t *)FRAMEBUFFER_BASE;
 
     if (!tty.screen_buffer || !fontdata_) return;
@@ -143,44 +147,49 @@ void Console::PutChar(int tty_num, char c, std::uint32_t color) {
     }
 
     switch (c) {
-    case '\n':
-        tty.xpos = 0;
-        tty.ypos += fontdata_->hdr.height;
-        break;
-    case '\r':
-        break;
-    case '\b':
-        tty.xpos -= fontdata_->hdr.width;
-        if (tty.xpos < 0) {
+        case '\n':
             tty.xpos = 0;
-        }
-        for (int y = 0; y < fontdata_->hdr.height; y++) {
-            for (int x = 0; x < fontdata_->hdr.width; x++) {
-                std::uint32_t pixel = (0xff << 24) | DEFAULT_BG_COLOR;
-                tty.screen_buffer[(tty.ypos + y) * video::width + (tty.xpos + x)] = pixel;
-                if (tty_num == current_tty_) {
-                    fb[(tty.ypos + y) * video::width + (tty.xpos + x)] = pixel;
+            tty.ypos += fontdata_->hdr.height;
+            break;
+        case '\r':
+            break;
+        case '\b':
+            tty.xpos -= fontdata_->hdr.width;
+            if (tty.xpos < 0) {
+                tty.xpos = 0;
+            }
+            for (int y = 0; y < fontdata_->hdr.height; y++) {
+                for (int x = 0; x < fontdata_->hdr.width; x++) {
+                    std::uint32_t pixel = (0xff << 24) | DEFAULT_BG_COLOR;
+                    tty.screen_buffer[(tty.ypos + y) * video::width +
+                                      (tty.xpos + x)] = pixel;
+                    if (tty_num == current_tty_) {
+                        fb[(tty.ypos + y) * video::width + (tty.xpos + x)] =
+                            pixel;
+                    }
                 }
             }
-        }
-        break;
-    default:
-        for (int y = 0; y < fontdata_->hdr.height; y++) {
-            for (int x = 0; x < fontdata_->hdr.width; x++) {
-                std::uint32_t pixel;
-                if (fontdata_->data[c * fontdata_->hdr.height + y] & (1 << (7 - x))) {
-                    pixel = (0xff << 24) | color;
-                } else {
-                    pixel = (0xff << 24) | DEFAULT_BG_COLOR;
-                }
-                tty.screen_buffer[(tty.ypos + y) * video::width + (tty.xpos + x)] = pixel;
-                if (tty_num == current_tty_) {
-                    fb[(tty.ypos + y) * video::width + (tty.xpos + x)] = pixel;
+            break;
+        default:
+            for (int y = 0; y < fontdata_->hdr.height; y++) {
+                for (int x = 0; x < fontdata_->hdr.width; x++) {
+                    std::uint32_t pixel;
+                    if (fontdata_->data[c * fontdata_->hdr.height + y] &
+                        (1 << (7 - x))) {
+                        pixel = (0xff << 24) | color;
+                    } else {
+                        pixel = (0xff << 24) | DEFAULT_BG_COLOR;
+                    }
+                    tty.screen_buffer[(tty.ypos + y) * video::width +
+                                      (tty.xpos + x)] = pixel;
+                    if (tty_num == current_tty_) {
+                        fb[(tty.ypos + y) * video::width + (tty.xpos + x)] =
+                            pixel;
+                    }
                 }
             }
-        }
-        tty.xpos += fontdata_->hdr.width;
-        break;
+            tty.xpos += fontdata_->hdr.width;
+            break;
     }
     tty_lock.unlock();
 }

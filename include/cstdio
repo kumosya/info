@@ -38,6 +38,8 @@ using ::fseek;
 using ::ftell;
 using ::fwrite;
 using ::scanf;
+using ::getchar;
+using ::gets;
 using ::printf;
 using ::vsprintf;
 using ::sprintf;

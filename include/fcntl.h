@@ -56,11 +56,6 @@ struct flock {
 #define F_WRLCK 2 /* Write lock */
 #define F_UNLCK 3 /* Unlock */
 
-/* Function declarations */
-int open(const char *path, int oflag, ...);
-int creat(const char *path, mode_t mode);
-int fcntl(int fd, int cmd, ...);
-
 #ifdef __cplusplus
 }
 #endif

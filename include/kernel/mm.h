@@ -18,7 +18,6 @@ inline static std::uint64_t Phy2Vir(std::uint64_t phy) {
     return phy + IDENTITY_BASE;
 }
 
-
 namespace page {
 /* in mm/page.cc */
 extern FrameMem frame;
@@ -30,7 +29,7 @@ void *Alloc(std::size_t size);
 void Free(void *addr);
 void UpdateKernelPml4(PTE *user_pml4);
 
-std::uint64_t AnalyzePageTable(PTE* pml4, std::uint64_t virt_addr);
+std::uint64_t AnalyzePageTable(PTE *pml4, std::uint64_t virt_addr);
 }  // namespace page
 namespace slab {
 void Init();

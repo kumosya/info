@@ -6,6 +6,7 @@
 #include "kernel/cpu.h"
 
 #define TIMER_FREQUENCY 100
+#define TIMER_PERIOD (1000 / TIMER_FREQUENCY)
 
 /* COM1 port base */
 #define COM1_PORT 0x3F8

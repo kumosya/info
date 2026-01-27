@@ -34,9 +34,5 @@ void operator delete[](void *ptr, const nothrow_t &) noexcept {
 }
 
 // sized delete (C++14+)
-void operator delete(void *ptr, size_t) noexcept {
-    mm::page::Free(ptr);
-}
-void operator delete[](void *ptr, size_t) noexcept {
-    mm::page::Free(ptr);
-}
+void operator delete(void *ptr, size_t) noexcept { mm::page::Free(ptr); }
+void operator delete[](void *ptr, size_t) noexcept { mm::page::Free(ptr); }

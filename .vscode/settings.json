@@ -55,6 +55,10 @@
         "xfacet": "cpp",
         "xlocinfo": "cpp",
         "xlocnum": "cpp",
-        "list": "cpp"
+        "list": "cpp",
+        "cpu.h": "c",
+        "syscall.h": "c",
+        "unistd.h": "c",
+        "stdio.h": "c"
     }
 }

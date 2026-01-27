@@ -1,7 +1,7 @@
 /**
  * @file sched.cc
- * @brief 调度器框架
- * 
+ * @brief Scheduler implementation
+ * @author Kumosya, 2025-2026
  */
 
 #include <cstdint>
@@ -17,17 +17,7 @@ namespace task {
 Pcb *run_queue_head = nullptr;
 SpinLock run_queue_lock;
 
-void SchedInit() {
-    run_queue_head = nullptr;
-    
-    cfs::sched.cfs_rq.rb_root = nullptr;
-    cfs::sched.cfs_rq.leftmost = nullptr;
-    cfs::sched.cfs_rq.min_vruntime = 0;
-    cfs::sched.cfs_rq.nr_running = 0;
-    cfs::sched.cfs_rq.curr_vruntime = 0;
-    cfs::sched.current = nullptr;
-    cfs::sched.clock = 0;
-}
+void SchedInit() { run_queue_head = nullptr; }
 
 void Schedule() {
     Pcb *prev = current_proc;
@@ -36,21 +26,21 @@ void Schedule() {
     // Update runqueue first: dequeue / enqueue the previous task so
     // the tree reflects its Ready state before picking the next task.
     if (prev->stat == Dead) {
-        cfs::Dequeue(prev);
+        cfs::sched.Dequeue(prev);
     } else {
         if (prev->stat != Blocked) {
             prev->stat = Ready;
-            cfs::Dequeue(prev);
-            cfs::Enqueue(prev);
+            cfs::sched.Dequeue(prev);
+            cfs::sched.Enqueue(prev);
         } else {
-            cfs::Dequeue(prev);
+            cfs::sched.Dequeue(prev);
         }
     }
 
     // Now pick the next task from the up-to-date runqueue and print state
-    next = cfs::PickNextTask();
-    //tty::printk("[%d -> %d]", prev->pid, next ? next->pid : -1);
-    //task::cfs::RbPrintTree();
+    next = cfs::sched.PickNextTask();
+    // tty::printk("[%d -> %d]", prev->pid, next ? next->pid : -1);
+    // task::cfs::RbPrintTree();
 
     cfs::sched.lock.lock();
 
@@ -69,9 +59,10 @@ void Schedule() {
         current_proc = next;
         SwitchContext(prev, next);
     } else {
-        //if (prev->stat == Blocked) {
-        //    tty::printk("Schedule: prev=%d is blocked, skip enqueue, next=%d\n", prev->pid, next ? next->pid : -1);
-        //}
+        // if (prev->stat == Blocked) {
+        //     tty::printk("Schedule: prev=%d is blocked, skip enqueue,
+        //     next=%d\n", prev->pid, next ? next->pid : -1);
+        // }
 
         if (prev == next) {
             cfs::sched.lock.unlock();
@@ -83,11 +74,13 @@ void Schedule() {
 
         if (!(prev->flags & THREAD_KERNEL) || !(next->flags & THREAD_KERNEL)) {
             if (!(next->flags & THREAD_KERNEL) && next->mm.pml4) {
-                //mm::page::UpdateKernelPml4(next->mm.pml4);
+                // mm::page::UpdateKernelPml4(next->mm.pml4);
                 SwitchTable(next);
-                //tty::printk("Switch to user page table: 0x%x\n", mm::Vir2Phy((std::uint64_t)next->mm.pml4));
-            } else if (!(prev->flags & THREAD_KERNEL) && (next->flags & THREAD_KERNEL)) {
-                //tty::printk("Switch to kernel page table\n");
+                // tty::printk("Switch to user page table: 0x%x\n",
+                // mm::Vir2Phy((std::uint64_t)next->mm.pml4));
+            } else if (!(prev->flags & THREAD_KERNEL) &&
+                       (next->flags & THREAD_KERNEL)) {
+                // tty::printk("Switch to kernel page table\n");
                 SwitchTable(next);
             }
         }

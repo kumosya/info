@@ -1,20 +1,21 @@
 
-#include <cstring>
+#include "kernel/ide.h"
+
 #include <cstdio>
+#include <cstring>
 #include <fcntl.h>
 
-#include "kernel/ide.h"
-#include "kernel/task.h"
-#include "kernel/tty.h"
 #include "kernel/block.h"
 #include "kernel/io.h"
-
+#include "kernel/task.h"
+#include "kernel/tty.h"
 
 namespace ide {
 
 class IDEDeviceController {
- public:
-    IDEDeviceController(std::uint16_t io, std::uint8_t drv, block::IDEBlockDevice *dev)
+   public:
+    IDEDeviceController(std::uint16_t io, std::uint8_t drv,
+                        block::IDEBlockDevice *dev)
         : io_base(io), drive(drv), status(0), lba_address(0), ide_dev(dev) {}
 
     std::uint16_t io_base;
@@ -45,7 +46,7 @@ static void WaitDrq(std::uint16_t io_base) {
         if (status & IDE_STATUS_DRQ) {
             return;
         }
-        //task::ipc::Send(&msg);
+        // task::ipc::Send(&msg);
     }
 }
 
@@ -56,11 +57,12 @@ static void WaitNotBusy(std::uint16_t io_base) {
         if (!(status & IDE_STATUS_BSY)) {
             return;
         }
-        //task::ipc::Send(&msg);
+        // task::ipc::Send(&msg);
     }
 }
 
-static int Identify(std::uint16_t io_base, std::uint8_t drive, std::uint16_t *buf) {
+static int Identify(std::uint16_t io_base, std::uint8_t drive,
+                    std::uint16_t *buf) {
     ide_lock.lock();
 
     outb(io_base + IDE_DEVICE, 0xA0 | (drive << 4));
@@ -100,10 +102,10 @@ static void IDEProcessRequest(block::Request *req) {
 
         if (req->rw == block::REQ_TYPE_READ) {
             IDEDeviceRead(ide_dev->ide_dev, ide_dev->io_base, ide_dev->drive,
-                         req->sector, req->count, req->buf);
+                          req->sector, req->count, req->buf);
         } else if (req->rw == block::REQ_TYPE_WRITE) {
             IDEDeviceWrite(ide_dev->ide_dev, ide_dev->io_base, ide_dev->drive,
-                          req->sector, req->count, req->buf);
+                           req->sector, req->count, req->buf);
         }
     }
 
@@ -111,13 +113,13 @@ static void IDEProcessRequest(block::Request *req) {
 }
 
 int IDEDeviceRead(block::IDEBlockDevice *dev, std::uint16_t io_base,
-                  std::uint8_t drive, std::uint64_t sector,
-                  std::uint32_t count, void *buf) {
+                  std::uint8_t drive, std::uint64_t sector, std::uint32_t count,
+                  void *buf) {
     ide_lock.lock();
-                    
+
     std::uint16_t *data = (std::uint16_t *)buf;
     WaitReady(io_base);
-    
+
     for (std::uint32_t i = 0; i < count; i++) {
         outb(io_base + IDE_DEVICE,
              0xE0 | (drive << 4) | (((sector + i) >> 24) & 0x0F));
@@ -184,20 +186,19 @@ static void DetectDevices(std::uint16_t io_base, std::uint8_t irq) {
             block::IDEBlockDevice *blk_dev =
                 new block::IDEBlockDevice(device_name, io_base, drive);
 
-            devices[device_count] = new IDEDeviceController(io_base, drive, blk_dev);
+            devices[device_count] =
+                new IDEDeviceController(io_base, drive, blk_dev);
             device_count++;
 
             std::uint64_t sectors = 0;
             if (identify_data[83] & (1 << 10)) {
-                sectors =
-                    ((std::uint64_t)identify_data[103] << 48) |
-                    ((std::uint64_t)identify_data[102] << 32) |
-                    ((std::uint64_t)identify_data[101] << 16) |
-                    (std::uint64_t)identify_data[100];
+                sectors = ((std::uint64_t)identify_data[103] << 48) |
+                          ((std::uint64_t)identify_data[102] << 32) |
+                          ((std::uint64_t)identify_data[101] << 16) |
+                          (std::uint64_t)identify_data[100];
             } else {
-                sectors =
-                    ((std::uint32_t)identify_data[61] << 16) |
-                    identify_data[60];
+                sectors = ((std::uint32_t)identify_data[61] << 16) |
+                          identify_data[60];
             }
 
             blk_dev->capacity = sectors;
@@ -207,8 +208,8 @@ static void DetectDevices(std::uint16_t io_base, std::uint8_t irq) {
 
             block::add_partition(blk_dev, 0, sectors, 1);
 
-            //tty::printk("IDE: Detected device %s with %lu sectors\n",
-            //           device_name, sectors);
+            // tty::printk("IDE: Detected device %s with %lu sectors\n",
+            //            device_name, sectors);
         }
     }
     ide_lock.unlock();

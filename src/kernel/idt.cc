@@ -4,8 +4,8 @@
 #include "kernel/cpu.h"
 #include "kernel/mm.h"
 #include "kernel/page.h"
-#include "kernel/tty.h"
 #include "kernel/task.h"
+#include "kernel/tty.h"
 
 extern "C" void de_fault_handler(faultStack_nocode *stack) {
     if (stack->cs == KERNEL_CS) {
@@ -79,13 +79,27 @@ extern "C" void br_fault_handler(faultStack_nocode *stack) {
 }
 
 extern "C" void ud_fault_handler(faultStack_nocode *stack) {
-    tty::printk("#UD Invalid Opcode!\n");
-    tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-    tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-    tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
+    if (stack->cs == KERNEL_CS) {
+        tty::printk("#UD Invalid Opcode!\n");
+        tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+        tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+        tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
 
-    while (true) {
-        asm volatile("hlt");
+        while (true) {
+            asm volatile("hlt");
+        }
+    } else {
+        tty::printk("Segmentation Fault.\n");
+        for (std::uint32_t i = 0; i < 16; i++) {
+            tty::printk(" %02x",
+                        reinterpret_cast<std::uint8_t *>(stack->rip)[i]);
+        }
+        tty::printk("\n (Invalid Opcode) RIP=0x%lx, RSP=0x%lx\n", stack->rip,
+                    stack->rsp);
+        tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+        tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
+
+        task::thread::Exit(0xc0000094);
     }
 }
 
@@ -146,19 +160,55 @@ extern "C" void ss_fault_handler(faultStack_code *stack) {
     }
 }
 
+static void print_gp_error_code(std::uint64_t error_code) {
+    tty::printk("  Error Code Analysis:\n");
+    tty::printk("    Raw error code: 0x%lx\n", error_code);
+
+    if (error_code & 0x01) {
+        tty::printk("    - External event (EXT)\n");
+    } else {
+        tty::printk("    - Not external event\n");
+    }
+
+    if (error_code & 0x02) {
+        tty::printk("    - Gate descriptor (IDT gate)\n");
+        std::uint16_t selector = (error_code >> 16) & 0xFFFF;
+        tty::printk("    - Selector index: 0x%x\n", selector);
+    } else {
+        tty::printk("    - Segment descriptor\n");
+        std::uint16_t index = (error_code >> 3) & 0xFFF8;
+        tty::printk("    - Descriptor index: 0x%x\n", index);
+    }
+
+    std::uint8_t cpl = error_code & 0x03;
+    tty::printk("    - CPL: %d\n", cpl);
+
+    if (error_code & 0x04) {
+        tty::printk("    - Error in IDT\n");
+    }
+}
+
 extern "C" void gp_fault_handler(faultStack_code *stack) {
     if (stack->cs == KERNEL_CS) {
-        tty::printk("#GP General Protection Fault! Error code = 0x%lx\n",
-                    stack->error_code);
-        tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-        tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
-        tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
+        tty::printk("#GP General Protection Fault!\n");
+        tty::printk("  Error code = 0x%lx\n", stack->error_code);
+        print_gp_error_code(stack->error_code);
+        tty::printk("  RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
+        tty::printk("  CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
+        tty::printk("  RFLAGS=0x%lx\n", stack->rflags);
 
         while (true) {
             asm volatile("hlt");
         }
     } else {
         tty::printk("Segmentation Fault.\n");
+        for (std::uint32_t i = 0; i < 16; i++) {
+            tty::printk(" %02x",
+                        reinterpret_cast<std::uint8_t *>(stack->rip)[i]);
+        }
+        tty::printk("\n  Error code = 0x%lx\n", stack->error_code);
+        print_gp_error_code(stack->error_code);
+        tty::printk("  RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
         task::thread::Exit(0xc0000096);
     }
 }
@@ -169,6 +219,16 @@ extern "C" void page_fault_handler(faultStack_code *stack) {
     asm volatile("mov %%cr3, %0" : "=r"(cr3));
     if (stack->cs == KERNEL_CS) {
         tty::printk("Page Fault. Error code = 0x%lx\n", stack->error_code);
+        if (stack->error_code & 1) {
+            tty::printk(" Page present, but not readable");
+        } else {
+            tty::printk(" Page not present");
+        }
+        if (stack->error_code & (1 << 1)) {
+            tty::printk("(when writing)");
+        } else {
+            tty::printk("(when reading)");
+        }
         tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
         tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
         tty::printk(" RFLAGS=0x%lx CR2=0x%lx\n", stack->rflags, cr2);
@@ -178,6 +238,16 @@ extern "C" void page_fault_handler(faultStack_code *stack) {
         }
     } else {
         tty::printk("Segmentation Fault.\n");
+        if (stack->error_code & 1) {
+            tty::printk(" Page present, but not readable");
+        } else {
+            tty::printk(" Page not present");
+        }
+        if (stack->error_code & (1 << 1)) {
+            tty::printk("(when writing)");
+        } else {
+            tty::printk("(when reading)");
+        }
         tty::printk(" Error code = 0x%lx\n", stack->error_code);
         tty::printk(" RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
         tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);

@@ -5,8 +5,8 @@
 
 #include "kernel/io.h"
 #include "kernel/mm.h"
-#include "kernel/tty.h"
 #include "kernel/multiboot2.h"
+#include "kernel/tty.h"
 
 namespace tty::video {
 
@@ -42,10 +42,10 @@ void Init(std::uint8_t *addr) {
         }
 
         for (int addr = 0; addr < height * width * size; addr += PAGE_SIZE) {
-            mm::page::Map(mm::page::kernel_pml4,
-                          (std::uint64_t)(FRAMEBUFFER_BASE + addr),
-                          (std::uint64_t)(buf_tag->common.framebuffer_addr + addr),
-                          PTE_PRESENT | PTE_WRITABLE);
+            mm::page::Map(
+                mm::page::kernel_pml4, (std::uint64_t)(FRAMEBUFFER_BASE + addr),
+                (std::uint64_t)(buf_tag->common.framebuffer_addr + addr),
+                PTE_PRESENT | PTE_WRITABLE);
         }
     } else {
         // Fallback to default VGA text mode address and size
@@ -60,7 +60,7 @@ void Init(std::uint8_t *addr) {
                 (std::uint64_t)(VIDEO_ADDR + addr), PTE_PRESENT | PTE_WRITABLE);
         }
     }
-    
+
     /*if (type == FRAMEBUFFER_TYPE_RGB) {
         for (int a = 0; a < height * width; a++) {
             *((std::uint32_t *)FRAMEBUFFER_BASE + a) = 0xff222222;
@@ -89,13 +89,17 @@ void Putchar(char c, std::uint8_t color) {
             for (std::uint16_t y = 1; y < VIDEO_HEIGHT; y++) {
                 for (std::uint16_t x = 0; x < VIDEO_WIDTH * 2; x++) {
                     // 源位置：y行x列；目标位置：y-1行x列
-                    *((std::uint8_t *)FRAMEBUFFER_BASE + (y-1)*VIDEO_WIDTH*2 + x) = *((std::uint8_t *)FRAMEBUFFER_BASE + y*VIDEO_WIDTH*2 + x);
+                    *((std::uint8_t *)FRAMEBUFFER_BASE +
+                      (y - 1) * VIDEO_WIDTH * 2 + x) =
+                        *((std::uint8_t *)FRAMEBUFFER_BASE +
+                          y * VIDEO_WIDTH * 2 + x);
                 }
             }
 
             // 2. 清空最后一行（VIDEO_HEIGHT-1行）
             for (std::uint16_t x = 0; x < VIDEO_WIDTH * 2; x++) {
-                *((std::uint8_t *)FRAMEBUFFER_BASE + (VIDEO_HEIGHT-1)*VIDEO_WIDTH*2 + x) = 0;
+                *((std::uint8_t *)FRAMEBUFFER_BASE +
+                  (VIDEO_HEIGHT - 1) * VIDEO_WIDTH * 2 + x) = 0;
             }
 
             // 3. 光标停在最后一行起始位置
@@ -105,12 +109,13 @@ void Putchar(char c, std::uint8_t color) {
     }
 
     if (type == FRAMEBUFFER_TYPE_EGA_TEXT) {
-        *((std::uint8_t *)FRAMEBUFFER_BASE + (xpos + ypos * width) * 2)     = c;
-        *((std::uint8_t *)FRAMEBUFFER_BASE + (xpos + ypos * width) * 2 + 1) = color;
+        *((std::uint8_t *)FRAMEBUFFER_BASE + (xpos + ypos * width) * 2) = c;
+        *((std::uint8_t *)FRAMEBUFFER_BASE + (xpos + ypos * width) * 2 + 1) =
+            color;
         xpos++;
         if (xpos >= width) goto newline;
         return;
     }
 }
 
-}  // namespace video
+}  // namespace tty::video

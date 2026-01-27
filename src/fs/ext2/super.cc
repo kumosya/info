@@ -4,8 +4,8 @@
 #include "kernel/block.h"
 #include "kernel/fs/ext2.h"
 #include "kernel/mm.h"
-#include "kernel/tty.h"
 #include "kernel/task.h"
+#include "kernel/tty.h"
 
 namespace ext2 {
 
@@ -38,7 +38,7 @@ std::uint32_t FindExt2Partition(block::BlockDevice *dev) {
     for (int i = 0; i < 4; i++) {
         if (mbr->partitions[i].partition_type == PARTITION_TYPE_LINUX) {
             ext2_lba = mbr->partitions[i].starting_lba;
-            //tty::printk("EXT2: Found Linux partition at LBA %u\n", ext2_lba);
+            // tty::printk("EXT2: Found Linux partition at LBA %u\n", ext2_lba);
             break;
         }
     }
@@ -53,7 +53,8 @@ std::uint32_t FindExt2Partition(block::BlockDevice *dev) {
     return ext2_lba;
 }
 
-int ReadSuperBlock(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t ext2_lba) {
+int ReadSuperBlock(block::BlockDevice *dev, Ext2SuperBlock *sb,
+                   std::uint32_t ext2_lba) {
     if (!dev || !sb) {
         return -1;
     }
@@ -68,7 +69,8 @@ int ReadSuperBlock(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t ex
     // 读取2个sector (1024字节 = block_size)
     int ret = dev->Read(ext2_lba + 2, 2, buf);
     if (ret != 0) {
-        tty::printk("EXT2: Failed to read superblock (ret=%d, lba=%u)\n", ret, ext2_lba);
+        tty::printk("EXT2: Failed to read superblock (ret=%d, lba=%u)\n", ret,
+                    ext2_lba);
         mm::page::Free(buf);
         return -4;
     }
@@ -77,29 +79,31 @@ int ReadSuperBlock(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t ex
     mm::page::Free(buf);
 
     if (sb->s_magic != EXT2_SUPER_MAGIC) {
-        tty::printk("EXT2: Invalid magic number 0x%x (expected 0x%x)\n", sb->s_magic, EXT2_SUPER_MAGIC);
+        tty::printk("EXT2: Invalid magic number 0x%x (expected 0x%x)\n",
+                    sb->s_magic, EXT2_SUPER_MAGIC);
         return -5;
     }
-    //tty::printk("EXT2: Superblock:\n");
-    //tty::printk("  Inodes: %u, Blocks: %u\n", sb->s_inodes_count, sb->s_blocks_count);
-    //tty::printk("  Block size: %u, Inode size: %u\n", 
-    //            1024 << sb->s_log_block_size, sb->s_inode_size);
-    //tty::printk("  Inodes per group: %u, Blocks per group: %u\n",
-    //            sb->s_inodes_per_group, sb->s_blocks_per_group);
-    //tty::printk("  First data block: %u\n", sb->s_first_data_block);
+    // tty::printk("EXT2: Superblock:\n");
+    // tty::printk("  Inodes: %u, Blocks: %u\n", sb->s_inodes_count,
+    // sb->s_blocks_count); tty::printk("  Block size: %u, Inode size: %u\n",
+    //             1024 << sb->s_log_block_size, sb->s_inode_size);
+    // tty::printk("  Inodes per group: %u, Blocks per group: %u\n",
+    //             sb->s_inodes_per_group, sb->s_blocks_per_group);
+    // tty::printk("  First data block: %u\n", sb->s_first_data_block);
 
     return 0;
 }
 
-int ReadGroupDesc(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t group, 
-                  Ext2GroupDesc *gd, std::uint32_t ext2_lba) {
+int ReadGroupDesc(block::BlockDevice *dev, Ext2SuperBlock *sb,
+                  std::uint32_t group, Ext2GroupDesc *gd,
+                  std::uint32_t ext2_lba) {
     if (!dev || !sb || !gd) {
         return -1;
     }
 
     std::uint32_t block_size = 1024 << sb->s_log_block_size;
-    std::uint32_t gd_block = 2;
-    
+    std::uint32_t gd_block   = 2;
+
     std::uint8_t *buf = (std::uint8_t *)mm::page::Alloc(block_size);
     if (!buf) {
         tty::printk("EXT2: Failed to allocate buffer for group descriptor\n");
@@ -107,24 +111,33 @@ int ReadGroupDesc(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t gro
     }
 
     std::uint32_t sectors_per_block = block_size / 512;
-    std::uint64_t sector = ext2_lba + (std::uint64_t)gd_block * sectors_per_block;
+    std::uint64_t sector =
+        ext2_lba + (std::uint64_t)gd_block * sectors_per_block;
     std::uint32_t count = sectors_per_block;
-    
+
     int ret = dev->Read(sector, count, buf);
     if (ret != 0) {
-        tty::printk("EXT2: Failed to read group descriptor (ret=%d, sector=%lu, ext2_lba=%u)\n", ret, sector, ext2_lba);
+        tty::printk(
+            "EXT2: Failed to read group descriptor (ret=%d, sector=%lu, "
+            "ext2_lba=%u)\n",
+            ret, sector, ext2_lba);
         mm::page::Free(buf);
         return -3;
     }
 
     memcpy(gd, buf + group * sizeof(Ext2GroupDesc), sizeof(Ext2GroupDesc));
 
-    //tty::printk("EXT2: ReadGroupDesc - group=%u, gd_block=%u, sector=%lu, ext2_lba=%u\n", group, gd_block, sector, ext2_lba);
-    //tty::printk("EXT2: ReadGroupDesc - bg_block_bitmap=%u, bg_inode_bitmap=%u, bg_inode_table=%u\n",
-    //            gd->bg_block_bitmap, gd->bg_inode_bitmap, gd->bg_inode_table);
-    //tty::printk("EXT2: ReadGroupDesc - bg_free_blocks_count=%u, bg_free_inodes_count=%u\n",
-    //            gd->bg_free_blocks_count, gd->bg_free_inodes_count);
-    //tty::printk("EXT2: ReadGroupDesc - bg_used_dirs_count=%u\n", gd->bg_used_dirs_count);
+    // tty::printk("EXT2: ReadGroupDesc - group=%u, gd_block=%u, sector=%lu,
+    // ext2_lba=%u\n", group, gd_block, sector, ext2_lba); tty::printk("EXT2:
+    // ReadGroupDesc - bg_block_bitmap=%u, bg_inode_bitmap=%u,
+    // bg_inode_table=%u\n",
+    //             gd->bg_block_bitmap, gd->bg_inode_bitmap,
+    //             gd->bg_inode_table);
+    // tty::printk("EXT2: ReadGroupDesc - bg_free_blocks_count=%u,
+    // bg_free_inodes_count=%u\n",
+    //             gd->bg_free_blocks_count, gd->bg_free_inodes_count);
+    // tty::printk("EXT2: ReadGroupDesc - bg_used_dirs_count=%u\n",
+    // gd->bg_used_dirs_count);
 
     mm::page::Free(buf);
 
@@ -156,14 +169,15 @@ int WriteSuperBlock(block::BlockDevice *dev, Ext2SuperBlock *sb) {
     return 0;
 }
 
-int WriteGroupDesc(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t group,
-                   Ext2GroupDesc *gd, std::uint32_t ext2_lba) {
+int WriteGroupDesc(block::BlockDevice *dev, Ext2SuperBlock *sb,
+                   std::uint32_t group, Ext2GroupDesc *gd,
+                   std::uint32_t ext2_lba) {
     if (!dev || !sb || !gd) {
         return -1;
     }
 
     std::uint32_t block_size = 1024 << sb->s_log_block_size;
-    std::uint32_t gd_block = 2;
+    std::uint32_t gd_block   = 2;
 
     std::uint8_t *buf = (std::uint8_t *)mm::page::Alloc(block_size);
     if (!buf) {
@@ -172,9 +186,10 @@ int WriteGroupDesc(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t gr
     }
 
     std::uint32_t sectors_per_block = block_size / 512;
-    std::uint64_t sector = ext2_lba + (std::uint64_t)gd_block * sectors_per_block;
+    std::uint64_t sector =
+        ext2_lba + (std::uint64_t)gd_block * sectors_per_block;
     std::uint32_t count = sectors_per_block;
-    int ret = dev->Read(sector, count, buf);
+    int ret             = dev->Read(sector, count, buf);
     if (ret != 0) {
         tty::printk("EXT2: Failed to read group descriptor for writing\n");
         mm::page::Free(buf);
@@ -194,4 +209,4 @@ int WriteGroupDesc(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t gr
     return 0;
 }
 
-}
+}  // namespace ext2

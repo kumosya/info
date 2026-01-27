@@ -1,6 +1,5 @@
 
 
-
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -42,7 +41,7 @@ void Panic(const char *fmt, ...) {
     Puts("KERNEL PANIC: ", 0x04);
     Puts(str, 0x04); /*输出格式化后的字符串*/
     va_end(argp);    /*停止使用可变参数*/
-    
+
     asm volatile("cli");
     while (true) {
         asm volatile("hlt");

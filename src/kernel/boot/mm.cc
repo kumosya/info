@@ -12,9 +12,7 @@ static std::uint64_t Vir2Phy(std::uint64_t virt) {
     return virt - IDENTITY_BASE;
 }
 
-static std::uint64_t Phy2Vir(std::uint64_t phy) {
-    return phy + IDENTITY_BASE;
-}
+static std::uint64_t Phy2Vir(std::uint64_t phy) { return phy + IDENTITY_BASE; }
 
 void frameInit(std::uint64_t start_addr, std::uint64_t end_addr) {
     //			boot::printf("Frame init: 0x%lx - 0x%lx\n", start_addr,
@@ -141,31 +139,35 @@ void MappingKernel(PTE *pml4, multiboot_tag_elf_sections *elf_sections) {
              boot::printf("0x%x->0x%x\n", vaddr, 0x100000 - 0x1000 + offset);
         }*/
         if (vaddr == reinterpret_cast<std::uint64_t>(__text_start)) {
-            for (std::uint64_t addr = 0; addr <= __text_end - __text_start; addr += PAGE_SIZE) {
+            for (std::uint64_t addr = 0; addr <= __text_end - __text_start;
+                 addr += PAGE_SIZE) {
                 mapping(pml4, vaddr + addr, 0x100000 - 0x1000 + offset + addr,
                         PTE_PRESENT | PTE_WRITABLE);
             }
-        }
-        else if (vaddr == reinterpret_cast<std::uint64_t>(__rodata_start)) {
-            for (std::uint64_t addr = 0; addr <= __rodata_end - __rodata_start; addr += PAGE_SIZE) {
+        } else if (vaddr == reinterpret_cast<std::uint64_t>(__rodata_start)) {
+            for (std::uint64_t addr = 0; addr <= __rodata_end - __rodata_start;
+                 addr += PAGE_SIZE) {
                 mapping(pml4, vaddr + addr, 0x100000 - 0x1000 + offset + addr,
                         PTE_PRESENT | PTE_WRITABLE);
             }
-        }
-        else if (vaddr == reinterpret_cast<std::uint64_t>(__data_start)) {
-            for (std::uint64_t addr = 0; addr <= __data_end - __data_start; addr += PAGE_SIZE) {
+        } else if (vaddr == reinterpret_cast<std::uint64_t>(__data_start)) {
+            for (std::uint64_t addr = 0; addr <= __data_end - __data_start;
+                 addr += PAGE_SIZE) {
                 mapping(pml4, vaddr + addr, 0x100000 - 0x1000 + offset + addr,
                         PTE_PRESENT | PTE_WRITABLE);
             }
-        }
-        else if (vaddr == reinterpret_cast<std::uint64_t>(__bss_start)) {
-            for (std::uint64_t addr = 0; addr <= __bss_end - __bss_start + 0x20000; addr += PAGE_SIZE) {
+        } else if (vaddr == reinterpret_cast<std::uint64_t>(__bss_start)) {
+            for (std::uint64_t addr = 0;
+                 addr <= __bss_end - __bss_start + 0x20000; addr += PAGE_SIZE) {
                 mapping(pml4, vaddr + addr, 0x100000 - 0x1000 + offset + addr,
                         PTE_PRESENT | PTE_WRITABLE);
             }
-            boot::printf("ELF Section '%d':"
-             "Vir: 0x%lx Off: 0x%lx Size: 0x%x B\n", i, vaddr, offset, size);
-             boot::printf("End: 0x%x->0x%x\n", vaddr + size, 0x100000 - 0x1000 + offset + size);
+            boot::printf(
+                "ELF Section '%d':"
+                "Vir: 0x%lx Off: 0x%lx Size: 0x%x B\n",
+                i, vaddr, offset, size);
+            boot::printf("End: 0x%x->0x%x\n", vaddr + size,
+                         0x100000 - 0x1000 + offset + size);
         }
     }
 }
@@ -174,7 +176,8 @@ void MappingIdentity(PTE *pml4, std::uint64_t size) {
     for (std::uint64_t addr = 0; addr < 0xf00000; addr += PAGE_SIZE) {
         mapping(pml4, addr, addr, PTE_PRESENT | PTE_WRITABLE);
     }
-    for (std::uint64_t addr = 0; addr < size && size < 0xfffffffffff; addr += PAGE_SIZE) {
+    for (std::uint64_t addr = 0; addr < size && size < 0xfffffffffff;
+         addr += PAGE_SIZE) {
         mapping(pml4, IDENTITY_BASE + addr, addr, PTE_PRESENT | PTE_WRITABLE);
     }
 }

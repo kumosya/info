@@ -2,6 +2,7 @@
 #define INFO_KERNEL_IDE_H_
 
 #include <cstdint>
+
 #include "kernel/block.h"
 
 namespace ide {
@@ -37,12 +38,11 @@ namespace ide {
 
 void Init();
 int IDEDeviceRead(block::IDEBlockDevice *dev, std::uint16_t io_base,
-                  std::uint8_t drive, std::uint64_t sector,
-                  std::uint32_t count, void *buf);
+                  std::uint8_t drive, std::uint64_t sector, std::uint32_t count,
+                  void *buf);
 int IDEDeviceWrite(block::IDEBlockDevice *dev, std::uint16_t io_base,
                    std::uint8_t drive, std::uint64_t sector,
                    std::uint32_t count, const void *buf);
-
 
 }  // namespace ide
 

@@ -8,6 +8,8 @@
 #define CR4_PSE (1 << 4)
 #define CR4_PAE (1 << 5)
 #define CR4_PGE (1 << 7)
+#define CR4_OSFXSR (1 << 9)      /* OS supports FXSAVE/FXRSTOR */
+#define CR4_OSXMMEXCPT (1 << 10) /* OS supports SIMD FP exceptions */
 
 /* Segment selector */
 #define SELECTOR_RPL (0)
@@ -60,8 +62,6 @@ struct Ptr {
 } __attribute__((packed));
 
 void Init();
-static void SetEntry(int vec, void *handler, std::uint16_t sel,
-                     std::uint8_t type_attr);
 }  // namespace idt
 
 namespace gdt {

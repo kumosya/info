@@ -40,8 +40,7 @@
 #define PDPT_ENTRY(addr) ((addr >> PDPT_OFFSET) & PT_ENTRY_MASK)
 #define PML4_ENTRY(addr) ((addr >> PML4_OFFSET) & PT_ENTRY_MASK)
 
-#define IDENTITY_BASE   0xfffff00000000000ULL
-
+#define IDENTITY_BASE 0xfffff00000000000ULL
 
 /* for C++ code */
 

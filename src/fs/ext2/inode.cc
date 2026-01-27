@@ -8,37 +8,40 @@
 
 namespace ext2 {
 
-std::uint32_t Inode2Block(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t inode_num, std::uint32_t ext2_lba) {
+std::uint32_t Inode2Block(block::BlockDevice *dev, Ext2SuperBlock *sb,
+                          std::uint32_t inode_num, std::uint32_t ext2_lba) {
     if (!dev || !sb) {
         return 0;
     }
 
-    std::uint32_t block_size = 1024 << sb->s_log_block_size;
+    std::uint32_t block_size       = 1024 << sb->s_log_block_size;
     std::uint32_t inodes_per_block = block_size / sb->s_inode_size;
     std::uint32_t inodes_per_group = sb->s_inodes_per_group;
-    std::uint32_t group = (inode_num - 1) / inodes_per_group;
-    std::uint32_t inode_in_group = (inode_num - 1) % inodes_per_group;
+    std::uint32_t group            = (inode_num - 1) / inodes_per_group;
+    std::uint32_t inode_in_group   = (inode_num - 1) % inodes_per_group;
 
     Ext2GroupDesc gd;
     if (ReadGroupDesc(dev, sb, group, &gd, ext2_lba) != 0) {
         return 0;
     }
 
-    std::uint32_t block = gd.bg_inode_table + (inode_in_group / inodes_per_block);
+    std::uint32_t block =
+        gd.bg_inode_table + (inode_in_group / inodes_per_block);
     return block;
 }
 
-int ReadInode(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t inode_num, 
-              Ext2Inode *inode, std::uint32_t ext2_lba) {
+int ReadInode(block::BlockDevice *dev, Ext2SuperBlock *sb,
+              std::uint32_t inode_num, Ext2Inode *inode,
+              std::uint32_t ext2_lba) {
     if (!dev || !sb || !inode || inode_num == 0) {
         return -1;
     }
 
-    std::uint32_t block_size = 1024 << sb->s_log_block_size;
+    std::uint32_t block_size       = 1024 << sb->s_log_block_size;
     std::uint32_t inodes_per_block = block_size / sb->s_inode_size;
     std::uint32_t inodes_per_group = sb->s_inodes_per_group;
-    std::uint32_t group = (inode_num - 1) / inodes_per_group;
-    std::uint32_t inode_in_group = (inode_num - 1) % inodes_per_group;
+    std::uint32_t group            = (inode_num - 1) / inodes_per_group;
+    std::uint32_t inode_in_group   = (inode_num - 1) % inodes_per_group;
 
     Ext2GroupDesc gd;
     if (ReadGroupDesc(dev, sb, group, &gd, ext2_lba) != 0) {
@@ -46,12 +49,16 @@ int ReadInode(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t inode_n
         return -2;
     }
 
-    std::uint32_t table_block = gd.bg_inode_table + (inode_in_group / inodes_per_block);
-    std::uint32_t inode_offset = (inode_in_group % inodes_per_block) * sb->s_inode_size;
-    
-    //tty::printk("EXT2: ReadInode - inode=%u, group=%u, inode_in_group=%u\n", inode_num, group, inode_in_group);
-    //tty::printk("EXT2: ReadInode - gd.bg_inode_table=%u, inodes_per_block=%u\n", gd.bg_inode_table, inodes_per_block);
-    //tty::printk("EXT2: ReadInode - table_block=%u, inode_offset=%u\n", table_block, inode_offset);
+    std::uint32_t table_block =
+        gd.bg_inode_table + (inode_in_group / inodes_per_block);
+    std::uint32_t inode_offset =
+        (inode_in_group % inodes_per_block) * sb->s_inode_size;
+
+    // tty::printk("EXT2: ReadInode - inode=%u, group=%u, inode_in_group=%u\n",
+    // inode_num, group, inode_in_group); tty::printk("EXT2: ReadInode -
+    // gd.bg_inode_table=%u, inodes_per_block=%u\n", gd.bg_inode_table,
+    // inodes_per_block); tty::printk("EXT2: ReadInode - table_block=%u,
+    // inode_offset=%u\n", table_block, inode_offset);
 
     std::uint8_t *buf = (std::uint8_t *)mm::page::Alloc(block_size);
     if (!buf) {
@@ -69,25 +76,28 @@ int ReadInode(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t inode_n
     return 0;
 }
 
-int WriteInode(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t inode_num, 
-               Ext2Inode *inode, std::uint32_t ext2_lba) {
+int WriteInode(block::BlockDevice *dev, Ext2SuperBlock *sb,
+               std::uint32_t inode_num, Ext2Inode *inode,
+               std::uint32_t ext2_lba) {
     if (!dev || !sb || !inode || inode_num == 0) {
         return -1;
     }
 
-    std::uint32_t block_size = 1024 << sb->s_log_block_size;
+    std::uint32_t block_size       = 1024 << sb->s_log_block_size;
     std::uint32_t inodes_per_block = block_size / sb->s_inode_size;
     std::uint32_t inodes_per_group = sb->s_inodes_per_group;
-    std::uint32_t group = (inode_num - 1) / inodes_per_group;
-    std::uint32_t inode_in_group = (inode_num - 1) % inodes_per_group;
+    std::uint32_t group            = (inode_num - 1) / inodes_per_group;
+    std::uint32_t inode_in_group   = (inode_num - 1) % inodes_per_group;
 
     Ext2GroupDesc gd;
     if (ReadGroupDesc(dev, sb, group, &gd, ext2_lba) != 0) {
         return -2;
     }
 
-    std::uint32_t table_block = gd.bg_inode_table + (inode_in_group / inodes_per_block);
-    std::uint32_t inode_offset = (inode_in_group % inodes_per_block) * sb->s_inode_size;
+    std::uint32_t table_block =
+        gd.bg_inode_table + (inode_in_group / inodes_per_block);
+    std::uint32_t inode_offset =
+        (inode_in_group % inodes_per_block) * sb->s_inode_size;
 
     std::uint8_t *buf = (std::uint8_t *)mm::page::Alloc(block_size);
     if (!buf) {
@@ -111,13 +121,14 @@ int WriteInode(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t inode_
     return 0;
 }
 
-std::uint32_t GetBlockNum(Ext2Inode *inode, std::uint32_t block, 
-                          Ext2SuperBlock *sb, block::BlockDevice *dev, std::uint32_t ext2_lba) {
+std::uint32_t GetBlockNum(Ext2Inode *inode, std::uint32_t block,
+                          Ext2SuperBlock *sb, block::BlockDevice *dev,
+                          std::uint32_t ext2_lba) {
     if (!inode || !sb || !dev) {
         return 0;
     }
 
-    std::uint32_t block_size = 1024 << sb->s_log_block_size;
+    std::uint32_t block_size     = 1024 << sb->s_log_block_size;
     std::uint32_t ptrs_per_block = block_size / 4;
 
     if (block < EXT2_NDIR_BLOCKS) {
@@ -136,7 +147,8 @@ std::uint32_t GetBlockNum(Ext2Inode *inode, std::uint32_t block,
             return 0;
         }
 
-        if (ReadBlock(dev, sb, inode->i_block[EXT2_IND_BLOCK], ind_buf, ext2_lba) != 0) {
+        if (ReadBlock(dev, sb, inode->i_block[EXT2_IND_BLOCK], ind_buf,
+                      ext2_lba) != 0) {
             mm::page::Free(ind_buf);
             return 0;
         }
@@ -158,7 +170,8 @@ std::uint32_t GetBlockNum(Ext2Inode *inode, std::uint32_t block,
             return 0;
         }
 
-        if (ReadBlock(dev, sb, inode->i_block[EXT2_DIND_BLOCK], dind_buf, ext2_lba) != 0) {
+        if (ReadBlock(dev, sb, inode->i_block[EXT2_DIND_BLOCK], dind_buf,
+                      ext2_lba) != 0) {
             mm::page::Free(dind_buf);
             return 0;
         }
@@ -196,12 +209,14 @@ std::uint32_t GetBlockNum(Ext2Inode *inode, std::uint32_t block,
         return 0;
     }
 
-    if (ReadBlock(dev, sb, inode->i_block[EXT2_TIND_BLOCK], tind_buf, ext2_lba) != 0) {
+    if (ReadBlock(dev, sb, inode->i_block[EXT2_TIND_BLOCK], tind_buf,
+                  ext2_lba) != 0) {
         mm::page::Free(tind_buf);
         return 0;
     }
 
-    std::uint32_t dind_block = tind_buf[block / (ptrs_per_block * ptrs_per_block)];
+    std::uint32_t dind_block =
+        tind_buf[block / (ptrs_per_block * ptrs_per_block)];
     mm::page::Free(tind_buf);
 
     if (dind_block == 0) {
@@ -242,12 +257,13 @@ std::uint32_t GetBlockNum(Ext2Inode *inode, std::uint32_t block,
 }
 
 int SetBlockNum(Ext2Inode *inode, std::uint32_t block, std::uint32_t num,
-                Ext2SuperBlock *sb, block::BlockDevice *dev, std::uint32_t ext2_lba) {
+                Ext2SuperBlock *sb, block::BlockDevice *dev,
+                std::uint32_t ext2_lba) {
     if (!inode || !sb || !dev) {
         return -1;
     }
 
-    std::uint32_t block_size = 1024 << sb->s_log_block_size;
+    std::uint32_t block_size     = 1024 << sb->s_log_block_size;
     std::uint32_t ptrs_per_block = block_size / 4;
 
     if (block < EXT2_NDIR_BLOCKS) {
@@ -273,14 +289,16 @@ int SetBlockNum(Ext2Inode *inode, std::uint32_t block, std::uint32_t num,
             return -3;
         }
 
-        if (ReadBlock(dev, sb, inode->i_block[EXT2_IND_BLOCK], ind_buf, ext2_lba) != 0) {
+        if (ReadBlock(dev, sb, inode->i_block[EXT2_IND_BLOCK], ind_buf,
+                      ext2_lba) != 0) {
             mm::page::Free(ind_buf);
             return -4;
         }
 
         ind_buf[block] = num;
 
-        if (WriteBlock(dev, sb, inode->i_block[EXT2_IND_BLOCK], ind_buf, ext2_lba) != 0) {
+        if (WriteBlock(dev, sb, inode->i_block[EXT2_IND_BLOCK], ind_buf,
+                       ext2_lba) != 0) {
             mm::page::Free(ind_buf);
             return -5;
         }
@@ -307,7 +325,8 @@ int SetBlockNum(Ext2Inode *inode, std::uint32_t block, std::uint32_t num,
             return -3;
         }
 
-        if (ReadBlock(dev, sb, inode->i_block[EXT2_DIND_BLOCK], dind_buf, ext2_lba) != 0) {
+        if (ReadBlock(dev, sb, inode->i_block[EXT2_DIND_BLOCK], dind_buf,
+                      ext2_lba) != 0) {
             mm::page::Free(dind_buf);
             return -4;
         }
@@ -326,7 +345,8 @@ int SetBlockNum(Ext2Inode *inode, std::uint32_t block, std::uint32_t num,
             dind_buf[block / ptrs_per_block] = ind_block;
         }
 
-        if (WriteBlock(dev, sb, inode->i_block[EXT2_DIND_BLOCK], dind_buf, ext2_lba) != 0) {
+        if (WriteBlock(dev, sb, inode->i_block[EXT2_DIND_BLOCK], dind_buf,
+                       ext2_lba) != 0) {
             mm::page::Free(dind_buf);
             return -5;
         }
@@ -371,12 +391,14 @@ int SetBlockNum(Ext2Inode *inode, std::uint32_t block, std::uint32_t num,
         return -3;
     }
 
-    if (ReadBlock(dev, sb, inode->i_block[EXT2_TIND_BLOCK], tind_buf, ext2_lba) != 0) {
+    if (ReadBlock(dev, sb, inode->i_block[EXT2_TIND_BLOCK], tind_buf,
+                  ext2_lba) != 0) {
         mm::page::Free(tind_buf);
         return -4;
     }
 
-    std::uint32_t dind_block = tind_buf[block / (ptrs_per_block * ptrs_per_block)];
+    std::uint32_t dind_block =
+        tind_buf[block / (ptrs_per_block * ptrs_per_block)];
     if (dind_block == 0) {
         if (num == 0) {
             mm::page::Free(tind_buf);
@@ -390,7 +412,8 @@ int SetBlockNum(Ext2Inode *inode, std::uint32_t block, std::uint32_t num,
         tind_buf[block / (ptrs_per_block * ptrs_per_block)] = dind_block;
     }
 
-    if (WriteBlock(dev, sb, inode->i_block[EXT2_TIND_BLOCK], tind_buf, ext2_lba) != 0) {
+    if (WriteBlock(dev, sb, inode->i_block[EXT2_TIND_BLOCK], tind_buf,
+                   ext2_lba) != 0) {
         mm::page::Free(tind_buf);
         return -5;
     }
@@ -451,12 +474,13 @@ int SetBlockNum(Ext2Inode *inode, std::uint32_t block, std::uint32_t num,
     return 0;
 }
 
-int TruncateInode(block::BlockDevice *dev, Ext2SuperBlock *sb, Ext2Inode *inode, std::uint32_t ext2_lba) {
+int TruncateInode(block::BlockDevice *dev, Ext2SuperBlock *sb, Ext2Inode *inode,
+                  std::uint32_t ext2_lba) {
     if (!dev || !sb || !inode) {
         return -1;
     }
 
-    std::uint32_t block_size = 1024 << sb->s_log_block_size;
+    std::uint32_t block_size     = 1024 << sb->s_log_block_size;
     std::uint32_t ptrs_per_block = block_size / 4;
     std::uint32_t file_blocks = (inode->i_size + block_size - 1) / block_size;
 
@@ -470,7 +494,8 @@ int TruncateInode(block::BlockDevice *dev, Ext2SuperBlock *sb, Ext2Inode *inode,
     if (inode->i_block[EXT2_IND_BLOCK] != 0) {
         std::uint32_t *ind_buf = (std::uint32_t *)mm::page::Alloc(block_size);
         if (ind_buf) {
-            if (ReadBlock(dev, sb, inode->i_block[EXT2_IND_BLOCK], ind_buf, ext2_lba) == 0) {
+            if (ReadBlock(dev, sb, inode->i_block[EXT2_IND_BLOCK], ind_buf,
+                          ext2_lba) == 0) {
                 for (std::uint32_t i = 0; i < ptrs_per_block; i++) {
                     std::uint32_t block_num = EXT2_NDIR_BLOCKS + i;
                     if (block_num < file_blocks && ind_buf[i] != 0) {
@@ -487,16 +512,24 @@ int TruncateInode(block::BlockDevice *dev, Ext2SuperBlock *sb, Ext2Inode *inode,
     if (inode->i_block[EXT2_DIND_BLOCK] != 0) {
         std::uint32_t *dind_buf = (std::uint32_t *)mm::page::Alloc(block_size);
         if (dind_buf) {
-            if (ReadBlock(dev, sb, inode->i_block[EXT2_DIND_BLOCK], dind_buf, ext2_lba) == 0) {
+            if (ReadBlock(dev, sb, inode->i_block[EXT2_DIND_BLOCK], dind_buf,
+                          ext2_lba) == 0) {
                 for (std::uint32_t i = 0; i < ptrs_per_block; i++) {
                     if (dind_buf[i] != 0) {
-                        std::uint32_t *ind_buf = (std::uint32_t *)mm::page::Alloc(block_size);
+                        std::uint32_t *ind_buf =
+                            (std::uint32_t *)mm::page::Alloc(block_size);
                         if (ind_buf) {
-                            if (ReadBlock(dev, sb, dind_buf[i], ind_buf, ext2_lba) == 0) {
-                                for (std::uint32_t j = 0; j < ptrs_per_block; j++) {
-                                    std::uint32_t block_num = EXT2_NDIR_BLOCKS + ptrs_per_block + i * ptrs_per_block + j;
-                                    if (block_num < file_blocks && ind_buf[j] != 0) {
-                                        FreeBlock(dev, sb, ind_buf[j], ext2_lba);
+                            if (ReadBlock(dev, sb, dind_buf[i], ind_buf,
+                                          ext2_lba) == 0) {
+                                for (std::uint32_t j = 0; j < ptrs_per_block;
+                                     j++) {
+                                    std::uint32_t block_num =
+                                        EXT2_NDIR_BLOCKS + ptrs_per_block +
+                                        i * ptrs_per_block + j;
+                                    if (block_num < file_blocks &&
+                                        ind_buf[j] != 0) {
+                                        FreeBlock(dev, sb, ind_buf[j],
+                                                  ext2_lba);
                                     }
                                 }
                             }
@@ -517,10 +550,10 @@ int TruncateInode(block::BlockDevice *dev, Ext2SuperBlock *sb, Ext2Inode *inode,
         inode->i_block[EXT2_TIND_BLOCK] = 0;
     }
 
-    inode->i_size = 0;
+    inode->i_size   = 0;
     inode->i_blocks = 0;
 
     return 0;
 }
 
-}
+}  // namespace ext2

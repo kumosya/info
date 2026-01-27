@@ -2,9 +2,9 @@
 #ifndef _STDIO_H
 #define _STDIO_H
 
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stddef.h>
-#include <fcntl.h>
 
 /* 标准文件描述符 */
 #define stdin ((FILE *)0)

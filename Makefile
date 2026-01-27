@@ -52,16 +52,16 @@ mkdirs:
 	@mkdir -p $(ROOTFS)/var/log
 
 lib:
-	@cd lib/libc && $(MAKE) all
+	@cd lib && $(MAKE) all
 
 all: # clean
-	# @$(MAKE) lib
+	@$(MAKE) lib
 	@$(MAKE) -C src all
 
 clean:
 	@echo -e '\e[33m[RM]\e[0m Cleaning build files ...'
 	@cd src && $(MAKE) clean
-	# @cd lib/libc && $(MAKE) clean
+	@cd lib && $(MAKE) clean
 
 makeimg: all
 	@echo -e '\e[34m[DD]\e[0m $(IMG)'

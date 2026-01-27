@@ -4,8 +4,9 @@
 
 #include "kernel/cpu.h"
 #include "kernel/io.h"
-#include "kernel/page.h"
 #include "kernel/mm.h"
+#include "kernel/page.h"
+#include "kernel/vfs.h"
 
 #define STACK_SIZE 0x8000
 
@@ -14,9 +15,14 @@
 #define USER_CS 0x28
 #define USER_DS 0x30
 
+#define THREAD_NO_ARGS (1 << 2)
 #define THREAD_KERNEL (1 << 3)
 
 #define IDLE_NICE 19
+
+#define SYSCTL_SCHED_LATENCY 20000000ULL
+#define SYSCTL_SCHED_MIN_GRANULARITY 4000000ULL
+#define SYSCTL_SCHED_WAKEUP_GRANULARITY 2000000ULL
 
 namespace task {
 
@@ -59,18 +65,22 @@ namespace thread {
 
 extern pid_t pid_counter;
 
+pid_t UserFork(void);
+
 std::int64_t Exec(Registers *regs);
 std::int64_t Exit(std::int64_t code);
 std::int64_t Kill(Pcb *proc, std::int64_t code);
-pid_t Fork(Registers *regs, std::uint64_t flags, std::uint64_t stack_base,
-           std::uint64_t stack_size, int nice = 0);
-pid_t KernelThread(std::int64_t *func, const char *arg, std::int32_t nice, std::uint64_t flags);
+pid_t Fork(Registers *regs, std::uint64_t flags, std::uint64_t stack_size,
+           int nice = 0);
+int Execve(const char *filename, const char *argv[], const char *envp[]);
+pid_t KernelThread(std::int64_t *func, const char *arg, std::int32_t nice,
+                   std::uint64_t flags);
 void Init();
 
 }  // namespace thread
 
 class SpinLock {
-public:
+   public:
     SpinLock();
     ~SpinLock();
 
@@ -78,12 +88,12 @@ public:
     void unlock();
     bool try_lock();
 
-private:
+   private:
     std::uint32_t state;
 };
 
 class Sem {
-public:
+   public:
     Sem(std::int32_t value);
     ~Sem();
 
@@ -91,7 +101,7 @@ public:
     void signal();
     std::int32_t get_value() const;
 
-private:
+   private:
     std::int32_t value;
     Pcb *wait_queue;
     SpinLock lock;
@@ -128,14 +138,127 @@ struct Pipe {
     bool is_closed;
 };
 
-std::int64_t Send(Message *msg);
-bool Receive(Message *msg);
+int Send(Message *msg);
+int Receive(Message *msg);
 std::int64_t PipeCreate(int pipefd[2]);
 std::int64_t PipeRead(int fd, void *buf, std::uint64_t size);
 std::int64_t PipeWrite(int fd, const void *buf, std::uint64_t size);
 void PipeClose(int fd);
 
+}  // namespace ipc
+
+namespace cfs {
+
+const std::uint32_t PRIO_TO_WEIGHT[40] = {
+    88761, 71755, 56483, 46273, 36291, 29154, 23254, 18705, 14949, 11916,
+    9548,  7620,  6070,  4854,  3890,  3121,  2501,  2008,  1607,  1285,
+    1024,  820,   655,   526,   423,   335,   272,   215,   172,   137,
+    110,   87,    70,    56,    45,    36,    29,    23,    18,    15,
+};
+
+const std::uint32_t PRIO_TO_INV_WEIGHT[40] = {
+    82982,     98370,     125693,    155708,    200929,    248041,    317246,
+    388135,    478052,    595891,    740742,    922450,    1181682,   1475697,
+    1861631,   2317688,   2893871,   3610940,   4522467,   5682162,   7084980,
+    8786910,   10938093,  13700946,  17116283,  21558656,  26815000,  33538007,
+    42070292,  52958222,  66630628,  84254597,  105380904, 131291284, 164756170,
+    207791506, 261200000, 330926701, 419417000, 525518802,
+};
+
+struct Entity {
+    Pcb *pcb;
+    std::uint64_t vruntime;
+    std::uint64_t sum_exec_runtime;
+    std::uint64_t weight;
+    std::uint64_t min_vruntime;
+    Pcb *rb_left;
+    Pcb *rb_right;
+    Pcb *rb_parent;
+    bool rb_is_red;
+};
+
+inline std::int32_t Weight2Nice(std::uint32_t weight) {
+    for (std::int32_t i = 0; i < 40; i++) {
+        if (PRIO_TO_WEIGHT[i] == weight) {
+            return i - 20;
+        }
+    }
+    return 0;
 }
+
+inline std::uint32_t Nice2Weight(std::int32_t nice) {
+    if (nice < -20) nice = -20;
+    if (nice > 19) nice = 19;
+    return PRIO_TO_WEIGHT[nice + 20];
+}
+
+inline std::uint32_t Nice2InvWeight(std::int32_t nice) {
+    if (nice < -20) nice = -20;
+    if (nice > 19) nice = 19;
+    return PRIO_TO_INV_WEIGHT[nice + 20];
+}
+
+class Rq {
+   public:
+    Rq()
+        : rb_root(nullptr),
+          leftmost(nullptr),
+          min_vruntime(0),
+          nr_running(0),
+          total_weight(0) {}
+    ~Rq() {}
+
+    void RbPrintTree();
+
+   protected:
+    void RbInsert(task::Pcb *node);
+    void RbErase(task::Pcb *node);
+
+    task::Pcb *rb_root;
+    task::Pcb *leftmost;
+    std::uint64_t min_vruntime;
+    std::uint32_t nr_running;
+    std::uint64_t curr_vruntime;
+    std::uint64_t total_weight;
+
+   private:
+    void RbLeftRotate(task::Pcb *x);
+    void RbRightRotate(task::Pcb *y);
+    void RbInsertColorFixup(task::Pcb *node);
+    void RbEraseColorFixup(task::Pcb *node, task::Pcb *parent);
+    void RbInitNode(task::Pcb *node);
+    void RbReplaceNode(task::Pcb *u, task::Pcb *v);
+};
+
+class Sched : public Rq {
+   public:
+    Sched() : current(nullptr), clock(0) {}
+    ~Sched() {}
+
+    void Enqueue(Pcb *pcb);
+    void Dequeue(Pcb *pcb);
+    Pcb *PickNextTask();
+    void UpdateClock(std::uint64_t delta);
+    void UpdateVruntimeCurrent(std::uint64_t delta);
+    bool NeedsSchedule();
+
+    std::uint32_t NrRunning() { return nr_running; }
+    Pcb *GetLeftmost() { return leftmost; }
+
+    task::SpinLock lock;
+
+   private:
+    task::Pcb *FirstTask(void) { return leftmost; }
+    void UpdateVruntime(task::Pcb *pcb, std::uint64_t delta);
+    void NormalizeVruntime(task::Pcb *pcb);
+
+    task::Pcb *current;
+    std::uint64_t clock;
+};
+
+extern Sched sched;
+
+}  // namespace cfs
 
 struct Pcb {
     pid_t pid;
@@ -154,94 +277,25 @@ struct Pcb {
 
     std::uint64_t time_used;
     std::int64_t exit_code;
-    std::uint64_t priority;
 
-    // CFS相关字段
-    std::uint64_t vruntime;
-    std::uint64_t sum_exec_runtime;
-    std::uint64_t weight;
-    std::uint64_t min_vruntime;
-    Pcb *rb_left;
-    Pcb *rb_right;
-    Pcb *rb_parent;
-    bool rb_is_red;
+    vfs::FileDescriptorTable files;
+
+    // CFS
+    cfs::Entity se;
 };
 
 extern Pcb *current_proc;
 extern Pcb *idle;
 extern SpinLock run_queue_lock;
+extern Pcb *run_queue_head;
 
 void Schedule();
-void SchedInit();
-
 int Service(int argc, char *argv[]);
 
-#define SYSCTL_SCHED_LATENCY 20000000ULL
-#define SYSCTL_SCHED_MIN_GRANULARITY 4000000ULL
-#define SYSCTL_SCHED_WAKEUP_GRANULARITY 2000000ULL
-
-namespace cfs {
-
-static const std::uint32_t PRIO_TO_WEIGHT[40] = {
-     88761,     71755,     56483,     46273,     36291,
-     29154,     23254,     18705,     14949,     11916,
-      9548,      7620,      6070,      4854,      3890,
-      3121,      2501,      2008,      1607,      1285,
-      1024,       820,       655,       526,       423,
-       335,       272,       215,       172,       137,
-       110,        87,        70,        56,        45,
-        36,        29,        23,        18,        15,
-};
-
-static const std::uint32_t PRIO_TO_INV_WEIGHT[40] = {
-     82982,     98370,    125693,    155708,    200929,
-    248041,    317246,    388135,    478052,    595891,
-    740742,    922450,   1181682,   1475697,   1861631,
-   2317688,   2893871,   3610940,   4522467,   5682162,
-   7084980,   8786910,  10938093,  13700946,  17116283,
-  21558656,  26815000,  33538007,  42070292,  52958222,
-  66630628,  84254597, 105380904, 131291284, 164756170,
- 207791506, 261200000, 330926701, 419417000, 525518802,
-};
-
-struct CfsRq {
-    task::Pcb *rb_root;
-    task::Pcb *leftmost;
-    std::uint64_t min_vruntime;
-    std::uint32_t nr_running;
-    std::uint64_t curr_vruntime;
-};
-
-struct CfsSched {
-    CfsRq cfs_rq;
-    task::SpinLock lock;
-    task::Pcb *current;
-    std::uint64_t clock;
-    std::uint64_t clock_task;
-};
-
-extern CfsSched sched;
-
-void Enqueue(Pcb *pcb);
-void Dequeue(Pcb *pcb);
-Pcb *PickNextTask();
-void UpdateClock(std::uint64_t delta);
-void UpdateVruntimeCurrent(std::uint64_t delta);
-bool NeedsPreempt(Pcb *pcb);
-std::uint64_t TimeSlice();
-std::uint32_t NrRunning();
-Pcb *GetLeftmost();
-
-void RbPrintTree();
-void RbInsert(Pcb *node);
-void RbErase(Pcb *node);
-
-}  // namespace cfs
-
 inline void SwitchTable(Pcb *next) {
-    __asm__ __volatile__("movq	%0,	%%cr3	\n\t" ::"r"(mm::Vir2Phy((std::uint64_t)next->mm.pml4))
+    __asm__ __volatile__("movq	%0,	%%cr3	\n\t" ::"r"(
+                             mm::Vir2Phy((std::uint64_t)next->mm.pml4))
                          : "memory");
-    
 }
 
 }  // namespace task

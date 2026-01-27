@@ -1,10 +1,11 @@
 
+#include "kernel/keyboard.h"
+
 #include <cstdint>
 #include <cstring>
 
 #include "kernel/cpu.h"
 #include "kernel/io.h"
-#include "kernel/keyboard.h"
 #include "kernel/task.h"
 #include "kernel/tty.h"
 
@@ -13,11 +14,11 @@ extern "C" void kbd_handler_c();
 extern "C" void kbd_stub(void);
 
 namespace keyboard {
-    
+
 bool shift_pressed = false;
-bool ctrl_pressed = false;
-bool alt_pressed = false;
-bool caps_lock = false;
+bool ctrl_pressed  = false;
+bool alt_pressed   = false;
+bool caps_lock     = false;
 
 static TTYSwitchCallback tty_switch_callback = nullptr;
 
@@ -29,7 +30,7 @@ InputQueue kbd_buffer;
 task::SpinLock kbd_lock;
 
 void InputQueue::ProcessScancode(std::uint8_t sc) {
-    bool release = (sc & 0x80) != 0;
+    bool release      = (sc & 0x80) != 0;
     std::uint8_t code = sc & 0x7F;
 
     if (code >= sizeof(keymap_normal)) {
@@ -37,21 +38,21 @@ void InputQueue::ProcessScancode(std::uint8_t sc) {
     }
 
     switch (code) {
-    case 0x2A:
-    case 0x36:
-        shift_pressed = !release;
-        return;
-    case 0x1D:
-        ctrl_pressed = !release;
-        return;
-    case 0x38:
-        alt_pressed = !release;
-        return;
-    case 0x3A:
-        if (!release) {
-            caps_lock = !caps_lock;
-        }
-        return;
+        case 0x2A:
+        case 0x36:
+            shift_pressed = !release;
+            return;
+        case 0x1D:
+            ctrl_pressed = !release;
+            return;
+        case 0x38:
+            alt_pressed = !release;
+            return;
+        case 0x3A:
+            if (!release) {
+                caps_lock = !caps_lock;
+            }
+            return;
     }
 
     if (release) {
@@ -67,7 +68,7 @@ void InputQueue::ProcessScancode(std::uint8_t sc) {
     }
 
     const char *keymap = shift_pressed ? keymap_shift : keymap_normal;
-    char c = keymap[code];
+    char c             = keymap[code];
 
     if (c == 0) {
         return;
@@ -94,7 +95,7 @@ void InputQueue::ProcessScancode(std::uint8_t sc) {
             c = 0x1B;
         }
     }
-    
+
     Insert(c);
 }
 
@@ -104,7 +105,7 @@ char InputQueue::ScancodeToChar(std::uint8_t scancode, bool shift) {
     }
 
     const char *keymap = shift ? keymap_shift : keymap_normal;
-    char c = keymap[scancode];
+    char c             = keymap[scancode];
 
     if (c == 0) {
         return 0;
@@ -120,26 +121,26 @@ char InputQueue::ScancodeToChar(std::uint8_t scancode, bool shift) {
 }
 
 void InputQueue::Insert(char c) {
-    //kbd_lock.lock();
+    // kbd_lock.lock();
 
     if (count < KBD_BUFFER_SIZE - 1) {
         buffer[tail] = c;
-        tail = (tail + 1) % KBD_BUFFER_SIZE;
+        tail         = (tail + 1) % KBD_BUFFER_SIZE;
         count++;
     }
 
-    //kbd_lock.unlock();
+    // kbd_lock.unlock();
 }
 
 bool InputQueue::Peek(char *c) {
     kbd_lock.lock();
-    
+
     if (count == 0) {
         kbd_lock.unlock();
         return false;
     }
 
-    *c = buffer[head];
+    *c   = buffer[head];
     head = (head + 1) % KBD_BUFFER_SIZE;
     count--;
 
@@ -150,26 +151,26 @@ bool InputQueue::Peek(char *c) {
 
 bool InputQueue::HasData() {
     bool result;
-    //kbd_lock.lock();
+    // kbd_lock.lock();
     result = count > 0;
-    //kbd_lock.unlock();
+    // kbd_lock.unlock();
     return result;
 }
 
 std::uint64_t InputQueue::ReadBuffer(void *buf, std::uint64_t size) {
     std::uint64_t bytes_read = 0;
-    char *dest = static_cast<char *>(buf);
+    char *dest               = static_cast<char *>(buf);
 
-    //kbd_lock.lock();
+    // kbd_lock.lock();
 
     while (bytes_read < size && count > 0) {
         dest[bytes_read] = buffer[head];
-        head = (head + 1) % KBD_BUFFER_SIZE;
+        head             = (head + 1) % KBD_BUFFER_SIZE;
         count--;
         bytes_read++;
     }
 
-    //kbd_lock.unlock();
+    // kbd_lock.unlock();
 
     return bytes_read;
 }

@@ -97,7 +97,7 @@ _start:
 
 	/* Enable PAE and PGE */
 	mov     %cr4, %eax
-	or      $(CR4_PAE | CR4_PGE), %eax
+	or      $(CR4_PAE | CR4_PGE | CR4_OSFXSR | CR4_OSXMMEXCPT), %eax
 	mov     %eax, %cr4
 
 	/* Enabling EFER.LME */

@@ -63,7 +63,7 @@ void Putchar(char c, std::uint8_t color);
 }  // namespace video
 
 class Console {
-public:
+   public:
     void Init();
     void SetFont(FontData *font);
     void PutChar(int tty_num, char c, std::uint32_t color);
@@ -74,19 +74,18 @@ public:
     bool IsAltPressed() const { return alt_pressed_; }
     void SetAltPressed(bool pressed) { alt_pressed_ = pressed; }
 
-private:
-    void TTYSwitchHandler(int tty_num) {
-        SwitchTTY(tty_num);
-    }
+   private:
+    void TTYSwitchHandler(int tty_num) { SwitchTTY(tty_num); }
     class TTYState {
-        public:
-        int xpos = 0;
-        int ypos = 0;
+       public:
+        int xpos                     = 0;
+        int ypos                     = 0;
         std::uint32_t *screen_buffer = nullptr;
-        bool need_redraw = false;
+        bool need_redraw             = false;
 
         TTYState() {
-            screen_buffer = reinterpret_cast<std::uint32_t *>(mm::page::Alloc(video::width * video::height * video::size));
+            screen_buffer = reinterpret_cast<std::uint32_t *>(
+                mm::page::Alloc(video::width * video::height * video::size));
         }
 
         ~TTYState() {
@@ -96,18 +95,18 @@ private:
             }
         }
 
-        TTYState(const TTYState &) = delete;
+        TTYState(const TTYState &)            = delete;
         TTYState &operator=(const TTYState &) = delete;
 
-        TTYState(TTYState &&) = delete;
+        TTYState(TTYState &&)            = delete;
         TTYState &operator=(TTYState &&) = delete;
     };
 
-    //Console() = default;
+    // Console() = default;
 
     TTYState ttys_[NUM_TTYS];
-    int current_tty_ = 1;
-    bool alt_pressed_ = false;
+    int current_tty_    = 1;
+    bool alt_pressed_   = false;
     FontData *fontdata_ = nullptr;
 };
 

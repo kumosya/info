@@ -1,10 +1,11 @@
 #include <cstdint>
-#include <cstring>
 #include <cstdio>
+#include <cstring>
 
 #include "kernel/io.h"
 #include "kernel/keyboard.h"
 #include "kernel/mm.h"
+#include "kernel/syscall.h"
 #include "kernel/task.h"
 #include "kernel/tty.h"
 
@@ -18,9 +19,10 @@ int Service(int argc, char *argv[]) {
 
     task::current_proc->tty = 1;  // 绑定到第一个TTY
     task::ipc::Message msg;
-    msg.dst_pid = 4;
-    msg.type = 0;
-    std::sprintf(msg.data, "[ %08d ] Memory management service started.\n", timer::GetTicks());
+    msg.dst_pid = SYS_CHAR;
+    msg.type    = SYS_CHAR_PUTS;
+    std::sprintf(msg.data, "[ %08d ] Memory management service started.\n",
+                 timer::GetTicks());
     task::ipc::Send(&msg);
 
     while (true) {

@@ -9,8 +9,8 @@
 
 namespace ext2 {
 
-std::int64_t Lseek(block::BlockDevice *dev, Ext2SuperBlock *sb, Ext2Inode *inode, 
-                   std::int64_t offset, int whence) {
+std::int64_t Lseek(block::BlockDevice *dev, Ext2SuperBlock *sb,
+                   Ext2Inode *inode, std::int64_t offset, int whence) {
     if (!dev || !sb || !inode) {
         return -1;
     }
@@ -39,8 +39,9 @@ std::int64_t Lseek(block::BlockDevice *dev, Ext2SuperBlock *sb, Ext2Inode *inode
     return new_offset;
 }
 
-int Truncate(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t inode_num, 
-             std::uint64_t new_size, std::uint32_t ext2_lba) {
+int Truncate(block::BlockDevice *dev, Ext2SuperBlock *sb,
+             std::uint32_t inode_num, std::uint64_t new_size,
+             std::uint32_t ext2_lba) {
     if (!dev || !sb || inode_num == 0) {
         return -1;
     }
@@ -81,7 +82,7 @@ int Truncate(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t inode_nu
     return 0;
 }
 
-int GetFileSize(block::BlockDevice *dev, Ext2SuperBlock *sb, const char *path, 
+int GetFileSize(block::BlockDevice *dev, Ext2SuperBlock *sb, const char *path,
                 std::uint64_t *size, std::uint32_t ext2_lba) {
     if (!dev || !sb || !path || !size) {
         return -1;
@@ -101,4 +102,4 @@ int GetFileSize(block::BlockDevice *dev, Ext2SuperBlock *sb, const char *path,
     return 0;
 }
 
-}
+}  // namespace ext2

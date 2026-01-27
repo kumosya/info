@@ -1,3 +1,8 @@
+/**
+ * @file sem.cc
+ * @brief Semaphore implementation
+ * @author Kumosya, 2025-2026
+ **/
 
 #include <cstdint>
 #include <cstring>
@@ -17,17 +22,17 @@ Sem::~Sem() {}
 
 void Sem::wait() {
     lock.lock();
-    
+
     if (value > 0) {
         value--;
         lock.unlock();
         return;
     }
-    
-    Pcb *current = current_proc;
+
+    Pcb *current  = current_proc;
     current->stat = Blocked;
-    cfs::Dequeue(current);
-    
+    cfs::sched.Dequeue(current);
+
     Pcb *tail = wait_queue;
     /*if (tail == nullptr) {
         wait_queue = current;
@@ -39,14 +44,14 @@ void Sem::wait() {
         tail->next = current;
         current->next = nullptr;
     }*/
-    
+
     lock.unlock();
     Schedule();
 }
 
 void Sem::signal() {
     lock.lock();
-    
+
     /*if (wait_queue != nullptr) {
         Pcb *pcb = wait_queue;
         wait_queue = pcb->next;
@@ -55,12 +60,10 @@ void Sem::signal() {
     } else {
         value++;
     }*/
-    
+
     lock.unlock();
 }
 
-std::int32_t Sem::get_value() const {
-    return value;
-}
+std::int32_t Sem::get_value() const { return value; }
 
-}
+}  // namespace task

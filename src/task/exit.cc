@@ -1,3 +1,8 @@
+/**
+ * @file exit.cc
+ * @brief Exit & Kill functions for process termination
+ * @author Kumosya, 2025-2026
+ **/
 
 #include <cstdint>
 #include <cstring>

@@ -8,25 +8,6 @@
 
 using namespace std;
 
-extern "C" void pit_handler_c();
-
-// Stub implemented in interrupt.S
-extern "C" void pit_stub(void);
-
-extern "C" void pit_handler_c() {
-    timer::pit_ticks++;
-    
-    if (task::current_proc) {
-        task::current_proc->time_used++;
-    }
-    
-    // 更新 CFS vruntime（每个 tick 约 10ms）
-    task::cfs::UpdateVruntimeCurrent(10);
-    
-    outb(PIC1_CMD, 0x20);
-    task::Schedule();
-}
-
 namespace timer {
 volatile uint64_t pit_ticks = 0;
 void Init(uint32_t freq) {

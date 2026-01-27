@@ -1,9 +1,10 @@
 
+#include "kernel/page.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 
-#include "kernel/page.h"
 #include "kernel/mm.h"
 #include "kernel/tty.h"
 
@@ -77,7 +78,8 @@ void Map(PTE *pml4, std::uint64_t virt_addr, std::uint64_t phys_addr,
         PTE *pdpt = reinterpret_cast<PTE *>(AllocPages(1));
         memset(pdpt, 0, PAGE_SIZE);
         pml4[pml4_idx].value =
-            ((std::uint64_t)Vir2Phy((std::uint64_t)pdpt) & PAGE_MASK) | PTE_PRESENT | PTE_WRITABLE | flags;
+            ((std::uint64_t)Vir2Phy((std::uint64_t)pdpt) & PAGE_MASK) |
+            PTE_PRESENT | PTE_WRITABLE | flags;
     }
     PTE *pdpt = reinterpret_cast<PTE *>(pml4[pml4_idx].value & PAGE_MASK);
     if ((std::uint64_t)pdpt < 0xffff800000000000ULL) {
@@ -89,9 +91,11 @@ void Map(PTE *pml4, std::uint64_t virt_addr, std::uint64_t phys_addr,
         PTE *pd = reinterpret_cast<PTE *>(AllocPages(1));
         memset(pd, 0, PAGE_SIZE);
         pdpt[pdpt_idx].value =
-            ((std::uint64_t)Vir2Phy((std::uint64_t)pd) & PAGE_MASK) | PTE_PRESENT | PTE_WRITABLE | flags;
+            ((std::uint64_t)Vir2Phy((std::uint64_t)pd) & PAGE_MASK) |
+            PTE_PRESENT | PTE_WRITABLE | flags;
     }
-    PTE *pd = reinterpret_cast<PTE *>((std::uint64_t)pdpt[pdpt_idx].value & PAGE_MASK);
+    PTE *pd = reinterpret_cast<PTE *>((std::uint64_t)pdpt[pdpt_idx].value &
+                                      PAGE_MASK);
     if ((std::uint64_t)pd < 0xffff800000000000ULL) {
         pd = (PTE *)Phy2Vir((std::uint64_t)pd);
     }
@@ -101,9 +105,11 @@ void Map(PTE *pml4, std::uint64_t virt_addr, std::uint64_t phys_addr,
         PTE *pt = reinterpret_cast<PTE *>(AllocPages(1));
         memset(pt, 0, PAGE_SIZE);
         pd[pd_idx].value =
-            ((std::uint64_t)Vir2Phy((std::uint64_t)pt) & PAGE_MASK) | PTE_PRESENT | PTE_WRITABLE | flags;
+            ((std::uint64_t)Vir2Phy((std::uint64_t)pt) & PAGE_MASK) |
+            PTE_PRESENT | PTE_WRITABLE | flags;
     }
-    PTE *pt = reinterpret_cast<PTE *>((std::uint64_t)pd[pd_idx].value & PAGE_MASK);
+    PTE *pt =
+        reinterpret_cast<PTE *>((std::uint64_t)pd[pd_idx].value & PAGE_MASK);
     if ((std::uint64_t)pt < 0xffff800000000000ULL) {
         pt = (PTE *)Phy2Vir((std::uint64_t)pt);
     }
@@ -150,18 +156,28 @@ void UpdateKernelPml4(PTE *user_pml4) {
  * @param out_buf Output buffer (must be large enough, e.g., 256 bytes)
  * @param buf_size Size of output buffer
  */
-static void ParsePTEFlags(std::uint64_t pte_value, char* out_buf, size_t buf_size) {
-    memset(out_buf, 0, buf_size); // Clear buffer first
-    
-    if (pte_value & PTE_PRESENT)    strncat(out_buf, "P(Present) ", buf_size - strlen(out_buf) - 1);
-    if (pte_value & PTE_WRITABLE)   strncat(out_buf, "W(Writable) ", buf_size - strlen(out_buf) - 1);
-    if (pte_value & PTE_USER)       strncat(out_buf, "U(User) ", buf_size - strlen(out_buf) - 1);
-    if (pte_value & PTE_WRITE_THROUGH)        strncat(out_buf, "PWT(Write-Through) ", buf_size - strlen(out_buf) - 1);
-    if (pte_value & PTE_CACHE_DISABLE)        strncat(out_buf, "PCD(Cache-Disable) ", buf_size - strlen(out_buf) - 1);
-    if (pte_value & PTE_ACCESSED)   strncat(out_buf, "A(Accessed) ", buf_size - strlen(out_buf) - 1);
-    if (pte_value & PTE_DIRTY)      strncat(out_buf, "D(Dirty) ", buf_size - strlen(out_buf) - 1);
-    if (pte_value & PTE_GLOBAL)     strncat(out_buf, "G(Global) ", buf_size - strlen(out_buf) - 1);
-    if (pte_value & PTE_NO_EXECUTE)         strncat(out_buf, "NX(No-Execute) ", buf_size - strlen(out_buf) - 1);
+static void ParsePTEFlags(std::uint64_t pte_value, char *out_buf,
+                          size_t buf_size) {
+    memset(out_buf, 0, buf_size);  // Clear buffer first
+
+    if (pte_value & PTE_PRESENT)
+        strncat(out_buf, "P(Present) ", buf_size - strlen(out_buf) - 1);
+    if (pte_value & PTE_WRITABLE)
+        strncat(out_buf, "W(Writable) ", buf_size - strlen(out_buf) - 1);
+    if (pte_value & PTE_USER)
+        strncat(out_buf, "U(User) ", buf_size - strlen(out_buf) - 1);
+    if (pte_value & PTE_WRITE_THROUGH)
+        strncat(out_buf, "PWT(Write-Through) ", buf_size - strlen(out_buf) - 1);
+    if (pte_value & PTE_CACHE_DISABLE)
+        strncat(out_buf, "PCD(Cache-Disable) ", buf_size - strlen(out_buf) - 1);
+    if (pte_value & PTE_ACCESSED)
+        strncat(out_buf, "A(Accessed) ", buf_size - strlen(out_buf) - 1);
+    if (pte_value & PTE_DIRTY)
+        strncat(out_buf, "D(Dirty) ", buf_size - strlen(out_buf) - 1);
+    if (pte_value & PTE_GLOBAL)
+        strncat(out_buf, "G(Global) ", buf_size - strlen(out_buf) - 1);
+    if (pte_value & PTE_NO_EXECUTE)
+        strncat(out_buf, "NX(No-Execute) ", buf_size - strlen(out_buf) - 1);
 
     // If no flags, set default message
     if (strlen(out_buf) == 0) {
@@ -175,29 +191,31 @@ static void ParsePTEFlags(std::uint64_t pte_value, char* out_buf, size_t buf_siz
  * @param virt_addr Virtual address to analyze (no need for page alignment)
  * @return Physical address (0 = no mapping)
  */
-std::uint64_t AnalyzePageTable(PTE* pml4, std::uint64_t virt_addr) {
+std::uint64_t AnalyzePageTable(PTE *pml4, std::uint64_t virt_addr) {
     // Align virtual address to page boundary
     std::uint64_t va_aligned = virt_addr & PAGE_MASK;
-    tty::printk("== Page Table Analysis: Virtual Address 0x%lx (Aligned: 0x%lx) ==\n", 
-           virt_addr, va_aligned);
+    tty::printk(
+        "== Page Table Analysis: Virtual Address 0x%lx (Aligned: 0x%lx) ==\n",
+        virt_addr, va_aligned);
 
     // Parse indices for each page table level
     int pml4_idx = PML4_ENTRY(va_aligned);
     int pdpt_idx = PDPT_ENTRY(va_aligned);
     int pd_idx   = PD_ENTRY(va_aligned);
     int pt_idx   = PT_ENTRY(va_aligned);
-    tty::printk("Index: PML4=%d, PDPT=%d, PD=%d, PT=%d\n", 
-           pml4_idx, pdpt_idx, pd_idx, pt_idx);
+    tty::printk("Index: PML4=%d, PDPT=%d, PD=%d, PT=%d\n", pml4_idx, pdpt_idx,
+                pd_idx, pt_idx);
 
     // -------------------------- Analyze PML4 Level --------------------------
-    PTE& pml4_entry = pml4[pml4_idx];
+    PTE &pml4_entry      = pml4[pml4_idx];
     char pml4_flags[256] = {0};
     ParsePTEFlags(pml4_entry.value, pml4_flags, sizeof(pml4_flags));
-    
-    tty::printk("  PML4 Entry Physical Address: 0x%lx\n", (std::uint64_t)&pml4_entry);
+
+    tty::printk("  PML4 Entry Physical Address: 0x%lx\n",
+                (std::uint64_t)&pml4_entry);
     tty::printk("       Entry Value: 0x%lx\n", pml4_entry.value);
     tty::printk("       Flags: %s\n", pml4_flags);
-    
+
     if (!(pml4_entry.value & PTE_PRESENT)) {
         tty::printk(" [x] PML4 Entry not present - No mapping!\n");
         return 0;
@@ -205,20 +223,20 @@ std::uint64_t AnalyzePageTable(PTE* pml4, std::uint64_t virt_addr) {
 
     // -------------------------- Analyze PDPT Level --------------------------
     std::uint64_t pdpt_phys = pml4_entry.value & PAGE_MASK;
-    PTE* pdpt = reinterpret_cast<PTE*>(pdpt_phys);
+    PTE *pdpt               = reinterpret_cast<PTE *>(pdpt_phys);
     if (pdpt_phys < 0xffff800000000000ULL) {
-        pdpt = reinterpret_cast<PTE*>(mm::Phy2Vir(pdpt_phys));
+        pdpt = reinterpret_cast<PTE *>(mm::Phy2Vir(pdpt_phys));
     }
-    
+
     char pdpt_flags[256] = {0};
-    PTE& pdpt_entry = pdpt[pdpt_idx];
+    PTE &pdpt_entry      = pdpt[pdpt_idx];
     ParsePTEFlags(pdpt_entry.value, pdpt_flags, sizeof(pdpt_flags));
-    
+
     tty::printk("  PDPT Table Physical Base: 0x%lx\n", pdpt_phys);
     tty::printk("       Table Virtual Address: 0x%lx\n", (std::uint64_t)pdpt);
     tty::printk("       Entry Value: 0x%lx\n", pdpt_entry.value);
     tty::printk("       Flags: %s\n", pdpt_flags);
-    
+
     if (!(pdpt_entry.value & PTE_PRESENT)) {
         tty::printk(" [x] PDPT Entry not present - No mapping!\n");
         return 0;
@@ -226,20 +244,20 @@ std::uint64_t AnalyzePageTable(PTE* pml4, std::uint64_t virt_addr) {
 
     // -------------------------- Analyze PD Level --------------------------
     std::uint64_t pd_phys = pdpt_entry.value & PAGE_MASK;
-    PTE* pd = reinterpret_cast<PTE*>(pd_phys);
+    PTE *pd               = reinterpret_cast<PTE *>(pd_phys);
     if (pd_phys < 0xffff800000000000ULL) {
-        pd = reinterpret_cast<PTE*>(mm::Phy2Vir(pd_phys));
+        pd = reinterpret_cast<PTE *>(mm::Phy2Vir(pd_phys));
     }
-    
+
     char pd_flags[256] = {0};
-    PTE& pd_entry = pd[pd_idx];
+    PTE &pd_entry      = pd[pd_idx];
     ParsePTEFlags(pd_entry.value, pd_flags, sizeof(pd_flags));
-    
+
     tty::printk("  PD Table Physical Base: 0x%lx\n", pd_phys);
     tty::printk("     Table Virtual Address: 0x%lx\n", (std::uint64_t)pd);
     tty::printk("     Entry Value: 0x%lx\n", pd_entry.value);
     tty::printk("     Flags: %s\n", pd_flags);
-    
+
     if (!(pd_entry.value & PTE_PRESENT)) {
         tty::printk(" [x] PD Entry not present - No mapping!\n");
         return 0;
@@ -247,36 +265,38 @@ std::uint64_t AnalyzePageTable(PTE* pml4, std::uint64_t virt_addr) {
 
     // -------------------------- Analyze PT Level --------------------------
     std::uint64_t pt_phys = pd_entry.value & PAGE_MASK;
-    PTE* pt = reinterpret_cast<PTE*>(pt_phys);
+    PTE *pt               = reinterpret_cast<PTE *>(pt_phys);
     if (pt_phys < 0xffff800000000000ULL) {
-        pt = reinterpret_cast<PTE*>(mm::Phy2Vir(pt_phys));
+        pt = reinterpret_cast<PTE *>(mm::Phy2Vir(pt_phys));
     }
-    
+
     char pt_flags[256] = {0};
-    PTE& pt_entry = pt[pt_idx];
+    PTE &pt_entry      = pt[pt_idx];
     ParsePTEFlags(pt_entry.value, pt_flags, sizeof(pt_flags));
-    
+
     tty::printk("  PT Table Physical Base: 0x%lx\n", pt_phys);
     tty::printk("     Table Virtual Address: 0x%lx\n", (std::uint64_t)pt);
     tty::printk("     Entry Value: 0x%lx\n", pt_entry.value);
     tty::printk("     Flags: %s\n", pt_flags);
-    
+
     if (!(pt_entry.value & PTE_PRESENT)) {
         tty::printk(" [x] PT Entry not present - No mapping!\n");
         return 0;
     }
 
-    // -------------------------- Calculate Physical Address --------------------------
+    // -------------------------- Calculate Physical Address
+    // --------------------------
     std::uint64_t phy_page_base = pt_entry.value & PAGE_MASK;
-    std::uint64_t page_offset = virt_addr & ~PAGE_MASK;
-    std::uint64_t phy_addr = phy_page_base + page_offset;
-    
+    std::uint64_t page_offset   = virt_addr & ~PAGE_MASK;
+    std::uint64_t phy_addr      = phy_page_base + page_offset;
+
     tty::printk("\nMapping Successful!\n");
-    tty::printk("  Virtual Address 0x%lx → Physical Address 0x%lx\n", virt_addr, phy_addr);
-    tty::printk("  Physical Page Base: 0x%lx, Page Offset: 0x%lX\n", phy_page_base, page_offset);
+    tty::printk("  Virtual Address 0x%lx → Physical Address 0x%lx\n", virt_addr,
+                phy_addr);
+    tty::printk("  Physical Page Base: 0x%lx, Page Offset: 0x%lX\n",
+                phy_page_base, page_offset);
 
     return phy_addr;
 }
-
 
 }  // namespace mm::page

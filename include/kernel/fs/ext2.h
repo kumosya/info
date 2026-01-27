@@ -70,12 +70,12 @@ struct Ext2SuperBlock {
     std::uint32_t s_feature_compat;
     std::uint32_t s_feature_incompat;
     std::uint32_t s_feature_ro_compat;
-    std::uint8_t  s_uuid[16];
-    std::uint8_t  s_volume_name[16];
+    std::uint8_t s_uuid[16];
+    std::uint8_t s_volume_name[16];
     char s_last_mounted[64];
     std::uint32_t s_algorithm_usage_bitmap;
-    std::uint8_t  s_prealloc_blocks;
-    std::uint8_t  s_prealloc_dir_blocks;
+    std::uint8_t s_prealloc_blocks;
+    std::uint8_t s_prealloc_dir_blocks;
     std::uint16_t s_padding1;
     std::uint32_t s_reserved[204];
 } __attribute__((packed));
@@ -109,14 +109,14 @@ struct Ext2Inode {
     std::uint32_t i_file_acl;
     std::uint32_t i_dir_acl;
     std::uint32_t i_faddr;
-    std::uint8_t  i_osd2[12];
+    std::uint8_t i_osd2[12];
 } __attribute__((packed));
 
 struct Ext2DirEntry {
     std::uint32_t inode;
     std::uint16_t rec_len;
-    std::uint8_t  name_len;
-    std::uint8_t  file_type;
+    std::uint8_t name_len;
+    std::uint8_t file_type;
     char name[256];
 } __attribute__((packed));
 
@@ -138,56 +138,75 @@ struct Ext2FileInfo {
 
 namespace ext2 {
 
-int ReadSuperBlock(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t ext2_lba);
+int ReadSuperBlock(block::BlockDevice *dev, Ext2SuperBlock *sb,
+                   std::uint32_t ext2_lba);
 int WriteSuperBlock(block::BlockDevice *dev, Ext2SuperBlock *sb);
-int ReadGroupDesc(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t group, 
-                  Ext2GroupDesc *gd, std::uint32_t ext2_lba);
-int WriteGroupDesc(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t group,
-                   Ext2GroupDesc *gd, std::uint32_t ext2_lba);
-int ReadInode(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t inode_num, 
-              Ext2Inode *inode, std::uint32_t ext2_lba);
-int WriteInode(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t inode_num, 
-               Ext2Inode *inode, std::uint32_t ext2_lba);
-std::uint32_t GetBlockNum(Ext2Inode *inode, std::uint32_t block, 
-                          Ext2SuperBlock *sb, block::BlockDevice *dev, std::uint32_t ext2_lba);
+int ReadGroupDesc(block::BlockDevice *dev, Ext2SuperBlock *sb,
+                  std::uint32_t group, Ext2GroupDesc *gd,
+                  std::uint32_t ext2_lba);
+int WriteGroupDesc(block::BlockDevice *dev, Ext2SuperBlock *sb,
+                   std::uint32_t group, Ext2GroupDesc *gd,
+                   std::uint32_t ext2_lba);
+int ReadInode(block::BlockDevice *dev, Ext2SuperBlock *sb,
+              std::uint32_t inode_num, Ext2Inode *inode,
+              std::uint32_t ext2_lba);
+int WriteInode(block::BlockDevice *dev, Ext2SuperBlock *sb,
+               std::uint32_t inode_num, Ext2Inode *inode,
+               std::uint32_t ext2_lba);
+std::uint32_t GetBlockNum(Ext2Inode *inode, std::uint32_t block,
+                          Ext2SuperBlock *sb, block::BlockDevice *dev,
+                          std::uint32_t ext2_lba);
 int SetBlockNum(Ext2Inode *inode, std::uint32_t block, std::uint32_t num,
-                Ext2SuperBlock *sb, block::BlockDevice *dev, std::uint32_t ext2_lba);
-int ReadBlock(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t block_num, 
-              void *buf, std::uint32_t ext2_lba);
-int WriteBlock(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t block_num, 
-               const void *buf, std::uint32_t ext2_lba);
-std::uint32_t AllocBlock(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t ext2_lba);
-void FreeBlock(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t block, std::uint32_t ext2_lba);
-std::uint32_t AllocInode(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t ext2_lba);
-void FreeInode(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t inode, std::uint32_t ext2_lba);
-int FindEntry(block::BlockDevice *dev, Ext2SuperBlock *sb, Ext2Inode *dir_inode, 
+                Ext2SuperBlock *sb, block::BlockDevice *dev,
+                std::uint32_t ext2_lba);
+int ReadBlock(block::BlockDevice *dev, Ext2SuperBlock *sb,
+              std::uint32_t block_num, void *buf, std::uint32_t ext2_lba);
+int WriteBlock(block::BlockDevice *dev, Ext2SuperBlock *sb,
+               std::uint32_t block_num, const void *buf,
+               std::uint32_t ext2_lba);
+std::uint32_t AllocBlock(block::BlockDevice *dev, Ext2SuperBlock *sb,
+                         std::uint32_t ext2_lba);
+void FreeBlock(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t block,
+               std::uint32_t ext2_lba);
+std::uint32_t AllocInode(block::BlockDevice *dev, Ext2SuperBlock *sb,
+                         std::uint32_t ext2_lba);
+void FreeInode(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t inode,
+               std::uint32_t ext2_lba);
+int FindEntry(block::BlockDevice *dev, Ext2SuperBlock *sb, Ext2Inode *dir_inode,
               const char *name, Ext2DirEntry *entry, std::uint32_t ext2_lba);
-int AddEntry(block::BlockDevice *dev, Ext2SuperBlock *sb, Ext2Inode *dir_inode, 
+int AddEntry(block::BlockDevice *dev, Ext2SuperBlock *sb, Ext2Inode *dir_inode,
              std::uint32_t inode_num, const char *name, std::uint8_t file_type,
              std::uint32_t ext2_lba);
-int RemoveEntry(block::BlockDevice *dev, Ext2SuperBlock *sb, Ext2Inode *dir_inode, 
-                const char *name, std::uint32_t ext2_lba);
-int TruncateInode(block::BlockDevice *dev, Ext2SuperBlock *sb, Ext2Inode *inode, std::uint32_t ext2_lba);
-std::uint32_t Inode2Block(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t inode_num, std::uint32_t ext2_lba);
-int LookupPath(block::BlockDevice *dev, Ext2SuperBlock *sb, const char *path, 
+int RemoveEntry(block::BlockDevice *dev, Ext2SuperBlock *sb,
+                Ext2Inode *dir_inode, const char *name, std::uint32_t ext2_lba);
+int TruncateInode(block::BlockDevice *dev, Ext2SuperBlock *sb, Ext2Inode *inode,
+                  std::uint32_t ext2_lba);
+std::uint32_t Inode2Block(block::BlockDevice *dev, Ext2SuperBlock *sb,
+                          std::uint32_t inode_num, std::uint32_t ext2_lba);
+int LookupPath(block::BlockDevice *dev, Ext2SuperBlock *sb, const char *path,
                std::uint32_t *inode_num, std::uint32_t ext2_lba);
-DirEntry *Readdir(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t dir_inode_num, 
-                  std::uint32_t index, std::uint32_t ext2_lba);
-ssize_t ReadFile(block::BlockDevice *dev, Ext2SuperBlock *sb, Ext2Inode *inode, 
-                 void *buf, size_t count, std::uint64_t offset, std::uint32_t ext2_lba);
-ssize_t WriteFile(block::BlockDevice *dev, Ext2SuperBlock *sb, Ext2Inode *inode, 
-                  const void *buf, size_t count, std::uint64_t offset, std::uint32_t ext2_lba);
-int CreateFile(block::BlockDevice *dev, Ext2SuperBlock *sb, const char *path, 
+vfs::DirEntry *Readdir(block::BlockDevice *dev, Ext2SuperBlock *sb,
+                       std::uint32_t dir_inode_num, std::uint32_t index,
+                       std::uint32_t ext2_lba);
+ssize_t ReadFile(block::BlockDevice *dev, Ext2SuperBlock *sb, Ext2Inode *inode,
+                 void *buf, size_t count, std::uint64_t offset,
+                 std::uint32_t ext2_lba);
+ssize_t WriteFile(block::BlockDevice *dev, Ext2SuperBlock *sb, Ext2Inode *inode,
+                  const void *buf, size_t count, std::uint64_t offset,
+                  std::uint32_t ext2_lba);
+int CreateFile(block::BlockDevice *dev, Ext2SuperBlock *sb, const char *path,
                std::uint16_t mode, std::uint32_t ext2_lba);
-int DeleteFile(block::BlockDevice *dev, Ext2SuperBlock *sb, const char *path, std::uint32_t ext2_lba);
-std::int64_t Lseek(block::BlockDevice *dev, Ext2SuperBlock *sb, Ext2Inode *inode, 
-                   std::int64_t offset, int whence);
-int Truncate(block::BlockDevice *dev, Ext2SuperBlock *sb, std::uint32_t inode_num, 
-             std::uint64_t new_size, std::uint32_t ext2_lba);
-int GetFileSize(block::BlockDevice *dev, Ext2SuperBlock *sb, const char *path, 
+int DeleteFile(block::BlockDevice *dev, Ext2SuperBlock *sb, const char *path,
+               std::uint32_t ext2_lba);
+std::int64_t Lseek(block::BlockDevice *dev, Ext2SuperBlock *sb,
+                   Ext2Inode *inode, std::int64_t offset, int whence);
+int Truncate(block::BlockDevice *dev, Ext2SuperBlock *sb,
+             std::uint32_t inode_num, std::uint64_t new_size,
+             std::uint32_t ext2_lba);
+int GetFileSize(block::BlockDevice *dev, Ext2SuperBlock *sb, const char *path,
                 std::uint64_t *size, std::uint32_t ext2_lba);
 std::uint32_t FindExt2Partition(block::BlockDevice *dev);
 
-}
+}  // namespace ext2
 
 #endif  // INFO_KERNEL_FS_EXT2_H_

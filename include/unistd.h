@@ -29,7 +29,8 @@ extern "C" {
 #define SEEK_END 2
 
 /* Function declarations */
-int _exit(int status);
+void _exit(int status);
+int open(const char *path, int flags, mode_t mode);
 ssize_t read(int fd, void *buf, size_t count);
 ssize_t write(int fd, const void *buf, size_t count);
 int close(int fd);
@@ -57,6 +58,7 @@ pid_t getppid(void);
 pid_t fork(void);
 pid_t wait(int *status);
 pid_t waitpid(pid_t pid, int *status, int options);
+int execv(const char *filename, char *const argv[]);
 int execve(const char *filename, char *const argv[], char *const envp[]);
 
 /* User and group */
