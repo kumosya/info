@@ -1,5 +1,5 @@
 /**
- * @file thread.cc
+ * @file task/thread.cc
  * @brief Thread management functions
  * @author Kumosya, 2025-2026
  **/
@@ -26,7 +26,24 @@ namespace thread {
 
 pid_t pid_counter;
 
-// 辅助函数：解析命令行参数字符串
+void Block(Pcb *proc) {
+    if (proc == nullptr) {
+        return;
+    }
+
+    proc->stat = task::Blocked;
+}
+
+void Unblock(Pcb *proc) {
+    if (proc == nullptr) {
+        return;
+    }
+
+    proc->stat = task::Ready;
+    cfs::sched.Enqueue(proc);
+}
+
+// 解析命令行参数字符串
 static std::uint64_t ParseArgs(const char *arg, char ***argv) {
     std::uint64_t argc = 0;
 
@@ -107,12 +124,6 @@ static std::uint64_t ParseArgs(const char *arg, char ***argv) {
     // tty::printk("ParseArgs: argc=%d, argv[0]=%s\n", argc, (*argv)[0]);
 
     return argc;
-}
-
-std::int64_t Exec(task::Registers *regs) {
-    /* TODO */
-
-    return 0;
 }
 
 // 内核线程创建函数，使用pt_regs来设置线程上下文
@@ -199,15 +210,22 @@ void InitIdle() {
 
 void Init() {
     pid_counter = 0;
-    wrmsr(0x174, KERNEL_CS);
+    //wrmsr(0x174, KERNEL_CS);
 
     InitIdle();
 
-    wrmsr(0x175, current_proc->thread->rsp0);
+    //wrmsr(0x175, current_proc->thread->rsp0);
+    
     // 初始化系统调用
-    wrmsr(0x176, reinterpret_cast<std::uint64_t>(enter_syscall));
-
-    // 创建init线程
+    wrmsr(MSR_EFER,
+         rdmsr(MSR_EFER) | (1 << 0));  // 启用syscall扩展
+    wrmsr(MSR_STAR,
+         (static_cast<std::uint64_t>(KERNEL_CS) << 32) | 
+         (static_cast<std::uint64_t>(USER_CS - 0x10) << 48)); 
+    wrmsr(MSR_LSTAR, reinterpret_cast<std::uint64_t>(enter_syscall));
+    wrmsr(MSR_FMASK, 0x200); 
+    
+    // 创建线程
     KernelThread(reinterpret_cast<std::int64_t *>(SysInit), "init", 0, 0);
 
     KernelThread(reinterpret_cast<std::int64_t *>(block::Service), "block", -10,

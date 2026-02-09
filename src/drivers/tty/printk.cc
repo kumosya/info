@@ -23,7 +23,7 @@ void Puts(const char *s, std::uint8_t color) {
 function printf. */
 int printk(const char *fmt, ...) {
     va_list argp;
-    char str[128];
+    char str[192];
     int a;
     va_start(argp, fmt);          /*开始使用可变参数*/
     a = vsprintf(str, fmt, argp); /*格式化输出*/
@@ -34,7 +34,7 @@ int printk(const char *fmt, ...) {
 
 void Panic(const char *fmt, ...) {
     va_list argp;
-    char str[128];
+    char str[192];
     int a;
     va_start(argp, fmt);          /*开始使用可变参数*/
     a = vsprintf(str, fmt, argp); /*格式化输出*/

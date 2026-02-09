@@ -22,9 +22,6 @@ extern char *cmdline;
 int SysInit(int argc, char *argv[]) {
     tty::printk("boot cmdline:%s\n", cmdline);
 
-    CpuId cpu_id;
-    cpu_id.PrintInfo();
-
     task::current_proc->tty = 1;  // 绑定到第一个TTY
     task::ipc::Message msg;
     msg.dst_pid = 3;

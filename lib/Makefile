@@ -2,10 +2,10 @@ CC=gcc
 CPP=g++
 CFLAGS=-c -m64 -fno-builtin -fno-stack-protector -nostartfiles \
 	-nostdinc -nostdlib  -Wall -Wextra \
-	 -I ../include -O2 -std=c11 -mno-sse
+	 -I ../include -O2 -std=c11
 CPPFLAGS=-c -m64 -fno-builtin -fno-stack-protector -nostartfiles -nostdinc -nostdlib \
 	 -Wall -Wextra \
-	-I ../include -O2 -std=c++11 -mno-sse
+	-I ../include -O2 -std=c++11
 
 AR=ar
 ARFLAGS=rcs
@@ -48,7 +48,7 @@ $(LIBC): $(LIBC_OBJS)
 
 # Clean rules
 clean:
-	@rm -f $(KLIBC_OBJS) $(KLIBC) $(LIBC)
+	@rm -f $(KLIBC_OBJS) $(KLIBC) $(LIBC) libc/*.o klibc/*.o
 
 .PHONY: all clean
 

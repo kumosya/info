@@ -1,5 +1,5 @@
 /**
- * @file sem.cc
+ * @file task/sem.cc
  * @brief Semaphore implementation
  * @author Kumosya, 2025-2026
  **/
@@ -13,6 +13,8 @@
 #include "kernel/page.h"
 #include "kernel/task.h"
 #include "kernel/tty.h"
+
+// TODO: 完善信号量
 
 namespace task {
 
@@ -30,20 +32,7 @@ void Sem::wait() {
     }
 
     Pcb *current  = current_proc;
-    current->stat = Blocked;
-    cfs::sched.Dequeue(current);
-
-    Pcb *tail = wait_queue;
-    /*if (tail == nullptr) {
-        wait_queue = current;
-        current->next = nullptr;
-    } else {
-        while (tail->next != nullptr) {
-            tail = tail->next;
-        }
-        tail->next = current;
-        current->next = nullptr;
-    }*/
+    thread::Block(current);
 
     lock.unlock();
     Schedule();
@@ -52,14 +41,7 @@ void Sem::wait() {
 void Sem::signal() {
     lock.lock();
 
-    /*if (wait_queue != nullptr) {
-        Pcb *pcb = wait_queue;
-        wait_queue = pcb->next;
-        pcb->stat = Ready;
-        cfs::Enqueue(pcb);
-    } else {
-        value++;
-    }*/
+    value++;
 
     lock.unlock();
 }

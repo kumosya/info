@@ -1,3 +1,9 @@
+/**
+ * @file kernel/io.h
+ * @brief I/O port and CPU instruction interfaces
+ * @author Kumosya, 2025-2026
+ **/
+
 #ifndef INFO_KERNEL_IO_H_
 #define INFO_KERNEL_IO_H_
 

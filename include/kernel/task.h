@@ -1,3 +1,9 @@
+/**
+ * @file kernel/task.h
+ * @brief Task management header
+ * @author Kumosya, 2025-2026
+ **/
+
 #ifndef INFO_KERNEL_TASK_H_
 #define INFO_KERNEL_TASK_H_
 #include <cstdint>
@@ -9,11 +15,6 @@
 #include "kernel/vfs.h"
 
 #define STACK_SIZE 0x8000
-
-#define KERNEL_CS 0x08
-#define KERNEL_DS 0x10
-#define USER_CS 0x28
-#define USER_DS 0x30
 
 #define THREAD_NO_ARGS (1 << 2)
 #define THREAD_KERNEL (1 << 3)
@@ -27,6 +28,17 @@
 namespace task {
 
 struct Pcb;
+struct Registers;
+struct Mem;
+struct Tcb;
+
+class SpinLock;
+class Sem;
+
+extern Pcb *current_proc;
+extern Pcb *idle;
+extern SpinLock run_queue_lock;
+extern Pcb *run_queue_head;
 
 using pid_t = std::int64_t;
 enum State {
@@ -60,24 +72,6 @@ struct Tcb {
     std::uint16_t fs, gs;
     std::uint64_t cr2, trap_nr, error_code;
 };
-
-namespace thread {
-
-extern pid_t pid_counter;
-
-pid_t UserFork(void);
-
-std::int64_t Exec(Registers *regs);
-std::int64_t Exit(std::int64_t code);
-std::int64_t Kill(Pcb *proc, std::int64_t code);
-pid_t Fork(Registers *regs, std::uint64_t flags, std::uint64_t stack_size,
-           int nice = 0);
-int Execve(const char *filename, const char *argv[], const char *envp[]);
-pid_t KernelThread(std::int64_t *func, const char *arg, std::int32_t nice,
-                   std::uint64_t flags);
-void Init();
-
-}  // namespace thread
 
 class SpinLock {
    public:
@@ -125,7 +119,15 @@ struct Message {
     };
 };
 
-struct Pipe {
+class Pipe {
+public:
+    int pipefd[2];
+    Pipe();
+    ~Pipe();
+
+    std::int64_t Read(int fd, void *buf, std::uint64_t size);
+    std::int64_t Write(int fd, const void *buf, std::uint64_t size);
+private:
     char buffer[4096];
     std::uint64_t read_pos;
     std::uint64_t write_pos;
@@ -140,10 +142,6 @@ struct Pipe {
 
 int Send(Message *msg);
 int Receive(Message *msg);
-std::int64_t PipeCreate(int pipefd[2]);
-std::int64_t PipeRead(int fd, void *buf, std::uint64_t size);
-std::int64_t PipeWrite(int fd, const void *buf, std::uint64_t size);
-void PipeClose(int fd);
 
 }  // namespace ipc
 
@@ -284,19 +282,35 @@ struct Pcb {
     cfs::Entity se;
 };
 
-extern Pcb *current_proc;
-extern Pcb *idle;
-extern SpinLock run_queue_lock;
-extern Pcb *run_queue_head;
-
 void Schedule();
 int Service(int argc, char *argv[]);
 
 inline void SwitchTable(Pcb *next) {
-    __asm__ __volatile__("movq	%0,	%%cr3	\n\t" ::"r"(
+    __asm__ __volatile__(
+                        "movq	%0,	%%cr3	\n" ::"r"(
                              mm::Vir2Phy((std::uint64_t)next->mm.pml4))
                          : "memory");
 }
+
+namespace thread {
+
+extern pid_t pid_counter;
+
+pid_t UserFork(void);
+
+std::int64_t Exec(Registers *regs);
+std::int64_t Exit(std::int64_t code);
+std::int64_t Kill(Pcb *proc, std::int64_t code);
+pid_t Fork(Registers *regs, std::uint64_t flags, std::uint64_t stack_size,
+           int nice = 0);
+void Block(Pcb *proc);
+void Unblock(Pcb *proc);
+int Execve(const char *filename, const char *argv[], const char *envp[]);
+pid_t KernelThread(std::int64_t *func, const char *arg, std::int32_t nice,
+                   std::uint64_t flags);
+void Init();
+
+}  // namespace thread
 
 }  // namespace task
 

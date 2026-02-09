@@ -1,5 +1,5 @@
 /**
- * @file ipc.cc
+ * @file task/ipc.cc
  * @brief Inter-Process Communication
  * @author Kumosya, 2025-2026
  **/
@@ -48,8 +48,7 @@ int Send(Message *msg) {
         Pcb *receiver           = queue->waiting_receiver;
         queue->waiting_receiver = nullptr;
         queue->lock.unlock();
-        receiver->stat = task::Ready;
-        cfs::sched.Enqueue(receiver);
+        thread::Unblock(receiver);
         return 1;
     }
 
@@ -59,10 +58,10 @@ int Send(Message *msg) {
     // current_proc->pid, (int)msg->dst_pid, msg);
     current_proc->msg     = msg;
     queue->waiting_sender = current_proc;
-    current_proc->stat    = task::Blocked;
+    thread::Block(current_proc);
     queue->lock.unlock();
-    Schedule();
     // tty::printk("Send: pid=%d woke up\n", current_proc->pid);
+    Schedule();
 
     return 1;
 }
@@ -97,13 +96,12 @@ int Receive(Message *msg) {
         queue->lock.unlock();
         // tty::printk("Receive: pid=%d waking sender=%d\n", current->pid,
         // sender->pid);
-        sender->stat = task::Ready;
-        cfs::sched.Enqueue(sender);
+        thread::Unblock(sender);
     } else {
         current_proc->msg  = msg;
-        current_proc->stat = task::Blocked;
 
         queue->waiting_receiver = current_proc;
+        thread::Block(current_proc);
         queue->lock.unlock();
 
         Schedule();

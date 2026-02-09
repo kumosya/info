@@ -13,6 +13,10 @@ std::uint64_t gdt_table[12];
 TssEntry *tss;
 Ptr gdtr;
 
+extern "C" std::uint64_t gdt_get_tss_rsp0() {
+    return tss->rsp0;
+}
+
 void SetEntry(int index, std::uint64_t base, std::uint64_t limit,
               std::uint8_t access, std::uint8_t gran) {
     // Build descriptor from two 32-bit halves to avoid tricky 64-bit shifts
@@ -65,21 +69,24 @@ void Init() {
 
     // User code segment descriptor (32-bit, 0x18) - leave empty
     SetEntry(3, 0, 0, 0, 0);
-    // User data segment descriptor (32-bit, 0x20) - leave empty
-    SetEntry(4, 0, 0, 0, 0);
+
+    // User data segment descriptor (64-bit, 0x20)
+    // Access: 0xF2 = present, ring 3, data, writable
+    SetEntry(4, 0, 0, GDT_PRESENT | GDT_DPL_RING3 | GDT_TYPE_DATA | GDT_TYPE_RW,
+             0x0);
 
     // User code segment descriptor (64-bit, 0x28)
     // Access: 0xFA = present, ring 3, code, executable, readable
     SetEntry(5, 0, 0, GDT_PRESENT | GDT_DPL_RING3 | GDT_TYPE_CODE | GDT_TYPE_RW,
              0x2);
-    // User data segment descriptor (64-bit, 0x30)
-    // Access: 0xF2 = present, ring 3, data, writable
-    SetEntry(6, 0, 0, GDT_PRESENT | GDT_DPL_RING3 | GDT_TYPE_DATA | GDT_TYPE_RW,
-             0x0);
+
+    // User data segment descriptor (32-bit, 0x30) - leave empty
+    SetEntry(6, 0, 0, 0, 0);
 
     // Code segment descriptor (32-bit, 0x38)
     SetEntry(7, 0, 0xfffff,
              GDT_PRESENT | GDT_DPL_RING0 | GDT_TYPE_CODE | GDT_TYPE_RW, 0xc);
+
     // Data segment descriptor (32-bit, 0x40)
     SetEntry(8, 0, 0xfffff,
              GDT_PRESENT | GDT_DPL_RING0 | GDT_TYPE_DATA | GDT_TYPE_RW, 0);
@@ -98,5 +105,8 @@ void Init() {
 
     // Load TSS
     ltr(10 * 8);
+    
+    wrmsr(MSR_GS_BASE, 0);
+    wrmsr(MSR_KERNEL_GS_BASE, reinterpret_cast<std::uint64_t>(tss));
 }
 }  // namespace gdt

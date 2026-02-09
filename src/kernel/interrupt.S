@@ -1,8 +1,15 @@
-/* Consolidated interrupt/exception stubs for x86_64
-   Each stub preserves registers, sets up arguments as expected by
-   C handlers, calls the C handler, restores registers and returns
-   with iretq (or halts for boot-time handlers that never return). */
+/**
+ *   @file src/kernel/interrupt.S
+ *   @brief Consolidated interrupt/exception stubs for x86_64
+ *          Each stub preserves registers, sets up arguments as expected by
+ *          C++ handlers, calls the C++ handler, restores registers and returns
+ *          (or halts for boot-time handlers that never return).
+ *   @author Kumosya, 2025-2026
+ */
 /* clang-format off */
+
+#define ASM_FILE 1
+#include "kernel/cpu.h"
 
 .section .text
 .global pit_stub
@@ -11,7 +18,6 @@
 /* PIT IRQ0 stub: call C handler and iretq */
 pit_stub:
     cli
-    /* preserve caller regs */
     push %rax
     push %rbx
     push %rcx
@@ -23,7 +29,40 @@ pit_stub:
     push %r9
     push %r10
     push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
+
+    /*
+     * 进入时：
+     *  - 若来自用户态：GS = 用户 GS
+     *  - 若来自内核态：GS = 内核 GS
+     */
+
+    /* Check CPL (CS.RPL) to see if we came from user (CPL==3). */
+    testl $3, 8(%rsp)        # CS.RPL & 3 == CPL
+    je .from_kernel
+    swapgs                   # 切换到内核 GS
+.from_kernel:
+    /* 现在开始，GS 一定是内核 GS */
+    
     call pit_handler_c
+
+    /* 
+     * 返回前：
+     * 必须与入口完全对称
+     * 判断依据仍然是“最初的 CS”
+     */
+    testl $3, 8(%rsp)
+    je .return_to_kernel
+    swapgs                   # 内核 → 用户
+.return_to_kernel:
+
+    pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9
@@ -35,10 +74,13 @@ pit_stub:
     pop %rcx
     pop %rbx
     pop %rax
+
     sti
     iretq
 
+
 /* Keyboard IRQ1 stub */
+
 kbd_stub:
     cli
     push %rax
@@ -52,7 +94,29 @@ kbd_stub:
     push %r9
     push %r10
     push %r11
-    call kbd_handler_c
+    push %r12
+    push %r13
+    push %r14
+    push %r15
+
+    /* If we came from user mode, swapgs to get kernel GS before
+       touching per-cpu data or kernel-side stacks. */
+    testl $3, 8(%rsp)
+    je .kbd_from_kernel
+    swapgs
+.kbd_from_kernel:
+
+    call kbd_handler_c 
+
+    /* Swap back to user GS if necessary (check CPL in the saved frame). */
+    testl $3, 8(%rsp)
+    je .kbd_return_to_kernel
+    swapgs
+.kbd_return_to_kernel:
+    pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9
@@ -102,10 +166,17 @@ de_stub:
     push %r9
     push %r10
     push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
 
     mov %rsp, %rdi
     call de_fault_handler
-    
+     pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9
@@ -133,10 +204,17 @@ debug_stub:
     push %r9
     push %r10
     push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
 
     mov %rsp, %rdi
     call debug_trap_handler
-    
+     pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9
@@ -163,10 +241,17 @@ nmi_stub:
     push %r9
     push %r10
     push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
 
     mov %rsp, %rdi
     call nmi_handler
-    
+     pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9
@@ -194,10 +279,17 @@ bp_stub:
     push %r9
     push %r10
     push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
 
     mov %rsp, %rdi
     call bp_trap_handler
-    
+     pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9
@@ -225,10 +317,17 @@ of_stub:
     push %r9
     push %r10
     push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
 
     mov %rsp, %rdi
     call of_trap_handler
-    
+     pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9
@@ -256,10 +355,17 @@ br_stub:
     push %r9
     push %r10
     push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
 
     mov %rsp, %rdi
     call br_fault_handler
-    
+     pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9
@@ -286,10 +392,17 @@ ud_stub:
     push %r9
     push %r10
     push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
 
     mov %rsp, %rdi
     call ud_fault_handler
-    
+     pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9
@@ -317,10 +430,17 @@ nm_stub:
     push %r9
     push %r10
     push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
 
     mov %rsp, %rdi
     call nm_fault_handler
-    
+     pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9
@@ -347,10 +467,17 @@ df_stub:
     push %r9
     push %r10
     push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
 
     mov %rsp, %rdi
     call double_fault_handler
-    
+     pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9
@@ -378,10 +505,17 @@ ts_stub:
     push %r9
     push %r10
     push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
 
     mov %rsp, %rdi
     call tss_fault_handler
-    
+     pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9
@@ -409,10 +543,17 @@ np_stub:
     push %r9
     push %r10
     push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
 
     mov %rsp, %rdi
     call np_fault_handler
-    
+     pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9
@@ -439,10 +580,17 @@ ss_stub:
     push %r9
     push %r10
     push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
 
     mov %rsp, %rdi
     call ss_fault_handler
-    
+     pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9
@@ -470,10 +618,17 @@ gp_stub:
     push %r9
     push %r10
     push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
 
     mov %rsp, %rdi
     call gp_fault_handler
-    
+     pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9
@@ -501,10 +656,17 @@ pf_stub:
     push %r9
     push %r10
     push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
     
     mov %rsp, %rdi
     call page_fault_handler
-
+ pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9
@@ -531,10 +693,17 @@ mf_stub:
     push %r9
     push %r10
     push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
 
     mov %rsp, %rdi
     call mf_fault_handler
-    
+     pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9
@@ -562,10 +731,17 @@ ac_stub:
     push %r9
     push %r10
     push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
 
     mov %rsp, %rdi
     call ac_fault_handler
-    
+     pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9
@@ -593,10 +769,17 @@ mc_stub:
     push %r9
     push %r10
     push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
 
     mov %rsp, %rdi
     call mc_abort_handler
-    
+     pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9
@@ -624,10 +807,17 @@ xm_stub:
     push %r9
     push %r10
     push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
 
     mov %rsp, %rdi
     call xm_fault_handler
-    
+     pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9
@@ -655,10 +845,17 @@ ve_stub:
     push %r9
     push %r10
     push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
 
     mov %rsp, %rdi
     call ve_fault_handler
-    
+     pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9
@@ -686,10 +883,17 @@ cp_stub:
     push %r9
     push %r10
     push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
 
     mov %rsp, %rdi
     call cp_fault_handler
-    
+     pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
     pop %r11
     pop %r10
     pop %r9

@@ -26,6 +26,15 @@ int Service(int argc, char *argv[]) {
     task::ipc::Send(&msg);
 
     while (true) {
+        task::ipc::Message msg;
+        if (task::ipc::Receive(&msg)) {
+            tty::printk("Service received message from PID %d, type %d\n", msg.sender->pid, msg.type);
+            switch (msg.type) {
+                default:
+                    tty::printk("Unknown message type: %d\n", msg.type);
+                    break;
+            }
+        }
     }
     return 0;
 }

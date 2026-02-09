@@ -101,9 +101,9 @@ _start:
 	mov     %eax, %cr4
 
 	/* Enabling EFER.LME */
-	mov     $0xC0000080, %ecx
+	mov     $MSR_EFER, %ecx
 	rdmsr
-	or      $(1 << 8), %eax
+	or      $((1 << 8) | (1 << 0)), %eax
 	wrmsr
 
 	/* Enable paging */

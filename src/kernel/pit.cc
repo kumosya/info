@@ -21,6 +21,7 @@ void Init(uint32_t freq) {
     outb(PIT_CHANNEL0, hi);
     // unmask IRQ0
     pic::UnmaskIrq(0);
+    asm volatile("cli");
 }
 
 uint64_t GetTicks() { return pit_ticks; }

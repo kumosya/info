@@ -44,6 +44,7 @@ using ::printf;
 using ::vsprintf;
 using ::sprintf;
 using ::putc;
+using ::putchar;
 using ::puts;
 using ::fread;
 using ::rewind;

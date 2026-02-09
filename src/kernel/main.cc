@@ -29,7 +29,9 @@ void KernelMain(std::uint8_t *addr) {
     serial::Init();
     timer::Init(TIMER_FREQUENCY);
 
-    asm volatile("cli");
+    CpuId cpu_id;
+    cpu_id.PrintInfo();
+
     multiboot_tag_string *str = nullptr;
     multiboot_tag *tag        = reinterpret_cast<multiboot_tag *>(
         (std::uint8_t *)mm::Phy2Vir((std::uint64_t)addr) + 8);
@@ -48,7 +50,7 @@ void KernelMain(std::uint8_t *addr) {
 
     asm volatile("sti");
     while (true) {
-        // asm volatile("hlt");
+        asm volatile("hlt");
     }
     // task::thread::Exit(0);
 }

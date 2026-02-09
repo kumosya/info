@@ -3,9 +3,6 @@
 #include "kernel/mm.h"
 #include "kernel/page.h"
 
-// Simple kernel operator new/delete backed by page allocator.
-// Allocation stores the page count in the first 8 bytes of the allocation.
-
 typedef unsigned long size_t;
 
 struct nothrow_t {
@@ -33,6 +30,5 @@ void operator delete[](void *ptr, const nothrow_t &) noexcept {
     mm::page::Free(ptr);
 }
 
-// sized delete (C++14+)
 void operator delete(void *ptr, size_t) noexcept { mm::page::Free(ptr); }
 void operator delete[](void *ptr, size_t) noexcept { mm::page::Free(ptr); }

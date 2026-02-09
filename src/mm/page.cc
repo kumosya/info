@@ -7,6 +7,7 @@
 
 #include "kernel/mm.h"
 #include "kernel/tty.h"
+#include "kernel/task.h"
 
 namespace mm::page {
 FrameMem frame;
@@ -217,7 +218,7 @@ std::uint64_t AnalyzePageTable(PTE *pml4, std::uint64_t virt_addr) {
     tty::printk("       Flags: %s\n", pml4_flags);
 
     if (!(pml4_entry.value & PTE_PRESENT)) {
-        tty::printk(" [x] PML4 Entry not present - No mapping!\n");
+        tty::printk(" [!] PML4 Entry not present - No mapping!\n");
         return 0;
     }
 
@@ -238,7 +239,7 @@ std::uint64_t AnalyzePageTable(PTE *pml4, std::uint64_t virt_addr) {
     tty::printk("       Flags: %s\n", pdpt_flags);
 
     if (!(pdpt_entry.value & PTE_PRESENT)) {
-        tty::printk(" [x] PDPT Entry not present - No mapping!\n");
+        tty::printk(" [!] PDPT Entry not present - No mapping!\n");
         return 0;
     }
 
@@ -259,7 +260,7 @@ std::uint64_t AnalyzePageTable(PTE *pml4, std::uint64_t virt_addr) {
     tty::printk("     Flags: %s\n", pd_flags);
 
     if (!(pd_entry.value & PTE_PRESENT)) {
-        tty::printk(" [x] PD Entry not present - No mapping!\n");
+        tty::printk(" [!] PD Entry not present - No mapping!\n");
         return 0;
     }
 
@@ -280,7 +281,7 @@ std::uint64_t AnalyzePageTable(PTE *pml4, std::uint64_t virt_addr) {
     tty::printk("     Flags: %s\n", pt_flags);
 
     if (!(pt_entry.value & PTE_PRESENT)) {
-        tty::printk(" [x] PT Entry not present - No mapping!\n");
+        tty::printk(" [!] PT Entry not present - No mapping!\n");
         return 0;
     }
 
@@ -290,7 +291,7 @@ std::uint64_t AnalyzePageTable(PTE *pml4, std::uint64_t virt_addr) {
     std::uint64_t page_offset   = virt_addr & ~PAGE_MASK;
     std::uint64_t phy_addr      = phy_page_base + page_offset;
 
-    tty::printk("\nMapping Successful!\n");
+    tty::printk("\nMapping Successfully!\n");
     tty::printk("  Virtual Address 0x%lx → Physical Address 0x%lx\n", virt_addr,
                 phy_addr);
     tty::printk("  Physical Page Base: 0x%lx, Page Offset: 0x%lX\n",

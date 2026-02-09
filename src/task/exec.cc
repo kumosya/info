@@ -1,5 +1,5 @@
 /**
- * @file exec.cc
+ * @file task/exec.cc
  * @brief Executive functions for process execution
  * @author Kumosya, 2025-2026
  **/
@@ -33,7 +33,7 @@ extern "C" std::uint64_t ExecProc(task::Registers *regs) {
                   mm::Vir2Phy((std::uint64_t)start_addr) + 0x2000,
                   PTE_PRESENT | PTE_WRITABLE | PTE_USER);
 
-    regs->rcx = reinterpret_cast<std::uint64_t>(
+    regs->r12 = reinterpret_cast<std::uint64_t>(
                     mm::Vir2Phy((std::uint64_t)start_addr)) +
                 0x3000;
     regs->rax = 1;
@@ -106,12 +106,13 @@ int Execve(const char *filename, const char *argv[], const char *envp[]) {
     if (task::current_proc != nullptr &&
         task::current_proc->thread != nullptr) {
         gdt::tss->rsp0 = task::current_proc->thread->rsp0;
-        wrmsr(0x175, task::current_proc->thread->rsp0);
+        //wrmsr(0x175, task::current_proc->thread->rsp0);
     }
 
     task::current_proc->thread->rip =
         reinterpret_cast<std::uint64_t>(ret_syscall);
-    task::current_proc->thread->rsp = reinterpret_cast<std::uint64_t>(
+    
+        task::current_proc->thread->rsp = reinterpret_cast<std::uint64_t>(
         reinterpret_cast<char *>(task::current_proc) + sizeof(task::Pcb) +
         STACK_SIZE - sizeof(task::Registers));
 
@@ -144,11 +145,12 @@ int Execve(const char *filename, const char *argv[], const char *envp[]) {
 
     regs->rdi = argc;
     regs->rsi = mm::Vir2Phy(reinterpret_cast<std::uint64_t>(user_argv));
-    regs->rdx = ehdr.e_entry;
+    regs->rcx = ehdr.e_entry;
 
     __asm__ __volatile__(
         "movq %1, %%rsp \n"
         "pushq %2\n"
+        "swapgs\n"
         "jmp ExecProc\n" ::"D"(regs),
         "m"(task::current_proc->thread->rsp),
         "m"(task::current_proc->thread->rip)

@@ -12,6 +12,11 @@
 #define CR4_OSXMMEXCPT (1 << 10) /* OS supports SIMD FP exceptions */
 
 /* Segment selector */
+#define KERNEL_CS 0x08
+#define KERNEL_DS 0x10
+#define USER_CS 0x28
+#define USER_DS 0x20
+
 #define SELECTOR_RPL (0)
 #define SELECTOR_TI (2)
 #define SELECTOR_INDEX (3)
@@ -29,18 +34,28 @@
 
 #define GDT_PRESENT (1 << 7)
 
+/* MSR */
+#define MSR_EFER    0xC0000080
+#define MSR_STAR    0xC0000081
+#define MSR_LSTAR   0xC0000082
+#define MSR_FMASK   0xC0000084 
+
+#define MSR_FS_BASE 0xC0000100
+#define MSR_GS_BASE 0xC0000101
+#define MSR_KERNEL_GS_BASE 0xC0000102
+
 #ifndef ASM_FILE
 
 #include <cstdint>
 
 struct faultStack_code {
-    std::uint64_t r11, r10, r9, r8;
+    std::uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
     std::uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
     std::uint64_t error_code, rip, cs, rflags, rsp, ss;
 } __attribute__((packed));
 
 struct faultStack_nocode {
-    std::uint64_t r11, r10, r9, r8;
+    std::uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
     std::uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
     std::uint64_t rip, cs, rflags, rsp, ss;
 } __attribute__((packed));

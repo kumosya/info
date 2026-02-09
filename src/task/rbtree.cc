@@ -1,5 +1,5 @@
 /**
- * @file rbtree.cc
+ * @file task/rbtree.cc
  * @brief Red-Black Tree implementation for CFS
  * @author Kumosya, 2025-2026
  **/
@@ -90,7 +90,7 @@ void Rq::RbPrintTree() {
         rb_print_node(sched.rb_root, 0, visited, visited_count, 256);
         tty::printk("\n");
     }
-    tty::printk("=============\n\n");
+    tty::printk("=============\n");
 }
 
 void Rq::RbLeftRotate(task::Pcb *x) {

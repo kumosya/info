@@ -5,13 +5,9 @@
 int msgSend(pid_t dst_pid, uint64_t type, MESSAGE *data) {
     int ret;
     __asm__ __volatile__(
-        "movq   %4, %%r8        \n"
-        "leaq	__send_ret(%%rip),	%%rdx	\n"
-        "movq	%%rsp,	%%rcx		\n"
-        "sysenter			\n"
-        "__send_ret:	\n"
+        "syscall		\n"
         : "=a"(ret)
-        : "a"(SYS_SEND), "D"(dst_pid), "S"(type), "r"(data)
+        : "a"(SYS_SEND), "D"(dst_pid), "S"(type), "d"(data)
         : "memory");
 
     return ret;
@@ -20,13 +16,9 @@ int msgSend(pid_t dst_pid, uint64_t type, MESSAGE *data) {
 int msgRecv(pid_t *src_pid, uint64_t type, MESSAGE *msg) {
     int ret;
     __asm__ __volatile__(
-        "movq   %4, %%r8        \n"
-        "leaq	__recv_ret(%%rip),	%%rdx	\n"
-        "movq	%%rsp,	%%rcx		\n"
-        "sysenter			\n"
-        "__recv_ret:	\n"
+        "syscall			\n"
         : "=a"(ret)
-        : "a"(SYS_RECEIVE), "D"(src_pid), "S"(type), "r"(msg)
+        : "a"(SYS_RECEIVE), "D"(src_pid), "S"(type), "d"(msg)
         : "memory");
 
     return ret;

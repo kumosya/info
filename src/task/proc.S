@@ -1,16 +1,23 @@
 /**
- * @file proc.S
+ * @file task/proc.S
  * @brief Process entry and system calls
  * @author Kumosya, 2025-2026
  **/
+ /* clang-format off */
+
+#define ASM_FILE 1
+#include "kernel/cpu.h"
 
 .global enter_syscall
+.global ret_syscall
 enter_syscall:
-	sti
-    pushq %rax
-	movq %es, %rax
-	pushq %rax
-	movq %ds, %rax
+	swapgs
+
+	movq %rsp, %r12
+	movq %gs:4, %rsp
+
+	/* Save volatile registers onto the user stack (will copy to kernel
+	   stack below). */
 	pushq %rax
 	pushq %rbp
 	pushq %rdi
@@ -27,16 +34,20 @@ enter_syscall:
 	pushq %r14
 	pushq %r15
 
-	movq $0x10, %rdx
-	movq %rdx, %ds
-	movq %rdx, %es
-	movq %rsp, %rdi
+	movq %r10, %rcx  /* syscall number in r10 */
+	movq %rax, %r9
 
 	call SyscallMain
 
-.global ret_syscall
 ret_syscall:
+	/* Syscall handler ran on the kernel stack. Restore kernel-saved
+		return slot and registers while still on kernel stack, then
+		restore the user stack pointer and perform swapgs before
+		the final `sysretq`. */
+	/* Store syscall return value into the saved rax slot on the
+		kernel stack (will be popped into %rax below). */
 	movq %rax, 0x80(%rsp)
+
 	popq %r15
 	popq %r14
 	popq %r13
@@ -51,13 +62,15 @@ ret_syscall:
 	popq %rsi
 	popq %rdi
 	popq %rbp
-	popq %rax
-	movq $0x30, %rax
+	popq %rax    /* loads syscall return value into %rax */
+
+	movq $USER_CS, %rax
 	movq %rax, %ds
 	movq %rax, %es
-	popq %rax
-	
-	sysexitq
+
+	movq %r12, %rsp /* restore original user rsp */
+	swapgs
+	sysretq
 
 .global kernel_thread_entry
 kernel_thread_entry:

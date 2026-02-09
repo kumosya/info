@@ -1,5 +1,5 @@
 /**
- * @file sched.cc
+ * @file task/sched.cc
  * @brief Scheduler implementation
  * @author Kumosya, 2025-2026
  */
@@ -40,7 +40,7 @@ void Schedule() {
     // Now pick the next task from the up-to-date runqueue and print state
     next = cfs::sched.PickNextTask();
     // tty::printk("[%d -> %d]", prev->pid, next ? next->pid : -1);
-    // task::cfs::RbPrintTree();
+    // cfs::sched.RbPrintTree();
 
     cfs::sched.lock.lock();
 
@@ -68,10 +68,11 @@ void Schedule() {
             cfs::sched.lock.unlock();
             return;
         }
-
+        
         current_proc = next;
         cfs::sched.lock.unlock();
 
+        //tty::printk(" GS_BASE=0x%lx GS_KERNEL_BASE=0x%lx\n", rdmsr(MSR_GS_BASE), rdmsr(MSR_KERNEL_GS_BASE));
         if (!(prev->flags & THREAD_KERNEL) || !(next->flags & THREAD_KERNEL)) {
             if (!(next->flags & THREAD_KERNEL) && next->mm.pml4) {
                 // mm::page::UpdateKernelPml4(next->mm.pml4);
@@ -92,13 +93,12 @@ extern "C" void __switch_to(Pcb *prev, Pcb *next) {
     gdt::tss->rsp0 = next->thread->rsp0;
 
     __asm__ __volatile__("movw	%%fs,	%0 \n\t" : "=a"(prev->thread->fs));
-    __asm__ __volatile__("movw	%%gs,	%0 \n\t" : "=a"(prev->thread->gs));
+    //__asm__ __volatile__("movw	%%gs,	%0 \n\t" : "=a"(prev->thread->gs));
 
     __asm__ __volatile__("movw	%0,	%%fs \n\t" ::"a"(next->thread->fs));
-    __asm__ __volatile__("movw	%0,	%%gs \n\t" ::"a"(next->thread->gs));
+    //__asm__ __volatile__("movw	%0,	%%gs \n\t" ::"a"(next->thread->gs));
 
     __asm__ __volatile__("sti");
-    wrmsr(0x175, next->thread->rsp0);
 }
 
 }  // namespace task

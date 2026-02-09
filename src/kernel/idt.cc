@@ -160,7 +160,7 @@ extern "C" void ss_fault_handler(faultStack_code *stack) {
     }
 }
 
-static void print_gp_error_code(std::uint64_t error_code) {
+static void PrintGpErrorCode(std::uint64_t error_code) {
     tty::printk("  Error Code Analysis:\n");
     tty::printk("    Raw error code: 0x%lx\n", error_code);
 
@@ -172,11 +172,11 @@ static void print_gp_error_code(std::uint64_t error_code) {
 
     if (error_code & 0x02) {
         tty::printk("    - Gate descriptor (IDT gate)\n");
-        std::uint16_t selector = (error_code >> 16) & 0xFFFF;
+        std::uint16_t selector = error_code >> 3;
         tty::printk("    - Selector index: 0x%x\n", selector);
     } else {
         tty::printk("    - Segment descriptor\n");
-        std::uint16_t index = (error_code >> 3) & 0xFFF8;
+        std::uint16_t index = error_code >> 3;
         tty::printk("    - Descriptor index: 0x%x\n", index);
     }
 
@@ -192,10 +192,17 @@ extern "C" void gp_fault_handler(faultStack_code *stack) {
     if (stack->cs == KERNEL_CS) {
         tty::printk("#GP General Protection Fault!\n");
         tty::printk("  Error code = 0x%lx\n", stack->error_code);
-        print_gp_error_code(stack->error_code);
+        PrintGpErrorCode(stack->error_code);
         tty::printk("  RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
         tty::printk("  CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
         tty::printk("  RFLAGS=0x%lx\n", stack->rflags);
+        tty::printk(" GS_BASE=0x%lx GS_KERNEL_BASE=0x%lx\n", rdmsr(MSR_GS_BASE), rdmsr(MSR_KERNEL_GS_BASE));
+        tty::printk(" RAX=0x%016lx RBX=0x%016lx RCX=0x%016lx RDX=0x%016lx\n",
+                    stack->rax, stack->rbx, stack->rcx, stack->rdx);
+        tty::printk(" RSI=0x%016lx RDI=0x%016lx RBP=0x%016lx R8=0x%016lx\n",
+                    stack->rsi, stack->rdi, stack->rbp, stack->r8);
+        tty::printk(" R9=0x%016lx R10=0x%016lx R11=0x%016lx\n",
+                    stack->r9, stack->r10, stack->r11);
 
         while (true) {
             asm volatile("hlt");
@@ -207,7 +214,7 @@ extern "C" void gp_fault_handler(faultStack_code *stack) {
                         reinterpret_cast<std::uint8_t *>(stack->rip)[i]);
         }
         tty::printk("\n  Error code = 0x%lx\n", stack->error_code);
-        print_gp_error_code(stack->error_code);
+        PrintGpErrorCode(stack->error_code);
         tty::printk("  RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
         task::thread::Exit(0xc0000096);
     }
@@ -233,6 +240,13 @@ extern "C" void page_fault_handler(faultStack_code *stack) {
         tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
         tty::printk(" RFLAGS=0x%lx CR2=0x%lx\n", stack->rflags, cr2);
         tty::printk(" CR3=0x%lx\n", cr3);
+        tty::printk(" GS_BASE=0x%lx GS_KERNEL_BASE=0x%lx\n", rdmsr(MSR_GS_BASE), rdmsr(MSR_KERNEL_GS_BASE));
+        tty::printk(" RAX=0x%016lx RBX=0x%016lx RCX=0x%016lx RDX=0x%016lx\n",
+                    stack->rax, stack->rbx, stack->rcx, stack->rdx);
+        tty::printk(" RSI=0x%016lx RDI=0x%016lx RBP=0x%016lx R8=0x%016lx\n",
+                    stack->rsi, stack->rdi, stack->rbp, stack->r8);
+        tty::printk(" R9=0x%016lx R10=0x%016lx R11=0x%016lx\n",
+                    stack->r9, stack->r10, stack->r11);
         while (true) {
             asm volatile("hlt");
         }

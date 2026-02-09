@@ -7,5 +7,6 @@ void kassert_fail(const char *expr, const char *file, int line,
     tty::printk("KERNEL ASSERT FAILED: %s at %s:%d\n", expr, file, line);
     if (msg) tty::printk("Message: %s\n", msg);
     // Halt
-    while (true) asm __volatile__("hlt");
+    asm __volatile__ ("cli");
+    while (true) asm __volatile__ ("hlt");
 }
