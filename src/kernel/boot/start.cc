@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "kernel/cpu.h"
+#include "kernel/io.h"
 #include "kernel/multiboot2.h"
 #include "kernel/tty.h"
 
@@ -30,7 +31,7 @@ extern "C" void boot_gp_fault_handler() {
     boot::printf("#GP Fault!\n");
     // Halt so user can inspect
     while (true) {
-        asm volatile("hlt");
+        hlt();
     }
 }
 // C handler called from the assembly stub. Prints CR2 and halts.
@@ -38,7 +39,7 @@ extern "C" void boot_page_fault_handler(std::uint64_t fault_addr) {
     boot::printf("Page Fault! CR2=0x%lx\n", fault_addr);
     // Halt so user can inspect
     while (true) {
-        asm volatile("hlt");
+        hlt();
     }
 }
 
@@ -51,7 +52,7 @@ extern "C" void CppStart(std::uint32_t magic, std::uint8_t *addr) {
 
     //  Am I booted by a Multiboot-compliant boot loader?
     if (magic != MULTIBOOT2_BOOTLOADER_MAGIC) {
-        boot::printf("Error: Invalid magic number: 0x%x.\n", (unsigned)magic);
+        boot::printf("Error: Invalid magic number: 0x%x.\n", magic);
         while (true);
     }
     if (addr[0] & 7) {
@@ -64,8 +65,8 @@ extern "C" void CppStart(std::uint32_t magic, std::uint8_t *addr) {
     // kernel code selector is 0x08 (see gdt setup in boot.S)
     //		boot::printf("handler set for page fault at 0x%lx\n",
     //(uint64_t)page_fault_stub);
-    SetIDTEntry(13, (void *)gp_fault_stub, 0x08, 0x8E);
-    SetIDTEntry(14, (void *)page_fault_stub, 0x08, 0x8E);
+    SetIDTEntry(13, reinterpret_cast<void *>(gp_fault_stub), 0x08, 0x8E);
+    SetIDTEntry(14, reinterpret_cast<void *>(page_fault_stub), 0x08, 0x8E);
     idt::Ptr idtp;
     idtp.limit = sizeof(idt_ety) - 1;
     idtp.base  = reinterpret_cast<std::uint64_t>(&idt_ety);

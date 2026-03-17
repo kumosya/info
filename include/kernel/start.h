@@ -26,7 +26,7 @@ namespace mm {
 void *Alloc();
 void Mapping(PTE *pml4, std::uint64_t virt_addr, std::uint64_t phys_addr,
              std::uint64_t flags);
-void MappingKernel(PTE *pml4, multiboot_tag_elf_sections *elf_sections);
+void MappingKernel(PTE *pml4);
 void MappingIdentity(PTE *pml4, std::uint64_t size);
 
 void *memset(void *dest, int val, size_t len);

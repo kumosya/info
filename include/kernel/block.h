@@ -190,7 +190,7 @@ class IDEBlockDevice : public BlockDevice {
     std::uint8_t drive_;
 };
 
-int Service(int argc, char *argv[]);
+int Service(void *arg);
 void RegisterDevice(BlockDevice *dev);
 BlockDevice *FindDevice(const char *name);
 int submit_bio(Bio *bio);

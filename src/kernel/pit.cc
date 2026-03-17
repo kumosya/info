@@ -9,9 +9,10 @@
 using namespace std;
 
 namespace timer {
-volatile uint64_t pit_ticks = 0;
+volatile uint64_t pit_ticks;
 void Init(uint32_t freq) {
     if (freq == 0) return;
+    pit_ticks = 0;
     uint32_t div = PIT_FREQ / freq;
     uint8_t lo   = div & 0xFF;
     uint8_t hi   = (div >> 8) & 0xFF;

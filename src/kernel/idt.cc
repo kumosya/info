@@ -19,7 +19,7 @@ extern "C" void de_fault_handler(faultStack_nocode *stack) {
         }
     } else {
         tty::printk("Math Error.\n");
-        task::thread::Exit(0xc0000094);
+        task::current_proc->Exit(0xc0000094);
     }
 }
 
@@ -99,7 +99,7 @@ extern "C" void ud_fault_handler(faultStack_nocode *stack) {
         tty::printk(" CS=0x%lx, SS=0x%lx\n", stack->cs, stack->ss);
         tty::printk(" RFLAGS=0x%lx\n", stack->rflags);
 
-        task::thread::Exit(0xc0000094);
+        task::current_proc->Exit(0xc0000094);
     }
 }
 
@@ -164,13 +164,13 @@ static void PrintGpErrorCode(std::uint64_t error_code) {
     tty::printk("  Error Code Analysis:\n");
     tty::printk("    Raw error code: 0x%lx\n", error_code);
 
-    if (error_code & 0x01) {
+    if (error_code & (1 << 0)) {
         tty::printk("    - External event (EXT)\n");
     } else {
         tty::printk("    - Not external event\n");
     }
 
-    if (error_code & 0x02) {
+    if (error_code & (1 << 1)) {
         tty::printk("    - Gate descriptor (IDT gate)\n");
         std::uint16_t selector = error_code >> 3;
         tty::printk("    - Selector index: 0x%x\n", selector);
@@ -180,10 +180,10 @@ static void PrintGpErrorCode(std::uint64_t error_code) {
         tty::printk("    - Descriptor index: 0x%x\n", index);
     }
 
-    std::uint8_t cpl = error_code & 0x03;
+    std::uint8_t cpl = error_code & ((1 << 1) | (1 << 0));
     tty::printk("    - CPL: %d\n", cpl);
 
-    if (error_code & 0x04) {
+    if (error_code & (1 << 2)) {
         tty::printk("    - Error in IDT\n");
     }
 }
@@ -216,7 +216,7 @@ extern "C" void gp_fault_handler(faultStack_code *stack) {
         tty::printk("\n  Error code = 0x%lx\n", stack->error_code);
         PrintGpErrorCode(stack->error_code);
         tty::printk("  RIP=0x%lx, RSP=0x%lx\n", stack->rip, stack->rsp);
-        task::thread::Exit(0xc0000096);
+        task::current_proc->Exit(0xc0000096);
     }
 }
 
@@ -224,6 +224,23 @@ extern "C" void page_fault_handler(faultStack_code *stack) {
     std::uint64_t cr3, cr2;
     asm volatile("mov %%cr2, %0" : "=r"(cr2));
     asm volatile("mov %%cr3, %0" : "=r"(cr3));
+    
+    if (cr2 >= task::current_proc->GetStackSize() - task::current_proc->GetStackAllocated() 
+            && cr2 <= task::current_proc->GetStackBase() 
+            && !(stack->error_code & 1)) {
+        std::uint64_t newstack = 
+            task::current_proc->AllocateStack(task::current_proc->GetStackBase() - task::current_proc->GetStackAllocated() - cr2);
+
+        tty::printk("PID %d: Page fault at address 0x%lx, allocating new stack page at 0x%lx\n", task::current_proc->GetPid(), cr2, newstack);
+        if (newstack == 0) {
+            tty::Panic("Failed to allocate new stack page.\n");
+        }
+        mm::page::Map(task::current_proc->GetPml4(),
+                    cr2,
+                    mm::Vir2Phy(newstack),
+                    PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+        return;
+    }
     if (stack->cs == KERNEL_CS) {
         tty::printk("Page Fault. Error code = 0x%lx\n", stack->error_code);
         if (stack->error_code & 1) {
@@ -251,6 +268,8 @@ extern "C" void page_fault_handler(faultStack_code *stack) {
             asm volatile("hlt");
         }
     } else {
+        swapgs();
+
         tty::printk("Segmentation Fault.\n");
         if (stack->error_code & 1) {
             tty::printk(" Page present, but not readable");
@@ -268,7 +287,8 @@ extern "C" void page_fault_handler(faultStack_code *stack) {
         tty::printk(" RFLAGS=0x%lx CR2=0x%lx\n", stack->rflags, cr2);
         tty::printk(" CR3=0x%lx\n", cr3);
 
-        task::thread::Exit(0xc0000005);
+        swapgs();
+        task::current_proc->Exit(0xc0000005);
     }
 }
 

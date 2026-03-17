@@ -59,6 +59,7 @@
         "cpu.h": "c",
         "syscall.h": "c",
         "unistd.h": "c",
-        "stdio.h": "c"
+        "stdio.h": "c",
+        "wait.h": "c"
     }
 }

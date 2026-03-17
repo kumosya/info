@@ -79,6 +79,7 @@ class FileDescriptorTable {
         fds[1].used = true;
         fds[1].file = nullptr;
     }
+    ~FileDescriptorTable() {/* TODO */}
     int Alloc(File *file, std::uint32_t flags);
     int Free(int fd);
     File *Get(int fd);
@@ -100,7 +101,7 @@ struct DirEntry {
 };
 
 void RegisterFileSystems();
-int Service(int argc, char *argv[]);
+int Service(void *arg);
 DirEntry *Readdir(const char *path, std::uint32_t index);
 MountFs *FindMountPoint(const char *path);
 void ExtractRelativePath(MountFs *mount, const char *full_path, char *rel_path,

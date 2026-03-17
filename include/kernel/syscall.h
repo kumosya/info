@@ -16,11 +16,11 @@ extern "C" {
 #define SYS_TASK 6
 
 /* Memory management */
-#define SYS_MM_FORK 0x2
-#define SYS_MM_EXIT 0x3
-#define SYS_MM_WAITPID 0x4
-#define SYS_MM_MMAP 0x5
-#define SYS_MM_MUNMAP 0x6
+#define SYS_MM_BRK 0x3
+#define SYS_MM_SBRK 0x4
+#define SYS_MM_UNBRK 0x5
+#define SYS_MM_MMAP 0x6
+#define SYS_MM_MUNMAP 0x7
 
 /* Block device */
 #define SYS_BLOCK_GET 0x10
@@ -47,6 +47,8 @@ extern "C" {
 #define SYS_TASK_GETPID 0x36
 #define SYS_TASK_GETPPID 0x37
 #define SYS_TASK_WAIT 0x38
+#define SYS_TASK_CLONE 0x39
+#define SYS_TASK_FORK 0x40
 
 /* Character device */
 #define SYS_CHAR_PUTCHAR 0x40

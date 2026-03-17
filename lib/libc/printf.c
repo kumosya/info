@@ -20,7 +20,7 @@ int puts(const char *str) {
 }
 
 int printf(const char *fmt, ...) {
-    char buf[256] = {0};
+    char buf[264] = {0};
     va_list args;
     va_start(args, fmt);
     int ret = vsprintf(buf, fmt, args);

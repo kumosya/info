@@ -19,13 +19,23 @@
 
 extern char *cmdline;
 
-int SysInit(int argc, char *argv[]) {
+int a1(void *arg) {
+    tty::printk("hello");
+    task::Pipe *pipe = (task::Pipe *)arg;
+    char buf[256];
+    pipe->Read(buf, sizeof(buf));
+    tty::printk("read from pipe: %s\n", buf);
+    pipe->CloseRead();
+    return 100;
+}
+
+int SysInit(void *arg) {
     tty::printk("boot cmdline:%s\n", cmdline);
 
-    task::current_proc->tty = 1;  // 绑定到第一个TTY
-    task::ipc::Message msg;
+    task::current_proc->SetTTY(1);
+    task::Message msg;
     msg.dst_pid = 3;
-    task::ipc::Receive(&msg);
+    msg.Recv();
     if (msg.type != 0xa00) {
         tty::Panic("Failed to mount root filesystem!");
     }
@@ -40,10 +50,27 @@ int SysInit(int argc, char *argv[]) {
         }
         close(fstab);
     }
+    tty::printk("%d's pid is %d\n", task::current_proc->GetPid(), task::task_table.Find(task::current_proc->GetPid())->GetPid());
+    tty::printk("\n=== Pipe Test ===\n");
+    
+    task::InitPipeManager();
+    task::Pipe *pipe = task::pipe_manager->CreatePipe();
+    if (pipe) {
+        tty::printk("Pipe created: read_fd=%d, write_fd=%d\n", 
+                    pipe->GetReadFd(), pipe->GetWriteFd());
+        task::Task *a = task::current_proc->Clone(a1, nullptr, 0, pipe, 0);
+        pipe->Write("hello", 5);
+        pipe->CloseWrite();
+        task::pipe_manager->DestroyPipe(pipe);
+        task::current_proc->Wait(a);
+        tty::printk("a exit with status %d\n", task::current_proc->GetChildExitCode());
+    } else {
+        tty::Panic("Failed to create pipe!");
+    }
+    
     char buf[256];
-
     const char *args[] = {"/bin/sh", nullptr};
-    task::thread::Execve("/bin/sh", args, nullptr);
+    task::current_proc->Execve("/bin/sh", args, nullptr);
 
     printf("WARNING: thread init exited.\n");
     return 1;

@@ -15,11 +15,11 @@ extern "C" void pit_handler_c() {
     timer::pit_ticks++;
 
     if (task::current_proc) {
-        task::current_proc->time_used += TIMER_PERIOD;
-        task::cfs::sched.UpdateClock(TIMER_PERIOD);
+        task::current_proc->GetEntity()->time_used += TIMER_PERIOD;
+        task::curr_sched.UpdateClock(TIMER_PERIOD);
     }
     outb(PIC1_CMD, 0x20);
-    if (task::cfs::sched.NeedsSchedule()) {
+    if (task::current_proc && task::curr_sched.NeedsSchedule()) {
         task::Schedule();
     }
 }

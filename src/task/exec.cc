@@ -10,41 +10,22 @@
 #include <unistd.h>
 
 #include "kernel/cpu.h"
+#include "kernel/io.h"
 #include "kernel/elf.h"
 #include "kernel/mm.h"
 #include "kernel/page.h"
 #include "kernel/task.h"
 #include "kernel/tty.h"
 
-namespace task::thread {
+namespace task {
 
-extern "C" std::uint64_t ExecProc(task::Registers *regs) {
-    void *start_addr = mm::page::Alloc(0x3000);
-    mm::page::Map(task::current_proc->mm.pml4,
-                  mm::Vir2Phy((std::uint64_t)start_addr),
-                  mm::Vir2Phy((std::uint64_t)start_addr),
-                  PTE_PRESENT | PTE_WRITABLE | PTE_USER);
-    mm::page::Map(task::current_proc->mm.pml4,
-                  mm::Vir2Phy((std::uint64_t)start_addr) + 0x1000,
-                  mm::Vir2Phy((std::uint64_t)start_addr) + 0x1000,
-                  PTE_PRESENT | PTE_WRITABLE | PTE_USER);
-    mm::page::Map(task::current_proc->mm.pml4,
-                  mm::Vir2Phy((std::uint64_t)start_addr) + 0x2000,
-                  mm::Vir2Phy((std::uint64_t)start_addr) + 0x2000,
-                  PTE_PRESENT | PTE_WRITABLE | PTE_USER);
-
-    regs->r12 = reinterpret_cast<std::uint64_t>(
-                    mm::Vir2Phy((std::uint64_t)start_addr)) +
-                0x3000;
-    regs->rax = 1;
-    regs->ds = regs->es = 0;
-
-    task::SwitchTable(task::current_proc);
+extern "C" std::uint64_t ExecProc(Task *pcb, task::Registers *regs) {
+    task::SwitchTable(pcb);
 
     return 1;
 }
 
-int Execve(const char *filename, const char *argv[], const char *envp[]) {
+int Task::Execve(const char *filename, const char *argv[], const char *envp[]) {
     int file = open(filename, O_RDONLY, 0);
 
     if (file == -1) {
@@ -60,11 +41,11 @@ int Execve(const char *filename, const char *argv[], const char *envp[]) {
     }
     if (ehdr.e_type != ET_EXEC) {
         tty::printk("execve: not executable\n");
-        return -1;
+        return -2;
     }
     if (ehdr.e_machine != EM_X86_64) {
         tty::printk("execve: not x86_64\n");
-        return -1;
+        return -3;
     }
 
     PTE *user_pml4 = (PTE *)mm::page::Alloc(512 * sizeof(PTE));
@@ -97,30 +78,31 @@ int Execve(const char *filename, const char *argv[], const char *envp[]) {
             read(file, (void *)page_addr, phdr.p_filesz);
 
             if (i == 1) {
-                task::current_proc->mm.text_start = phdr.p_vaddr;
-                task::current_proc->mm.text_end   = phdr.p_vaddr + phdr.p_memsz;
+                text_start = phdr.p_vaddr;
+                text_end   = phdr.p_vaddr + phdr.p_memsz;
             }
         }
     }
 
-    if (task::current_proc != nullptr &&
-        task::current_proc->thread != nullptr) {
-        gdt::tss->rsp0 = task::current_proc->thread->rsp0;
-        //wrmsr(0x175, task::current_proc->thread->rsp0);
+    if (this != nullptr &&
+        thread != nullptr) {
+        gdt::tss->rsp0 = thread->rsp0;
     }
 
-    task::current_proc->thread->rip =
+    thread->rip =
         reinterpret_cast<std::uint64_t>(ret_syscall);
     
-        task::current_proc->thread->rsp = reinterpret_cast<std::uint64_t>(
-        reinterpret_cast<char *>(task::current_proc) + sizeof(task::Pcb) +
-        STACK_SIZE - sizeof(task::Registers));
+    thread->rsp = reinterpret_cast<std::uint64_t>(
+        reinterpret_cast<char *>(this) + sizeof(task::Task) +
+        KERNEL_STACK_SIZE - sizeof(task::Registers));
 
-    task::Registers *regs = (task::Registers *)task::current_proc->thread->rsp;
+    task::Registers *regs = (task::Registers *)thread->rsp;
 
-    task::current_proc->mm.pml4 = user_pml4;
+    pml4 = user_pml4;
+    stack_base = USER_STACK_BASE;
+    stack_allocated = 0;
+    heap_start = heap_end = USER_HEAP_BASE;
 
-    task::current_proc->flags ^= THREAD_KERNEL;
     uint64_t argc = 0, len = 0;
     char **user_argv =
         reinterpret_cast<char **>(mm::page::Alloc(argc * sizeof(char *)));
@@ -146,15 +128,25 @@ int Execve(const char *filename, const char *argv[], const char *envp[]) {
     regs->rdi = argc;
     regs->rsi = mm::Vir2Phy(reinterpret_cast<std::uint64_t>(user_argv));
     regs->rcx = ehdr.e_entry;
+    regs->rflags = (1 << 9) | (1 << 1);
+    regs->r11 = regs->rflags;
 
-    __asm__ __volatile__(
-        "movq %1, %%rsp \n"
-        "pushq %2\n"
-        "swapgs\n"
-        "jmp ExecProc\n" ::"D"(regs),
-        "m"(task::current_proc->thread->rsp),
-        "m"(task::current_proc->thread->rip)
+    is_kernel = false;
+    MkStack();
+    regs->r12 = stack_base;
+    regs->rax = 1;
+    regs->ds = regs->es = 0;
+    
+    if (this == task::current_proc) {
+        __asm__ __volatile__(
+        "movq %2, %%rsp \n"
+        "pushq %3\n"
+        "jmp ExecProc\n" ::"D"(this), "S"(regs),
+        "m"(thread->rsp),
+        "m"(thread->rip)
         : "memory");
+    }
+    
     return 0;
 }
 

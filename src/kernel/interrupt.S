@@ -18,6 +18,11 @@
 /* PIT IRQ0 stub: call C handler and iretq */
 pit_stub:
     cli
+
+    push %rax
+    movq %es, %rax
+    push %rax
+    movq %ds, %rax
     push %rax
     push %rbx
     push %rcx
@@ -41,7 +46,7 @@ pit_stub:
      */
 
     /* Check CPL (CS.RPL) to see if we came from user (CPL==3). */
-    testl $3, 8(%rsp)        # CS.RPL & 3 == CPL
+    testl $3, CS(%rsp)        # CS.RPL & 3 == CPL
     je .from_kernel
     swapgs                   # 切换到内核 GS
 .from_kernel:
@@ -54,7 +59,7 @@ pit_stub:
      * 必须与入口完全对称
      * 判断依据仍然是“最初的 CS”
      */
-    testl $3, 8(%rsp)
+    testl $3, CS(%rsp)        # CS.RPL & 3 == CPL
     je .return_to_kernel
     swapgs                   # 内核 → 用户
 .return_to_kernel:
@@ -74,6 +79,10 @@ pit_stub:
     pop %rcx
     pop %rbx
     pop %rax
+    movq %rax, %ds
+    pop %rax
+    movq %rax, %es
+    pop %rax
 
     sti
     iretq
@@ -83,6 +92,10 @@ pit_stub:
 
 kbd_stub:
     cli
+    push %rax
+    movq %ds, %rax
+    push %rax
+    movq %ds, %rax
     push %rax
     push %rbx
     push %rcx
@@ -101,15 +114,15 @@ kbd_stub:
 
     /* If we came from user mode, swapgs to get kernel GS before
        touching per-cpu data or kernel-side stacks. */
-    testl $3, 8(%rsp)
+    testl $3, CS(%rsp)        # CS.RPL & 3 == CPL
     je .kbd_from_kernel
     swapgs
 .kbd_from_kernel:
 
     call kbd_handler_c 
 
-    /* Swap back to user GS if necessary (check CPL in the saved frame). */
-    testl $3, 8(%rsp)
+    /* Swap back to user GS if necessary. */
+    testl $3, CS(%rsp)        # CS.RPL & 3 == CPL
     je .kbd_return_to_kernel
     swapgs
 .kbd_return_to_kernel:
@@ -127,6 +140,10 @@ kbd_stub:
     pop %rdx
     pop %rcx
     pop %rbx
+    pop %rax
+    movq %rax, %ds
+    pop %rax
+    movq %rax, %es
     pop %rax
     sti
     iretq
@@ -663,7 +680,7 @@ pf_stub:
     
     mov %rsp, %rdi
     call page_fault_handler
- pop %r15
+    pop %r15
     pop %r14
     pop %r13
     pop %r12
@@ -678,6 +695,7 @@ pf_stub:
     pop %rcx
     pop %rbx
     pop %rax
+    add $8, %rsp  /* Skip error code pushed by CPU */
     iretq
 
 mf_stub:

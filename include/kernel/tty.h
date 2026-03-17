@@ -46,7 +46,7 @@
 
 namespace tty {
 
-int Service(int argc, char *argv[]);
+int Service(void *arg);
 
 extern FontData *fontdata;
 
@@ -112,5 +112,10 @@ class Console {
 
 int printk(const char *format, ...);
 void Panic(const char *format, ...);
+// TTY device read/write interface for VFS or other consumers.
+// Read blocks until data available and returns number of bytes read.
+ssize_t Read(int tty_num, void *buf, std::size_t count);
+// Write returns number of bytes written (may buffer and return immediately).
+ssize_t Write(int tty_num, const void *buf, std::size_t count);
 }  // namespace tty
 #endif /* INFO_KERNEL_TTY_H_ */

@@ -15,33 +15,33 @@ namespace block {
 
 BlockDevice *device_list = nullptr;
 
-int Service(int argc, char *argv[]) {
+int Service(void *arg) {
     device_list = nullptr;
     bool reply;
 
     ide::Init();
 
-    task::ipc::Message msg;
+    task::Message msg;
     while (true) {
         reply = true;
 
-        if (task::ipc::Receive(&msg)) {
+        if (msg.Recv()) {
             switch (msg.type) {
                 case SYS_BLOCK_GET:
-                    // tty::printk("Block: Request for device %s\n", msg.data);
                     msg.num[0] = reinterpret_cast<uint64_t>(
                         FindDevice(reinterpret_cast<const char *>(msg.data)));
+                    // tty::printk("Block: ret=0x%x\n", msg.num[0]);
                     reply = true;
                     break;
                 default:
-                    tty::printk("Block: Unknown message type: %d\n", msg.type);
+                    // tty::printk("Block: Unknown message type: %d\n", msg.type);
                     reply = false;
                     break;
             }
             if (reply) {
-                msg.dst_pid = msg.sender->pid;
+                msg.dst_pid = msg.sender->GetPid();
                 msg.sender  = task::current_proc;
-                task::ipc::Send(&msg);
+                msg.Send();
             }
         }
     }
@@ -51,7 +51,9 @@ int Service(int argc, char *argv[]) {
 
 BlockDevice *FindDevice(const char *name) {
     BlockDevice *dev = device_list;
+    //tty::printk("%x\n", dev);
     while (dev) {
+        // tty::printk("%x:%s\n", dev, dev->disk_name);
         if (strcmp(dev->disk_name, name) == 0) {
             return dev;
         }
@@ -70,8 +72,8 @@ void RegisterDevice(BlockDevice *dev) {
     dev->next   = device_list;
     device_list = dev;
 
-    // tty::printk("Block: Registered device %s with %lu sectors\n",
-    //            dev->disk_name, dev->capacity);
+    //tty::printk("Block: Registered device %s with %lu sectors 0x%p\n",
+    //            dev->disk_name, dev->capacity, dev);
 }
 
 int submit_bio(Bio *bio) {

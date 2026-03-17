@@ -9,14 +9,20 @@ LD=ld
 LDFLAGS= -nostdlib -m elf_x86_64
 
 USER_LIBC = ../../build/libc.a
+USER_LIBCPP = ../../build/libc++.a
 
 SH = ../../build/rootfs/bin/sh
+CAT = ../../build/rootfs/bin/cat
 
-all : $(SH)
+all : $(SH) $(CAT)
 
 $(SH): head.o sh.o
 	@echo -e '\e[32m[LD]\e[0m $@'
-	@$(LD) $(LDFLAGS) -o $@ $^ $(USER_LIBC)
+	@$(LD) $(LDFLAGS) -o $@ $^ $(USER_LIBCPP) $(USER_LIBC)
+
+$(CAT): head.o cat.o
+	@echo -e '\e[32m[LD]\e[0m $@'
+	@$(LD) $(LDFLAGS) -o $@ $^ $(USER_LIBCPP) $(USER_LIBC)
 
 %.o: %.S
 	@echo -e '\e[32m[CPP]\e[0m $<'

@@ -294,6 +294,7 @@ struct multiboot_tag_elf_sections {
     multiboot_uint32_t num;
     multiboot_uint32_t entsize;
     multiboot_uint32_t shndx;
+    multiboot_uint32_t reserved;
     char sections[0];
 };
 

@@ -1,6 +1,6 @@
 /**
- * @file task/sched.cc
- * @brief Scheduler implementation
+ * @file task/curr_sched.cc
+ * @brief curr_Scheduler implementation
  * @author Kumosya, 2025-2026
  */
 
@@ -14,73 +14,77 @@
 
 namespace task {
 
-Pcb *run_queue_head = nullptr;
+Task *run_queue_head = nullptr;
 SpinLock run_queue_lock;
 
 void SchedInit() { run_queue_head = nullptr; }
 
 void Schedule() {
-    Pcb *prev = current_proc;
-    Pcb *next = nullptr;
+    Task *prev = current_proc;
+    Task *next = nullptr;
 
     // Update runqueue first: dequeue / enqueue the previous task so
     // the tree reflects its Ready state before picking the next task.
-    if (prev->stat == Dead) {
-        cfs::sched.Dequeue(prev);
+    if (prev->GetState() == Dead) {
+        curr_sched.Dequeue(prev);
     } else {
-        if (prev->stat != Blocked) {
-            prev->stat = Ready;
-            cfs::sched.Dequeue(prev);
-            cfs::sched.Enqueue(prev);
+        if (prev->GetState() != Blocked) {
+            prev->SetState(Ready);
+            curr_sched.Dequeue(prev);
+            curr_sched.Enqueue(prev);
         } else {
-            cfs::sched.Dequeue(prev);
+            curr_sched.Dequeue(prev);
         }
     }
 
     // Now pick the next task from the up-to-date runqueue and print state
-    next = cfs::sched.PickNextTask();
-    // tty::printk("[%d -> %d]", prev->pid, next ? next->pid : -1);
-    // cfs::sched.RbPrintTree();
+    next = curr_sched.PickNextTask();
 
-    cfs::sched.lock.lock();
+    curr_sched.lock.lock();
 
     if (next == nullptr) {
-        tty::Panic("No runnable task found!\n");
+        tty::printk("WARNING: No runnable task, switching to idle.\n");
+        next = idle;
     }
+    tty::printk("%d ", next->GetPid());
 
-    if (prev->stat == Dead) {
-        cfs::sched.lock.unlock();
+    if (prev->GetState() == Dead) {
+        curr_sched.lock.unlock();
 
         // 用户进程退出后，恢复内核页表
-        if (prev->mm.pml4 != 0 && (next->flags & THREAD_KERNEL)) {
+        if (prev->GetPml4() != 0 && !(next->IsKernel())) {
             SwitchTable(next);
         }
+
+        mm::page::Free(prev->thread);
+        mm::page::Free(prev->GetEntity());
+        mm::page::Free(prev);
 
         current_proc = next;
         SwitchContext(prev, next);
     } else {
         // if (prev->stat == Blocked) {
-        //     tty::printk("Schedule: prev=%d is blocked, skip enqueue,
+        //     tty::printk("curr_Schedule: prev=%d is blocked, skip enqueue,
         //     next=%d\n", prev->pid, next ? next->pid : -1);
         // }
 
         if (prev == next) {
-            cfs::sched.lock.unlock();
+            curr_sched.lock.unlock();
             return;
         }
         
         current_proc = next;
-        cfs::sched.lock.unlock();
+        curr_sched.lock.unlock();
 
         //tty::printk(" GS_BASE=0x%lx GS_KERNEL_BASE=0x%lx\n", rdmsr(MSR_GS_BASE), rdmsr(MSR_KERNEL_GS_BASE));
-        if (!(prev->flags & THREAD_KERNEL) || !(next->flags & THREAD_KERNEL)) {
-            if (!(next->flags & THREAD_KERNEL) && next->mm.pml4) {
+        if (!(prev->IsKernel()) || !(next->IsKernel())) {
+            if (!(next->IsKernel()) && next->GetPml4()) {
                 // mm::page::UpdateKernelPml4(next->mm.pml4);
                 SwitchTable(next);
                 // tty::printk("Switch to user page table: 0x%x\n",
                 // mm::Vir2Phy((std::uint64_t)next->mm.pml4));
-            } else if (!(prev->flags & THREAD_KERNEL) &&
-                       (next->flags & THREAD_KERNEL)) {
+            } else if (!(prev->IsKernel()) &&
+                       (next->IsKernel())) {
                 // tty::printk("Switch to kernel page table\n");
                 SwitchTable(next);
             }
@@ -89,16 +93,17 @@ void Schedule() {
     }
 }
 
-extern "C" void __switch_to(Pcb *prev, Pcb *next) {
+extern "C" void __switch_to(Task *prev, Task *next) {
     gdt::tss->rsp0 = next->thread->rsp0;
 
-    __asm__ __volatile__("movw	%%fs,	%0 \n\t" : "=a"(prev->thread->fs));
-    //__asm__ __volatile__("movw	%%gs,	%0 \n\t" : "=a"(prev->thread->gs));
+    __asm__ __volatile__("movw	%%fs,	%0\n" : "=a"(prev->thread->fs));
+    __asm__ __volatile__("movw  %0,     %%fs\n" ::"a"(next->thread->fs));
 
-    __asm__ __volatile__("movw	%0,	%%fs \n\t" ::"a"(next->thread->fs));
-    //__asm__ __volatile__("movw	%0,	%%gs \n\t" ::"a"(next->thread->gs));
+    // 我也不知道为什么，反正这么写就能正常跑
+    wrmsr(MSR_GS_BASE, reinterpret_cast<std::uint64_t>(gdt::tss));
+    wrmsr(MSR_KERNEL_GS_BASE, 0);
 
-    __asm__ __volatile__("sti");
+    sti();
 }
 
 }  // namespace task

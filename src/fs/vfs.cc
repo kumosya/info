@@ -13,8 +13,8 @@
 
 namespace vfs {
 
-FileSystem *registered_filesystems = nullptr;
-MountFs *mount_points              = nullptr;
+FileSystem *registered_filesystems;
+MountFs *mount_points;
 
 int FileDescriptorTable::Alloc(File *file, std::uint32_t flags) {
     for (std::uint32_t i = 5; i < MAX_FD; i++) {
@@ -57,24 +57,24 @@ int FileDescriptorTable::SetFlags(int fd, std::uint32_t flags) {
 }
 
 int FdAlloc(File *file, std::uint32_t flags) {
-    return task::current_proc->files.Alloc(file, flags);
+    return task::current_proc->files->Alloc(file, flags);
 }
 
-int FdFree(int fd) { return task::current_proc->files.Free(fd); }
+int FdFree(int fd) { return task::current_proc->files->Free(fd); }
 
-File *FdGet(int fd) { return task::current_proc->files.Get(fd); }
+File *FdGet(int fd) { return task::current_proc->files->Get(fd); }
 
 int FdDup(int oldfd) {
     File *file = FdGet(oldfd);
     if (!file) {
         return -1;
     }
-    return FdAlloc(file, task::current_proc->files.fds[oldfd].flags);
+    return FdAlloc(file, task::current_proc->files->fds[oldfd].flags);
 }
 
 int FdDup2(int oldfd, int newfd) {
     if (oldfd < 0 || oldfd >= MAX_FD ||
-        !task::current_proc->files.fds[oldfd].used) {
+        !task::current_proc->files->fds[oldfd].used) {
         return -1;
     }
     if (newfd < 0 || newfd >= MAX_FD) {
@@ -83,25 +83,28 @@ int FdDup2(int oldfd, int newfd) {
     if (oldfd == newfd) {
         return newfd;
     }
-    task::current_proc->files.fds[newfd].used =
-        task::current_proc->files.fds[oldfd].used;
-    task::current_proc->files.fds[newfd].file =
-        task::current_proc->files.fds[oldfd].file;
-    task::current_proc->files.fds[newfd].flags =
-        task::current_proc->files.fds[oldfd].flags;
+    task::current_proc->files->fds[newfd].used =
+        task::current_proc->files->fds[oldfd].used;
+    task::current_proc->files->fds[newfd].file =
+        task::current_proc->files->fds[oldfd].file;
+    task::current_proc->files->fds[newfd].flags =
+        task::current_proc->files->fds[oldfd].flags;
     return newfd;
 }
 
-int Service(int argc, char *argv[]) {
+int Service(void *arg) {
+    registered_filesystems = nullptr;
+    mount_points = nullptr;
+    
     RegisterFileSystems();
 
     // Wait for block devices to initialize
-    task::ipc::Message msg;
+    task::Message msg;
     msg.dst_pid = 2;
     msg.type    = SYS_BLOCK_GET;
     strcpy(msg.data, "hda");
-    task::ipc::Send(&msg);
-    task::ipc::Receive(&msg);
+    msg.Send();
+    msg.Recv();
 
     if (msg.num[0] == 0) {
         tty::printk("VFS: Failed to get device info from IPC response\n");
@@ -133,18 +136,18 @@ int Service(int argc, char *argv[]) {
 
     msg.dst_pid = 1;
     msg.type    = 0xa00;
-    task::ipc::Send(&msg);
+    msg.Send();
 
     bool reply;
     while (true) {
         reply = true;
-        if (task::ipc::Receive(&msg)) {
+        if (msg.Recv()) {
             switch (msg.type) {
                 case SYS_FS_OPEN: {
                     File *file = Open(msg.s.str, msg.s.arg);
                     int fd     = -1;
                     if (file) {
-                        fd = msg.sender->files.Alloc(file, msg.s.arg);
+                        fd = msg.sender->files->Alloc(file, msg.s.arg);
                         if (fd < 0) {
                             Close(file);
                             file = nullptr;
@@ -156,7 +159,7 @@ int Service(int argc, char *argv[]) {
                 }
                 case SYS_FS_READ: {
                     int fd      = static_cast<int>(msg.num[0]);
-                    File *f     = msg.sender->files.Get(fd);
+                    File *f     = msg.sender->files->Get(fd);
                     ssize_t ret = -1;
                     if (f) {
                         ret = Read(f, reinterpret_cast<void *>(msg.num[1]),
@@ -167,7 +170,7 @@ int Service(int argc, char *argv[]) {
                 }
                 case SYS_FS_WRITE: {
                     int fd      = static_cast<int>(msg.num[0]);
-                    File *f     = msg.sender->files.Get(fd);
+                    File *f     = msg.sender->files->Get(fd);
                     ssize_t ret = -1;
                     if (f) {
                         ret =
@@ -179,12 +182,12 @@ int Service(int argc, char *argv[]) {
                 }
                 case SYS_FS_CLOSE: {
                     int fd     = static_cast<int>(msg.num[0]);
-                    msg.num[0] = msg.sender->files.Free(fd);
+                    msg.num[0] = msg.sender->files->Free(fd);
                     break;
                 }
                 case SYS_FS_LSEEK: {
                     int fd      = static_cast<int>(msg.num[0]);
-                    File *f     = msg.sender->files.Get(fd);
+                    File *f     = msg.sender->files->Get(fd);
                     ssize_t ret = -1;
                     if (f) {
                         ret = Seek(f, static_cast<off_t>(msg.num[1]),
@@ -196,10 +199,10 @@ int Service(int argc, char *argv[]) {
                 case SYS_FS_DUP: {
                     int oldfd = static_cast<int>(msg.num[0]);
                     int newfd = -1;
-                    File *f   = msg.sender->files.Get(oldfd);
+                    File *f   = msg.sender->files->Get(oldfd);
                     if (f) {
-                        newfd = msg.sender->files.Alloc(
-                            f, msg.sender->files.fds[oldfd].flags);
+                        newfd = msg.sender->files->Alloc(
+                            f, msg.sender->files->fds[oldfd].flags);
                     }
                     msg.num[0] = newfd;
                     break;
@@ -228,9 +231,8 @@ int Service(int argc, char *argv[]) {
                     break;
             }
             if (reply) {
-                msg.dst_pid = msg.sender->pid;
-                msg.sender  = task::current_proc;
-                task::ipc::Send(&msg);
+                msg.dst_pid = msg.sender->GetPid();
+                msg.Send();
             }
         }
     }

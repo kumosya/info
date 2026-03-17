@@ -14,13 +14,18 @@
 #include "kernel/task.h"
 #include "kernel/tty.h"
 
-// TODO: 完善信号量
-
 namespace task {
 
 Sem::Sem(std::int32_t value) : value(value), wait_queue(nullptr) {}
 
-Sem::~Sem() {}
+Sem::~Sem() {
+    while (wait_queue != nullptr) {
+        Task *task = wait_queue;
+        wait_queue = reinterpret_cast<Task*>(task->GetMessage());
+        task->SetMessage(nullptr);
+        task->Unblock();
+    }
+}
 
 void Sem::wait() {
     lock.lock();
@@ -31,9 +36,10 @@ void Sem::wait() {
         return;
     }
 
-    Pcb *current  = current_proc;
-    thread::Block(current);
-
+    current_proc->SetMessage(reinterpret_cast<Message*>(wait_queue));
+    wait_queue = current_proc;
+    current_proc->Block();
+    
     lock.unlock();
     Schedule();
 }
@@ -41,8 +47,16 @@ void Sem::wait() {
 void Sem::signal() {
     lock.lock();
 
-    value++;
+    if (wait_queue != nullptr) {
+        Task *task = wait_queue;
+        wait_queue = reinterpret_cast<Task*>(task->GetMessage());
+        task->SetMessage(nullptr);
+        task->Unblock();
+        lock.unlock();
+        return;
+    }
 
+    value++;
     lock.unlock();
 }
 

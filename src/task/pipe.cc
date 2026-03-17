@@ -15,51 +15,40 @@
 #include "kernel/task.h"
 #include "kernel/tty.h"
 
-// TODO: 完善管道
+namespace task {
 
-namespace task::ipc {
+static std::int64_t fd_counter = 1000;
+static SpinLock fd_lock;
 
-Pipe pipe_table[64];
-std::int64_t pipe_count = 0;
-
-Pipe::Pipe() {
-    if (pipe_count >= 64) {
-        pipefd[0] = -1;
-        pipefd[1] = -1;
-        return;
-    }
-
-    int id     = pipe_count++;
-    Pipe *pipe = &pipe_table[id];
-
-    read_pos    = 0;
-    write_pos   = 0;
-    buffer_size = 0;
-    reader      = nullptr;
-    writer      = nullptr;
-    is_closed   = false;
-    readable    = new Sem(0);
-    writable    = new Sem(4096);
-
-    pipefd[0] = id * 2;
-    pipefd[1] = id * 2 + 1;
+static int AllocFd() {
+    fd_lock.lock();
+    int fd = fd_counter++;
+    fd_lock.unlock();
+    return fd;
 }
 
-std::int64_t Pipe::Read(int fd, void *buf, std::uint64_t size) {
-    if (fd < 0 || fd >= 128) {
+PipeManager *pipe_manager = nullptr;
+
+void InitPipeManager() {
+    pipe_manager = new PipeManager();
+}
+
+int Pipe::Create() {
+    read_fd = AllocFd();
+    write_fd = AllocFd();
+    read_open = true;
+    write_open = true;
+    return 0;
+}
+
+std::int64_t Pipe::Read(void *buf, std::uint64_t size) {
+    if (!read_open) {
         return -1;
     }
-
-    int pipe_id = fd / 2;
-    if (pipe_id >= pipe_count) {
-        return -1;
-    }
-
-    Pipe *pipe = &pipe_table[pipe_id];
 
     lock.lock();
 
-    while (buffer_size == 0 && !is_closed) {
+    while (buffer_size == 0 && write_open) {
         lock.unlock();
         readable->wait();
         lock.lock();
@@ -70,12 +59,11 @@ std::int64_t Pipe::Read(int fd, void *buf, std::uint64_t size) {
         return 0;
     }
 
-    std::uint64_t read_size =
-        size < buffer_size ? size : buffer_size;
+    std::uint64_t read_size = size < buffer_size ? size : buffer_size;
 
     for (std::uint64_t i = 0; i < read_size; i++) {
         *((char *)buf + i) = buffer[read_pos];
-        read_pos     = (read_pos + 1) % 4096;
+        read_pos = (read_pos + 1) % 4096;
     }
 
     buffer_size -= read_size;
@@ -87,37 +75,29 @@ std::int64_t Pipe::Read(int fd, void *buf, std::uint64_t size) {
     return read_size;
 }
 
-std::int64_t Pipe::Write(int fd, const void *buf, std::uint64_t size) {
-    if (fd < 0 || fd >= 128) {
+std::int64_t Pipe::Write(const void *buf, std::uint64_t size) {
+    if (!write_open) {
         return -1;
     }
-
-    int pipe_id = fd / 2;
-    if (pipe_id >= pipe_count) {
-        return -1;
-    }
-
-    Pipe *pipe = &pipe_table[pipe_id];
 
     lock.lock();
 
-    while (buffer_size == 4096 && !is_closed) {
+    while (buffer_size == PIPE_BUF_SIZE && read_open) {
         lock.unlock();
         writable->wait();
         lock.lock();
     }
 
-    if (is_closed) {
+    if (!read_open) {
         lock.unlock();
         return -1;
     }
 
-    std::uint64_t write_size =
-        size < (4096 - buffer_size) ? size : (4096 - buffer_size);
+    std::uint64_t write_size = size < (PIPE_BUF_SIZE - buffer_size) ? size : (PIPE_BUF_SIZE - buffer_size);
 
     for (std::uint64_t i = 0; i < write_size; i++) {
         buffer[write_pos] = *((const char *)buf + i);
-        write_pos               = (write_pos + 1) % 4096;
+        write_pos = (write_pos + 1) % PIPE_BUF_SIZE;
     }
 
     buffer_size += write_size;
@@ -129,23 +109,111 @@ std::int64_t Pipe::Write(int fd, const void *buf, std::uint64_t size) {
     return write_size;
 }
 
-Pipe::~Pipe() {
-    if (readable) {
-        delete readable;
+void Pipe::CloseRead() {
+    lock.lock();
+    read_open = false;
+    lock.unlock();
+    writable->signal();
+}
+
+void Pipe::CloseWrite() {
+    lock.lock();
+    write_open = false;
+    lock.unlock();
+    readable->signal();
+}
+
+PipeManager::~PipeManager() {
+    lock.lock();
+    Pipe *current = head;
+    while (current) {
+        Pipe *next = current->next;
+        delete current;
+        current = next;
+    }
+    head = nullptr;
+    count = 0;
+    lock.unlock();
+}
+
+Pipe *PipeManager::CreatePipe() {
+    lock.lock();
+
+    Pipe *pipe = new Pipe();
+    if (!pipe) {
+        lock.unlock();
+        return nullptr;
     }
 
-    if (writable) {
-        delete writable;
+    pipe->Create();
+
+    pipe->next = head;
+    head = pipe;
+    count++;
+
+    lock.unlock();
+
+    return pipe;
+}
+
+void PipeManager::DestroyPipe(Pipe *pipe) {
+    if (!pipe) {
+        return;
     }
 
     lock.lock();
 
-    is_closed = true;
+    Pipe *current = head;
+    Pipe *prev = nullptr;
+
+    while (current) {
+        if (current == pipe) {
+            if (prev) {
+                prev->next = current->next;
+            } else {
+                head = current->next;
+            }
+            count--;
+            delete current;
+            break;
+        }
+        prev = current;
+        current = current->next;
+    }
 
     lock.unlock();
-
-    readable->signal();
-    writable->signal();
 }
 
-}  // namespace task::ipc
+Pipe *PipeManager::FindByReadFd(int fd) {
+    lock.lock();
+
+    Pipe *current = head;
+    while (current) {
+        if (current->GetReadFd() == fd) {
+            lock.unlock();
+            return current;
+        }
+        current = current->next;
+    }
+
+    lock.unlock();
+    return nullptr;
+}
+
+Pipe *PipeManager::FindByWriteFd(int fd) {
+    lock.lock();
+
+    Pipe *current = head;
+    while (current) {
+        if (current->GetWriteFd() == fd) {
+            lock.unlock();
+            return current;
+        }
+        current = current->next;
+    }
+
+    lock.unlock();
+    return nullptr;
+}
+
+}  // namespace task

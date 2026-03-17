@@ -1,7 +1,7 @@
 #  /* clang-format off */
 
 CPP=g++
-CPPFLAGS=-c -m64 -nostdlib -nostdinc -fno-stack-protector -mcmodel=large \
+CPPFLAGS=-c -m64 -nostdlib -nostdinc -fno-stack-protector -mcmodel=large -g \
 			-ffreestanding -fno-exceptions \
 			-fno-rtti \
 			-std=c++11 -fno-pie \

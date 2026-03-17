@@ -8,11 +8,25 @@ FrameMem pm;
 
 namespace boot::mm {
 
+static struct {
+    std::uint32_t num;
+    std::uint32_t entsize;
+    std::uint32_t shndx;
+    char sections[4096];
+} saved_elf;
+
 static std::uint64_t Vir2Phy(std::uint64_t virt) {
     return virt - IDENTITY_BASE;
 }
 
 static std::uint64_t Phy2Vir(std::uint64_t phy) { return phy + IDENTITY_BASE; }
+
+void *memcpy(void *dest, const void *src, size_t len) {
+    std::uint8_t *d = (std::uint8_t *)dest;
+    const std::uint8_t *s = (const std::uint8_t *)src;
+    while (len-- > 0) *d++ = *s++;
+    return dest;
+}
 
 void frameInit(std::uint64_t start_addr, std::uint64_t end_addr) {
     //			boot::printf("Frame init: 0x%lx - 0x%lx\n", start_addr,
@@ -122,22 +136,18 @@ void mapping(PTE *pml4, std::uint64_t virt_addr, std::uint64_t phys_addr,
 }
 
 // 映射内核段
-void MappingKernel(PTE *pml4, multiboot_tag_elf_sections *elf_sections) {
-    for (size_t i = 0; i < elf_sections->num; i++) {
-        char *section = elf_sections->sections + i * elf_sections->entsize;
-        std::uint64_t vaddr =
-            *(std::uint64_t *)(section + 16);  // section address
-        std::uint64_t offset =
-            *(std::uint64_t *)(section + 24);  // section offset
-        std::uint64_t size = *(std::uint64_t *)(section + 32);  // section size
-        /*if (vaddr == (std::uint64_t)__text_start ||
-            vaddr == (std::uint64_t)__rodata_start ||
-            vaddr == (std::uint64_t)__data_start ||
-            vaddr == (std::uint64_t)__bss_start) {
-            boot::printf("ELF Section '%d':"
-             "Vir: 0x%lx Off: 0x%lx Size: %d B\n", i, vaddr, offset, size);
-             boot::printf("0x%x->0x%x\n", vaddr, 0x100000 - 0x1000 + offset);
-        }*/
+void MappingKernel(PTE *pml4) {
+    boot::printf("Mapping Kernel... %d sections, entsize=%d\n", saved_elf.num, saved_elf.entsize);
+    
+    for (std::uint32_t i = 0; i < saved_elf.num; i++) {
+        char *section = saved_elf.sections + i * saved_elf.entsize;
+        
+        std::uint64_t vaddr = *(std::uint64_t *)(section + 16);
+        std::uint64_t offset = *(std::uint64_t *)(section + 24);
+        std::uint64_t size = *(std::uint64_t *)(section + 32);
+        
+        boot::printf("section[%d]: addr=0x%lx off=0x%lx size=0x%lx\n", i, vaddr, offset, size);
+        
         if (vaddr == reinterpret_cast<std::uint64_t>(__text_start)) {
             for (std::uint64_t addr = 0; addr <= __text_end - __text_start;
                  addr += PAGE_SIZE) {
@@ -162,12 +172,6 @@ void MappingKernel(PTE *pml4, multiboot_tag_elf_sections *elf_sections) {
                 mapping(pml4, vaddr + addr, 0x100000 - 0x1000 + offset + addr,
                         PTE_PRESENT | PTE_WRITABLE);
             }
-            boot::printf(
-                "ELF Section '%d':"
-                "Vir: 0x%lx Off: 0x%lx Size: 0x%x B\n",
-                i, vaddr, offset, size);
-            boot::printf("End: 0x%x->0x%x\n", vaddr + size,
-                         0x100000 - 0x1000 + offset + size);
         }
     }
 }
@@ -189,12 +193,15 @@ void *memset(void *dest, int val, size_t len) {
 }
 
 void Init(std::uint8_t *addr) {
-    // boot::printf("MM init\n");
-
+    std::uint64_t mbi_start = (std::uint64_t)addr;
+    std::uint64_t mbi_size = *(std::uint32_t *)addr;
+    std::uint64_t mbi_end = mbi_start + mbi_size;
+    
     multiboot_mmap_entry *mmap;
     multiboot_tag *tag                       = (multiboot_tag *)(addr + 8);
     multiboot_tag_mmap *mmap_tag             = NULL;
     multiboot_tag_elf_sections *elf_sections = NULL;
+    
     while (tag->type != MULTIBOOT_TAG_TYPE_END) {
         if (tag->type == MULTIBOOT_TAG_TYPE_MMAP) {
             mmap_tag = (multiboot_tag_mmap *)tag;
@@ -212,6 +219,14 @@ void Init(std::uint8_t *addr) {
         boot::printf("Error: ELF sections tag is not found!\n");
         while (true);
     }
+    
+    std::uint8_t *elf_raw = (std::uint8_t *)elf_sections;
+    saved_elf.num = *(std::uint32_t *)(elf_raw + 8);
+    saved_elf.entsize = *(std::uint32_t *)(elf_raw + 12);
+    saved_elf.shndx = *(std::uint32_t *)(elf_raw + 16);
+    std::uint64_t sections_size = saved_elf.num * saved_elf.entsize;
+    if (sections_size > 4096) sections_size = 4096;
+    memcpy(saved_elf.sections, elf_raw + 20, sections_size);
 
     mmap = mmap_tag->entries;
     size_t entry_count =
@@ -219,9 +234,17 @@ void Init(std::uint8_t *addr) {
     for (size_t i = 0; i < entry_count; i++) {
         if (mmap->type == MULTIBOOT_MEMORY_AVAILABLE &&
             mmap->addr >= 0x100000) {
-            //				boot::printf("Available Memory: Addr:
-            // 0x%lx, Len: 0x%lx\n", mmap->addr, mmap->len);
-            mm::frameInit(mmap->addr + 0x100000, mmap->addr + mmap->len);
+            std::uint64_t mem_start = mmap->addr + 0x100000;
+            std::uint64_t mem_end = mmap->addr + mmap->len;
+            
+            if (mem_start < mbi_end) {
+                mem_start = (mbi_end + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+            }
+            
+            boot::printf("Frame init: 0x%lx - 0x%lx (skipped mbi at 0x%lx-0x%lx)\n", 
+                mem_start, mem_end, mbi_start, mbi_end);
+            
+            mm::frameInit(mem_start, mem_end);
             break;
         }
         mmap = (multiboot_mmap_entry *)((std::uint8_t *)mmap +
@@ -232,7 +255,7 @@ void Init(std::uint8_t *addr) {
     memset(pml4, 0, PAGE_SIZE);
 
     MappingIdentity(pml4, pm.start_addr + pm.total_pages * PAGE_SIZE);
-    MappingKernel(pml4, elf_sections);
+    MappingKernel(pml4);
 
     asm __volatile__("mov %0, %%cr3\n" : : "r"(pml4));
 }

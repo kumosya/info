@@ -23,12 +23,16 @@ KLIBC_OBJS=${patsubst %.c,%.o,${patsubst %.cc,%.o,${KLIBC_SRCS}}}
 LIBC_SRCS=${wildcard libc/*.c}
 LIBC_OBJS=${patsubst %.c,%.o,${LIBC_SRCS}}
 
+LIBCPP_SRCS=${wildcard libc++/*.cc}
+LIBCPP_OBJS=${patsubst %.cc,%.o,${LIBCPP_SRCS}}
+
 # The name of the static library
 KLIBC=../build/klibc.a
 LIBC=../build/libc.a
+LIBCPP=../build/libc++.a
 
 # Default target
-all: $(KLIBC) $(LIBC)
+all: $(KLIBC) $(LIBC) $(LIBCPP)
 
 # Build the static library
 $(KLIBC): $(KLIBC_OBJS)
@@ -39,6 +43,10 @@ $(LIBC): $(LIBC_OBJS)
 	@echo -e '\e[32m[AR]\e[0m $@'
 	@$(AR) $(ARFLAGS) $(LIBC) $(LIBC_OBJS)
 	
+$(LIBCPP): $(LIBCPP_OBJS)
+	@echo -e '\e[32m[AR]\e[0m $@'
+	@$(AR) $(ARFLAGS) $(LIBCPP) $(LIBCPP_OBJS)
+
 # Compilation rules
 %.o: %.c
 	@$(CC) $(CFLAGS) -o $@ $<
@@ -48,7 +56,7 @@ $(LIBC): $(LIBC_OBJS)
 
 # Clean rules
 clean:
-	@rm -f $(KLIBC_OBJS) $(KLIBC) $(LIBC) libc/*.o klibc/*.o
+	@rm -f $(KLIBC_OBJS) $(KLIBC) $(LIBC) $(LIBCPP) libc/*.o klibc/*.o libc++/*.o
 
 .PHONY: all clean
 

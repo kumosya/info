@@ -67,6 +67,22 @@ static inline std::uint64_t rdmsr(std::uint32_t msr) {
     return static_cast<std::uint64_t>(tmp0) << 32 | tmp1;
 }
 
+static inline void cli(void) {
+    __asm__ __volatile__("cli");
+}
+
+static inline void sti(void) {
+    __asm__ __volatile__("sti");
+}
+
+static inline void hlt(void) {
+    __asm__ __volatile__("hlt");
+}
+
+static inline void swapgs(void) {
+    __asm__ __volatile__("swapgs");
+}
+
 static inline void cpuid(std::uint32_t func, std::uint32_t &eax,
                          std::uint32_t &ebx, std::uint32_t &ecx,
                          std::uint32_t &edx) {

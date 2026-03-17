@@ -19,16 +19,18 @@ void KernelMain(std::uint8_t *addr) {
     mm::page::kernel_pml4 =
         (PTE *)mm::Phy2Vir((std::uint64_t)mm::page::kernel_pml4);
     mm::page::frame = pm;
+    mm::page::frame.bitmap = (std::uint8_t *)mm::Phy2Vir((std::uint64_t)mm::page::frame.bitmap);
+    mm::page::frame.pages = (Page *)mm::Phy2Vir((std::uint64_t)mm::page::frame.pages);
 
     tty::video::Init((std::uint8_t *)mm::Phy2Vir((std::uint64_t)addr));
 
     pic::Init();
     gdt::Init();
     idt::Init();
-
+    
     serial::Init();
     timer::Init(TIMER_FREQUENCY);
-
+    
     CpuId cpu_id;
     cpu_id.PrintInfo();
 
@@ -46,13 +48,17 @@ void KernelMain(std::uint8_t *addr) {
     cmdline = (char *)mm::page::Alloc(strlen(str->string) * sizeof(char));
     strcpy(cmdline, str->string);
 
-    task::thread::Init();
+    std::uint64_t r;
+    asm volatile("movq %%rsp, %0    \n":  "=r"(r) :: "memory");
+    asm volatile("movq %0, %%rsp\n" :: "r"(mm::Phy2Vir(r)) : "memory");
 
-    asm volatile("sti");
+    task::thread::Init();
+    
+    //sti();
     while (true) {
-        asm volatile("hlt");
+        hlt();
     }
-    // task::thread::Exit(0);
+    // task::current_proc->Exit(0);
 }
 
 void *__dso_handle = nullptr;

@@ -14,10 +14,8 @@
 #include "kernel/page.h"
 #include "kernel/vfs.h"
 
-#define STACK_SIZE 0x8000
-
-#define THREAD_NO_ARGS (1 << 2)
-#define THREAD_KERNEL (1 << 3)
+#define USER_STACK_SIZE   0x800000
+#define KERNEL_STACK_SIZE 0x8000
 
 #define IDLE_NICE 19
 
@@ -25,52 +23,46 @@
 #define SYSCTL_SCHED_MIN_GRANULARITY 4000000ULL
 #define SYSCTL_SCHED_WAKEUP_GRANULARITY 2000000ULL
 
-namespace task {
+#define USER_STACK_BASE  0x7fffff000000ULL
+#define USER_HEAP_BASE   0x400000000000ULL
 
-struct Pcb;
-struct Registers;
-struct Mem;
-struct Tcb;
+#define PIPE_BUF_SIZE 0x1000
+
+#define CLONE_VM    (1 << 7) /* set if VM shared between processes */
+#define CLONE_FS    (1 << 8) /* set if fs info shared between processes */
+#define CLONE_FILES (1 << 9) /* set if open files shared between processes */
+#define CLONE_SIGHAND (1 << 10) /* set if signal handlers shared */
+#define CLONE_THREAD (1 << 11)
+#define CLONE_PARENT (1 << 12)
+
+namespace task {
 
 class SpinLock;
 class Sem;
+class Sched;
+class Pipe;
+class Message;
 
-extern Pcb *current_proc;
-extern Pcb *idle;
+struct Registers;
+class Thread;
+class Task;
+class TaskTable;
+
+extern Task *current_proc;
+extern Task *idle;
 extern SpinLock run_queue_lock;
-extern Pcb *run_queue_head;
+extern Task *run_queue_head;
+extern Sched curr_sched;
+extern TaskTable task_table;
 
 using pid_t = std::int64_t;
+
+
 enum State {
     Running,
     Ready,
     Blocked,
-    Zombie,
     Dead,
-};
-
-struct Registers {
-    std::uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
-    std::uint64_t rbx, rcx, rdx, rsi, rdi, rbp;
-    std::uint64_t ds, es, rax;
-    std::uint64_t rip, cs, rflags, rsp, ss;
-} __attribute__((packed));
-
-struct Mem {
-    PTE *pml4;
-
-    std::uint64_t text_start, text_end;
-    std::uint64_t data_start, data_end;
-    std::uint64_t rodata_start, rodata_end;
-    std::uint64_t bss_start, bss_end;
-    std::uint64_t heap_start, heap_end;
-    std::uint64_t stack_base;
-};
-
-struct Tcb {
-    std::uint64_t rsp0, rip, rsp;
-    std::uint16_t fs, gs;
-    std::uint64_t cr2, trap_nr, error_code;
 };
 
 class SpinLock {
@@ -86,25 +78,12 @@ class SpinLock {
     std::uint32_t state;
 };
 
-class Sem {
-   public:
-    Sem(std::int32_t value);
-    ~Sem();
-
-    void wait();
-    void signal();
-    std::int32_t get_value() const;
-
-   private:
-    std::int32_t value;
-    Pcb *wait_queue;
-    SpinLock lock;
-};
-
-namespace ipc {
-
 struct Message {
-    Pcb *sender;
+public:
+    int Send();
+    int Recv();
+
+    Task *sender;
     std::uint64_t dst_pid;
     std::uint64_t type;
     std::uint64_t size;
@@ -119,14 +98,56 @@ struct Message {
     };
 };
 
+class Sem {
+   public:
+    Sem(std::int32_t value);
+    ~Sem();
+
+    void wait();
+    void signal();
+    std::int32_t get_value() const;
+
+   private:
+    std::int32_t value;
+    Task *wait_queue;
+    SpinLock lock;
+};
+
 class Pipe {
 public:
-    int pipefd[2];
-    Pipe();
-    ~Pipe();
+    Pipe() : next(nullptr),
+      read_pos(0),
+      write_pos(0),
+      buffer_size(0),
+      read_fd(-1),
+      write_fd(-1),
+      read_open(false),
+      write_open(false) {
+        readable = new Sem(0);
+        writable = new Sem(4096);
+    }
+    ~Pipe() {
+        if (readable) {
+            delete readable;
+        }
+        if (writable) {
+            delete writable;
+        }
+    }
 
-    std::int64_t Read(int fd, void *buf, std::uint64_t size);
-    std::int64_t Write(int fd, const void *buf, std::uint64_t size);
+    int Create();
+    std::int64_t Read(void *buf, std::uint64_t size);
+    std::int64_t Write(const void *buf, std::uint64_t size);
+    void CloseRead();
+    void CloseWrite();
+
+    int GetReadFd() const { return read_fd; }
+    int GetWriteFd() const { return write_fd; }
+    bool IsReadable() const { return read_open; }
+    bool IsWritable() const { return write_open; }
+
+    Pipe *next;
+
 private:
     char buffer[4096];
     std::uint64_t read_pos;
@@ -135,15 +156,32 @@ private:
     SpinLock lock;
     Sem *readable;
     Sem *writable;
-    Pcb *reader;
-    Pcb *writer;
-    bool is_closed;
+    int read_fd;
+    int write_fd;
+    bool read_open;
+    bool write_open;
 };
 
-int Send(Message *msg);
-int Receive(Message *msg);
+class PipeManager {
+public:
+    PipeManager() : head(nullptr), count(0) {}
+    ~PipeManager();
 
-}  // namespace ipc
+    Pipe *CreatePipe();
+    void DestroyPipe(Pipe *pipe);
+    Pipe *FindByReadFd(int fd);
+    Pipe *FindByWriteFd(int fd);
+
+    std::uint64_t GetCount() const { return count; }
+
+private:
+    Pipe *head;
+    std::uint64_t count;
+    SpinLock lock;
+};
+
+extern PipeManager *pipe_manager;
+void InitPipeManager();
 
 namespace cfs {
 
@@ -163,38 +201,19 @@ const std::uint32_t PRIO_TO_INV_WEIGHT[40] = {
     207791506, 261200000, 330926701, 419417000, 525518802,
 };
 
-struct Entity {
-    Pcb *pcb;
+class Entity {
+public:
+    std::uint64_t time_used;
     std::uint64_t vruntime;
     std::uint64_t sum_exec_runtime;
     std::uint64_t weight;
     std::uint64_t min_vruntime;
-    Pcb *rb_left;
-    Pcb *rb_right;
-    Pcb *rb_parent;
+    Task *pcb;
+    Entity *rb_left;
+    Entity *rb_right;
+    Entity *rb_parent;
     bool rb_is_red;
 };
-
-inline std::int32_t Weight2Nice(std::uint32_t weight) {
-    for (std::int32_t i = 0; i < 40; i++) {
-        if (PRIO_TO_WEIGHT[i] == weight) {
-            return i - 20;
-        }
-    }
-    return 0;
-}
-
-inline std::uint32_t Nice2Weight(std::int32_t nice) {
-    if (nice < -20) nice = -20;
-    if (nice > 19) nice = 19;
-    return PRIO_TO_WEIGHT[nice + 20];
-}
-
-inline std::uint32_t Nice2InvWeight(std::int32_t nice) {
-    if (nice < -20) nice = -20;
-    if (nice > 19) nice = 19;
-    return PRIO_TO_INV_WEIGHT[nice + 20];
-}
 
 class Rq {
    public:
@@ -205,109 +224,233 @@ class Rq {
           nr_running(0),
           total_weight(0) {}
     ~Rq() {}
+    
+    std::int32_t Weight2Nice(std::uint32_t weight) {
+        for (std::int32_t i = 0; i < 40; i++) {
+            if (PRIO_TO_WEIGHT[i] == weight) {
+                return i - 20;
+            }
+        }
+        return 0;
+    }
 
+    std::uint32_t Nice2Weight(std::int32_t nice) {
+        if (nice < -20) nice = -20;
+        if (nice > 19) nice = 19;
+        return PRIO_TO_WEIGHT[nice + 20];
+    }
+
+    std::uint32_t Nice2InvWeight(std::int32_t nice) {
+        if (nice < -20) nice = -20;
+        if (nice > 19) nice = 19;
+        return PRIO_TO_INV_WEIGHT[nice + 20];
+    }
     void RbPrintTree();
 
    protected:
-    void RbInsert(task::Pcb *node);
-    void RbErase(task::Pcb *node);
+    void RbInsert(Entity *node);
+    void RbErase(Entity *node);
 
-    task::Pcb *rb_root;
-    task::Pcb *leftmost;
+    Entity *rb_root;
+    Entity *leftmost;
     std::uint64_t min_vruntime;
     std::uint32_t nr_running;
     std::uint64_t curr_vruntime;
     std::uint64_t total_weight;
 
    private:
-    void RbLeftRotate(task::Pcb *x);
-    void RbRightRotate(task::Pcb *y);
-    void RbInsertColorFixup(task::Pcb *node);
-    void RbEraseColorFixup(task::Pcb *node, task::Pcb *parent);
-    void RbInitNode(task::Pcb *node);
-    void RbReplaceNode(task::Pcb *u, task::Pcb *v);
+    void RbLeftRotate(Entity *x);
+    void RbRightRotate(Entity *y);
+    void RbInsertColorFixup(Entity *node);
+    void RbEraseColorFixup(Entity *node, Entity *parent);
+    void RbInitNode(Entity *node);
+    void RbReplaceNode(Entity *u, Entity *v);
 };
 
-class Sched : public Rq {
+}  // namespace cfs
+
+class Sched : public cfs::Rq {
    public:
     Sched() : current(nullptr), clock(0) {}
     ~Sched() {}
 
-    void Enqueue(Pcb *pcb);
-    void Dequeue(Pcb *pcb);
-    Pcb *PickNextTask();
+    void Enqueue(Task *pcb);
+    void Dequeue(Task *pcb);
+    Task *PickNextTask();
     void UpdateClock(std::uint64_t delta);
     void UpdateVruntimeCurrent(std::uint64_t delta);
     bool NeedsSchedule();
 
     std::uint32_t NrRunning() { return nr_running; }
-    Pcb *GetLeftmost() { return leftmost; }
+    Task *GetLeftmost() { return leftmost ? leftmost->pcb : nullptr; }
+    
 
-    task::SpinLock lock;
+    SpinLock lock;
 
    private:
-    task::Pcb *FirstTask(void) { return leftmost; }
-    void UpdateVruntime(task::Pcb *pcb, std::uint64_t delta);
-    void NormalizeVruntime(task::Pcb *pcb);
+    cfs::Entity *FirstTask(void) { return leftmost; }
+    void UpdateVruntime(cfs::Entity *pcb, std::uint64_t delta);
+    void NormalizeVruntime(cfs::Entity *pcb);
 
-    task::Pcb *current;
+    cfs::Entity *current;
     std::uint64_t clock;
 };
 
-extern Sched sched;
+class Task {
+public:
+    Task(bool iskernel) : is_kernel(iskernel), pid(-1), stat(task::Blocked), 
+                          is_waiting(false),
+                          flags(0), parent(nullptr), se(nullptr), sched(nullptr),
+                          pml4(nullptr), thread(nullptr), files(nullptr),
+                          stack_base(0), stack_size(0), stack_allocated(0),
+                          tty(0), msg(nullptr), exit_code(0), argv(0), 
+                          waiting_for(nullptr) {
+        // 初始化默认值
+        if (iskernel) {
+            pml4 = reinterpret_cast<PTE*>(mm::page::kernel_pml4);
+        }
+    }
+    ~Task();
 
-}  // namespace cfs
+    std::int64_t Exit(std::int64_t code);
+    void Block();
+    void Unblock();
+    void Enqueue() {
+        sched->Enqueue(this);
+    }
+    void Dequeue() {
+        sched->Dequeue(this);
+    }
+    int Execve(const char *filename, const char *argv[], const char *envp[]);
+    Task *Clone(int (*fn)(void *), void *stack, int flags, void *arg, int nice);
+    void Wait(Task *child);
+    int Kill(Task *proc, int code);
+    void *Brk(std::uint64_t new_brk);
+    void *Sbrk(intptr_t increment);
+    Task *GetParent() const { return parent; }
 
-struct Pcb {
+    bool IsKernel() const { return is_kernel; }
+    bool IsWaiting() const { return is_waiting; }
+
+    bool IsParentWaitingForMyself() {
+        if (parent && parent->is_waiting && 
+                (parent->waiting_for == this || parent->waiting_for == nullptr)) {
+            return true;
+        }
+        else return false;
+    }
+    pid_t GetPid() const { return pid; }
+    State GetState() const { return stat; }
+    void SetState(State new_stat) { stat = new_stat; }
+    std::uint64_t GetFlags() const { return flags; }
+    cfs::Entity *GetEntity() const { return se; }
+    int GetChildExitCode() const { return exit_code; }
+
+    uint64_t GetStackBase() const { return stack_base; }
+    uint64_t GetStackSize() const { return stack_size; }
+    uint64_t GetStackAllocated() const { return stack_allocated; }
+    uint64_t AllocateStack(uint64_t size);
+
+    void SetTTY(std::uint64_t tty_num) { tty = tty_num; }
+    std::uint64_t GetTTY() const { return tty; }
+    Message *GetMessage() const { return msg; }
+    void SetMessage(Message *message) { msg = message; }
+
+    PTE *GetPml4() const { return pml4; }
+
+    Thread *thread;
+    vfs::FileDescriptorTable *files;
+
+private:
+    void MkStack();
+
     pid_t pid;
     enum State stat;
     std::uint64_t flags;
+    bool is_kernel;
+    bool is_waiting;
+    
+    // CFS
+    cfs::Entity *se;
+    Sched *sched;
 
-    Pcb *parent;
-    Tcb *thread;
-    Mem mm;
+    Task *parent;
 
     std::uint64_t argv;
 
-    ipc::Message *msg;
+    // MM
+    PTE *pml4;
+    std::uint64_t text_start, text_end;
+    std::uint64_t data_start, data_end;
+    std::uint64_t rodata_start, rodata_end;
+    std::uint64_t bss_start, bss_end;
+    std::uint64_t heap_start, heap_end;
+    std::uint64_t stack_base, stack_size;
+
+    std::uint64_t stack_allocated;
+
+    Message *msg;
 
     std::uint64_t tty;
+    int exit_code;
+    Task *waiting_for;
 
-    std::uint64_t time_used;
-    std::int64_t exit_code;
+};
 
-    vfs::FileDescriptorTable files;
+#define TABLE_SIZE 256
+class TaskTable {
+public:
+    TaskTable() {
+        for (std::uint64_t i = 0; i < TABLE_SIZE; i++) {
+            buckets[i] = nullptr;
+        }
+    }
+    void Insert(Task *task);
+    void Remove(pid_t pid);
+    Task *Find(pid_t pid);
+    
+private:
+    struct Node {
+        Task *task;
+        Node *next;
+    };
+    
+    Node *buckets[TABLE_SIZE];
+    SpinLock lock;
+    
+    std::uint64_t Hash(pid_t pid) {
+        return static_cast<std::uint64_t>(pid) % TABLE_SIZE;
+    }
+};
 
-    // CFS
-    cfs::Entity se;
+struct Registers {
+    std::uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
+    std::uint64_t rbx, rcx, rdx, rsi, rdi, rbp;
+    std::uint64_t ds, es, rax;
+    std::uint64_t rip, cs, rflags, rsp, ss;
+} __attribute__((packed));
+
+class Thread {
+public:
+    std::uint64_t rsp0, rsp, rip;
+    std::uint16_t fs, gs;
+    std::uint64_t cr2, trap_nr, error_code;
 };
 
 void Schedule();
-int Service(int argc, char *argv[]);
+int Service(void *arg);
 
-inline void SwitchTable(Pcb *next) {
+inline void SwitchTable(Task *next) {
     __asm__ __volatile__(
                         "movq	%0,	%%cr3	\n" ::"r"(
-                             mm::Vir2Phy((std::uint64_t)next->mm.pml4))
+                             mm::Vir2Phy(reinterpret_cast<std::uint64_t>(next->GetPml4())))
                          : "memory");
 }
 
-namespace thread {
-
 extern pid_t pid_counter;
 
-pid_t UserFork(void);
 
-std::int64_t Exec(Registers *regs);
-std::int64_t Exit(std::int64_t code);
-std::int64_t Kill(Pcb *proc, std::int64_t code);
-pid_t Fork(Registers *regs, std::uint64_t flags, std::uint64_t stack_size,
-           int nice = 0);
-void Block(Pcb *proc);
-void Unblock(Pcb *proc);
-int Execve(const char *filename, const char *argv[], const char *envp[]);
-pid_t KernelThread(std::int64_t *func, const char *arg, std::int32_t nice,
-                   std::uint64_t flags);
+namespace thread {
 void Init();
 
 }  // namespace thread
@@ -317,8 +460,8 @@ void Init();
 extern "C" void ret_syscall(void);
 extern "C" void enter_syscall(void);
 extern "C" void kernel_thread_entry(void);
-extern "C" void __switch_to(task::Pcb *prev, task::Pcb *next);
-int SysInit(int argc, char *argv[]);
+extern "C" void __switch_to(task::Task *prev, task::Task *next);
+int SysInit(void *arg);
 
 #define SwitchContext(prev, next)                                        \
     do {                                                                 \

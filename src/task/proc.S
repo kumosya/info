@@ -11,14 +11,13 @@
 .global enter_syscall
 .global ret_syscall
 enter_syscall:
-	swapgs
+	swapgs		/* User -> Kernel */
 
 	movq %rsp, %r12
 	movq %gs:4, %rsp
 
 	/* Save volatile registers onto the user stack (will copy to kernel
 	   stack below). */
-	pushq %rax
 	pushq %rbp
 	pushq %rdi
 	pushq %rsi
@@ -35,9 +34,10 @@ enter_syscall:
 	pushq %r15
 
 	movq %r10, %rcx  /* syscall number in r10 */
-	movq %rax, %r9
+	pushq %rax
 
 	call SyscallMain
+	popq %rax
 
 ret_syscall:
 	/* Syscall handler ran on the kernel stack. Restore kernel-saved
@@ -46,7 +46,7 @@ ret_syscall:
 		the final `sysretq`. */
 	/* Store syscall return value into the saved rax slot on the
 		kernel stack (will be popped into %rax below). */
-	movq %rax, 0x80(%rsp)
+	movq %rax, RAX(%rsp)
 
 	popq %r15
 	popq %r14
@@ -61,15 +61,14 @@ ret_syscall:
 	popq %rdx
 	popq %rsi
 	popq %rdi
-	popq %rbp
-	popq %rax    /* loads syscall return value into %rax */
+	popq %rbp    /* loads syscall return value into %rax */
 
 	movq $USER_CS, %rax
 	movq %rax, %ds
 	movq %rax, %es
 
 	movq %r12, %rsp /* restore original user rsp */
-	swapgs
+	swapgs			/* kernel -> user */
 	sysretq
 
 .global kernel_thread_entry
@@ -95,7 +94,6 @@ kernel_thread_entry:
 	popq %rax
 
 	movq %rdx, %rdi
-	movq %rcx, %rsi
     
     sti
 	callq *%rbx

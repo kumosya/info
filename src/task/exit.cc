@@ -12,43 +12,62 @@
 #include "kernel/page.h"
 #include "kernel/task.h"
 #include "kernel/tty.h"
+#include "kernel/syscall.h"
 
 extern "C" std::int64_t do_exit(std::int64_t code) {
-    return task::thread::Exit(code);
+    return task::current_proc->Exit(code);
 }
 
-namespace task::thread {
-std::int64_t Exit(std::int64_t code) {
-    Kill(current_proc, code);
+namespace task {
 
-    // 切换到下一个线程（Schedule 中会 Dequeue）
-    Schedule();
+std::int64_t Task::Exit(std::int64_t code) {
+    tty::printk("Thread %d exit with code: 0x%lx\n", pid, code);
+    
+    exit_code = code;
+    stat = Dead;
+    task_table.Remove(pid);
+    
+    if (IsParentWaitingForMyself()) {
+        parent->is_waiting = false;
+        parent->waiting_for = nullptr;
+        parent->exit_code = code;
+        parent->Unblock();
+    }
 
+    this->~Task();
     return 0;
 }
 
-std::int64_t Kill(Pcb *proc, std::int64_t code) {
-    tty::printk("Thread %d exit with code: 0x%lx\n", proc->pid, code);
-    proc->exit_code = code;
-    proc->stat      = Dead;
+Task::~Task() {
+    if (files) {
+        files->~FileDescriptorTable();
+    }
 
-    // 释放argv内存
-    if (proc->argv != 0) {
-        char **argv = reinterpret_cast<char **>(proc->argv);
-        // 遍历并释放每个参数字符串
-        for (std::uint64_t i = 0; argv[i] != nullptr; i++) {
-            mm::page::Free(argv[i]);
+    if (thread) {
+        if (thread->rsp0 && !is_kernel) {
+            mm::page::Free(reinterpret_cast<void*>(thread->rsp0));
         }
-        // 释放argv数组本身
-        mm::page::Free(argv);
+        delete thread;
     }
-
-    // 释放用户态页表
-    if (!(proc->flags & THREAD_KERNEL)) {
-        mm::page::Free(proc->mm.pml4);
+    if (se) {
+        delete se;
     }
+    if (pml4 && pml4 != reinterpret_cast<PTE*>(mm::page::kernel_pml4)) {
+        mm::page::Free(pml4);
+    }
+    
+    if (argv != 0) {
+        char **argv_ptr = reinterpret_cast<char **>(argv);
+        for (std::uint64_t i = 0; argv_ptr[i] != nullptr; i++) {
+            mm::page::Free(argv_ptr[i]);
+        }
+        mm::page::Free(argv_ptr);
+    }
+    Schedule();
+}
 
+int Task::Kill(Task *proc, int code) {
     return 0;
 }
 
-}  // namespace task::thread
+}  // namespace task

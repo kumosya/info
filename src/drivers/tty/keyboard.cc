@@ -60,9 +60,13 @@ void InputQueue::ProcessScancode(std::uint8_t sc) {
     }
 
     if (tty_switch_callback && alt_pressed && ctrl_pressed) {
-        if (code >= 0x3B && code <= 0x3B + NUM_TTYS) {
+        if (code >= 0x3B && code < 0x3B + NUM_TTYS) {
             int tty_num = code - 0x3B + 1;
             tty_switch_callback(tty_num);
+            return;
+        }
+        else if (code == 0x3B + NUM_TTYS) {
+            tty::printk("\nGUI: Not supported.");
             return;
         }
     }

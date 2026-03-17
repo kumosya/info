@@ -12,7 +12,7 @@ namespace tty {
 
 task::SpinLock tty_lock;
 
-int Service(int argc, char *argv[]) {
+int Service(void *arg) {
     Console con;
     con.Init();
 
@@ -29,27 +29,25 @@ int Service(int argc, char *argv[]) {
     while (true) {
         char c;
         bool status, reply;
-        task::ipc::Message msg;
-        if (task::ipc::Receive(&msg)) {
+        task::Message msg;
+        if (msg.Recv()) {
             reply  = true;
             status = false;
 
             switch (msg.type) {
                 case SYS_CHAR_PUTCHAR:
-                    con.PutChar(msg.sender->tty, static_cast<char>(msg.num[0]),
+                    con.PutChar(msg.sender->GetTTY(), static_cast<char>(msg.num[0]),
                                 DEFAULT_COLOR);
                     reply = false;
                     break;
                 case SYS_CHAR_PUTS:
-                    con.Puts(msg.sender->tty, msg.data, DEFAULT_COLOR);
+                    con.Puts(msg.sender->GetTTY(), msg.data, DEFAULT_COLOR);
                     reply = false;
                     break;
                 case SYS_CHAR_GETCHAR:
                     while (true) {
                         status = keyboard::kbd_buffer.Peek(&c);
                         if (status) {
-                            msg.dst_pid = msg.sender->pid;
-                            msg.sender  = task::current_proc;
                             msg.type    = 0;
                             msg.num[0]  = c;
                             msg.num[1]  = status;
@@ -62,7 +60,8 @@ int Service(int argc, char *argv[]) {
                     break;
             }
             if (reply) {
-                task::ipc::Send(&msg);
+                msg.dst_pid = msg.sender->GetPid();
+                msg.Send();
             }
         }
     }
@@ -81,7 +80,7 @@ void Console::Init() {
     tty_lock.lock();
     g_console = this;
     keyboard::SetTTYSwitchCallback(TTYSwitchCallbackImpl);
-    if (video::type == FRAMEBUFFER_TYPE_RGB) {
+    /*if (video::type == FRAMEBUFFER_TYPE_RGB) {
         for (int t = 0; t < NUM_TTYS; t++) {
             if (ttys_[t].screen_buffer) {
                 for (int a = 0; a < video::height * video::width; a++) {
@@ -89,7 +88,7 @@ void Console::Init() {
                 }
             }
         }
-    }
+    }*/
     tty_lock.unlock();
     Redraw();
 }

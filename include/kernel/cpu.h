@@ -44,6 +44,30 @@
 #define MSR_GS_BASE 0xC0000101
 #define MSR_KERNEL_GS_BASE 0xC0000102
 
+/* offset of the structure 'Registers' (NOT faultStack_code!) */
+#define R15 0x0
+#define R14 0x8
+#define R13 0x10
+#define R12 0x18
+#define R11 0x20
+#define R10 0x28
+#define R9 0x30
+#define R8 0x38
+#define RBX 0x40
+#define RCX 0x48
+#define RDX 0x50
+#define RSI 0x58
+#define RDI 0x60
+#define RBP 0x68
+#define DS 0x70
+#define ES 0x78
+#define RAX 0x80
+#define RIP 0x88
+#define CS 0x90
+#define RFLAGS 0x98
+#define RSP 0xA0
+#define SS 0xB0
+
 #ifndef ASM_FILE
 
 #include <cstdint>

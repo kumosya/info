@@ -46,7 +46,7 @@ static void WaitDrq(std::uint16_t io_base) {
         if (status & IDE_STATUS_DRQ) {
             return;
         }
-        // task::ipc::Send(&msg);
+        // msg.Send();
     }
 }
 
@@ -57,7 +57,7 @@ static void WaitNotBusy(std::uint16_t io_base) {
         if (!(status & IDE_STATUS_BSY)) {
             return;
         }
-        // task::ipc::Send(&msg);
+        // msg.Send();
     }
 }
 

@@ -10,9 +10,9 @@ extern "C" {
 #endif
 
 /* Wait status macros */
-#define WNOHANG 1    /* 不阻塞，立即返回 */
-#define WUNTRACED 2  /* 返回已停止的子进程 */
-#define WCONTINUED 4 /* 返回已继续的子进程 */
+#define WNOHANG (1 << 0)    /* 不阻塞，立即返回 */
+#define WUNTRACED (1 << 1)  /* 返回已停止的子进程 */
+#define WCONTINUED (1 << 2) /* 返回已继续的子进程 */
 
 /* Macros for interpreting status in wait() */
 #define WIFEXITED(status) (((status) & 0xFF) == 0)   /* 进程正常退出 */

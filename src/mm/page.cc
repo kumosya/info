@@ -144,6 +144,54 @@ void Free(void *addr) {
     FreePages(addr, pages);
 }
 
+std::uint64_t GetPhyAddr(PTE *pml4, std::uint64_t virt_addr) {
+    // Align virtual address to page boundary
+    std::uint64_t va_aligned = virt_addr & PAGE_MASK;
+
+    // Parse indices for each page table level
+    int pml4_idx = PML4_ENTRY(va_aligned);
+    int pdpt_idx = PDPT_ENTRY(va_aligned);
+    int pd_idx   = PD_ENTRY(va_aligned);
+    int pt_idx   = PT_ENTRY(va_aligned);
+    
+    PTE &pml4_entry      = pml4[pml4_idx];
+
+    if (!(pml4_entry.value & PTE_PRESENT)) {
+        return 0;
+    }
+
+    std::uint64_t pdpt_phys = pml4_entry.value & PAGE_MASK;
+    PTE *pdpt               = reinterpret_cast<PTE *>(pdpt_phys);
+    if (pdpt_phys < 0xffff800000000000ULL) {
+        pdpt = reinterpret_cast<PTE *>(mm::Phy2Vir(pdpt_phys));
+    }
+
+    PTE &pdpt_entry      = pdpt[pdpt_idx];
+    std::uint64_t pd_phys = pdpt_entry.value & PAGE_MASK;
+    PTE *pd               = reinterpret_cast<PTE *>(pd_phys);
+    if (pd_phys < 0xffff800000000000ULL) {
+        pd = reinterpret_cast<PTE *>(mm::Phy2Vir(pd_phys));
+    }
+
+    PTE &pd_entry      = pd[pd_idx];
+
+    std::uint64_t pt_phys = pd_entry.value & PAGE_MASK;
+    PTE *pt               = reinterpret_cast<PTE *>(pt_phys);
+    if (pt_phys < 0xffff800000000000ULL) {
+        pt = reinterpret_cast<PTE *>(mm::Phy2Vir(pt_phys));
+    }
+
+    PTE &pt_entry      = pt[pt_idx];
+
+    if (!(pt_entry.value & PTE_PRESENT)) {
+        return 0;
+    }
+    std::uint64_t phy_page_base = pt_entry.value & PAGE_MASK;
+    std::uint64_t page_offset   = virt_addr & ~PAGE_MASK;
+    std::uint64_t phy_addr      = phy_page_base + page_offset;
+    return phy_addr;
+}
+
 void UpdateKernelPml4(PTE *user_pml4) {
     // Ensure the provided user PML4 contains the kernel (higher-half)
     // entries by copying them from the canonical kernel_pml4.

@@ -91,8 +91,8 @@ void Init() {
     SetEntry(8, 0, 0xfffff,
              GDT_PRESENT | GDT_DPL_RING0 | GDT_TYPE_DATA | GDT_TYPE_RW, 0);
 
-    void *stack = mm::page::Alloc(STACK_SIZE);
-    tss->rsp0   = reinterpret_cast<std::uint64_t>(stack) + STACK_SIZE;
+    void *stack = mm::page::Alloc(KERNEL_STACK_SIZE);
+    tss->rsp0   = reinterpret_cast<std::uint64_t>(stack) + KERNEL_STACK_SIZE;
 
     std::uint64_t tss_addr = reinterpret_cast<std::uint64_t>(tss);
     SetTss(10, tss_addr, 0x89);
