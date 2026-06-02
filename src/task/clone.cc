@@ -12,6 +12,7 @@
 #include "kernel/page.h"
 #include "kernel/task.h"
 #include "kernel/tty.h"
+#include "kernel/vfs.h"
 
 namespace task {
     
@@ -26,9 +27,9 @@ Task *Task::Clone(int (*fn)(void *), void *stack, int flags, void *arg, int nice
     }
 
     if (current_proc) {
-        child->parent = this;
+        child->SetParent(this);
     } else {
-        child->parent = nullptr;
+        child->SetParent(nullptr);
     }
 
     child->pid   = NewPid();
@@ -42,6 +43,16 @@ Task *Task::Clone(int (*fn)(void *), void *stack, int flags, void *arg, int nice
     } else {
         child->tty = 1;
     }
+
+    if (this->current_dir) {
+        child->current_dir = new vfs::DirStream;
+        if (child->current_dir) {
+            memcpy(child->current_dir, this->current_dir, sizeof(vfs::DirStream));
+        }
+    }
+
+    // 为子进程创建新的文件描述符表（不继承父进程打开的文件）
+    child->files = new vfs::FileDescriptorTable;
 
     task::Registers regs;
     std::memset(&regs, 0, sizeof(regs));
@@ -67,10 +78,9 @@ Task *Task::Clone(int (*fn)(void *), void *stack, int flags, void *arg, int nice
         regs.rcx = reinterpret_cast<std::uint64_t>(fn);
         regs.rip = reinterpret_cast<std::uint64_t>(ret_syscall);
 
-        // 新页表
+        // 新页表 - 复制完整的父进程页表（包括用户空间 0-255 和内核空间 256-511）
         user_pml4 = (PTE *)mm::page::Alloc(512 * sizeof(PTE));
         memset(user_pml4, 0, 512 * sizeof(PTE));
-
         memcpy(user_pml4, pml4, 512 * sizeof(PTE));
     }
 
@@ -123,7 +133,7 @@ Task *Task::Clone(int (*fn)(void *), void *stack, int flags, void *arg, int nice
     // 如果current_proc为nullptr（创建第一个进程idle时），直接初始化
     if (current_proc == nullptr) {
         // 初始化第一个进程idle
-        child->parent = nullptr;
+        child->SetParent(nullptr);
         child->thread->rip = reinterpret_cast<std::uint64_t>(kernel_thread_entry);
         child->thread->rsp = child->thread->rsp0;
         child->pml4 = mm::page::kernel_pml4;

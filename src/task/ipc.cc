@@ -34,7 +34,7 @@ int Message::Send() {
     sender = current_proc;
 
     // validate destination before indexing into the array
-    if (dst_pid < 0 || dst_pid >= 256 || sender->IsWaiting()) {
+    if (dst_pid < 0 || dst_pid >= 256 || current_proc->IsWaiting()) {
         return -1;
     }
 

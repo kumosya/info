@@ -159,7 +159,7 @@ int IDEDeviceWrite(block::IDEBlockDevice *dev, std::uint16_t io_base,
         outb(io_base + IDE_LBA_HIGH, ((sector + i) >> 16) & 0xFF);
         outb(io_base + IDE_COMMAND, IDE_CMD_WRITE_PIO);
 
-        WaitReady(io_base);
+        WaitDrq(io_base);
 
         for (int j = 0; j < 256; j++) {
             outw(io_base + IDE_DATA, *data++);

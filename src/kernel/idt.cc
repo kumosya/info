@@ -225,21 +225,29 @@ extern "C" void page_fault_handler(faultStack_code *stack) {
     asm volatile("mov %%cr2, %0" : "=r"(cr2));
     asm volatile("mov %%cr3, %0" : "=r"(cr3));
     
-    if (cr2 >= task::current_proc->GetStackSize() - task::current_proc->GetStackAllocated() 
-            && cr2 <= task::current_proc->GetStackBase() 
-            && !(stack->error_code & 1)) {
-        std::uint64_t newstack = 
-            task::current_proc->AllocateStack(task::current_proc->GetStackBase() - task::current_proc->GetStackAllocated() - cr2);
-
-        tty::printk("PID %d: Page fault at address 0x%lx, allocating new stack page at 0x%lx\n", task::current_proc->GetPid(), cr2, newstack);
-        if (newstack == 0) {
-            tty::Panic("Failed to allocate new stack page.\n");
+    std::uint64_t stack_base = task::current_proc->GetStackBase();
+    std::uint64_t stack_alloc = task::current_proc->GetStackAllocated();
+    std::uint64_t stack_max = task::current_proc->GetStackSize();
+    std::uint64_t current_top = stack_base - stack_alloc;
+    
+    // Stack grows downward from stack_base
+    // Valid stack region: [stack_base - stack_max, stack_base]
+    std::uint64_t stack_bottom = stack_base - stack_max;
+    
+    if (cr2 > stack_bottom && cr2 < current_top && !(stack->error_code & 1)) {
+        // Need to allocate pages from current_top down to cr2 (inclusive)
+        std::uint64_t alloc_size = current_top - cr2;
+        std::uint64_t newstack = task::current_proc->AllocateStack(alloc_size);
+        if (newstack != 0) {
+            tty::printk("PID %d: Stack page fault at 0x%lx, allocating 0x%lx bytes\n", 
+                task::current_proc->GetPid(), cr2, alloc_size);
+            mm::page::Map(task::current_proc->GetPml4(), cr2, mm::Vir2Phy(newstack),
+                         PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+            return;
+        } else {
+            tty::printk("PID %d: Stack overflow! cr2=0x%lx, stack_bottom=0x%lx\n",
+                task::current_proc->GetPid(), cr2, stack_bottom);
         }
-        mm::page::Map(task::current_proc->GetPml4(),
-                    cr2,
-                    mm::Vir2Phy(newstack),
-                    PTE_PRESENT | PTE_WRITABLE | PTE_USER);
-        return;
     }
     if (stack->cs == KERNEL_CS) {
         tty::printk("Page Fault. Error code = 0x%lx\n", stack->error_code);

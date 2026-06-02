@@ -13,6 +13,7 @@
 #include "kernel/task.h"
 #include "kernel/tty.h"
 #include "kernel/syscall.h"
+#include "kernel/vfs.h"
 
 extern "C" std::int64_t do_exit(std::int64_t code) {
     return task::current_proc->Exit(code);
@@ -25,22 +26,44 @@ std::int64_t Task::Exit(std::int64_t code) {
     
     exit_code = code;
     stat = Dead;
+    
+    // 处理孤儿进程：将子进程的父进程设为 init
+    Task *init = task_table.Find(1);
+    if (init && init != this) {
+        task_table.Reparent(this, init);
+    }
+    
     task_table.Remove(pid);
     
-    if (IsParentWaitingForMyself()) {
+    if (parent && IsParentWaitingForMyself()) {
+        tty::printk("Parent %d is waiting for child %d\n", parent->pid, pid);
         parent->is_waiting = false;
         parent->waiting_for = nullptr;
         parent->exit_code = code;
+        parent->child_pid = pid;
         parent->Unblock();
     }
 
     this->~Task();
+    // 释放 Task 对象本身的内存
+    mm::page::Free(this);
     return 0;
 }
 
 Task::~Task() {
+    // 关闭所有打开的文件描述符
     if (files) {
-        files->~FileDescriptorTable();
+        for (std::uint32_t i = 0; i < MAX_FD; i++) {
+            if (files->fds[i].used && files->fds[i].file) {
+                vfs::Close(files->fds[i].file);
+                files->fds[i].used = false;
+                files->fds[i].file = nullptr;
+            }
+        }
+        delete files;
+    }
+    if (current_dir) {
+        delete current_dir;
     }
 
     if (thread) {

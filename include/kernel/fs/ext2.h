@@ -140,7 +140,8 @@ namespace ext2 {
 
 int ReadSuperBlock(block::BlockDevice *dev, Ext2SuperBlock *sb,
                    std::uint32_t ext2_lba);
-int WriteSuperBlock(block::BlockDevice *dev, Ext2SuperBlock *sb);
+int WriteSuperBlock(block::BlockDevice *dev, Ext2SuperBlock *sb,
+                    std::uint32_t ext2_lba);
 int ReadGroupDesc(block::BlockDevice *dev, Ext2SuperBlock *sb,
                   std::uint32_t group, Ext2GroupDesc *gd,
                   std::uint32_t ext2_lba);

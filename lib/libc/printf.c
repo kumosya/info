@@ -20,10 +20,10 @@ int puts(const char *str) {
 }
 
 int printf(const char *fmt, ...) {
-    char buf[264] = {0};
+    char buf[512] = {0};
     va_list args;
     va_start(args, fmt);
-    int ret = vsprintf(buf, fmt, args);
+    int ret = vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
     
     char *p = buf;

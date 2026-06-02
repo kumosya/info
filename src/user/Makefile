@@ -12,9 +12,14 @@ USER_LIBC = ../../build/libc.a
 USER_LIBCPP = ../../build/libc++.a
 
 SH = ../../build/rootfs/bin/sh
+LS = ../../build/rootfs/bin/ls
 CAT = ../../build/rootfs/bin/cat
 
-all : $(SH) $(CAT)
+all : $(SH) $(LS) $(CAT)
+
+$(LS): head.o ls.o
+	@echo -e '\e[32m[LD]\e[0m $@'
+	@$(LD) $(LDFLAGS) -o $@ $^ $(USER_LIBCPP) $(USER_LIBC)
 
 $(SH): head.o sh.o
 	@echo -e '\e[32m[LD]\e[0m $@'

@@ -34,6 +34,7 @@ class FileSystem {
                      std::uint64_t offset);
     int (*mkdir)(MountFs *mount, const char *path);
     int (*rmdir)(MountFs *mount, const char *path);
+    int (*unlink)(MountFs *mount, const char *path);
     DirEntry *(*readdir)(MountFs *mount, const char *path, std::uint32_t index);
     int (*stat)(MountFs *mount, const char *path, void *statbuf);
 };
@@ -50,11 +51,12 @@ class MountFs : public FileSystem {
 
 // File structure
 class File {
-   public:
+public:
     std::uint32_t flags;     // File flags (read/write mode)
     std::uint64_t position;  // Current file position
     MountFs *mount;          // Mount point of this file
     void *private_data;      // File system-specific file data
+    char path[256];          // File path for directory operations
 };
 
 #define MAX_FD 64
@@ -92,21 +94,33 @@ File *FdGet(int fd);
 int FdDup(int oldfd);
 int FdDup2(int oldfd, int newfd);
 
-// Directory entry structure
 struct DirEntry {
-    char name[256];         // Entry name
-    std::uint32_t inode;    // Inode number
-    std::uint32_t type;     // Entry type (file, directory, etc.)
-    struct DirEntry *next;  // Next entry (for linked list)
+    char name[256];
+    std::uint32_t inode;
+    std::uint32_t type;
+    struct DirEntry *next;
 };
 
-void RegisterFileSystems();
+struct DirStream {
+    char path[256];
+    std::uint32_t index;
+    MountFs *mount;
+};
+
+DirEntry *Readdir(const char *path, std::uint32_t index);
+int Mkdir(const char *path);
+int Rmdir(const char *path);
+int Unlink(const char *path);
+DirStream *Opendir(const char *path);
+int Closedir(DirStream *dir);
+int Chdir(DirStream *current_dir, const char *path);
+char *GetCwd(DirStream *current_dir, char *buf, size_t size);
 int Service(void *arg);
 DirEntry *Readdir(const char *path, std::uint32_t index);
 MountFs *FindMountPoint(const char *path);
 void ExtractRelativePath(MountFs *mount, const char *full_path, char *rel_path,
                          size_t rel_path_len);
-
+void RegisterFileSystems();
 int RegisterFileSystem(FileSystem *fs);
 FileSystem *GetFileSystem(const char *name);
 int Mount(const char *device, const char *path, const char *fs_type,
@@ -129,6 +143,7 @@ ssize_t Ext2Write(File *file, const void *buf, std::size_t count,
                   std::uint64_t offset);
 int Ext2Mkdir(MountFs *mount, const char *path);
 int Ext2Rmdir(MountFs *mount, const char *path);
+int Ext2Unlink(MountFs *mount, const char *path);
 DirEntry *Ext2Readdir(MountFs *mount, const char *path, std::uint32_t index);
 int Ext2Stat(MountFs *mount, const char *path, void *statbuf);
 

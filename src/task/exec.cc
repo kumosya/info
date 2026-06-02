@@ -16,6 +16,7 @@
 #include "kernel/page.h"
 #include "kernel/task.h"
 #include "kernel/tty.h"
+#include "kernel/vfs.h"
 
 namespace task {
 
@@ -26,25 +27,28 @@ extern "C" std::uint64_t ExecProc(Task *pcb, task::Registers *regs) {
 }
 
 int Task::Execve(const char *filename, const char *argv[], const char *envp[]) {
-    int file = open(filename, O_RDONLY, 0);
+    vfs::File *file = vfs::Open(filename, O_RDONLY);
 
-    if (file == -1) {
+    if (!file) {
         return -1;
     }
 
     Elf64_Ehdr ehdr;
-    read(file, &ehdr, sizeof(ehdr));
+    vfs::Read(file, &ehdr, sizeof(ehdr));
 
     if (memcmp(ehdr.e_ident, "\x7f\x45\x4c\x46", 4) != 0) {
         tty::printk("execve: not an available elf file\n");
+        vfs::Close(file);
         return -1;
     }
     if (ehdr.e_type != ET_EXEC) {
         tty::printk("execve: not executable\n");
+        vfs::Close(file);
         return -2;
     }
     if (ehdr.e_machine != EM_X86_64) {
         tty::printk("execve: not x86_64\n");
+        vfs::Close(file);
         return -3;
     }
 
@@ -56,8 +60,8 @@ int Task::Execve(const char *filename, const char *argv[], const char *envp[]) {
     for (std::uint16_t i = 0; i < ehdr.e_phnum; i++) {
         Elf64_Phdr phdr;
         std::uint64_t phdr_offset = ehdr.e_phoff + i * ehdr.e_phentsize;
-        lseek(file, phdr_offset, SEEK_SET);
-        read(file, &phdr, sizeof(phdr));
+        vfs::Seek(file, phdr_offset, SEEK_SET);
+        vfs::Read(file, &phdr, sizeof(phdr));
 
         if (phdr.p_type == PT_LOAD) {
             std::uint64_t page_start = phdr.p_vaddr & ~0xFFF;
@@ -74,8 +78,8 @@ int Task::Execve(const char *filename, const char *argv[], const char *envp[]) {
                     PTE_PRESENT | PTE_WRITABLE | PTE_USER);
             }
 
-            lseek(file, phdr.p_offset, SEEK_SET);
-            read(file, (void *)page_addr, phdr.p_filesz);
+            vfs::Seek(file, phdr.p_offset, SEEK_SET);
+            vfs::Read(file, (void *)page_addr, phdr.p_filesz);
 
             if (i == 1) {
                 text_start = phdr.p_vaddr;
@@ -84,46 +88,58 @@ int Task::Execve(const char *filename, const char *argv[], const char *envp[]) {
         }
     }
 
+    vfs::Close(file);
+
     if (this != nullptr &&
         thread != nullptr) {
         gdt::tss->rsp0 = thread->rsp0;
     }
 
+    // 重建内核栈
+    is_kernel = false;
+    MkStack();
+
+    // 设置内核栈上的寄存器保存区
+    thread->rsp = thread->rsp0 - sizeof(task::Registers);
+    task::Registers *regs = (task::Registers *)thread->rsp;
+    
     thread->rip =
         reinterpret_cast<std::uint64_t>(ret_syscall);
     
-    thread->rsp = reinterpret_cast<std::uint64_t>(
-        reinterpret_cast<char *>(this) + sizeof(task::Task) +
-        KERNEL_STACK_SIZE - sizeof(task::Registers));
-
-    task::Registers *regs = (task::Registers *)thread->rsp;
-
     pml4 = user_pml4;
     stack_base = USER_STACK_BASE;
     stack_allocated = 0;
     heap_start = heap_end = USER_HEAP_BASE;
 
     uint64_t argc = 0, len = 0;
-    char **user_argv =
-        reinterpret_cast<char **>(mm::page::Alloc(argc * sizeof(char *)));
-    while (argv[argc] != nullptr) {
-        len             = strlen(argv[argc]) + 1;
-        user_argv[argc] = reinterpret_cast<char *>(
+    // 先计算 argc
+    while (argv && argv[argc] != nullptr) {
+        argc++;
+    }
+    char **user_argv = nullptr;
+    if (argc > 0) {
+        user_argv =
+            reinterpret_cast<char **>(mm::page::Alloc(argc * sizeof(char *)));
+    }
+    for (uint64_t i = 0; i < argc; i++) {
+        len             = strlen(argv[i]) + 1;
+        user_argv[i] = reinterpret_cast<char *>(
             mm::Vir2Phy(reinterpret_cast<std::uint64_t>(
                 mm::page::Alloc(len * sizeof(char)))));
         strcpy(reinterpret_cast<char *>(mm::Phy2Vir(
-                   reinterpret_cast<std::uint64_t>(user_argv[argc]))),
-               argv[argc]);
+                   reinterpret_cast<std::uint64_t>(user_argv[i]))),
+               argv[i]);
         mm::page::Map(user_pml4,
-                      reinterpret_cast<std::uint64_t>(user_argv[argc]),
-                      reinterpret_cast<std::uint64_t>(user_argv[argc]),
+                      reinterpret_cast<std::uint64_t>(user_argv[i]),
+                      reinterpret_cast<std::uint64_t>(user_argv[i]),
                       PTE_PRESENT | PTE_WRITABLE | PTE_USER);
-        argc++;
     }
-    mm::page::Map(user_pml4,
-                  mm::Vir2Phy(reinterpret_cast<std::uint64_t>(user_argv)),
-                  mm::Vir2Phy(reinterpret_cast<std::uint64_t>(user_argv)),
-                  PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+    if (user_argv) {
+        mm::page::Map(user_pml4,
+                      mm::Vir2Phy(reinterpret_cast<std::uint64_t>(user_argv)),
+                      mm::Vir2Phy(reinterpret_cast<std::uint64_t>(user_argv)),
+                      PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+    }
 
     regs->rdi = argc;
     regs->rsi = mm::Vir2Phy(reinterpret_cast<std::uint64_t>(user_argv));
@@ -131,8 +147,6 @@ int Task::Execve(const char *filename, const char *argv[], const char *envp[]) {
     regs->rflags = (1 << 9) | (1 << 1);
     regs->r11 = regs->rflags;
 
-    is_kernel = false;
-    MkStack();
     regs->r12 = stack_base;
     regs->rax = 1;
     regs->ds = regs->es = 0;

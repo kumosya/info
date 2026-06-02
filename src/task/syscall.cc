@@ -45,6 +45,18 @@ std::uint64_t SysExecve(const char *filename, const char **argv, const char **en
     return task::current_proc->Execve(filename, argv, envp);
 }
 
+std::uint64_t SysWait(std::uint64_t *status) {
+    task::current_proc->Wait(nullptr);
+    *status = task::current_proc->GetChildExitCode();
+    return task::current_proc->GetChildPid();
+}
+
+std::uint64_t SysWaitPid(std::uint64_t pid, std::uint64_t *status, std::uint64_t options) {
+    task::current_proc->Wait(task::task_table.Find(static_cast<pid_t>(pid)));
+    *status = task::current_proc->GetChildExitCode();
+    return task::current_proc->GetChildPid();
+}
+
 extern "C" std::uint64_t SyscallMain(std::uint64_t arg1,
                                      std::uint64_t arg2, std::uint64_t arg3, std::uint64_t arg4, std::uint64_t arg5, std::uint64_t arg6, std::uint64_t num) {
     KASSERT(rdmsr(MSR_GS_BASE) != 0);
@@ -55,6 +67,10 @@ extern "C" std::uint64_t SyscallMain(std::uint64_t arg1,
         return SysRecv(reinterpret_cast<std::uint64_t *>(arg1), arg2, reinterpret_cast<MESSAGE *>(arg3));
     } else if (num == SYS_TASK_EXECVE) {
         return SysExecve(reinterpret_cast<const char *>(arg1), reinterpret_cast<const char **>(arg2), reinterpret_cast<const char **>(arg3));
+    } else if (num == SYS_TASK_WAIT) {
+        return SysWait(reinterpret_cast<std::uint64_t *>(arg1));
+    } else if (num == SYS_TASK_WAITPID) {
+        return SysWaitPid(arg1, reinterpret_cast<std::uint64_t *>(arg2), arg3);
     }
     return -1;
 }

@@ -301,7 +301,7 @@ public:
     Task(bool iskernel) : is_kernel(iskernel), pid(-1), stat(task::Blocked), 
                           is_waiting(false),
                           flags(0), parent(nullptr), se(nullptr), sched(nullptr),
-                          pml4(nullptr), thread(nullptr), files(nullptr),
+                          pml4(nullptr), thread(nullptr), files(nullptr), current_dir(nullptr),
                           stack_base(0), stack_size(0), stack_allocated(0),
                           tty(0), msg(nullptr), exit_code(0), argv(0), 
                           waiting_for(nullptr) {
@@ -328,6 +328,7 @@ public:
     void *Brk(std::uint64_t new_brk);
     void *Sbrk(intptr_t increment);
     Task *GetParent() const { return parent; }
+    void SetParent(Task *new_parent) { parent = new_parent; }
 
     bool IsKernel() const { return is_kernel; }
     bool IsWaiting() const { return is_waiting; }
@@ -353,6 +354,7 @@ public:
 
     void SetTTY(std::uint64_t tty_num) { tty = tty_num; }
     std::uint64_t GetTTY() const { return tty; }
+    pid_t GetChildPid() const { return child_pid; }
     Message *GetMessage() const { return msg; }
     void SetMessage(Message *message) { msg = message; }
 
@@ -360,6 +362,7 @@ public:
 
     Thread *thread;
     vfs::FileDescriptorTable *files;
+    vfs::DirStream *current_dir;
 
 private:
     void MkStack();
@@ -394,6 +397,7 @@ private:
     std::uint64_t tty;
     int exit_code;
     Task *waiting_for;
+    pid_t child_pid;
 
 };
 
@@ -408,6 +412,7 @@ public:
     void Insert(Task *task);
     void Remove(pid_t pid);
     Task *Find(pid_t pid);
+    void Reparent(Task *old_parent, Task *new_parent);
     
 private:
     struct Node {

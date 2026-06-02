@@ -18,7 +18,7 @@ extern "C" int printf(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
     task::Message msg;
-    int ret = vsprintf(msg.data, fmt, args);
+    int ret = vsnprintf(msg.data, sizeof(msg.data), fmt, args);
     va_end(args);
     msg.dst_pid = 4;
     msg.type    = SYS_CHAR_PUTS;

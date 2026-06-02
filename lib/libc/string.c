@@ -300,7 +300,7 @@ strstr (const char *haystack, const char *needle)
   
   return NULL;
 }
-/*
+
 char *
 strdup (const char *s)
 {
@@ -313,7 +313,6 @@ strdup (const char *s)
   
   return new_str;
 }
-*/
 
 size_t
 strcspn (const char *s, const char *reject)

@@ -33,6 +33,7 @@ int SysInit(void *arg) {
     tty::printk("boot cmdline:%s\n", cmdline);
 
     task::current_proc->SetTTY(1);
+    task::current_proc->files = new vfs::FileDescriptorTable;
     task::Message msg;
     msg.dst_pid = 3;
     msg.Recv();

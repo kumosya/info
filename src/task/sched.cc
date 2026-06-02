@@ -46,7 +46,7 @@ void Schedule() {
         tty::printk("WARNING: No runnable task, switching to idle.\n");
         next = idle;
     }
-    tty::printk("%d ", next->GetPid());
+    //tty::printk("%d ", next->GetPid());
 
     if (prev->GetState() == Dead) {
         curr_sched.lock.unlock();

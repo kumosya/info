@@ -36,6 +36,11 @@ extern "C" {
 #define SYS_FS_OPENDIR 0x27
 #define SYS_FS_READDIR 0x28
 #define SYS_FS_CLOSEDIR 0x29
+#define SYS_FS_MKDIR 0x2A
+#define SYS_FS_RMDIR 0x2B
+#define SYS_FS_CHDIR 0x2C
+#define SYS_FS_GETCWD 0x2D
+#define SYS_FS_UNLINK 0x2E
 
 /* Task */
 #define SYS_TASK_EXIT 0x30

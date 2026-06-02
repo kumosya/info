@@ -282,6 +282,7 @@ int SetBlockNum(Ext2Inode *inode, std::uint32_t block, std::uint32_t num,
             if (inode->i_block[EXT2_IND_BLOCK] == 0) {
                 return -2;
             }
+            inode->i_blocks += block_size / 512;
         }
 
         std::uint32_t *ind_buf = (std::uint32_t *)mm::page::Alloc(block_size);
@@ -318,6 +319,7 @@ int SetBlockNum(Ext2Inode *inode, std::uint32_t block, std::uint32_t num,
             if (inode->i_block[EXT2_DIND_BLOCK] == 0) {
                 return -2;
             }
+            inode->i_blocks += block_size / 512;
         }
 
         std::uint32_t *dind_buf = (std::uint32_t *)mm::page::Alloc(block_size);
@@ -343,6 +345,7 @@ int SetBlockNum(Ext2Inode *inode, std::uint32_t block, std::uint32_t num,
                 return -2;
             }
             dind_buf[block / ptrs_per_block] = ind_block;
+            inode->i_blocks += block_size / 512;
         }
 
         if (WriteBlock(dev, sb, inode->i_block[EXT2_DIND_BLOCK], dind_buf,
@@ -384,6 +387,7 @@ int SetBlockNum(Ext2Inode *inode, std::uint32_t block, std::uint32_t num,
         if (inode->i_block[EXT2_TIND_BLOCK] == 0) {
             return -2;
         }
+        inode->i_blocks += block_size / 512;
     }
 
     std::uint32_t *tind_buf = (std::uint32_t *)mm::page::Alloc(block_size);
@@ -410,6 +414,7 @@ int SetBlockNum(Ext2Inode *inode, std::uint32_t block, std::uint32_t num,
             return -2;
         }
         tind_buf[block / (ptrs_per_block * ptrs_per_block)] = dind_block;
+        inode->i_blocks += block_size / 512;
     }
 
     if (WriteBlock(dev, sb, inode->i_block[EXT2_TIND_BLOCK], tind_buf,
@@ -444,6 +449,7 @@ int SetBlockNum(Ext2Inode *inode, std::uint32_t block, std::uint32_t num,
             return -2;
         }
         dind_buf[block / ptrs_per_block] = ind_block;
+        inode->i_blocks += block_size / 512;
     }
 
     if (WriteBlock(dev, sb, dind_block, dind_buf, ext2_lba) != 0) {

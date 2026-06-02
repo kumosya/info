@@ -78,4 +78,20 @@ Task *TaskTable::Find(pid_t pid) {
     return nullptr;
 }
 
+void TaskTable::Reparent(Task *old_parent, Task *new_parent) {
+    lock.lock();
+    
+    for (std::uint64_t i = 0; i < TABLE_SIZE; i++) {
+        Node *curr = buckets[i];
+        while (curr != nullptr) {
+            if (curr->task && curr->task->GetParent() == old_parent) {
+                curr->task->SetParent(new_parent);
+            }
+            curr = curr->next;
+        }
+    }
+    
+    lock.unlock();
+}
+
 }  // namespace task

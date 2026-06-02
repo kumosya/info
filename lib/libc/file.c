@@ -57,3 +57,54 @@ int dup2(int oldfd, int newfd) {
     msgRecv(NULL, SYS_FS_DUP2, &msg);
     return (int)msg.num[0];
 }
+
+int chdir(const char *path) {
+    MESSAGE msg;
+    strcpy(msg.s.str, path);
+    msgSend(SYS_FS, SYS_FS_CHDIR, &msg);
+    msgRecv(NULL, SYS_FS_CHDIR, &msg);
+    return (int)msg.num[0];
+}
+
+char *getcwd(char *buf, size_t size) {
+    MESSAGE msg;
+    msg.num[0] = (uint64_t)buf;
+    msg.num[1] = size;
+    msgSend(SYS_FS, SYS_FS_GETCWD, &msg);
+    msgRecv(NULL, SYS_FS_GETCWD, &msg);
+    return (char *)msg.num[0];
+}
+
+off_t lseek(int file, off_t offset, int whence) {
+    MESSAGE msg;
+    msg.num[0]  = file;
+    msg.num[1]  = offset;
+    msg.num[2]  = whence;
+    msgSend(SYS_FS, SYS_FS_LSEEK, &msg);
+    msgRecv(NULL, SYS_FS_LSEEK, &msg);
+    return msg.num[0];
+}
+
+int mkdir(const char *path, mode_t mode) {
+    MESSAGE msg;
+    strcpy(msg.s.str, path);
+    msgSend(SYS_FS, SYS_FS_MKDIR, &msg);
+    msgRecv(NULL, SYS_FS_MKDIR, &msg);
+    return (int)msg.num[0];
+}
+
+int rmdir(const char *path) {
+    MESSAGE msg;
+    strcpy(msg.s.str, path);
+    msgSend(SYS_FS, SYS_FS_RMDIR, &msg);
+    msgRecv(NULL, SYS_FS_RMDIR, &msg);
+    return (int)msg.num[0];
+}
+
+int unlink(const char *path) {
+    MESSAGE msg;
+    strcpy(msg.s.str, path);
+    msgSend(SYS_FS, SYS_FS_UNLINK, &msg);
+    msgRecv(NULL, SYS_FS_UNLINK, &msg);
+    return (int)msg.num[0];
+}

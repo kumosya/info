@@ -110,6 +110,7 @@ MountFs *Ext2Mount(FileSystem *fs, const char *device, const char *path,
     mount->write                         = Ext2Write;
     mount->mkdir                         = Ext2Mkdir;
     mount->rmdir                         = Ext2Rmdir;
+    mount->unlink                        = Ext2Unlink;
     mount->readdir                       = Ext2Readdir;
     mount->stat                          = Ext2Stat;
 
@@ -282,7 +283,20 @@ int Ext2Mkdir(MountFs *mount, const char *path) {
         return -2;
     }
 
-    int ret = ext2::CreateFile(mount_data->device, &mount_data->super, path,
+    char abs_path[256];
+    const char *create_path = path;
+    if (path[0] != '/') {
+        abs_path[0] = '/';
+        size_t len  = strlen(path);
+        if (len >= sizeof(abs_path) - 1) {
+            return -7;
+        }
+        memcpy(abs_path + 1, path, len);
+        abs_path[len + 1] = '\0';
+        create_path       = abs_path;
+    }
+
+    int ret = ext2::CreateFile(mount_data->device, &mount_data->super, create_path,
                                EXT2_S_IFDIR | 0755, mount_data->ext2_lba);
     if (ret <= 0) {
         return -3;
@@ -348,6 +362,49 @@ int Ext2Rmdir(MountFs *mount, const char *path) {
 
     if (inode.i_links_count > 2) {
         return -6;
+    }
+
+    return ext2::DeleteFile(mount_data->device, &mount_data->super, lookup_path,
+                            mount_data->ext2_lba);
+}
+
+int Ext2Unlink(MountFs *mount, const char *path) {
+    if (!mount || !path) {
+        return -1;
+    }
+
+    Ext2MountData *mount_data = (Ext2MountData *)mount->private_data;
+    if (!mount_data) {
+        return -2;
+    }
+
+    char abs_path[256];
+    const char *lookup_path = path;
+    if (path[0] != '/') {
+        abs_path[0] = '/';
+        size_t len  = strlen(path);
+        if (len >= sizeof(abs_path) - 1) {
+            return -7;
+        }
+        memcpy(abs_path + 1, path, len);
+        abs_path[len + 1] = '\0';
+        lookup_path       = abs_path;
+    }
+
+    std::uint32_t inode_num;
+    if (ext2::LookupPath(mount_data->device, &mount_data->super, lookup_path,
+                         &inode_num, mount_data->ext2_lba) != 0) {
+        return -3;
+    }
+
+    Ext2Inode inode;
+    if (ext2::ReadInode(mount_data->device, &mount_data->super, inode_num,
+                        &inode, mount_data->ext2_lba) != 0) {
+        return -4;
+    }
+
+    if (inode.i_mode & EXT2_S_IFDIR) {
+        return -5;
     }
 
     return ext2::DeleteFile(mount_data->device, &mount_data->super, lookup_path,
@@ -476,6 +533,7 @@ void RegisterFileSystems() {
         ext2_fs->write   = Ext2Write;
         ext2_fs->mkdir   = Ext2Mkdir;
         ext2_fs->rmdir   = Ext2Rmdir;
+        ext2_fs->unlink  = Ext2Unlink;
         ext2_fs->readdir = Ext2Readdir;
         ext2_fs->stat    = Ext2Stat;
         vfs::RegisterFileSystem(ext2_fs);

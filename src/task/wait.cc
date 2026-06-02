@@ -22,6 +22,7 @@ void Task::Wait(Task *child) {
     }
     is_waiting = true;
     waiting_for = child;
+    tty::printk("Parent %d is waiting for child %d\n", pid, child->pid);
 
     Block();
     Schedule();
