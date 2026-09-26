@@ -1,0 +1,117 @@
+#pragma once
+
+#include <new>
+#include <stdint.h>
+#include <stdlib.h>
+#include <type_traits>
+#include <utility>
+
+namespace std {
+
+namespace detail {
+
+using ThreadInvoker = void (*)(void*);
+
+struct ThreadState;
+ThreadState* createStandardThread(ThreadInvoker invoker, void* object);
+void joinStandardThread(ThreadState* state);
+void detachStandardThread(ThreadState* state);
+uint64_t getStandardThreadId(const ThreadState* state);
+
+}  // namespace detail
+
+class thread {
+   public:
+    class id {
+       public:
+        constexpr id() noexcept = default;
+        explicit constexpr id(uint64_t value) noexcept : value_(value) {}
+        friend constexpr bool operator==(id left, id right) noexcept {
+            return left.value_ == right.value_;
+        }
+        friend constexpr bool operator!=(id left, id right) noexcept {
+            return !(left == right);
+        }
+
+       private:
+        uint64_t value_ = 0;
+    };
+
+    thread() noexcept = default;
+
+    template <class Function>
+    explicit thread(Function&& function) {
+        using Callable = decay_t<Function>;
+        Callable* callable = new Callable(forward<Function>(function));
+        state_ = detail::createStandardThread(&invoke<Callable>, callable);
+        if (state_ == nullptr) {
+            delete callable;
+            abort();
+        }
+    }
+
+    thread(const thread&) = delete;
+    thread& operator=(const thread&) = delete;
+    thread(thread&& other) noexcept : state_(other.state_) {
+        other.state_ = nullptr;
+    }
+    thread& operator=(thread&& other) noexcept {
+        if (joinable()) {
+            abort();
+        }
+        state_ = other.state_;
+        other.state_ = nullptr;
+        return *this;
+    }
+    ~thread() {
+        if (joinable()) {
+            abort();
+        }
+    }
+
+    bool joinable() const noexcept { return state_ != nullptr; }
+    void join() {
+        if (!joinable()) {
+            abort();
+        }
+        detail::joinStandardThread(state_);
+        state_ = nullptr;
+    }
+    void detach() {
+        if (!joinable()) {
+            abort();
+        }
+        detail::detachStandardThread(state_);
+        state_ = nullptr;
+    }
+    id get_id() const noexcept {
+        return id(detail::getStandardThreadId(state_));
+    }
+    static unsigned int hardware_concurrency() noexcept { return 0; }
+
+   private:
+    template <class Callable>
+    static void invoke(void* object) {
+        Callable* callable = static_cast<Callable*>(object);
+        (*callable)();
+        delete callable;
+    }
+
+    detail::ThreadState* state_ = nullptr;
+};
+
+namespace this_thread {
+
+inline void yield() noexcept;
+
+}  // namespace this_thread
+
+}  // namespace std
+
+#include "os/abi.h"
+
+namespace std::this_thread {
+
+inline void yield() noexcept { os::yield(); }
+
+}  // namespace std::this_thread

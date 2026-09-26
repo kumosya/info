@@ -1,0 +1,2 @@
+/dev/hda1   /            ext3     defaults
+/dev/cdrom  /mnt/cdrom   iso9660  ro

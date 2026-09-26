@@ -1,31 +1,29 @@
-#ifndef _DIRENT_H
-#define _DIRENT_H
+#pragma once
 
-#if __cplusplus
-extern "C" {
-#endif
-
-#include <stddef.h>
 #include <stdint.h>
 
+#define DT_UNKNOWN 0
+#define DT_REG 8
+#define DT_DIR 4
+
 struct dirent {
-    char d_name[256];
     uint64_t d_ino;
-    uint64_t d_off;
-    unsigned short d_reclen;
-    unsigned char d_type;
+    uint8_t d_type;
+    char d_name[48];
 };
 
-typedef struct dirent DIR;
+typedef struct DirectoryStream DIR;
 
-DIR *opendir(const char *name);
-struct dirent *readdir(DIR *dir);
-int closedir(DIR *dir);
-void rewinddir(DIR *dir);
-int dirfd(DIR *dir);
-
-#if __cplusplus
-}  // extern "C"
+#ifdef __cplusplus
+extern "C" {
 #endif
-
+DIR* opendir(const char* path);
+struct dirent* readdir(DIR* directory);
+int closedir(DIR* directory);
+void rewinddir(DIR* directory);
+void seekdir(DIR* directory, long location);
+long telldir(DIR* directory);
+int dirfd(DIR* directory);
+#ifdef __cplusplus
+}
 #endif

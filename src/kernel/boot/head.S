@@ -1,168 +1,199 @@
- /* clang-format off */
-#define ASM_FILE        1
-#include "kernel/multiboot2.h"
-#include "kernel/page.h"
-#include "kernel/cpu.h"
+.section .multiboot,"a"
+.align 8
+multibootHeader:
+    .long 0xe85250d6
+    .long 0
+    .long multibootHeaderEnd - multibootHeader
+    .long -(0xe85250d6 + (multibootHeaderEnd - multibootHeader))
+    .word 1
+    .word 0
+    .long 12
+    .long 8
+    .align 8
+    .word 5
+    .word 1
+    .long 20
+    .long 1024
+    .long 768
+    .long 32
+    .align 8
+    .word 0
+    .word 0
+    .long 8
+multibootHeaderEnd:
 
-/*  C++ symbol format. HAVE_ASM_USCORE is defined by configure. */
-#ifdef HAVE_ASM_USCORE
-# define EXT_CPP(sym)                     _ ## sym
-#else
-# define EXT_CPP(sym)                     sym
-#endif
-
-/*  The size of our stack (16KB). */
-#define STACK_SIZE                      0x4000
-        
-.section .boot.header
-        
-multiboot_header:
-	/*  Align 64 bits boundary. */
-	.align  8
-	/*  magic */
-	.long   MULTIBOOT2_HEADER_MAGIC
-	/*  ISA: i386 */
-	.long   MULTIBOOT_ARCHITECTURE_I386
-	/*  Header length. */
-	.long   multiboot_header_end - multiboot_header
-	/*  checksum */
-	.long   -(MULTIBOOT2_HEADER_MAGIC + MULTIBOOT_ARCHITECTURE_I386 + (multiboot_header_end - multiboot_header))
-entry_address_tag_start:        
-	.align  8
-	.short MULTIBOOT_HEADER_TAG_ENTRY_ADDRESS_EFI64
-	.short MULTIBOOT_HEADER_TAG_OPTIONAL
-	.long entry_address_tag_end - entry_address_tag_start
-	/*  entry_addr */
-	.long _start
-entry_address_tag_end:
-#ifdef ENABLE_TEXT_OUTPUT
-#else
-tag_frame_buffer:
-	.align 8
-	.short MULTIBOOT_HEADER_TAG_FRAMEBUFFER
-	.short 0
-	.long 20
-	.long 1024
-	.long 768
-	.long 32
-#endif
-
-end_tag_start:
-	.align  8
-	.short MULTIBOOT_HEADER_TAG_END
-	.short 0
-	.long end_tag_end - end_tag_start
-end_tag_end:
-multiboot_header_end:
-
-.section .boot.text
-    .code32
-    .align 0x1000
-    .extern CppStart
-    .globl _start
+.section .boot.text,"ax"
+.code32
+.global _start
+.extern kernelEntry
+.extern __bootStart
+.extern __kernelLoadEnd
 
 _start:
-	mov     $boot_stack_top, %esp
+    cli
+    movl %ebx, multibootAddress
+    cmpl $0x36d76289, %eax
+    jne bootFailure
+    movl $bootStackTop, %esp
+    call checkLongMode
 
-	/* Set the boot information as parameters for CppStart() */
-	mov     %eax, %edi
-	mov     %ebx, %esi
+    call setupPageTables
 
-	/* Clear eflags */
-	cli
-	
-	/* Disable paging (UEFI may turn it on) */
-	mov     %cr0, %eax
-	mov     $CR0_PG, %ebx
-	not     %ebx
-	and     %ebx, %eax
-	mov     %eax, %cr0
+    lgdt gdtPointer
+    movl %cr0, %eax
+    andl $~(1 << 2), %eax
+    orl $(1 << 1), %eax
+    movl %eax, %cr0
+    movl %cr4, %eax
+    orl $((1 << 5) | (1 << 9) | (1 << 10)), %eax
+    movl %eax, %cr4
+    movl $pageMapPml4, %eax
+    movl %eax, %cr3
 
-	/* Set up page table for booting stage */
-	mov     $pt, %eax
-	or      $(PTE_PRESENT | PTE_WRITABLE), %eax
-	mov     %eax, pd
+    movl $0xc0000080, %ecx
+    rdmsr
+    orl $((1 << 8) | (1 << 11)), %eax
+    wrmsr
 
-	xor     %eax, %eax
-	or      $(PTE_PRESENT | PTE_WRITABLE | PTE_PAGE_SIZE), %eax
-	movl    %eax, pt
+    movl %cr0, %eax
+    orl $(1 << 31), %eax
+    movl %eax, %cr0
+    ljmp $0x10, $start64
 
-	xor     %eax, %eax
-	mov     %eax, (pd + 4)
-	mov     %eax, (pt + 4)
+bootFailure:
+    movw $0x3f8, %dx
+    movb $0x42, %al
+    outb %al, %dx
+1:
+    cli
+    hlt
+    jmp 1b
 
-	/* Load page table */
-	mov     $pd, %eax
-	mov     %eax, %cr3
+setupPageTables:
+    movl $pageMapPml4, %edi
+    xorl %eax, %eax
+    movl $(4096 * 66 / 4), %ecx
+    rep stosl
 
-	/* Enable PAE and PGE */
-	mov     %cr4, %eax
-	or      $(CR4_PAE | CR4_PGE | CR4_OSFXSR | CR4_OSXMMEXCPT), %eax
-	mov     %eax, %cr4
+    movl $pageDirectoryPointerTable, %eax
+    orl $0x3, %eax
+    movl %eax, pageMapPml4
+    movl $0, pageMapPml4 + 4
+    movl %eax, pageMapPml4 + (256 * 8)
+    movl $0, pageMapPml4 + (256 * 8) + 4
 
-	/* Enabling EFER.LME */
-	mov     $MSR_EFER, %ecx
-	rdmsr
-	or      $((1 << 8) | (1 << 0)), %eax
-	wrmsr
+    movl $pageDirectories, %edi
+    xorl %ecx, %ecx
+2:
+    movl %edi, %eax
+    orl $0x3, %eax
+    movl %eax, pageDirectoryPointerTable(,%ecx,8)
+    movl $0, pageDirectoryPointerTable + 4(,%ecx,8)
+    addl $4096, %edi
+    incl %ecx
+    cmpl $64, %ecx
+    jne 2b
 
-	/* Enable paging */
-	mov     %cr0, %eax
-	or      $CR0_PG, %eax
-	mov     %eax, %cr0
+    movl $pageDirectories, %edi
+    xorl %ecx, %ecx
+3:
+    movl %ecx, %eax
+    shll $21, %eax
+    orl $0x83, %eax
+    movl %ecx, %edx
+    shrl $11, %edx
+    movl %eax, (%edi)
+    movl %edx, 4(%edi)
+    addl $8, %edi
+    incl %ecx
+    cmpl $(64 * 512), %ecx
+    jne 3b
+    ret
 
-	/* Set up GDT */
-	mov     $gdt64_ptr, %eax
-	lgdt    0(%eax)
+.code64
+start64:
+    cld
+    fninit
+    movw $0x18, %ax
+    movw %ax, %ds
+    movw %ax, %es
+    movw %ax, %ss
 
-	/* Reload all the segment registers */
-	mov $(2 << SELECTOR_INDEX), %ax
-	mov     %ax, %ds
-	mov     %ax, %ss
-	mov     %ax, %es
-	mov     %ax, %fs
-	mov     %ax, %gs
+    movabs $bootStackTop, %rsp
+    movabs $0xffff800000000000, %rax
+    addq %rax, %rsp
+    movl multibootAddress, %edi
+    movq %cr3, %rsi
+    movabs $__bootStart, %rdx
+    movabs $__kernelLoadEnd, %rcx
+    movabs $kernelEntry, %rax
+    call *%rax
+4:
+    cli
+    hlt
+    jmp 4b
 
-	/* Enter 64-bit world */
-	jmp $(1 << SELECTOR_INDEX), $CppStart
+.code32
+checkLongMode:
+    pushfl
+    popl %eax
+    movl %eax, %ecx
+    xorl $0x200000, %eax
+    pushl %eax
+    popfl
+    pushfl
+    popl %eax
+    xorl %ecx, %eax
+    jz bootFailure
+    movl $1, %eax
+    cpuid
+    movl %edx, %eax
+    andl $((1 << 25) | (1 << 26)), %eax
+    cmpl $((1 << 25) | (1 << 26)), %eax
+    jne bootFailure
+    movl $0x80000000, %eax
+    cpuid
+    cmpl $0x80000001, %eax
+    jb bootFailure
+    movl $0x80000001, %eax
+    cpuid
+    testl $(1 << 29), %edx
+    jz bootFailure
+    testl $(1 << 20), %edx
+    jz bootFailure
+    ret
 
-	/* We shouldn't get here... */
-.loop:
-	hlt
-	jmp .loop
-
-.section .boot.data
-    .align 0x1000
-
-    .globl boot_stack, boot_stack_top, pd, pt
-
-boot_stack:
-	.space 0x1000
-boot_stack_top:
-
-pd:
-	.space 0x1000
-pt:
-	.space 0x1000
-
-/* 64 bits GDT */
-.align 0x1000	/* it should be aligned to page */
-.globl gdt64, gdt64_ptr
-gdt64:
-	.quad 0 /* first one must be zero */
-gdt64_code_segment:
-	.quad 0x00209A0000000000 /* exec/read */
-gdt64_data_segment:
-	.quad 0x0000920000000000 /* read/write */
-gdt64_tss_lo:
+.code64
+.section .boot.rodata,"a"
+.align 8
+gdt:
     .quad 0
-gdt64_tss_hi:
-    .quad 0
-gdt64_ptr:
-	.short gdt64_ptr - gdt64 - 1    /* GDT limit */
-	.long gdt64                     /* GDT Addr */
+    .quad 0x00cf9a000000ffff
+    .quad 0x00af9a000000ffff
+    .quad 0x00af92000000ffff
+gdtPointer:
+    .word . - gdt - 1
+    .long gdt
 
-/* 64-bit TSS area: reserved and filled at runtime */
+.section .boot.data,"aw"
+.align 4
+multibootAddress:
+    .long 0
+
+.section .boot.bss,"aw"
+.align 4096
+.global pageMapPml4
+.global bootStack
+.global bootStackTop
+pageMapPml4:
+    .skip 4096
+pageDirectoryPointerTable:
+    .skip 4096
+.global pageTablesEnd
+pageDirectories:
+    .skip 4096 * 64
+pageTablesEnd:
 .align 16
-tss64:
-    .space 104
+bootStack:
+    .skip 16384
+bootStackTop:

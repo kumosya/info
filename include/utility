@@ -1,38 +1,42 @@
-#ifndef LIBCPP_UTILITY_H
-#define LIBCPP_UTILITY_H
+#pragma once
 
 #include <type_traits>
 
 namespace std {
 
-template <class T> constexpr typename remove_reference<T>::type&& move(T&& t) noexcept {
-    return static_cast<typename remove_reference<T>::type&&>(t);
+template <class Type>
+constexpr remove_reference_t<Type>&& move(Type&& value) noexcept {
+    return static_cast<remove_reference_t<Type>&&>(value);
 }
 
-template <class T> constexpr T&& forward(typename remove_reference<T>::type& t) noexcept {
-    return static_cast<T&&>(t);
+template <class Type>
+constexpr Type&& forward(remove_reference_t<Type>& value) noexcept {
+    return static_cast<Type&&>(value);
 }
 
-template <class T> constexpr T&& forward(typename remove_reference<T>::type&& t) noexcept {
-    return static_cast<T&&>(t);
+template <class Type>
+constexpr Type&& forward(remove_reference_t<Type>&& value) noexcept {
+    return static_cast<Type&&>(value);
 }
 
-template <class T>
+template <class First, class Second>
 struct pair {
-    typedef T first_type; // minimal: single-value pair for convenience
-    T first;
-    T second;
+    using first_type = First;
+    using second_type = Second;
+
+    First first;
+    Second second;
+
     constexpr pair() : first(), second() {}
-    constexpr pair(const T& a, const T& b) : first(a), second(b) {}
+    constexpr pair(const First& firstValue, const Second& secondValue)
+        : first(firstValue), second(secondValue) {}
 };
 
-template <class T>
-constexpr void swap(T& a, T& b) {
-    T tmp = move(a);
-    a = move(b);
-    b = move(tmp);
+template <class Type>
+constexpr void swap(Type& left, Type& right) {
+    Type temporary = move(left);
+    left = move(right);
+    right = move(temporary);
 }
 
-} // namespace std
-
-#endif // LIBCPP_UTILITY_H
+}  // namespace std

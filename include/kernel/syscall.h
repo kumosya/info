@@ -1,83 +1,128 @@
-#ifndef INFO_KERNEL_SYSCALL_H_
-#define INFO_KERNEL_SYSCALL_H_
+#pragma once
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-#define SYS_SEND 0
-#define SYS_RECEIVE 1
-
-/* IPC system calls */
-#define SYS_BLOCK 2
-#define SYS_FS 3
-#define SYS_CHAR 4
-#define SYS_MM 5
-#define SYS_TASK 6
-
-/* Memory management */
-#define SYS_MM_BRK 0x3
-#define SYS_MM_SBRK 0x4
-#define SYS_MM_UNBRK 0x5
-#define SYS_MM_MMAP 0x6
-#define SYS_MM_MUNMAP 0x7
-
-/* Block device */
-#define SYS_BLOCK_GET 0x10
-
-/* File system */
-#define SYS_FS_OPEN 0x20
-#define SYS_FS_READ 0x21
-#define SYS_FS_WRITE 0x22
-#define SYS_FS_CLOSE 0x23
-#define SYS_FS_LSEEK 0x24
-#define SYS_FS_DUP 0x25
-#define SYS_FS_DUP2 0x26
-#define SYS_FS_OPENDIR 0x27
-#define SYS_FS_READDIR 0x28
-#define SYS_FS_CLOSEDIR 0x29
-#define SYS_FS_MKDIR 0x2A
-#define SYS_FS_RMDIR 0x2B
-#define SYS_FS_CHDIR 0x2C
-#define SYS_FS_GETCWD 0x2D
-#define SYS_FS_UNLINK 0x2E
-
-/* Task */
-#define SYS_TASK_EXIT 0x30
-#define SYS_TASK_KILL 0x31
-#define SYS_TASK_EXECVE 0x32
-#define SYS_TASK_WAITPID 0x33
-#define SYS_TASK_YIELD 0x34
-#define SYS_TASK_SLEEP 0x35
-#define SYS_TASK_GETPID 0x36
-#define SYS_TASK_GETPPID 0x37
-#define SYS_TASK_WAIT 0x38
-#define SYS_TASK_CLONE 0x39
-#define SYS_TASK_FORK 0x40
-
-/* Character device */
-#define SYS_CHAR_PUTCHAR 0x40
-#define SYS_CHAR_GETCHAR 0x41
-#define SYS_CHAR_PUTS 0x42
-
+#include <stddef.h>
 #include <stdint.h>
 
-#include <sys/types.h>
+namespace kernel {
 
-typedef union _message {
-    uint64_t num[32];
-    char data[256];
-    struct {
-        char str[240];
-        uint64_t arg;
-    } s;
-} MESSAGE;
+enum class SyscallNumber : uint64_t {
+    ExitProcess        = 0,
+    CreateThread       = 1,
+    ExitThread         = 2,
+    Yield              = 3,
+    Sleep              = 4,
+    MapMemory          = 5,
+    UnmapMemory        = 6,
+    CreateEndpoint     = 7,
+    SendMessage        = 8,
+    ReceiveMessage     = 9,
+    CallService        = 10,
+    ReplyMessage       = 11,
+    SpawnProgram       = 12,
+    GetBootstrapHandle = 13,
+    Log                = 14,
+    EnumeratePci       = 15,
+    ReadPciConfig      = 16,
+    WritePciConfig     = 17,
+    MapDeviceMmio      = 18,
+    AllocateDma        = 19,
+    BindIrq            = 20,
+    GetProcessState    = 21,
+    CloseHandle        = 22,
+    GetProcessId       = 23,
+    GetThreadId        = 24,
+    GetMonotonicTime   = 25,
+    GetWallClockTime   = 26,
+    ReadIoPort         = 27,
+    WriteIoPort        = 28,
+    MapFramebuffer     = 29,
+    SpawnImage         = 30,
+    CreatePipe         = 31,
+    ReadPipe           = 32,
+    WritePipe          = 33,
+    GetStandardHandle  = 34,
+    GetProcessInfo     = 35,
+    TerminateProcess   = 36,
+    CreatePty          = 37,
+    GetPtyAttributes   = 38,
+    SetPtyAttributes   = 39,
+    GetPtyWindowSize   = 40,
+    SetPtyWindowSize   = 41,
+    SetPtyForegroundGroup = 42,
+    SetPtyNonblocking  = 43,
+    SendSignal         = 44,
+    CreateSession      = 45,
+    GetProcessIdentifiers = 46,
+    GetClockResolution = 47,
+    PosixUnsupported = 48,
+    WaitThread = 49,
+    WaitAddress = 50,
+    WakeAddress = 51,
+    SetSignalAction = 52,
+    SetSignalMask = 53,
+    GetPendingSignals = 54,
+    WaitSignal = 55,
+    SignalReturn = 56,
+    OpenMessageQueue = 57,
+    UnlinkMessageQueue = 58,
+    SendMessageQueue = 59,
+    ReceiveMessageQueue = 60,
+    GetMessageQueueAttributes = 61,
+    SetMessageQueueFlags = 62,
+    ProtectMemory = 63,
+    OpenSharedMemory = 64,
+    UnlinkSharedMemory = 65,
+    ResizeSharedMemory = 66,
+    MapSharedMemory = 67,
+    SendThreadSignal = 68,
+    RegisterMessageQueueNotification = 69,
+    ForkProcess = 70,
+    WaitChild = 71,
+    ReplaceProcessImage = 72,
+    Count
+};
 
-int msgSend(pid_t dst_pid, uint64_t type, MESSAGE *msg);
-int msgRecv(pid_t *src_pid, uint64_t type, MESSAGE *msg);
+enum class SyscallError : int64_t {
+    InvalidArgument  = -1,
+    InvalidHandle    = -2,
+    PermissionDenied = -3,
+    NotFound         = -4,
+    OutOfMemory      = -5,
+    WouldBlock       = -6,
+    NotSupported     = -7,
+    Busy             = -8,
+    IoError          = -11
+};
 
-#ifdef __cplusplus
-}  // extern "C"
-#endif
+struct SyscallContext {
+    uint64_t r15;
+    uint64_t r14;
+    uint64_t r13;
+    uint64_t r12;
+    uint64_t r11;
+    uint64_t r10;
+    uint64_t r9;
+    uint64_t r8;
+    uint64_t rbp;
+    uint64_t rdi;
+    uint64_t rsi;
+    uint64_t rdx;
+    uint64_t rcx;
+    uint64_t rbx;
+    uint64_t rax;
+    uint64_t userRip;
+    uint64_t userRflags;
+    uint64_t userRsp;
+};
 
-#endif /* INFO_KERNEL_SYSCALL_H_ */
+void initSyscall();
+uint64_t dispatchSyscall(uint64_t syscallNumber, uint64_t arg1, uint64_t arg2,
+                         uint64_t arg3, uint64_t arg4, uint64_t arg5,
+                         uint64_t arg6);
+bool copyFromUser(void* kernelBuffer, const void* userBuffer, size_t size);
+bool copyToUser(void* userBuffer, const void* kernelBuffer, size_t size);
+
+extern "C" void syscallEntry();
+extern "C" void syscallDispatchEntry(SyscallContext* context);
+
+}  // namespace kernel

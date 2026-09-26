@@ -1,30 +1,15 @@
-#ifndef LIBC_CTYPE_H
-#define LIBC_CTYPE_H
+#pragma once
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/* Character classification functions */
-int isalnum(int c);
-int isalpha(int c);
-int isblank(int c);
-int iscntrl(int c);
-int isdigit(int c);
-int isgraph(int c);
-int islower(int c);
-int isprint(int c);
-int ispunct(int c);
-int isspace(int c);
-int isupper(int c);
-int isxdigit(int c);
-
-/* Character conversion functions */
-int tolower(int c);
-int toupper(int c);
-
+int isalnum(int character);
+int isalpha(int character);
+int isdigit(int character);
+int isspace(int character);
+int isprint(int character);
+int tolower(int character);
+int toupper(int character);
 #ifdef __cplusplus
 }
 #endif
-
-#endif /* LIBC_CTYPE_H */

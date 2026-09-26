@@ -1,196 +1,84 @@
-#ifndef INFO_KERNEL_CPU_H_
-#define INFO_KERNEL_CPU_H_
+#pragma once
 
-/* CR0 */
-#define CR0_PG (1 << 31)
+#include <stdint.h>
 
-/* CR4 */
-#define CR4_PSE (1 << 4)
-#define CR4_PAE (1 << 5)
-#define CR4_PGE (1 << 7)
-#define CR4_OSFXSR (1 << 9)      /* OS supports FXSAVE/FXRSTOR */
-#define CR4_OSXMMEXCPT (1 << 10) /* OS supports SIMD FP exceptions */
+namespace kernel {
 
-/* Segment selector */
-#define KERNEL_CS 0x08
-#define KERNEL_DS 0x10
-#define USER_CS 0x28
-#define USER_DS 0x20
+struct Thread;
+struct Process;
+struct RunQueue;
 
-#define SELECTOR_RPL (0)
-#define SELECTOR_TI (2)
-#define SELECTOR_INDEX (3)
-
-#define GDT_TYPE_ACCESSED (1 << 0)
-#define GDT_TYPE_RW (1 << 1)
-#define GDT_TYPE_CONFORMING (1 << 2)
-#define GDT_TYPE_EXPAND_DOWN (1 << 2)
-
-#define GDT_TYPE_CODE (1 << 3 | 1 << 4)
-#define GDT_TYPE_DATA (1 << 4)
-
-#define GDT_DPL_RING0 (0 << 5)
-#define GDT_DPL_RING3 (3 << 5)
-
-#define GDT_PRESENT (1 << 7)
-
-/* MSR */
-#define MSR_EFER    0xC0000080
-#define MSR_STAR    0xC0000081
-#define MSR_LSTAR   0xC0000082
-#define MSR_FMASK   0xC0000084 
-
-#define MSR_FS_BASE 0xC0000100
-#define MSR_GS_BASE 0xC0000101
-#define MSR_KERNEL_GS_BASE 0xC0000102
-
-/* offset of the structure 'Registers' (NOT faultStack_code!) */
-#define R15 0x0
-#define R14 0x8
-#define R13 0x10
-#define R12 0x18
-#define R11 0x20
-#define R10 0x28
-#define R9 0x30
-#define R8 0x38
-#define RBX 0x40
-#define RCX 0x48
-#define RDX 0x50
-#define RSI 0x58
-#define RDI 0x60
-#define RBP 0x68
-#define DS 0x70
-#define ES 0x78
-#define RAX 0x80
-#define RIP 0x88
-#define CS 0x90
-#define RFLAGS 0x98
-#define RSP 0xA0
-#define SS 0xB0
-
-#ifndef ASM_FILE
-
-#include <cstdint>
-
-struct faultStack_code {
-    std::uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
-    std::uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
-    std::uint64_t error_code, rip, cs, rflags, rsp, ss;
-} __attribute__((packed));
-
-struct faultStack_nocode {
-    std::uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
-    std::uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
-    std::uint64_t rip, cs, rflags, rsp, ss;
-} __attribute__((packed));
-
-namespace idt {
-struct Entry {
-    std::uint16_t offset_low;
-    std::uint16_t selector;
-    std::uint8_t ist;
-    std::uint8_t type_attr;
-    std::uint16_t offset_mid;
-    std::uint32_t offset_high;
-    std::uint32_t zero;
-} __attribute__((packed));
-
-struct Ptr {
-    std::uint16_t limit;
-    std::uint64_t base;
-} __attribute__((packed));
-
-void Init();
-}  // namespace idt
-
-namespace gdt {
-
-struct Ptr {
-    std::uint16_t limit;
-    std::uint64_t base;
-} __attribute__((packed));
-
-struct TssEntry {
-    std::uint32_t reserved0;
-    std::uint64_t rsp0;
-    std::uint64_t rsp1;
-    std::uint64_t rsp2;
-    std::uint64_t reserved1;
-    std::uint64_t ist1;
-    std::uint64_t ist2;
-    std::uint64_t ist3;
-    std::uint64_t ist4;
-    std::uint64_t ist5;
-    std::uint64_t ist6;
-    std::uint64_t ist7;
-    std::uint64_t reserved2;
-    std::uint16_t reserved3;
-    std::uint16_t iomap_base;
-} __attribute__((packed, aligned(16)));
-
-extern TssEntry *tss;
-void SetEntry(int index, std::uint64_t base, std::uint64_t limit,
-              std::uint8_t access, std::uint8_t gran);
-void SetTss(int index, std::uint64_t tss_base, std::uint8_t access);
-void Init();
-}  // namespace gdt
-
-// Stubs implemented in interrupt.S
-extern "C" void pit_stub();
-extern "C" void kbd_stub();
-
-extern "C" void de_stub();
-extern "C" void debug_stub();
-extern "C" void nmi_stub();
-extern "C" void bp_stub();
-extern "C" void of_stub();
-extern "C" void br_stub();
-extern "C" void ud_stub();
-extern "C" void nm_stub();
-extern "C" void df_stub();
-extern "C" void ts_stub();
-extern "C" void np_stub();
-extern "C" void ss_stub();
-extern "C" void gp_stub();
-extern "C" void pf_stub();
-extern "C" void mf_stub();
-extern "C" void ac_stub();
-extern "C" void mc_stub();
-extern "C" void xm_stub();
-extern "C" void ve_stub();
-extern "C" void cp_stub();
-
-// CPU信息结构
-class CpuId {
-   public:
-    // 获取CPU信息
-    void GetInfo();
-    // 检测CPU特性
-    bool HasFeature(std::uint32_t feature_bit);
-    // 检测扩展CPU特性
-    bool HasExtFeature(std::uint32_t feature_bit);
-    // 打印CPU信息
-    void PrintInfo();
-
-    char *GetVendorId();
-    char *GetBrandString();
-    std::uint32_t GetFamily();
-    std::uint32_t GetModel();
-    std::uint32_t GetStepping();
-
-   private:
-    void Init();
-    bool initialized = false;
-
-    char vendor_id[13];          // 厂商ID
-    char brand_string[49];       // CPU品牌字符串
-    std::uint32_t family;        // CPU系列
-    std::uint32_t model;         // CPU型号
-    std::uint32_t stepping;      // 步进
-    std::uint32_t features;      // 特性标志
-    std::uint32_t ext_features;  // 扩展特性标志
+struct CpuFeatures {
+    bool longMode;
+    bool noExecute;
+    bool sse;
+    bool sse2;
+    bool apic;
+    bool x2Apic;
+    bool tsc;
+    bool invariantTsc;
 };
 
-#endif /* ASM_FILE */
+struct [[gnu::packed]] TaskStateSegment {
+    uint32_t reserved0;
+    uint64_t rsp0;
+    uint64_t rsp1;
+    uint64_t rsp2;
+    uint64_t reserved1;
+    uint64_t ist1;
+    uint64_t ist2;
+    uint64_t ist3;
+    uint64_t ist4;
+    uint64_t ist5;
+    uint64_t ist6;
+    uint64_t ist7;
+    uint64_t reserved2;
+    uint16_t reserved3;
+    uint16_t ioMapBase;
+};
 
-#endif /* INFO_KERNEL_CPU_H_ */
+struct CpuLocalData {
+    CpuLocalData* self;
+    uint32_t cpuId;
+    uint32_t apicId;
+    Thread* currentThread;
+    Process* currentProcess;
+    RunQueue* runQueue;
+    Thread* idleThread;
+    void* kernelStack;
+    TaskStateSegment* tss;
+    void* idt;
+    bool rescheduleRequested;
+    uint64_t tickCount;
+    uint64_t syscallUserStack;
+    void* architectureData;
+    uint32_t preemptionCount;
+};
+
+void initCpu();
+CpuLocalData* prepareCpuLocalData(uint32_t cpuId, uint32_t apicId);
+void initApplicationProcessorCpu(CpuLocalData* cpu);
+const CpuFeatures& getCpuFeatures();
+CpuLocalData* getCurrentCpu();
+uint32_t getCurrentCpuId();
+void setKernelStack(void* stackTop);
+
+uint64_t readMsr(uint32_t msr);
+void writeMsr(uint32_t msr, uint64_t value);
+
+void initLocalApic();
+void configureLocalApicTimer(uint8_t vector, uint32_t initialCount);
+void sendEndOfInterrupt();
+void sendInterProcessorInterrupt(uint32_t apicId, uint8_t vector);
+void sendInitInterProcessorInterrupt(uint32_t apicId);
+void sendStartupInterProcessorInterrupt(uint32_t apicId, uint8_t vector);
+
+uint64_t disableInterrupts();
+void restoreInterrupts(uint64_t flags);
+void enableInterrupts();
+void disablePreemption();
+void enablePreemption();
+bool isPreemptionEnabled();
+[[noreturn]] void haltCpu();
+
+}  // namespace kernel

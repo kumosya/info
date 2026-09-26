@@ -1,31 +1,30 @@
-#ifndef LIBCPP_NEW_H
-#define LIBCPP_NEW_H
-
-/* Minimal <new> for freestanding builds: declare placement new and
-   basic operator new/delete signatures so code using placement-new
-   and delete compiles. Implementations of global operator new/delete
-   are usually provided by the runtime or the freestanding environment. */
+#pragma once
 
 #include <stddef.h>
 
-#ifdef __cplusplus
-
 namespace std {
-class bad_alloc {};
-}
 
-// Global allocation hooks (declarations only)
-void* operator new(size_t) noexcept;
-void operator delete(void*) noexcept;
+struct nothrow_t {
+    explicit constexpr nothrow_t() = default;
+};
 
-// Placement new (returns the pointer passed in)
-inline void* operator new(size_t, void* p) noexcept { return p; }
+extern const nothrow_t nothrow;
+
+}  // namespace std
+
+void* operator new(size_t size) noexcept;
+void* operator new[](size_t size) noexcept;
+void* operator new(size_t size, const std::nothrow_t&) noexcept;
+void* operator new[](size_t size, const std::nothrow_t&) noexcept;
+
+void operator delete(void* pointer) noexcept;
+void operator delete[](void* pointer) noexcept;
+void operator delete(void* pointer, size_t size) noexcept;
+void operator delete[](void* pointer, size_t size) noexcept;
+void operator delete(void* pointer, const std::nothrow_t&) noexcept;
+void operator delete[](void* pointer, const std::nothrow_t&) noexcept;
+
+inline void* operator new(size_t, void* pointer) noexcept { return pointer; }
+inline void* operator new[](size_t, void* pointer) noexcept { return pointer; }
 inline void operator delete(void*, void*) noexcept {}
-
-// Provide a minimal nothrow tag
-namespace std { struct nothrow_t {}; }
-extern const std::nothrow_t nothrow;
-
-#endif /* __cplusplus */
-
-#endif /* LIBCPP_NEW_H */
+inline void operator delete[](void*, void*) noexcept {}

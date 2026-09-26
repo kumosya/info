@@ -42,3 +42,7 @@
 
 .vscode/*
 .trae/*
+.claude/*
+
+build/*
+obj/*

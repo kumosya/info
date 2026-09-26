@@ -1,40 +1,15 @@
-#ifndef INFO_KERNEL_MM_H_
-#define INFO_KERNEL_MM_H_
+#pragma once
 
-#include <cstddef>
-#include <cstdint>
+#include <stdint.h>
 
-#include "kernel/page.h"
+#include "kernel/boot.h"
 
-namespace mm {
+namespace kernel {
 
-int Service(void *arg);
+void initPhysicalMemory(const BootInfo* bootInfo);
+uint64_t allocatePhysicalPage();
+void freePhysicalPage(uint64_t physicalAddress);
+uint64_t getTotalMemoryBytes();
+uint64_t getFreeMemoryBytes();
 
-inline static std::uint64_t Vir2Phy(std::uint64_t virt) {
-    return virt - IDENTITY_BASE;
-}
-
-inline static std::uint64_t Phy2Vir(std::uint64_t phy) {
-    return phy + IDENTITY_BASE;
-}
-
-namespace page {
-/* in mm/page.cc */
-extern FrameMem frame;
-extern PTE *kernel_pml4;
-
-void Map(PTE *pml4, std::uint64_t virt_addr, std::uint64_t phys_addr,
-         std::uint64_t flags);
-void *Alloc(std::size_t size);
-void Free(void *addr);
-std::uint64_t GetPhyAddr(PTE *pml4, std::uint64_t virt_addr);
-void UpdateKernelPml4(PTE *user_pml4);
-
-std::uint64_t AnalyzePageTable(PTE *pml4, std::uint64_t virt_addr);
-}  // namespace page
-namespace slab {
-void Init();
-}
-}  // namespace mm
-
-#endif /* INFO_KERNEL_MM_H_ */
+}  // namespace kernel

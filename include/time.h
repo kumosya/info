@@ -1,42 +1,28 @@
-#ifndef LIBC_TIME_H
-#define LIBC_TIME_H
+#pragma once
 
-#include <stddef.h>
+#include <sys/types.h>
+
+struct timespec {
+    time_t tv_sec;
+    long tv_nsec;
+};
+
+#define CLOCK_MONOTONIC 1
+#define CLOCK_REALTIME 0
+#define CLOCK_PROCESS_CPUTIME_ID 2
+#define CLOCK_THREAD_CPUTIME_ID 3
+#define TIMER_ABSTIME 1
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/* Types */
-
-typedef long time_t;
-
-struct tm {
-    int tm_sec;   /* seconds after the minute [0-60] */
-    int tm_min;   /* minutes after the hour [0-59] */
-    int tm_hour;  /* hours since midnight [0-23] */
-    int tm_mday;  /* day of the month [1-31] */
-    int tm_mon;   /* months since January [0-11] */
-    int tm_year;  /* years since 1900 */
-    int tm_wday;  /* days since Sunday [0-6] */
-    int tm_yday;  /* days since January 1 [0-365] */
-    int tm_isdst; /* Daylight Saving Time flag */
-};
-
-/* Functions */
-
-double difftime(time_t time1, time_t time0);
-time_t mktime(struct tm *timeptr);
-time_t time(time_t *timer);
-char *asctime(const struct tm *timeptr);
-char *ctime(const time_t *timer);
-struct tm *gmtime(const time_t *timer);
-struct tm *localtime(const time_t *timer);
-size_t strftime(char *s, size_t maxsize, const char *format,
-                const struct tm *timeptr);
-
+time_t time(time_t* result);
+int clock_gettime(int clockId, struct timespec* value);
+int clock_getres(clockid_t clockId, struct timespec* value);
+int nanosleep(const struct timespec* duration, struct timespec* remaining);
+int clock_nanosleep(clockid_t clockId, int flags,
+                    const struct timespec* duration,
+                    struct timespec* remaining);
 #ifdef __cplusplus
 }
 #endif
-
-#endif /* LIBC_TIME_H */

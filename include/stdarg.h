@@ -1,21 +1,7 @@
-#ifndef LIBC_STDARG_H
-#define LIBC_STDARG_H
+#pragma once
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-/* Prefer compiler provided va_list and helpers. This is portable for
-   GCC/Clang in freestanding mode and avoids complex ABI reimplementation. */
 typedef __builtin_va_list va_list;
-
-#define va_start(ap, last) __builtin_va_start((ap), (last))
-#define va_arg(ap, type) __builtin_va_arg((ap), type)
-#define va_end(ap) __builtin_va_end(ap)
-#define va_copy(dest, src) __builtin_va_copy((dest), (src))
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* LIBC_STDARG_H */
+#define va_start(list, last) __builtin_va_start(list, last)
+#define va_end(list) __builtin_va_end(list)
+#define va_arg(list, type) __builtin_va_arg(list, type)
+#define va_copy(destination, source) __builtin_va_copy(destination, source)

@@ -1,49 +1,82 @@
-#ifndef LIBCPP_ERRNO_H
-#define LIBCPP_ERRNO_H
+#pragma once
+
+#define E2BIG 7
+#define EACCES 13
+#define EADDRINUSE 98
+#define EADDRNOTAVAIL 99
+#define EAFNOSUPPORT 97
+#define EAGAIN 11
+#define EALREADY 114
+#define EPERM 1
+#define ESRCH 3
+#define ENOENT 2
+#define EINTR 4
+#define EIO 5
+#define EFAULT 14
+#define ENXIO 6
+#define ENOEXEC 8
+#define EBADF 9
+#define ECHILD 10
+#define ENOMEM 12
+#define EBUSY 16
+#define EEXIST 17
+#define EXDEV 18
+#define ENODEV 19
+#define ENOTDIR 20
+#define EISDIR 21
+#define EINVAL 22
+#define ENFILE 23
+#define EMFILE 24
+#define ENOTTY 25
+#define EFBIG 27
+#define ENOSPC 28
+#define ESPIPE 29
+#define EROFS 30
+#define EMLINK 31
+#define EPIPE 32
+#define EDOM 33
+#define ERANGE 34
+#define EDEADLK 35
+#define ENAMETOOLONG 36
+#define ENOLCK 37
+#define ENOSYS 38
+#define ENOTEMPTY 39
+#define ELOOP 40
+#define ENOMSG 42
+#define EIDRM 43
+#define ENOSTR 60
+#define ENODATA 61
+#define ETIME 62
+#define ENOSR 63
+#define EOVERFLOW 75
+#define EPROTO 71
+#define EBADMSG 74
+#define ENOTSOCK 88
+#define EDESTADDRREQ 89
+#define EMSGSIZE 90
+#define EPROTOTYPE 91
+#define ENOPROTOOPT 92
+#define EPROTONOSUPPORT 93
+#define EOPNOTSUPP 95
+#define ECONNABORTED 103
+#define ECONNRESET 104
+#define ENOBUFS 105
+#define EISCONN 106
+#define ENOTCONN 107
+#define ETIMEDOUT 110
+#define ECONNREFUSED 111
+#define EINPROGRESS 115
+#define ECANCELED 125
+#define EOWNERDEAD 130
+#define ENOTRECOVERABLE 131
+
+#define EWOULDBLOCK EAGAIN
+#define ENOTSUP EOPNOTSUPP
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/* External declaration of errno variable */
 extern int errno;
-
-/* Error number definitions */
-#define EPERM 1    /* Operation not permitted */
-#define ENOENT 2   /* No such file or directory */
-#define ESRCH 3    /* No such process */
-#define EINTR 4    /* Interrupted system call */
-#define EIO 5      /* I/O error */
-#define ENXIO 6    /* No such device or address */
-#define E2BIG 7    /* Argument list too long */
-#define ENOEXEC 8  /* Exec format error */
-#define EBADF 9    /* Bad file descriptor */
-#define ECHILD 10  /* No child processes */
-#define EAGAIN 11  /* Resource temporarily unavailable */
-#define ENOMEM 12  /* Cannot allocate memory */
-#define EACCES 13  /* Permission denied */
-#define EFAULT 14  /* Bad address */
-#define EBUSY 16   /* Device or resource busy */
-#define EEXIST 17  /* File exists */
-#define EXDEV 18   /* Cross-device link */
-#define ENODEV 19  /* No such device */
-#define ENOTDIR 20 /* Not a directory */
-#define EISDIR 21  /* Is a directory */
-#define EINVAL 22  /* Invalid argument */
-#define ENFILE 23  /* File table overflow */
-#define EMFILE 24  /* Too many open files */
-#define ENOTTY 25  /* Inappropriate ioctl for device */
-#define EFBIG 27   /* File too large */
-#define ENOSPC 28  /* No space left on device */
-#define ESPIPE 29  /* Illegal seek */
-#define EROFS 30   /* Read-only file system */
-#define EMLINK 31  /* Too many links */
-#define EPIPE 32   /* Broken pipe */
-#define EDOM 33    /* Mathematics argument out of domain of function */
-#define ERANGE 34  /* Result too large */
-
 #ifdef __cplusplus
 }
 #endif
-
-#endif /* LIBCPP_ERRNO_H */

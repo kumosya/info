@@ -1,29 +1,45 @@
-#ifndef LIBCPP_ITERATOR_H
-#define LIBCPP_ITERATOR_H
+#pragma once
+
+#include <stddef.h>
 
 namespace std {
+
 struct input_iterator_tag {};
 struct output_iterator_tag {};
 struct forward_iterator_tag : input_iterator_tag {};
 struct bidirectional_iterator_tag : forward_iterator_tag {};
 struct random_access_iterator_tag : bidirectional_iterator_tag {};
 
-template <class T>
-struct iterator_traits { };
+template <class Iterator>
+struct iterator_traits {};
 
-template <class T>
-struct iterator_traits<T*> {
-    typedef T value_type;
-    typedef T* pointer;
-    typedef T& reference;
-    typedef random_access_iterator_tag iterator_category;
+template <class Type>
+struct iterator_traits<Type*> {
+    using difference_type = ptrdiff_t;
+    using value_type = Type;
+    using pointer = Type*;
+    using reference = Type&;
+    using iterator_category = random_access_iterator_tag;
 };
 
-template <class T>
-inline T* begin(T* p) { return p; }
-template <class T>
-inline T* end(T* p) { return p; }
+template <class Container>
+constexpr auto begin(Container& container) -> decltype(container.begin()) {
+    return container.begin();
+}
 
-} // namespace std
+template <class Container>
+constexpr auto end(Container& container) -> decltype(container.end()) {
+    return container.end();
+}
 
-#endif // LIBCPP_ITERATOR_H
+template <class Type, size_t size>
+constexpr Type* begin(Type (&array)[size]) noexcept {
+    return array;
+}
+
+template <class Type, size_t size>
+constexpr Type* end(Type (&array)[size]) noexcept {
+    return array + size;
+}
+
+}  // namespace std

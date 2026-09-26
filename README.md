@@ -1,12 +1,21 @@
 # OS Info
-OS Info - A Simple Unix-like Operating System
 
-# Build
-```shell
+## 介绍
+
+osinfo 运行在 x86-64 架构，采用微内核风格：
+
+- 内核直接提供：内存管理、线程/进程管理、调度、中断、系统调用、IPC 原语（端点/管道/伪终端/消息队列/共享内存）、信号、时间与设备访问控制。
+- 文件系统、终端、窗口、输入、存储等高层服务全部运行在用户态，通过端点 IPC 访问。
+- 用户态程序通过 73 个系统调用（`SYSCALL`/`SYSRET`）进入内核。
+
+## 编译
+
+```
 make all
 ```
 
-# Run
-```shell
-make makeimg cpfiles qemu
+## 编译并运行
+
+```
+make all mkimg run
 ```

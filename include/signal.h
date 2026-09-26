@@ -1,22 +1,55 @@
-/* Public domain.  */
-#ifndef _SIGNAL_H
-#define _SIGNAL_H
+#pragma once
 
+#include <stdint.h>
 #include <sys/types.h>
+#include <time.h>
 
-/* C++ compatibility */
-#ifdef __cplusplus
-extern "C" {
-#endif
+typedef uint64_t sigset_t;
+typedef int sig_atomic_t;
+typedef void (*sighandler_t)(int);
 
-/* Signal number definitions */
+typedef struct {
+    int si_signo;
+    int si_code;
+    int si_errno;
+    pid_t si_pid;
+    uid_t si_uid;
+    void* si_addr;
+    int si_status;
+    int64_t si_value;
+} siginfo_t;
+
+struct sigevent {
+    int sigev_notify;
+    int sigev_signo;
+    int64_t sigev_value;
+    void (*sigev_notify_function)(int64_t);
+    void* sigev_notify_attributes;
+};
+
+#define SIGEV_NONE 0
+#define SIGEV_SIGNAL 1
+#define SIGEV_THREAD 2
+
+struct sigaction {
+    union {
+        sighandler_t handler;
+        void (*action)(int, siginfo_t*, void*);
+    } __handler;
+    sigset_t sa_mask;
+    int sa_flags;
+    void (*sa_restorer)(void);
+};
+
+#define sa_handler __handler.handler
+#define sa_sigaction __handler.action
+
 #define SIGHUP 1
 #define SIGINT 2
 #define SIGQUIT 3
 #define SIGILL 4
 #define SIGTRAP 5
 #define SIGABRT 6
-#define SIGIOT 6
 #define SIGBUS 7
 #define SIGFPE 8
 #define SIGKILL 9
@@ -39,73 +72,49 @@ extern "C" {
 #define SIGVTALRM 26
 #define SIGPROF 27
 #define SIGWINCH 28
-#define SIGIO 29
-#define SIGPOLL SIGIO
-#define SIGPWR 30
-#define SIGSYS 31
-#define SIGUNUSED 31
+#define SIGRTMIN 32
+#define SIGRTMAX 64
+#define NSIG 65
 
-/* Signal action flags */
-#define SA_NOCLDSTOP 1
-#define SA_NOCLDWAIT 2
-#define SA_SIGINFO 4
-#define SA_RESTART 8
-#define SA_ONSTACK 16
-#define SA_RESETHAND 32
-#define SA_NODEFER 64
-#define SA_NOMASK SA_NODEFER
+#define SIG_DFL ((sighandler_t)0)
+#define SIG_IGN ((sighandler_t)1)
+#define SIG_ERR ((sighandler_t)-1)
 
-/* Signal mask manipulation */
 #define SIG_BLOCK 0
 #define SIG_UNBLOCK 1
 #define SIG_SETMASK 2
 
-/* Signal set operations */
-#define _SIGSET_NWORDS (1024 / (8 * sizeof(unsigned long)))
+#define SA_SIGINFO 0x00000004
+#define SA_RESTART 0x10000000
+#define SA_NODEFER 0x40000000
+#define SA_RESETHAND ((int)0x80000000U)
 
-typedef struct {
-    unsigned long __val[_SIGSET_NWORDS];
-} sigset_t;
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-/* sigaction structure */
-struct sigaction {
-    void (*sa_handler)(int);
-    void (*sa_sigaction)(int, siginfo_t *, void *);
-    sigset_t sa_mask;
-    int sa_flags;
-    void (*sa_restorer)(void);
-};
-
-/* siginfo structure */
-struct siginfo_t {
-    int si_signo;
-    int si_errno;
-    int si_code;
-    pid_t si_pid;
-    uid_t si_uid;
-    void *si_addr;
-    int si_status;
-    void *si_value;
-};
-
-/* Function declarations */
-typedef void (*sighandler_t)(int);
-sighandler_t signal(int signum, sighandler_t handler);
-int sigaction(int signum, const struct sigaction *act,
-              struct sigaction *oldact);
-int sigprocmask(int how, const sigset_t *set, sigset_t *oldset);
-int sigemptyset(sigset_t *set);
-int sigfillset(sigset_t *set);
-int sigaddset(sigset_t *set, int signum);
-int sigdelset(sigset_t *set, int signum);
-int sigismember(const sigset_t *set, int signum);
-int raise(int signum);
-int kill(pid_t pid, int signum);
-int sigsuspend(const sigset_t *mask);
-unsigned int alarm(unsigned int seconds);
+int kill(pid_t process_id, int signal);
+int raise(int signal);
+sighandler_t signal(int signal, sighandler_t handler);
+int sigaction(int signal, const struct sigaction* action,
+              struct sigaction* old_action);
+int sigemptyset(sigset_t* set);
+int sigfillset(sigset_t* set);
+int sigaddset(sigset_t* set, int signal);
+int sigdelset(sigset_t* set, int signal);
+int sigismember(const sigset_t* set, int signal);
+int sigprocmask(int how, const sigset_t* set, sigset_t* old_set);
+int pthread_sigmask(int how, const sigset_t* set, sigset_t* old_set);
+int sigpending(sigset_t* set);
+int sigsuspend(const sigset_t* mask);
+int sigwait(const sigset_t* set, int* signal);
+int sigwaitinfo(const sigset_t* set, siginfo_t* info);
+int sigtimedwait(const sigset_t* set, siginfo_t* info,
+                 const struct timespec* timeout);
+int pause(void);
+int pthread_kill(uint64_t thread, int signal);
+pid_t setsid(void);
 
 #ifdef __cplusplus
 }
 #endif
-
-#endif /* _SIGNAL_H */

@@ -1,0 +1,79 @@
+#pragma once
+
+#include <stdint.h>
+
+namespace std {
+
+enum memory_order {
+    memory_order_relaxed = __ATOMIC_RELAXED,
+    memory_order_consume = __ATOMIC_CONSUME,
+    memory_order_acquire = __ATOMIC_ACQUIRE,
+    memory_order_release = __ATOMIC_RELEASE,
+    memory_order_acq_rel = __ATOMIC_ACQ_REL,
+    memory_order_seq_cst = __ATOMIC_SEQ_CST
+};
+
+template <class Type>
+class atomic {
+   public:
+    constexpr atomic() noexcept = default;
+    constexpr atomic(Type value) noexcept : value_(value) {}
+    atomic(const atomic&) = delete;
+    atomic& operator=(const atomic&) = delete;
+
+    Type load(memory_order order = memory_order_seq_cst) const noexcept {
+        return __atomic_load_n(&value_, order);
+    }
+    void store(Type value,
+               memory_order order = memory_order_seq_cst) noexcept {
+        __atomic_store_n(&value_, value, order);
+    }
+    Type exchange(Type value,
+                  memory_order order = memory_order_seq_cst) noexcept {
+        return __atomic_exchange_n(&value_, value, order);
+    }
+    bool compare_exchange_strong(
+        Type& expected, Type desired,
+        memory_order success = memory_order_seq_cst,
+        memory_order failure = memory_order_seq_cst) noexcept {
+        return __atomic_compare_exchange_n(&value_, &expected, desired, false,
+                                           success, failure);
+    }
+    Type fetch_add(Type value,
+                   memory_order order = memory_order_seq_cst) noexcept {
+        return __atomic_fetch_add(&value_, value, order);
+    }
+    Type fetch_sub(Type value,
+                   memory_order order = memory_order_seq_cst) noexcept {
+        return __atomic_fetch_sub(&value_, value, order);
+    }
+    operator Type() const noexcept { return load(); }
+    Type operator=(Type value) noexcept {
+        store(value);
+        return value;
+    }
+
+   private:
+    Type value_{};
+};
+
+class atomic_flag {
+   public:
+    constexpr atomic_flag() noexcept = default;
+    bool test_and_set(memory_order order = memory_order_seq_cst) noexcept {
+        return __atomic_test_and_set(&value_, order);
+    }
+    void clear(memory_order order = memory_order_seq_cst) noexcept {
+        __atomic_clear(&value_, order);
+    }
+
+   private:
+    bool value_ = false;
+};
+
+using atomic_bool = atomic<bool>;
+using atomic_int = atomic<int>;
+using atomic_uint = atomic<unsigned int>;
+using atomic_uint64_t = atomic<uint64_t>;
+
+}  // namespace std

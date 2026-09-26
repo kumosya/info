@@ -1,40 +1,19 @@
-/* Public domain.  */
-#ifndef _SYS_TYPES_H
-#define _SYS_TYPES_H
+#pragma once
 
 #include <stddef.h>
 #include <stdint.h>
 
-/* C++ compatibility */
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-/* System specific types */
-typedef int pid_t;
-typedef unsigned int uid_t;
-typedef unsigned int gid_t;
-typedef unsigned long size_t;
-typedef signed long ssize_t;
-typedef long off_t;
-typedef long loff_t;
-typedef unsigned int mode_t;
-typedef int dev_t;
-typedef int ino_t;
-typedef int nlink_t;
-typedef int blksize_t;
-typedef int blkcnt_t;
-typedef int time_t;
-typedef int clock_t;
-typedef unsigned int useconds_t;
-typedef int suseconds_t;
-
-/* Socket types */
-typedef int socklen_t;
-typedef int sa_family_t;
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* _SYS_TYPES_H */
+typedef int64_t ssize_t;
+typedef int64_t off_t;
+typedef int32_t pid_t;
+typedef uint32_t mode_t;
+typedef int64_t time_t;
+typedef int32_t clockid_t;
+typedef uint32_t uid_t;
+typedef uint32_t gid_t;
+typedef uint64_t dev_t;
+typedef uint64_t ino_t;
+typedef uint64_t nlink_t;
+typedef int64_t blksize_t;
+typedef int64_t blkcnt_t;
+typedef uint32_t useconds_t;

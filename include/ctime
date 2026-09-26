@@ -1,0 +1,12 @@
+#pragma once
+
+#include <time.h>
+
+namespace std {
+
+using ::clock_gettime;
+using ::time;
+using ::time_t;
+using ::timespec;
+
+}  // namespace std
