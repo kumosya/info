@@ -5,7 +5,7 @@
 
 namespace kernel {
 
-class Process;
+class Task;
 
 enum class ElfLoadError : uint8_t {
     None,
@@ -43,22 +43,25 @@ struct ElfSharedImage {
 
 class ElfLoader {
    public:
-    static ElfLoadError load(Process& process, const void* image, size_t size,
+    static const char* errorName(ElfLoadError error);
+    static bool runValidationSelfTest(Task& task);
+
+    static ElfLoadError load(Task& task, const void* image, size_t size,
                              ElfLoadResult& result);
-    static ElfLoadError loadFromAddressSpace(
-        Process& process, uint64_t sourceRoot, uint64_t sourceAddress,
-        size_t size, ElfLoadResult& result);
-    static ElfLoadError loadFromAddressSpace(
-        uint64_t destinationRoot, uint64_t sourceRoot,
-        uint64_t sourceAddress, size_t size, ElfLoadResult& result);
+    static ElfLoadError loadFromAddressSpace(Task& task, uint64_t sourceRoot,
+                                             uint64_t sourceAddress,
+                                             size_t size,
+                                             ElfLoadResult& result);
+    static ElfLoadError loadFromAddressSpace(uint64_t destinationRoot,
+                                             uint64_t sourceRoot,
+                                             uint64_t sourceAddress,
+                                             size_t size,
+                                             ElfLoadResult& result);
     static ElfLoadError loadDynamicSetFromAddressSpace(
         uint64_t destinationRoot, uint64_t sourceRoot,
         uint64_t executableAddress, size_t executableSize,
         const ElfSharedImage* sharedImages, uint32_t sharedImageCount,
         ElfLoadResult& result);
 };
-
-const char* getElfLoadErrorName(ElfLoadError error);
-bool runElfLoaderValidationSelfTest(Process& process);
 
 }  // namespace kernel

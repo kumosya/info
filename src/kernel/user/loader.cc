@@ -1,22 +1,19 @@
 #include "kernel/boot.h"
 #include "kernel/ipc.h"
 #include "kernel/page.h"
-#include "kernel/pipe.h"
-#include "kernel/pty.h"
-#include "kernel/process.h"
 #include "kernel/serial.h"
+#include "kernel/task.h"
 #include "kernel/thread.h"
-#include "kernel/user.h"
 
 namespace {
 
-constexpr uint64_t PAGE_SIZE               = 4096;
-constexpr uint64_t USER_STACK_TOP          = 0x00007ffffff00000ULL;
-constexpr uint64_t USER_STACK_PAGES        = 8;
-constexpr uint32_t MAXIMUM_ARGUMENT_LENGTH = 255;
-constexpr uint32_t MAXIMUM_ARGUMENT_COUNT  = 8;
+constexpr uint64_t PAGE_SIZE                 = 4096;
+constexpr uint64_t USER_STACK_TOP            = 0x00007ffffff00000ULL;
+constexpr uint64_t USER_STACK_PAGES          = 64;
+constexpr uint32_t MAXIMUM_ARGUMENT_LENGTH   = 383;
+constexpr uint32_t MAXIMUM_ARGUMENT_COUNT    = 64;
 constexpr uint32_t MAXIMUM_ENVIRONMENT_COUNT = 16;
-constexpr uint64_t DIRECT_MAP_BASE = 0xffff800000000000ULL;
+constexpr uint64_t DIRECT_MAP_BASE           = 0xffff800000000000ULL;
 
 struct ProgramImage {
     const char* moduleName;
@@ -27,23 +24,19 @@ struct ProgramImage {
 };
 
 ProgramImage PROGRAM_IMAGES[] = {
-    {"init", "init", 0, 0,
-     kernel::processCapabilitySpawn},
-    {"task", "task-server", 0, 0,
-     kernel::processCapabilitySpawn},
+    {"init", "init", 0, 0, kernel::taskCapabilitySpawn},
+    {"task", "task-server", 0, 0, kernel::taskCapabilitySpawn},
     {"fs", "fs-server", 0, 0, 0},
-    {"device", "device-server", 0, 0,
-     kernel::processCapabilityDevice},
-    {"storage", "storage-server", 0, 0,
-     kernel::processCapabilityDevice}};
+    {"pci", "pci-server", 0, 0, kernel::taskCapabilityPci},
+    {"device", "device-server", 0, 0, kernel::taskCapabilityDevice},
+    {"storage", "storage-server", 0, 0, kernel::taskCapabilityDevice}};
 kernel::ElfSharedImage bootRuntimeImage{};
 bool bootProgramsReady;
 
 bool moduleNameEquals(const char* commandLine, const char* expected) {
     if (commandLine == nullptr || expected == nullptr) return false;
     uint32_t index = 0;
-    while (expected[index] != '\0' &&
-           commandLine[index] == expected[index]) {
+    while (expected[index] != '\0' && commandLine[index] == expected[index]) {
         ++index;
     }
     return expected[index] == '\0' &&
@@ -68,13 +61,12 @@ bool initializeBootPrograms(const kernel::BootInfo& bootInfo) {
             findModule(bootInfo, image.moduleName);
         if (module == nullptr) return false;
         image.sourceAddress = DIRECT_MAP_BASE + module->start;
-        image.size = module->end - module->start;
+        image.size          = module->end - module->start;
     }
-    const kernel::BootModule* runtime =
-        findModule(bootInfo, "libos-c++.so");
+    const kernel::BootModule* runtime = findModule(bootInfo, "libos-c++.so");
     if (runtime == nullptr) return false;
-    bootRuntimeImage = {DIRECT_MAP_BASE + runtime->start,
-                        runtime->end - runtime->start, "libos-c++.so"};
+    bootRuntimeImage  = {DIRECT_MAP_BASE + runtime->start,
+                         runtime->end - runtime->start, "libos-c++.so"};
     bootProgramsReady = true;
     return true;
 }
@@ -96,18 +88,17 @@ uint32_t stringLength(const char* value) {
 
 namespace kernel {
 
-ElfLoadError buildUserStack(uint64_t root, const char* programName,
-                            uint32_t argumentCount,
-                            const char* const* arguments,
-                            uint32_t environmentCount,
-                            const char* const* environment,
-                            uint64_t runtimeStateAddress,
-                            uint64_t& stackPointer) {
+ElfLoadError UserProgramLoader::buildStack(
+    uint64_t root, const char* programName, uint32_t argumentCount,
+    const char* const* arguments, uint32_t environmentCount,
+    const char* const* environment, uint64_t runtimeStateAddress,
+    uint64_t& stackPointer) {
     const uint64_t stackBottom = USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE;
     for (uint64_t address = stackBottom; address < USER_STACK_TOP;
          address += PAGE_SIZE) {
-        const UserPageMapResult mapResult = allocateUserPageInAddressSpace(
-            root, address, pageUser | pageWritable | pageNoExecute);
+        const UserPageMapResult mapResult =
+            memory::allocateUserPageInAddressSpace(
+                root, address, pageUser | pageWritable | pageNoExecute);
         if (mapResult == UserPageMapResult::OutOfMemory) {
             return ElfLoadError::OutOfMemory;
         }
@@ -119,7 +110,7 @@ ElfLoadError buildUserStack(uint64_t root, const char* programName,
     const char* defaultArguments[] = {programName};
     if (argumentCount == 0) {
         argumentCount = 1;
-        arguments = defaultArguments;
+        arguments     = defaultArguments;
     }
     if (argumentCount > MAXIMUM_ARGUMENT_COUNT || arguments == nullptr) {
         return ElfLoadError::InvalidArgument;
@@ -138,8 +129,8 @@ ElfLoadError buildUserStack(uint64_t root, const char* programName,
             return ElfLoadError::InvalidArgument;
         }
         cursor -= length + 1;
-        if (!copyToAddressSpace(root, cursor, environment[index - 1],
-                                length + 1)) {
+        if (!memory::copyToAddressSpace(root, cursor, environment[index - 1],
+                                        length + 1)) {
             return ElfLoadError::MappingFailed;
         }
         environmentAddresses[index - 1] = cursor;
@@ -151,19 +142,18 @@ ElfLoadError buildUserStack(uint64_t root, const char* programName,
             return ElfLoadError::InvalidArgument;
         }
         cursor -= argumentLength + 1;
-        if (!copyToAddressSpace(root, cursor, arguments[index - 1],
-                                argumentLength + 1)) {
+        if (!memory::copyToAddressSpace(root, cursor, arguments[index - 1],
+                                        argumentLength + 1)) {
             return ElfLoadError::MappingFailed;
         }
         argumentAddresses[index - 1] = cursor;
     }
 
-    cursor = alignDown(cursor, 16);
-    const uint64_t startupWordCount =
-        argumentCount + environmentCount + 4;
+    cursor                          = alignDown(cursor, 16);
+    const uint64_t startupWordCount = argumentCount + environmentCount + 4;
     cursor = alignDown(cursor - startupWordCount * sizeof(uint64_t), 16);
-    uint64_t startupWords[MAXIMUM_ARGUMENT_COUNT +
-                          MAXIMUM_ENVIRONMENT_COUNT + 4]{};
+    uint64_t
+        startupWords[MAXIMUM_ARGUMENT_COUNT + MAXIMUM_ENVIRONMENT_COUNT + 4]{};
     startupWords[0] = argumentCount;
     for (uint32_t index = 0; index < argumentCount; ++index) {
         startupWords[index + 1] = argumentAddresses[index];
@@ -172,22 +162,20 @@ ElfLoadError buildUserStack(uint64_t root, const char* programName,
     for (uint32_t index = 0; index < environmentCount; ++index) {
         startupWords[environmentStart + index] = environmentAddresses[index];
     }
-    startupWords[environmentStart + environmentCount + 1] =
-        runtimeStateAddress;
+    startupWords[environmentStart + environmentCount + 1] = runtimeStateAddress;
     if (cursor < stackBottom ||
-        !copyToAddressSpace(root, cursor, startupWords,
-                            startupWordCount * sizeof(uint64_t))) {
+        !memory::copyToAddressSpace(root, cursor, startupWords,
+                                    startupWordCount * sizeof(uint64_t))) {
         return ElfLoadError::MappingFailed;
     }
     stackPointer = cursor;
     return ElfLoadError::None;
 }
 
-Process* UserProgramLoader::load(os::ProgramId program, Process* parent,
-                                 uint64_t bootstrapHandle,
-                                 uint32_t argumentCount,
-                                 const char* const* arguments,
-                                 ElfLoadError* loadError) {
+Task* UserProgramLoader::load(os::ProgramId program, Task* parent,
+                              uint64_t bootstrapHandle, uint32_t argumentCount,
+                              const char* const* arguments,
+                              ElfLoadError* loadError) {
     if (loadError != nullptr) {
         *loadError = ElfLoadError::None;
     }
@@ -201,42 +189,48 @@ Process* UserProgramLoader::load(os::ProgramId program, Process* parent,
     }
 
     const ProgramImage& image = PROGRAM_IMAGES[index];
-    Process* process          = Process::create(image.name, parent);
-    if (process == nullptr) {
+    Task* task                = Task::create(image.name, parent);
+    if (task == nullptr) {
         if (loadError != nullptr) {
             *loadError = ElfLoadError::OutOfMemory;
         }
         return nullptr;
     }
-    process->grantCapabilities(image.capabilities);
+    task->grantCapabilities(image.capabilities);
+    // Only immutable boot-module identities can start in supervisor mode.
+    // Disk executables and user-requested capability bits cannot opt into it.
+    task->setSystemService(program == os::ProgramId::PciServer ||
+                           program == os::ProgramId::DeviceServer ||
+                           program == os::ProgramId::StorageServer);
 
     if (bootstrapHandle != 0) {
         const uint64_t childHandle =
-            duplicateEndpointHandle(parent, process, bootstrapHandle);
+            Endpoint::duplicateHandle(parent, task, bootstrapHandle);
         if (childHandle == 0) {
-            process->destroy();
+            task->destroy();
             if (loadError != nullptr) {
                 *loadError = ElfLoadError::InvalidArgument;
             }
             return nullptr;
         }
-        process->setBootstrapHandle(childHandle);
+        task->setBootstrapHandle(childHandle);
     }
 
     ElfLoadResult result{};
     ElfLoadError error = ElfLoader::loadDynamicSetFromAddressSpace(
-        process->addressSpace().rootPhysicalAddress(),
-        getKernelAddressSpaceRoot(), image.sourceAddress, image.size,
+        task->addressSpace().rootPhysicalAddress(),
+        memory::getKernelAddressSpaceRoot(), image.sourceAddress, image.size,
         &bootRuntimeImage, 1, result);
     uint64_t stackPointer = 0;
     if (error == ElfLoadError::None) {
-        error = buildUserStack(process->addressSpace().rootPhysicalAddress(),
-                               image.name, argumentCount, arguments, 0,
-                               nullptr, 0, stackPointer);
+        error = UserProgramLoader::buildStack(
+            task->addressSpace().rootPhysicalAddress(), image.name,
+            argumentCount, arguments, 0, nullptr, 0, stackPointer);
     }
     if (error != ElfLoadError::None ||
-        createUserThread(process, result.entryPoint, stackPointer) == nullptr) {
-        process->destroy();
+        Thread::createUser(task, result.entryPoint, stackPointer, 0,
+                           USER_STACK_TOP - stackPointer) == nullptr) {
+        task->destroy();
         if (error == ElfLoadError::None) {
             error = ElfLoadError::OutOfMemory;
         }
@@ -245,12 +239,12 @@ Process* UserProgramLoader::load(os::ProgramId program, Process* parent,
         }
         return nullptr;
     }
-    return process;
+    return task;
 }
 
-Process* UserProgramLoader::loadImage(
-    uint64_t sourceAddress, size_t imageSize, const char* name, Process* source,
-    Process* parent, uint64_t bootstrapHandle, uint64_t capabilities,
+Task* UserProgramLoader::loadImage(
+    uint64_t sourceAddress, size_t imageSize, const char* name, Task* source,
+    Task* parent, uint64_t bootstrapHandle, uint64_t capabilities,
     uint64_t standardInputHandle, uint64_t standardOutputHandle,
     uint64_t standardErrorHandle, uint32_t argumentCount,
     const char* const* arguments, const ElfSharedImage* sharedImages,
@@ -265,25 +259,25 @@ Process* UserProgramLoader::loadImage(
         }
         return nullptr;
     }
-    Process* process = Process::create(name, parent);
-    if (process == nullptr) {
+    Task* task = Task::create(name, parent);
+    if (task == nullptr) {
         if (loadError != nullptr) {
             *loadError = ElfLoadError::OutOfMemory;
         }
         return nullptr;
     }
-    process->grantCapabilities(capabilities);
+    task->grantCapabilities(capabilities);
     if (bootstrapHandle != 0) {
         const uint64_t childHandle =
-            duplicateEndpointHandle(source, process, bootstrapHandle);
+            Endpoint::duplicateHandle(source, task, bootstrapHandle);
         if (childHandle == 0) {
-            process->destroy();
+            task->destroy();
             if (loadError != nullptr) {
                 *loadError = ElfLoadError::InvalidArgument;
             }
             return nullptr;
         }
-        process->setBootstrapHandle(childHandle);
+        task->setBootstrapHandle(childHandle);
     }
     const uint64_t standardHandles[] = {
         standardInputHandle, standardOutputHandle, standardErrorHandle};
@@ -292,30 +286,26 @@ Process* UserProgramLoader::loadImage(
         if (standardHandles[index] == 0) {
             continue;
         }
-        void* standardObject = nullptr;
+        void* standardObject    = nullptr;
         HandleType standardType = HandleType::None;
         uint32_t standardRights = 0;
         source->handles().inspect(standardHandles[index], &standardObject,
                                   &standardType, &standardRights);
         const uint64_t childHandle =
-            standardType == HandleType::Pty
-                ? duplicatePtyHandle(*source, *process,
-                                     standardHandles[index])
-                : duplicatePipeHandle(*source, *process,
-                                      standardHandles[index]);
-        hasPtyStandardHandle = hasPtyStandardHandle ||
-                               standardType == HandleType::Pty;
+            Pipe::duplicateHandle(*source, *task, standardHandles[index]);
+        hasPtyStandardHandle =
+            hasPtyStandardHandle || standardType == HandleType::Channel;
         if (childHandle == 0) {
-            process->destroy();
+            task->destroy();
             if (loadError != nullptr) {
                 *loadError = ElfLoadError::InvalidArgument;
             }
             return nullptr;
         }
-        process->setStandardHandle(index, childHandle);
+        task->setStandardHandle(index, childHandle);
     }
-    if (hasPtyStandardHandle && !process->createSession()) {
-        process->destroy();
+    if (hasPtyStandardHandle && !task->createSession()) {
+        task->destroy();
         if (loadError != nullptr) {
             *loadError = ElfLoadError::InvalidArgument;
         }
@@ -323,25 +313,24 @@ Process* UserProgramLoader::loadImage(
     }
 
     ElfLoadResult result{};
-    ElfLoadError error = sharedImageCount == 0
-                             ? ElfLoader::loadFromAddressSpace(
-                                   *process,
-                                   source->addressSpace().rootPhysicalAddress(),
-                                   sourceAddress, imageSize, result)
-                             : ElfLoader::loadDynamicSetFromAddressSpace(
-                                   process->addressSpace().rootPhysicalAddress(),
-                                   source->addressSpace().rootPhysicalAddress(),
-                                   sourceAddress, imageSize, sharedImages,
-                                   sharedImageCount, result);
+    ElfLoadError error =
+        sharedImageCount == 0
+            ? ElfLoader::loadFromAddressSpace(
+                  *task, source->addressSpace().rootPhysicalAddress(),
+                  sourceAddress, imageSize, result)
+            : ElfLoader::loadDynamicSetFromAddressSpace(
+                  task->addressSpace().rootPhysicalAddress(),
+                  source->addressSpace().rootPhysicalAddress(), sourceAddress,
+                  imageSize, sharedImages, sharedImageCount, result);
     uint64_t stackPointer = 0;
     if (error == ElfLoadError::None) {
-        error = buildUserStack(process->addressSpace().rootPhysicalAddress(),
-                               name, argumentCount, arguments, 0, nullptr,
-                               0, stackPointer);
+        error = UserProgramLoader::buildStack(
+            task->addressSpace().rootPhysicalAddress(), name, argumentCount,
+            arguments, 0, nullptr, 0, stackPointer);
     }
     if (error != ElfLoadError::None ||
-        createUserThread(process, result.entryPoint, stackPointer) == nullptr) {
-        process->destroy();
+        Thread::createUser(task, result.entryPoint, stackPointer) == nullptr) {
+        task->destroy();
         if (error == ElfLoadError::None) {
             error = ElfLoadError::OutOfMemory;
         }
@@ -350,26 +339,26 @@ Process* UserProgramLoader::loadImage(
         }
         return nullptr;
     }
-    return process;
+    return task;
 }
 
-Process* startInitialUserland(const BootInfo* bootInfo) {
+Task* UserProgramLoader::startInitial(const BootInfo* bootInfo) {
     if (bootInfo == nullptr || !initializeBootPrograms(*bootInfo)) {
-        serialWrite("[ELF] required boot service module missing\n");
+        serial::serialWrite("[ELF] required boot service module missing\n");
         return nullptr;
     }
     ElfLoadError error;
-    Process* init = UserProgramLoader::load(os::ProgramId::Init,
-                                            getKernelProcess(), 0, 0, nullptr,
-                                            &error);
+    Task* init = UserProgramLoader::load(os::ProgramId::Init, task::getIdle(),
+                                         0, 0, nullptr, &error);
     if (init == nullptr) {
-        serialWrite("[ELF] unable to load init: ");
-        serialWrite(getElfLoadErrorName(error));
-        serialWrite("\n");
+        serial::serialWrite("[ELF] unable to load init: ");
+        serial::serialWrite(ElfLoader::errorName(error));
+        serial::serialWrite("\n");
         return nullptr;
     }
-    serialWrite("[ELF] ELF64 init image validated and mapped\n");
-    serialWrite("[USERLAND] init loaded into an isolated address space\n");
+    serial::serialWrite("[ELF] ELF64 init image validated and mapped\n");
+    serial::serialWrite(
+        "[USERLAND] init loaded into an isolated address space\n");
     return init;
 }
 

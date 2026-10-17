@@ -18,7 +18,7 @@ char* strerror(int errorNumber) {
         case EPERM: return "Operation not permitted";
         case EPIPE: return "Broken pipe";
         case ERANGE: return "Result out of range";
-        case ESRCH: return "No such process";
+        case ESRCH: return "No such task";
         default: return "Unknown error";
     }
 }

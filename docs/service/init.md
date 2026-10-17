@@ -1,12 +1,12 @@
 # init 服务（src/init/）
 
-init 是第一个用户进程（由内核 `startInitialUserland` 加载），职责：
+init 是第一个用户进程（由内核 `UserProgramLoader::startInitial` 加载），职责：
 
 1. 运行**服务注册表**（service registry）；
 2. 按顺序启动全部内置服务与磁盘服务；
 3. 启动终端会话。
 
-授予能力：`processCapabilitySpawn`。
+授予能力：`taskCapabilitySpawn`。
 
 ## 1. 服务注册表
 
@@ -29,18 +29,19 @@ struct ServiceRecord { char name[24]; uint64_t endpoint; };
 ## 2. 启动流程（`userMain`）
 
 1. `createEndpoint` 创建注册表端点；在 `0x70000000` 映射 4 页栈，`createThread(registryMain)` 启动注册表线程。
-2. 依次 `spawnProgram`（内核内置镜像，传入注册表端点作为引导句柄）：
+2. 先启动内置 `ProgramId::PciServer`，等待 `pci` 注册，再依次启动其他内置服务（均接收注册表端点）：
    - `ProgramId::TaskServer`
    - `ProgramId::DeviceServer`
    - `ProgramId::StorageServer`
    - `ProgramId::FsServer`
 3. `lookupService("fs", 30000)` 等待 fs 服务注册（最多 30000 次重试）。
 4. 从磁盘启动（`os::execute`）：
-   - `/system/services/console.elf`
-   - `/system/services/window.elf`
+   - `/sbin/sys/tty.elf`
+   - `/sbin/sys/console.elf`
+   - `/sbin/sys/guiw.elf`（guiw 软件包）
    - `/usr/bin/terminal`（GUI 终端）
 5. `switchTerminal(os::graphicalTerminalId)`（=6，即 tty7 图形会话）。
-6. 为 tty1-6（`os::textTerminalCount = 6`）各启动 `/bin/shell`，参数 `--os-terminal=N`（N=1..6）。
+6. 为 tty1-6（`os::textTerminalCount = 6`）各启动 `/bin/sh`，参数 `--os-terminal=N`（N=1..6）。
 7. 进入 `sleep(1000)` 无限循环保活。
 
 ## 3. 失败码
@@ -50,6 +51,6 @@ struct ServiceRecord { char name[24]; uint64_t endpoint; };
 | 1 | 注册表端点/线程创建失败 |
 | 2 | 核心内置服务启动失败 |
 | 3 | fs 服务发现失败 |
-| 4 / 5 / 6 | console / window / terminal 启动失败 |
+| 4 / 5 / 6 | tty 或 console / guiw / terminal 启动失败 |
 | 7 | 图形终端切换失败 |
 | 8 | TTY shell 启动失败 |

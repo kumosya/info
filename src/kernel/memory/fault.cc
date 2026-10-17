@@ -3,26 +3,27 @@
 #include "kernel/serial.h"
 #include "kernel/thread.h"
 
-namespace kernel {
+namespace kernel::interrupt {
 
-void handlePageFault(InterruptContext* context) {
+void handlePageFault(interrupt::Context* context) {
     uint64_t faultAddress;
     asm volatile("movq %%cr2, %0" : "=r"(faultAddress));
-    serialWrite("[MEMORY] page fault address=");
-    serialWriteHex(faultAddress);
-    serialWrite(" error=");
-    serialWriteHex(context->errorCode);
-    serialWrite(" rip=");
-    serialWriteHex(context->rip);
-    serialWrite("\n");
+    serial::serialWrite("[MEMORY] page fault address=");
+    serial::serialWriteHex(faultAddress);
+    serial::serialWrite(" error=");
+    serial::serialWriteHex(context->errorCode);
+    serial::serialWrite(" rip=");
+    serial::serialWriteHex(context->rip);
+    serial::serialWrite("\n");
 
     if ((context->cs & 3) != 0) {
-        serialWrite("[MEMORY] terminating user thread after page fault\n");
-        terminateCurrentThreadFromException(-14);
+        serial::serialWrite(
+            "[MEMORY] terminating user thread after page fault\n");
+        Thread::terminateCurrentFromException(-14);
     } else {
-        serialWrite("[MEMORY] kernel page fault\n");
+        serial::serialWrite("[MEMORY] kernel page fault\n");
     }
-    haltCpu();
+    cpu::halt();
 }
 
-}  // namespace kernel
+}  // namespace kernel::interrupt

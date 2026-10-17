@@ -6,7 +6,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include "os/c_api.h"
+#include "os_adapter.h"
 
 #define MMAP_PAGE_SIZE 4096ULL
 #define MMAP_BASE 0x0000000040000000ULL
@@ -35,7 +35,7 @@ static uint64_t next_mapping = MMAP_BASE;
 static volatile uint8_t mapping_lock;
 
 static void lock_mappings(void) {
-    while (__atomic_test_and_set(&mapping_lock, __ATOMIC_ACQUIRE)) os_yield();
+    while (__atomic_test_and_set(&mapping_lock, __ATOMIC_ACQUIRE)) __libc_os_yield();
 }
 
 static void unlock_mappings(void) {
@@ -157,13 +157,13 @@ void* mmap(void* address, size_t length, int protection, int flags,
         return MAP_FAILED;
     }
     if (kind == MAPPING_SHARED_MEMORY) {
-        result = os_map_shared_memory(description->handle, requested, size,
+        result = __libc_os_map_shared_memory(description->handle, requested, size,
                                       (uint64_t)offset,
                                       native_protection(protection));
     } else {
         const uint64_t initial_protection =
             kind == MAPPING_FILE_PRIVATE ? 1U : native_protection(protection);
-        result = os_map_memory(requested, size, initial_protection);
+        result = __libc_os_map_memory(requested, size, initial_protection);
     }
     if ((int64_t)result < 0 || result != requested) {
         abandon_mapping(slot);
@@ -174,9 +174,9 @@ void* mmap(void* address, size_t length, int protection, int flags,
         const ssize_t count = pread(file_descriptor, (void*)(uintptr_t)result,
                                     length, offset);
         if (count < 0 ||
-            os_protect_memory(result, size,
+            __libc_os_protect_memory(result, size,
                               native_protection(protection)) != 0) {
-            (void)os_unmap_memory(result, size);
+            (void)__libc_os_unmap_memory(result, size);
             abandon_mapping(slot);
             if (count >= 0) errno = EACCES;
             return MAP_FAILED;
@@ -200,7 +200,7 @@ int munmap(void* address, size_t length) {
     for (index = 0; index < MMAP_CAPACITY; ++index) {
         if (mappings[index].address == value && mappings[index].size == size &&
             mappings[index].kind > MAPPING_RESERVED) {
-            if (os_unmap_memory(value, size) != 0) {
+            if (__libc_os_unmap_memory(value, size) != 0) {
                 unlock_mappings();
                 errno = EINVAL;
                 return -1;
@@ -244,7 +244,7 @@ int mprotect(void* address, size_t length, int protection) {
                 errno = EACCES;
                 return -1;
             }
-            if (os_protect_memory(value, size,
+            if (__libc_os_protect_memory(value, size,
                                   native_protection(protection)) != 0) {
                 unlock_mappings();
                 errno = EINVAL;
@@ -302,22 +302,22 @@ int shm_open(const char* name, int flags, mode_t mode) {
         errno = EACCES;
         return -1;
     }
-    handle = os_open_shared_memory(name, flags);
+    handle = __libc_os_open_shared_memory(name, flags);
     if ((int64_t)handle < 0 || handle == 0) {
         errno = ((flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL))
                     ? EEXIST
                     : ENOENT;
         return -1;
     }
-    if ((flags & O_TRUNC) != 0 && os_resize_shared_memory(handle, 0) != 0) {
-        (void)os_close_handle(handle);
+    if ((flags & O_TRUNC) != 0 && __libc_os_resize_shared_memory(handle, 0) != 0) {
+        (void)__libc_os_close_handle(handle);
         errno = EINVAL;
         return -1;
     }
     descriptor = libcAllocateDescriptor(handle, name, flags,
                                          DESCRIPTOR_SHARED_MEMORY);
     if (descriptor < 0) {
-        (void)os_close_handle(handle);
+        (void)__libc_os_close_handle(handle);
         return -1;
     }
     libcDescriptors[descriptor].closeOnExec = 1;
@@ -325,7 +325,7 @@ int shm_open(const char* name, int flags, mode_t mode) {
 }
 
 int shm_unlink(const char* name) {
-    if (name == NULL || os_unlink_shared_memory(name) != 0) {
+    if (name == NULL || __libc_os_unlink_shared_memory(name) != 0) {
         errno = ENOENT;
         return -1;
     }

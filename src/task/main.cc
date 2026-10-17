@@ -6,15 +6,15 @@
 
 namespace {
 
-constexpr uint32_t maximumArgumentCount  = 8;
+constexpr uint32_t maximumArgumentCount  = 64;
 constexpr uint32_t executePayloadSize    = 7 * sizeof(uint64_t);
 constexpr uint64_t maximumExecutableSize = 8ULL * 1024 * 1024;
-constexpr uint32_t sharedImageCount = 3;
+constexpr uint32_t sharedImageCount = 4;
 constexpr const char* sharedImagePaths[sharedImageCount] = {
-    "/lib/x86-64-osinfo/libos-c++.so",
-    "/lib/x86-64-osinfo/libc.so",
-    "/lib/x86-64-osinfo/libc++.so"};
-constexpr uint32_t processRecordCapacity = 64;
+    "/usr/lib/libos-c++.so",
+    "/usr/lib/libc.so",
+    "/usr/lib/libc++.so", "/usr/lib/libosgui-c++.so"};
+constexpr uint32_t taskRecordCapacity = 64;
 constexpr uint32_t executableReadWindow  = 8;
 constexpr uint32_t elfProgramDynamic     = 2;
 
@@ -46,31 +46,31 @@ struct [[gnu::packed]] ProgramHeader {
     uint64_t alignment;
 };
 
-struct ProcessRecord {
+struct TaskRecord {
     uint64_t handle;
     uint64_t id;
     char name[48];
 };
 
-ProcessRecord processRecords[processRecordCapacity];
+TaskRecord taskRecords[taskRecordCapacity];
 uint64_t executableCompletionEndpoint;
 
-void reapProcessRecords() {
-    for (ProcessRecord& record : processRecords) {
+void reapTaskRecords() {
+    for (TaskRecord& record : taskRecords) {
         if (record.handle == 0) continue;
-        os::ProcessInfo info{};
-        if (os::getProcessInfo(record.handle, info) != 0 || info.state == 2) {
+        os::TaskInfo info{};
+        if (os::getTaskInfo(record.handle, info) != 0 || info.state == 2) {
             os::closeHandle(record.handle);
             record = {};
         }
     }
 }
 
-void trackProcess(uint64_t handle, const char* name) {
-    reapProcessRecords();
-    os::ProcessInfo info{};
-    if (handle == 0 || os::getProcessInfo(handle, info) != 0) return;
-    for (ProcessRecord& record : processRecords) {
+void trackTask(uint64_t handle, const char* name) {
+    reapTaskRecords();
+    os::TaskInfo info{};
+    if (handle == 0 || os::getTaskInfo(handle, info) != 0) return;
+    for (TaskRecord& record : taskRecords) {
         if (record.handle == 0) {
             record.handle = handle;
             record.id = info.id;
@@ -80,13 +80,13 @@ void trackProcess(uint64_t handle, const char* name) {
     }
 }
 
-bool listProcess(uint32_t requested, os::IpcMessage& reply) {
-    reapProcessRecords();
+bool listTask(uint32_t requested, os::IpcMessage& reply) {
+    reapTaskRecords();
     uint32_t visible = 0;
-    for (ProcessRecord& record : processRecords) {
+    for (TaskRecord& record : taskRecords) {
         if (record.handle == 0) continue;
-        os::ProcessInfo info{};
-        if (os::getProcessInfo(record.handle, info) != 0) continue;
+        os::TaskInfo info{};
+        if (os::getTaskInfo(record.handle, info) != 0) continue;
         if (visible++ != requested) continue;
         reply.data[0] = 0;
         reply.data[1] = info.id;
@@ -100,11 +100,11 @@ bool listProcess(uint32_t requested, os::IpcMessage& reply) {
     return false;
 }
 
-bool killProcess(uint64_t processId) {
-    reapProcessRecords();
-    for (ProcessRecord& record : processRecords) {
-        if (record.handle != 0 && record.id == processId) {
-            return os::terminateProcess(record.handle, -15) == 0;
+bool killTask(uint64_t taskId) {
+    reapTaskRecords();
+    for (TaskRecord& record : taskRecords) {
+        if (record.handle != 0 && record.id == taskId) {
+            return os::terminateTask(record.handle, -15) == 0;
         }
     }
     return false;
@@ -163,9 +163,10 @@ const char* programName(const char* path) {
 }
 
 uint64_t capabilitiesForPath(const char* path) {
-    return os::stringsEqual(path, "/system/services/console.elf") ||
-                   os::stringsEqual(path, "/system/services/window.elf")
-               ? os::processCapabilityDisplay
+    if (os::stringsEqual(path, "/sbin/sys/users.elf")) return os::taskCapabilityUsers;
+    return os::stringsEqual(path, "/sbin/sys/console.elf") ||
+                   os::stringsEqual(path, "/sbin/sys/guiw.elf")
+               ? os::taskCapabilityDisplay
                : 0;
 }
 
@@ -204,9 +205,7 @@ bool readExecutable(uint64_t fs, uint64_t descriptor, void* image,
                 size - nextOffset < os::maximumAsyncFileTransfer
                     ? static_cast<size_t>(size - nextOffset)
                     : os::maximumAsyncFileTransfer;
-            if (!os::readFileAsync(fs, descriptor, nextOffset, chunk,
-                                   executableCompletionEndpoint,
-                                   nextOffset)) {
+            if (!os::File::borrow(fs, descriptor).readAsync(nextOffset, chunk, executableCompletionEndpoint, nextOffset)) {
                 success = false;
                 break;
             }
@@ -216,8 +215,7 @@ bool readExecutable(uint64_t fs, uint64_t descriptor, void* image,
         if (inFlight == 0) break;
         uint8_t data[os::maximumAsyncFileTransfer]{};
         os::FileOperationResult result{};
-        if (!os::waitFileOperation(executableCompletionEndpoint, result, data,
-                                   sizeof(data)) ||
+        if (!os::File::waitOperation(executableCompletionEndpoint, result, data, sizeof(data)) ||
             result.status != 0 || result.requestId >= size) {
             success = false;
             --inFlight;
@@ -243,71 +241,71 @@ uint64_t loadAndSpawn(uint64_t fs, const char* path, uint64_t bootstrap,
                       uint64_t standardInput, uint64_t standardOutput,
                       uint64_t standardError, uint32_t argumentCount,
                       const char* const* arguments,
-                      uint64_t parentProcessId) {
-    os::FileStat stat{};
-    if (!os::statFile(fs, path, stat) || stat.type != os::FileType::File ||
-        stat.size == 0 || stat.size > maximumExecutableSize) {
+                      uint64_t parentTaskId) {
+    os::File stat(fs);
+    if (!(stat.refresh(path) == 0) || stat.getType() != os::FileType::File ||
+        stat.getSize() == 0 || stat.getSize() > maximumExecutableSize) {
         os::log("[TASK] executable stat failed\n");
         return 0;
     }
-    void* image = os::allocateMemory(static_cast<size_t>(stat.size));
+    void* image = os::allocateMemory(static_cast<size_t>(stat.getSize()));
     if (image == nullptr) {
         os::log("[TASK] executable allocation failed\n");
         return 0;
     }
-    const uint64_t descriptor = os::openFile(fs, path);
+    const uint64_t descriptor = ([&]() -> uint64_t { os::File opened(fs); return opened.open(path, O_RDONLY) == 0 ? opened.releaseNativeHandle() : 0; }());
     const bool read = descriptor != 0 &&
-                      readExecutable(fs, descriptor, image, stat.size);
+                      readExecutable(fs, descriptor, image, stat.getSize());
     if (descriptor != 0) {
-        os::closeFile(fs, descriptor);
+        os::File::borrow(fs, descriptor).close();
     }
-    uint64_t process = 0;
+    uint64_t task = 0;
     os::SharedImageInfo sharedImages[sharedImageCount]{};
     void* sharedBuffers[sharedImageCount]{};
     bool sharedRead = read;
-    const bool dynamicExecutable = read && usesDynamicLinking(image, stat.size);
+    const bool dynamicExecutable = read && usesDynamicLinking(image, stat.getSize());
     const uint32_t imagesToRead =
         dynamicExecutable ? sharedImageCount : 0;
     for (uint32_t index = 0; index < imagesToRead && sharedRead; ++index) {
-        os::FileStat sharedStat{};
-        if (!os::statFile(fs, sharedImagePaths[index], sharedStat) ||
-            sharedStat.type != os::FileType::File || sharedStat.size == 0 ||
-            sharedStat.size > maximumExecutableSize) {
+        os::File sharedStat(fs);
+        if (!(sharedStat.refresh(sharedImagePaths[index]) == 0) ||
+            sharedStat.getType() != os::FileType::File || sharedStat.getSize() == 0 ||
+            sharedStat.getSize() > maximumExecutableSize) {
             sharedRead = false;
             break;
         }
         sharedBuffers[index] =
-            os::allocateMemory(static_cast<size_t>(sharedStat.size));
+            os::allocateMemory(static_cast<size_t>(sharedStat.getSize()));
         const uint64_t sharedDescriptor =
-            os::openFile(fs, sharedImagePaths[index]);
+            ([&]() -> uint64_t { os::File opened(fs); return opened.open(sharedImagePaths[index], O_RDONLY) == 0 ? opened.releaseNativeHandle() : 0; }());
         sharedRead = sharedBuffers[index] != nullptr &&
                      sharedDescriptor != 0 &&
                      readExecutable(fs, sharedDescriptor,
-                                    sharedBuffers[index], sharedStat.size);
-        if (sharedDescriptor != 0) os::closeFile(fs, sharedDescriptor);
+                                    sharedBuffers[index], sharedStat.getSize());
+        if (sharedDescriptor != 0) os::File::borrow(fs, sharedDescriptor).close();
         if (sharedRead) {
-            sharedImages[index] = {sharedBuffers[index], sharedStat.size,
+            sharedImages[index] = {sharedBuffers[index], sharedStat.getSize(),
                                    sharedImagePaths[index]};
         }
     }
     if (sharedRead) {
         os::SpawnImageInfo info{};
         info.image = image;
-        info.imageSize = stat.size;
+        info.imageSize = stat.getSize();
         info.name = programName(path);
         info.bootstrapHandle = bootstrap;
         info.standardInputHandle = standardInput;
         info.standardOutputHandle = standardOutput;
         info.standardErrorHandle = standardError;
         info.capabilities = capabilitiesForPath(path);
-        info.parentProcessId = parentProcessId;
+        info.parentTaskId = parentTaskId;
         info.argumentCount = argumentCount;
         info.arguments = arguments;
         info.sharedImageCount = imagesToRead;
         info.sharedImages = imagesToRead == 0 ? nullptr : sharedImages;
         const int64_t result = static_cast<int64_t>(os::spawnImage(info));
         if (result > 0) {
-            process = static_cast<uint64_t>(result);
+            task = static_cast<uint64_t>(result);
         } else {
             os::log("[TASK] SpawnImage failed\n");
         }
@@ -320,12 +318,12 @@ uint64_t loadAndSpawn(uint64_t fs, const char* path, uint64_t bootstrap,
         if (buffer != nullptr) os::freeMemory(buffer);
     }
     os::freeMemory(image);
-    return process;
+    return task;
 }
 
 }  // namespace
 
-extern "C" int userMain() {
+int main(int, char**) {
     os::log("[TASK] Task Server started in Ring 3\n");
     const uint64_t registry = os::getBootstrapHandle();
     const uint64_t endpoint = os::createEndpoint();
@@ -354,13 +352,13 @@ extern "C" int userMain() {
         if (request.type == static_cast<uint64_t>(os::TaskRequest::Spawn)) {
             const int64_t result = static_cast<int64_t>(os::spawnProgram(
                 static_cast<os::ProgramId>(request.data[0]), bootstrap));
-            const uint64_t process =
+            const uint64_t task =
                 result > 0 ? static_cast<uint64_t>(result) : 0;
-            trackProcess(process, "system-service");
-            reply.data[0] = process == 0 ? 1 : 0;
-            if (process != 0) {
+            trackTask(task, "system-service");
+            reply.data[0] = task == 0 ? 1 : 0;
+            if (task != 0) {
                 reply.handleCount = 1;
-                reply.handles[0]  = process;
+                reply.handles[0]  = task;
             }
         } else if (request.type ==
                    static_cast<uint64_t>(os::TaskRequest::Execute)) {
@@ -421,7 +419,7 @@ extern "C" int userMain() {
             } else if (fs == 0) {
                 os::log("[TASK] fs service unavailable\n");
             }
-            const uint64_t process =
+            const uint64_t task =
                 valid && fs != 0
                     ? loadAndSpawn(fs, path, bootstrap, standardInput,
                                    standardOutput, standardError, argumentCount,
@@ -430,29 +428,29 @@ extern "C" int userMain() {
             for (uint32_t index = 0; index < request.handleCount; ++index) {
                 os::closeHandle(request.handles[index]);
             }
-            if (process != 0) {
-                trackProcess(process, programName(path));
+            if (task != 0) {
+                trackTask(task, programName(path));
             }
-            reply.data[0] = process == 0 ? 1 : 0;
-            if (process != 0) {
+            reply.data[0] = task == 0 ? 1 : 0;
+            if (task != 0) {
                 reply.handleCount = 1;
-                reply.handles[0]  = process;
+                reply.handles[0]  = task;
             }
         } else if (request.type ==
                        static_cast<uint64_t>(os::TaskRequest::Wait) &&
                    request.handleCount == 1) {
             int exitCode    = 0;
-            const int state = os::getProcessState(request.handles[0], exitCode);
+            const int state = os::getTaskState(request.handles[0], exitCode);
             os::closeHandle(request.handles[0]);
             reply.data[0] = state < 0 ? 2 : static_cast<uint64_t>(state);
             reply.data[1] = static_cast<uint64_t>(exitCode);
             reply.length  = 2;
         } else if (request.type ==
                    static_cast<uint64_t>(os::TaskRequest::List)) {
-            listProcess(static_cast<uint32_t>(request.data[0]), reply);
+            listTask(static_cast<uint32_t>(request.data[0]), reply);
         } else if (request.type ==
                    static_cast<uint64_t>(os::TaskRequest::Kill)) {
-            reply.data[0] = killProcess(request.data[0]) ? 0 : 1;
+            reply.data[0] = killTask(request.data[0]) ? 0 : 1;
         } else {
             reply.data[0] = 3;
         }

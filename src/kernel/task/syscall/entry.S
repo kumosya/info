@@ -1,11 +1,13 @@
+#include "kernel/cpu.h"
+
 .section .text
 .code64
 .global syscallEntry
 .type syscallEntry, @function
 .extern syscallDispatchEntry
 
-.set cpuKernelStackOffset, 48
-.set cpuSyscallUserStackOffset, 88
+.set cpuKernelStackOffset, KERNEL_CPU_STACK_OFFSET
+.set cpuSyscallUserStackOffset, KERNEL_CPU_USER_STACK_OFFSET
 
 syscallEntry:
     swapgs

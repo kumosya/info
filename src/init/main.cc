@@ -1,5 +1,5 @@
 #include "os/abi.h"
-#include "os/process.h"
+#include "os/task.h"
 #include "os/protocol.h"
 #include "os/service.h"
 #include "os/terminal.h"
@@ -27,8 +27,15 @@ void registryMain() {
                 static_cast<uint64_t>(os::RegistryRequest::Register) &&
             request.handleCount == 1 && serviceCount < 12) {
             bool replaced = false;
+            bool denied = false;
             for (uint32_t index = 0; index < serviceCount; ++index) {
                 if (os::stringsEqual(services[index].name, name)) {
+                    if (os::stringsEqual(name, os::pciServiceName)) {
+                        os::closeHandle(request.handles[0]);
+                        denied = true;
+                        replaced = true;
+                        break;
+                    }
                     services[index].endpoint = request.handles[0];
                     replaced                 = true;
                     break;
@@ -40,7 +47,7 @@ void registryMain() {
                 services[serviceCount].endpoint = request.handles[0];
                 ++serviceCount;
             }
-            reply.data[0] = 0;
+            reply.data[0] = denied ? 2 : 0;
         } else if (request.type ==
                    static_cast<uint64_t>(os::RegistryRequest::Lookup)) {
             reply.data[0] = 1;
@@ -67,7 +74,7 @@ bool startDiskProgram(const char* path, const char* name) {
 
 }  // namespace
 
-extern "C" int userMain() {
+int main(int, char**) {
     os::log("[INIT] Ring 3 init started\n");
     registryEndpoint                     = os::createEndpoint();
     constexpr uint64_t registryStackBase = 0x0000000070000000ULL;
@@ -82,6 +89,17 @@ extern "C" int userMain() {
     }
     os::setServiceRegistry(registryEndpoint);
     os::log("[INIT] service discovery online\n");
+    if (os::spawnProgram(os::ProgramId::PciServer, registryEndpoint) == 0) {
+        os::log("[INIT] pci service startup failed\n");
+        return 2;
+    }
+    const uint64_t pci = os::lookupService(registryEndpoint,
+                                            os::pciServiceName, 10000);
+    if (pci == 0) {
+        os::log("[INIT] pci service discovery failed\n");
+        return 2;
+    }
+    os::closeHandle(pci);
     if (os::spawnProgram(os::ProgramId::TaskServer, registryEndpoint) == 0 ||
         os::spawnProgram(os::ProgramId::DeviceServer, registryEndpoint) == 0 ||
         os::spawnProgram(os::ProgramId::StorageServer, registryEndpoint) == 0 ||
@@ -89,7 +107,7 @@ extern "C" int userMain() {
         os::log("[INIT] service startup failed\n");
         return 2;
     }
-    os::log("[INIT] task, device, storage and fs services started\n");
+    os::log("[INIT] pci, task, device, storage and fs services started\n");
     const uint64_t fs =
         os::lookupService(registryEndpoint, os::fsServiceName, 30000);
     if (fs == 0) {
@@ -97,16 +115,33 @@ extern "C" int userMain() {
         return 3;
     }
     os::closeHandle(fs);
-    if (!startDiskProgram("/system/services/console.elf", "console")) {
+    if (!startDiskProgram("/sbin/sys/users.elf", "users")) {
+        os::log("[INIT] users service startup failed\n"); return 4;
+    }
+    const uint64_t users = os::lookupService(registryEndpoint, "users", 10000);
+    if (!users) { os::log("[INIT] users service registration failed\n"); return 4; }
+    os::closeHandle(users);
+    if (!startDiskProgram("/sbin/sys/tty.elf", "tty")) {
+        os::log("[INIT] tty service startup failed\n");
+        return 4;
+    }
+    const uint64_t tty = os::lookupService(registryEndpoint,
+                                           os::ttyServiceName, 10000);
+    if (!tty) {
+        os::log("[INIT] tty service registration failed\n");
+        return 4;
+    }
+    os::closeHandle(tty);
+    if (!startDiskProgram("/sbin/sys/console.elf", "console")) {
         os::log("[INIT] console service startup failed\n");
         return 4;
     }
     os::log("[INIT] console and virtual TTY service started\n");
-    if (!startDiskProgram("/system/services/window.elf", "window")) {
-        os::log("[INIT] window service startup failed\n");
+    if (!startDiskProgram("/sbin/sys/guiw.elf", "guiw")) {
+        os::log("[INIT] guiw service startup failed\n");
         return 5;
     }
-    os::log("[INIT] window service started\n");
+    os::log("[INIT] guiw service started\n");
     if (!startDiskProgram("/usr/bin/terminal", "terminal")) {
         os::log("[INIT] GUI terminal startup failed\n");
         return 6;
@@ -119,8 +154,8 @@ extern "C" int userMain() {
     for (uint32_t tty = 0; tty < os::textTerminalCount; ++tty) {
         char terminalArgument[] = "--os-terminal=1";
         terminalArgument[14]    = static_cast<char>('1' + tty);
-        const char* arguments[] = {"shell", terminalArgument};
-        if (os::execute("/bin/shell", 2, arguments) == 0) {
+        const char* arguments[] = {"sh", terminalArgument};
+        if (os::execute("/bin/sh", 2, arguments) == 0) {
             os::log("[INIT] TTY shell startup failed\n");
             return 8;
         }

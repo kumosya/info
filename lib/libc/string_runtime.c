@@ -1,6 +1,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+void* memchr(const void* memory, int value, size_t size) {
+    const unsigned char* bytes = memory;
+    for (size_t i = 0; i < size; ++i) if (bytes[i] == (unsigned char)value) return (void*)(bytes + i);
+    return NULL;
+}
+
 void* memcpy(void* destination, const void* source, size_t size) {
     unsigned char* target = destination;
     const unsigned char* input = source;

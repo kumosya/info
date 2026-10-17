@@ -1,6 +1,6 @@
 # task 服务（src/task/）
 
-task 服务（注册名 `"task"`）是进程服务器：负责从文件系统读取 ELF、判定动态链接、组装 `SpawnImageInfo` 并经 `spawnImage` 创建进程，同时维护进程表。授予能力：`processCapabilitySpawn`。
+task 服务（注册名 `"task"`）是进程服务器：负责从文件系统读取 ELF、判定动态链接、组装 `SpawnImageInfo` 并经 `spawnImage` 创建进程，同时维护进程表。授予能力：`taskCapabilitySpawn`。
 
 ## 1. 常量
 
@@ -9,15 +9,15 @@ task 服务（注册名 `"task"`）是进程服务器：负责从文件系统读
 | `maximumArgumentCount` | 8 | 最大参数个数 |
 | `executePayloadSize` | 56 字节 | Execute 请求参数区（7 个 uint64） |
 | `maximumExecutableSize` | 8 MiB | 可执行文件上限 |
-| `processRecordCapacity` | 64 | 进程表容量 |
+| `taskRecordCapacity` | 64 | 进程表容量 |
 | `executableReadWindow` | 8 | 异步读流水线深度 |
 
 动态可执行文件一并加载的共享库（`sharedImageCount = 3`）：
 
 ```text
-/lib/x86-64-osinfo/libos-c++.so
-/lib/x86-64-osinfo/libc.so
-/lib/x86-64-osinfo/libc++.so
+/usr/lib/libos-c++.so
+/usr/lib/libc.so
+/usr/lib/libc++.so
 ```
 
 ## 2. IPC 请求（`os::TaskRequest`）
@@ -26,9 +26,9 @@ task 服务（注册名 `"task"`）是进程服务器：负责从文件系统读
 |---|---|---|
 | Spawn | 1 | `data[0]` = `ProgramId`，`handles[0]` = bootstrap 句柄；`spawnProgram` 启动内置镜像；成功回传进程句柄 |
 | Execute | 2 | 从磁盘加载并启动程序（核心路径，见下） |
-| Wait | 3 | `handles[0]` = 进程句柄；`getProcessState` 查询；回复 `data[0]`=state（<0 时为 2）、`data[1]`=exitCode |
+| Wait | 3 | `handles[0]` = 进程句柄；`getTaskState` 查询；回复 `data[0]`=state（<0 时为 2）、`data[1]`=exitCode |
 | List | 4 | `data[0]` = 索引；回复 pid、state、48 字节进程名；越界 `data[0]=1` |
-| Kill | 5 | `data[0]` = pid；`terminateProcess(handle, -15)`（SIGTERM） |
+| Kill | 5 | `data[0]` = pid；`terminateTask(handle, -15)`（SIGTERM） |
 
 未知类型回复 `data[0]=3`。
 
@@ -48,30 +48,30 @@ task 服务（注册名 `"task"`）是进程服务器：负责从文件系统读
 2. `allocateMemory` 分配缓冲；`openFile` + `readExecutable()`：用独立完成端点做窗口为 8 的 `readFileAsync` 流水线（每块 ≤ 4088 字节）；
 3. `usesDynamicLinking()`：扫描程序头判断是否含非空 `PT_DYNAMIC`；
 4. 动态程序则同样读入 3 个共享库；
-5. 组装 `SpawnImageInfo`（bootstrap 句柄、三个标准流句柄、能力、`parentProcessId = request.senderPid`、参数、共享镜像数组）；
+5. 组装 `SpawnImageInfo`（bootstrap 句柄、三个标准流句柄、能力、`parentTaskId = request.senderPid`、参数、共享镜像数组）；
 6. `os::spawnImage()` 创建进程；
 7. 关闭请求携带的全部句柄。
 
-**能力授予**：路径为 `/system/services/console.elf` 或 `window.elf` 时 `capabilities = processCapabilityDisplay`，否则 0。
+**能力授予**：路径为 `/sbin/sys/console.elf` 或 `/sbin/sys/guiw.elf` 时 `capabilities = taskCapabilityDisplay`，否则 0。
 
 ## 5. 进程表维护
 
-`ProcessRecord { uint64_t handle; uint64_t id; char name[48]; }`，容量 64。
+`TaskRecord { uint64_t handle; uint64_t id; char name[48]; }`，容量 64。
 
-- `trackProcess()`：登记新创建的进程；
-- `reapProcessRecords()`：回收 `state == 2`（已退出）或句柄失效的记录。
+- `trackTask()`：登记新创建的进程；
+- `reapTaskRecords()`：回收 `state == 2`（已退出）或句柄失效的记录。
 
 ## 6. 客户端接口
 
-用户态经 `include/os/process.h` 访问（实现见 os 运行时库）：
+用户态经 `include/os-c++/os/task.h` 访问（实现见 os 运行时库）：
 
 ```cpp
-ProcessHandle execute(const char* path);
-ProcessHandle execute(const char* path, int argumentCount, const char* const* arguments);
-ProcessHandle executeWithIo(const char* path, int argumentCount, const char* const* arguments,
+TaskHandle execute(const char* path);
+TaskHandle execute(const char* path, int argumentCount, const char* const* arguments);
+TaskHandle executeWithIo(const char* path, int argumentCount, const char* const* arguments,
                             uint64_t standardInputHandle, uint64_t standardOutputHandle,
                             uint64_t standardErrorHandle = 0);
-int waitProcess(ProcessHandle process, int* exitCode);
-bool listProcess(uint32_t index, ProcessListEntry& entry);
-bool killProcess(uint64_t processId);
+int waitTask(TaskHandle task, int* exitCode);
+bool listTask(uint32_t index, TaskListEntry& entry);
+bool killTask(uint64_t taskId);
 ```

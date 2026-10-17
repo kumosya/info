@@ -8,7 +8,7 @@ namespace kernel {
 
 class SpinLock {
    public:
-    void initialize() { locked_ = 0; }
+    void init() { locked_ = 0; }
 
     void lock() {
         while (__atomic_test_and_set(&locked_, __ATOMIC_ACQUIRE)) {
@@ -29,13 +29,13 @@ class SpinLock {
 class InterruptSpinLockGuard {
    public:
     explicit InterruptSpinLockGuard(SpinLock& lock)
-        : lock_(lock), interruptFlags_(disableInterrupts()) {
+        : lock_(lock), interruptFlags_(interrupt::disable()) {
         lock_.lock();
     }
 
     ~InterruptSpinLockGuard() {
         lock_.unlock();
-        restoreInterrupts(interruptFlags_);
+        interrupt::restore(interruptFlags_);
     }
 
     InterruptSpinLockGuard(const InterruptSpinLockGuard&)            = delete;
@@ -49,13 +49,13 @@ class InterruptSpinLockGuard {
 class PreemptionSpinLockGuard {
    public:
     explicit PreemptionSpinLockGuard(SpinLock& lock) : lock_(lock) {
-        disablePreemption();
+        cpu::disablePreemption();
         lock_.lock();
     }
 
     ~PreemptionSpinLockGuard() {
         lock_.unlock();
-        enablePreemption();
+        cpu::enablePreemption();
     }
 
     PreemptionSpinLockGuard(const PreemptionSpinLockGuard&)            = delete;

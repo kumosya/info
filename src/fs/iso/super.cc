@@ -1,6 +1,6 @@
 #include "../format.h"
 
-namespace fs {
+namespace vfs {
 
 bool probeIso9660(const uint8_t* data, size_t size) {
     if (data == nullptr || size < 7 || data[0] != 1) return false;
@@ -11,4 +11,4 @@ bool probeIso9660(const uint8_t* data, size_t size) {
     return data[6] == 1;
 }
 
-}  // namespace fs
+}  // namespace vfs

@@ -1,6 +1,6 @@
 #include "../format.h"
 
-namespace fs {
+namespace vfs {
 
 uint64_t fatBlockOffset(uint32_t cluster, uint32_t sectorsPerCluster,
                         uint32_t firstDataSector, uint32_t bytesPerSector) {
@@ -10,4 +10,4 @@ uint64_t fatBlockOffset(uint32_t cluster, uint32_t sectorsPerCluster,
            bytesPerSector;
 }
 
-}  // namespace fs
+}  // namespace vfs

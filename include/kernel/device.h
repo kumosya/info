@@ -6,21 +6,16 @@
 
 namespace kernel {
 
-class Process;
-struct Endpoint;
+class Task;
+class Endpoint;
 struct BootInfo;
 
-void initDeviceSubsystem(const BootInfo* bootInfo);
-
-class PortAccess {
-   public:
-    static bool read8(const Process& process, uint16_t port, uint8_t& value);
-    static bool write8(const Process& process, uint16_t port, uint8_t value);
-};
+namespace device {
+void init(const BootInfo* bootInfo);
 
 class DisplayAccess {
    public:
-    static bool mapFramebuffer(Process& process, uint64_t userAddress,
+    static bool mapFramebuffer(Task& task, uint64_t userAddress,
                                os::DisplayInfo& info);
 };
 
@@ -38,8 +33,7 @@ class PciAccess {
 
 class MmioRegion {
    public:
-    static MmioRegion* map(Process& process,
-                           const os::PciFunctionInfo& function,
+    static MmioRegion* map(Task& task, const os::PciFunctionInfo& function,
                            uint8_t barIndex, uint64_t userAddress,
                            uint64_t size);
 
@@ -51,7 +45,7 @@ class MmioRegion {
 
 class DmaBuffer {
    public:
-    static DmaBuffer* create(Process& process, uint64_t userAddress,
+    static DmaBuffer* create(Task& task, uint64_t userAddress,
                              os::DmaBufferInfo& info);
 
    private:
@@ -62,14 +56,20 @@ class DmaBuffer {
 
 class InterruptBinding {
    public:
-    static InterruptBinding* create(Process& process, uint8_t irq,
-                                    Endpoint* endpoint);
+    static InterruptBinding* create(Task& task, uint8_t irq,
+                                    Endpoint* endpoint, bool levelTriggered = false);
     uint8_t irq() const;
     Endpoint* endpoint() const;
+    bool requiresAcknowledgement() const { return levelTriggered_; }
+    bool acknowledge(Task& task) const;
 
    private:
     uint8_t irq_;
     Endpoint* endpoint_;
+    Task* owner_;
+    uint32_t apicId_;
+    bool levelTriggered_;
 };
+}  // namespace device
 
 }  // namespace kernel

@@ -8,10 +8,8 @@
 
 int open(const char* path, int flags, ...) {
     char absolute[LIBC_PATH_CAPACITY];
-    OsFileStat status;
     uint64_t service;
     uint64_t handle;
-    int exists;
     int result;
     mode_t createMode = 0666;
     if ((flags & O_CREAT) != 0) {
@@ -20,47 +18,24 @@ int open(const char* path, int flags, ...) {
         createMode = va_arg(arguments, mode_t);
         va_end(arguments);
     }
-    libcCopyPath(absolute, path);
+    if (libcPathAt(AT_FDCWD,path,absolute)) return -1;
     service = libcFsService();
     if (service == 0 || absolute[0] == '\0') {
         errno = ENOENT;
         return -1;
     }
-    exists = os_stat_file(service, absolute, &status);
-    if (!exists && (flags & O_CREAT) != 0) {
-        if (!os_create_file(service, absolute)) {
-            errno = EIO;
-            return -1;
-        }
-        if (!os_change_file_mode(service, absolute, createMode)) {
-            errno = EIO;
-            return -1;
-        }
-        exists = os_stat_file(service, absolute, &status);
-    }
-    if (!exists || status.type == OS_FILE_TYPE_DIRECTORY) {
-        errno = exists ? EISDIR : ENOENT;
-        return -1;
-    }
-    if ((flags & O_TRUNC) != 0 && (flags & (O_WRONLY | O_RDWR)) != 0 &&
-        !os_truncate_file(service, absolute)) {
-        errno = EIO;
-        return -1;
-    }
-    handle = os_open_file(service, absolute);
+    { int status=0; handle=__libc_file_open(service,absolute,flags,libcCreationMode(createMode),&status);
+      if (!handle) { errno=status<0?-status:EIO; return -1; } }
     if (handle == 0) {
         errno = EIO;
         return -1;
     }
     result = libcAllocateDescriptor(handle, absolute, flags, DESCRIPTOR_FILE);
     if (result < 0) {
-        os_close_file(service, handle);
+        __libc_os_close_file(service, handle);
         return -1;
     }
-    if ((flags & O_APPEND) != 0 && os_stat_file(service, absolute, &status)) {
-        os_seek_file(service, handle, status.size);
-        libcDescriptor(result)->offset = status.size;
-    }
+    libcDescriptors[result].closeOnExec=(flags&O_CLOEXEC)!=0;
     return result;
 }
 
@@ -72,7 +47,7 @@ int creat(const char* path, mode_t mode) {
 ssize_t read(int fileDescriptor, void* buffer, size_t count) {
     OpenDescription* value = libcDescriptor(fileDescriptor);
     int64_t result;
-    if (value == NULL || buffer == NULL) {
+    if (value == NULL || (buffer == NULL && count)) {
         errno = value == NULL ? EBADF : EFAULT;
         return -1;
     }
@@ -87,23 +62,17 @@ ssize_t read(int fileDescriptor, void* buffer, size_t count) {
         return -1;
     }
     if (value->kind == DESCRIPTOR_FILE) libcLockFileIo();
-    if (value->kind == DESCRIPTOR_PIPE_READ) {
-        result = os_read_pipe(value->handle, buffer, count);
-    } else if (value->kind == DESCRIPTOR_TERMINAL_READ) {
-        result = os_read_terminal(buffer, count);
-    } else {
-        result = os_read_file(libcFsService(), value->handle, buffer, count);
-    }
+    result = __libc_file_read(value->fileObject,buffer,count);
     if (result >= 0) value->offset += (uint64_t)result;
-    else errno = EIO;
+    else errno = (int)-result;
     if (value->kind == DESCRIPTOR_FILE) libcUnlockFileIo();
-    return result;
+    return result<0?-1:result;
 }
 
 ssize_t write(int fileDescriptor, const void* buffer, size_t count) {
     OpenDescription* value = libcDescriptor(fileDescriptor);
     int64_t result;
-    if (value == NULL || buffer == NULL) {
+    if (value == NULL || (buffer == NULL && count)) {
         errno = value == NULL ? EBADF : EFAULT;
         return -1;
     }
@@ -117,28 +86,12 @@ ssize_t write(int fileDescriptor, const void* buffer, size_t count) {
         errno = EBADF;
         return -1;
     }
-    if (value->kind == DESCRIPTOR_FILE) {
-        OsFileStat status;
-        libcLockFileIo();
-        if ((value->flags & O_APPEND) != 0 &&
-            (!os_stat_file(libcFsService(), value->path, &status) ||
-             !os_seek_file(libcFsService(), value->handle, status.size))) {
-            libcUnlockFileIo();
-            errno = EIO;
-            return -1;
-        }
-    }
-    if (value->kind == DESCRIPTOR_PIPE_WRITE) {
-        result = os_write_pipe(value->handle, buffer, count);
-    } else if (value->kind == DESCRIPTOR_TERMINAL_WRITE) {
-        result = os_write_terminal(buffer, count);
-    } else {
-        result = os_write_file(libcFsService(), value->handle, buffer, count);
-    }
+    if (value->kind==DESCRIPTOR_FILE) libcLockFileIo();
+    result=__libc_file_write(value->fileObject,buffer,count);
     if (result >= 0) value->offset += (uint64_t)result;
-    else errno = EIO;
+    else errno = (int)-result;
     if (value->kind == DESCRIPTOR_FILE) libcUnlockFileIo();
-    return result;
+    return result<0?-1:result;
 }
 
 int close(int fileDescriptor) {
@@ -214,6 +167,7 @@ int fcntl(int fileDescriptor, int command, ...) {
         } else {
             slot->description->flags =
                 (slot->description->flags & ~O_APPEND) | (flags & O_APPEND);
+            __libc_file_set_flags(slot->description->fileObject,slot->description->flags);
         }
     } else {
         errno = EINVAL;
@@ -233,7 +187,7 @@ int pipe2(int fileDescriptors[2], int flags) {
         errno = EINVAL;
         return -1;
     }
-    if (!os_create_pipe(&handles)) {
+    if (!__libc_os_create_pipe(&handles)) {
         errno = ENOMEM;
         return -1;
     }
@@ -243,9 +197,9 @@ int pipe2(int fileDescriptors[2], int flags) {
                                               O_WRONLY, DESCRIPTOR_PIPE_WRITE);
     if (readDescriptor < 0 || writeDescriptor < 0) {
         if (readDescriptor >= 0) close(readDescriptor);
-        else os_close_handle(handles.readHandle);
+        else __libc_os_close_handle(handles.readHandle);
         if (writeDescriptor >= 0) close(writeDescriptor);
-        else os_close_handle(handles.writeHandle);
+        else __libc_os_close_handle(handles.writeHandle);
         return -1;
     }
     libcDescriptors[readDescriptor].closeOnExec = (flags & O_CLOEXEC) != 0;
@@ -271,8 +225,7 @@ off_t lseek(int fileDescriptor, off_t offset, int whence) {
         return -1;
     }
     libcLockFileIo();
-    target = os_seek_file_position(libcFsService(), value->handle,
-                                   (int64_t)offset, whence);
+    target = __libc_file_seek(value->fileObject,offset,whence);
     if (target < 0) {
         libcUnlockFileIo();
         errno = EINVAL;
@@ -284,46 +237,24 @@ off_t lseek(int fileDescriptor, off_t offset, int whence) {
 }
 
 ssize_t pread(int fd, void* buffer, size_t count, off_t offset) {
-    OpenDescription* value = libcDescriptor(fd);
-    uint64_t saved;
+    OpenDescription* value=libcDescriptor(fd);
     ssize_t result;
-    if (value == NULL || value->kind != DESCRIPTOR_FILE || offset < 0) {
-        errno = value == NULL ? EBADF : ESPIPE;
-        return -1;
+    if (!value || value->kind!=DESCRIPTOR_FILE || offset<0 || (!buffer && count)) {
+        errno=!value?EBADF:offset<0?EINVAL:!buffer&&count?EFAULT:ESPIPE; return -1;
     }
-    libcLockFileIo();
-    saved = value->offset;
-    if (!os_seek_file(libcFsService(), value->handle, (uint64_t)offset)) {
-        libcUnlockFileIo();
-        errno = EINVAL;
-        return -1;
-    }
-    result = os_read_file(libcFsService(), value->handle, buffer, count);
-    os_seek_file(libcFsService(), value->handle, saved);
-    libcUnlockFileIo();
-    if (result < 0) errno = EIO;
+    result=__libc_file_pread(value->fileObject,buffer,count,offset);
+    if (result<0) { errno=(int)-result; return -1; }
     return result;
 }
 
 ssize_t pwrite(int fd, const void* buffer, size_t count, off_t offset) {
-    OpenDescription* value = libcDescriptor(fd);
-    uint64_t saved;
+    OpenDescription* value=libcDescriptor(fd);
     ssize_t result;
-    if (value == NULL || value->kind != DESCRIPTOR_FILE || offset < 0) {
-        errno = value == NULL ? EBADF : ESPIPE;
-        return -1;
+    if (!value || value->kind!=DESCRIPTOR_FILE || offset<0 || (!buffer && count)) {
+        errno=!value?EBADF:offset<0?EINVAL:!buffer&&count?EFAULT:ESPIPE; return -1;
     }
-    libcLockFileIo();
-    saved = value->offset;
-    if (!os_seek_file(libcFsService(), value->handle, (uint64_t)offset)) {
-        libcUnlockFileIo();
-        errno = EINVAL;
-        return -1;
-    }
-    result = os_write_file(libcFsService(), value->handle, buffer, count);
-    os_seek_file(libcFsService(), value->handle, saved);
-    libcUnlockFileIo();
-    if (result < 0) errno = EIO;
+    result=__libc_file_pwrite(value->fileObject,buffer,count,offset);
+    if (result<0) { errno=(int)-result; return -1; }
     return result;
 }
 

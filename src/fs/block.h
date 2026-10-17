@@ -2,7 +2,9 @@
 
 #include <stdint.h>
 
-namespace fs {
+#include "vfs.h"
+
+namespace vfs {
 
 class SectorDevice {
    public:
@@ -34,4 +36,4 @@ class SectorDevice {
     virtual bool readOnly() const        = 0;
 };
 
-}  // namespace fs
+}  // namespace vfs

@@ -6,11 +6,11 @@
 
 namespace kernel {
 
-struct Thread;
+class Thread;
 
 class WaitQueue {
    public:
-    void initialize();
+    void init();
     void wait();
     bool wakeOne();
     uint32_t wakeAll();
@@ -23,29 +23,29 @@ class WaitQueue {
 
 class Mutex {
    public:
-    void initialize();
+    void init();
     void lock();
     bool tryLock();
     void unlock();
 
    private:
     SpinLock lock_;
-    Thread* owner_ = nullptr;
-    Thread* waiters_ = nullptr;
+    Thread* owner_       = nullptr;
+    Thread* waiters_     = nullptr;
     Thread* waitersTail_ = nullptr;
 };
 
 class Semaphore {
    public:
-    void initialize(uint32_t count);
+    void init(uint32_t count);
     void wait();
     bool tryWait();
     void signal();
 
    private:
     SpinLock lock_;
-    uint32_t count_ = 0;
-    Thread* waiters_ = nullptr;
+    uint32_t count_      = 0;
+    Thread* waiters_     = nullptr;
     Thread* waitersTail_ = nullptr;
 };
 
@@ -53,16 +53,21 @@ class Once {
    public:
     using Initializer = void (*)(void* argument);
 
-    void initialize();
+    void init();
     void run(Initializer initializer, void* argument = nullptr);
 
    private:
     SpinLock lock_;
-    uint8_t state_ = 0;
-    Thread* waiters_ = nullptr;
+    uint8_t state_       = 0;
+    Thread* waiters_     = nullptr;
     Thread* waitersTail_ = nullptr;
 };
 
+namespace sync {
 void runSynchronizationSelfTest();
 
+int waitOnUserAddress(volatile uint32_t* address, uint32_t expected);
+uint32_t wakeUserAddress(volatile uint32_t* address, uint32_t count);
+
+}  // namespace sync
 }  // namespace kernel

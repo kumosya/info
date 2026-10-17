@@ -2,10 +2,10 @@ CC=gcc
 CPP=g++
 CFLAGS=-c -m64 -fno-builtin -fno-stack-protector -nostartfiles \
 	-nostdinc -nostdlib  -Wall -Wextra \
-	 -I ../include -O2 -std=c11
+	 -I ../include -I ../include/stdc -I ../include/stdc++ -I ../include/posix -I ../include/os-c++ -I ../include/osgui-c++ -O2 -std=c11
 CPPFLAGS=-c -m64 -fno-builtin -fno-stack-protector -nostartfiles -nostdinc -nostdlib \
 	 -Wall -Wextra \
-	-I ../include -O2 -std=c++11
+	-I ../include -I ../include/stdc -I ../include/stdc++ -I ../include/posix -I ../include/os-c++ -I ../include/osgui-c++ -O2 -std=c++11
 
 AR=ar
 ARFLAGS=rcs

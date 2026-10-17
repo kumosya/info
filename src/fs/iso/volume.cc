@@ -1,7 +1,5 @@
 #include "../iso.h"
 
-namespace fs::iso9660 {
-
 namespace {
 
 constexpr uint32_t isoBlockSize = 2048;
@@ -14,8 +12,7 @@ uint32_t readLe32(const uint8_t* value) {
 }
 
 char lower(char value) {
-    return value >= 'A' && value <= 'Z' ? static_cast<char>(value + 32)
-                                        : value;
+    return value >= 'A' && value <= 'Z' ? static_cast<char>(value + 32) : value;
 }
 
 bool sameName(const uint8_t* raw, uint32_t rawLength, const char* name,
@@ -27,6 +24,7 @@ bool sameName(const uint8_t* raw, uint32_t rawLength, const char* name,
             break;
         }
     }
+    if (length > 0 && raw[length - 1] == '.') --length;
     if (length != nameLength) return false;
     for (uint32_t index = 0; index < length; ++index) {
         if (lower(static_cast<char>(raw[index])) != lower(name[index])) {
@@ -38,12 +36,12 @@ bool sameName(const uint8_t* raw, uint32_t rawLength, const char* name,
 
 }  // namespace
 
-bool Volume::mount(SectorDevice& device) {
+bool Iso9660FileSystem::mount(vfs::SectorDevice& device) {
     device_ = &device;
     uint8_t block[isoBlockSize]{};
-    if (!device.readOnly() || !readBlock(16, block) || block[0] != 1 ||
-        block[6] != 1 || block[1] != 'C' || block[2] != 'D' ||
-        block[3] != '0' || block[4] != '0' || block[5] != '1') {
+    if (!readBlock(16, block) || block[0] != 1 || block[6] != 1 ||
+        block[1] != 'C' || block[2] != 'D' || block[3] != '0' ||
+        block[4] != '0' || block[5] != '1') {
         return false;
     }
     const uint8_t* root = block + 156;
@@ -52,45 +50,48 @@ bool Volume::mount(SectorDevice& device) {
     return root_.extent != 0 && root_.size != 0;
 }
 
-bool Volume::readBlock(uint32_t block, void* buffer) {
+bool Iso9660FileSystem::readBlock(uint32_t block, void* buffer) {
     return device_ != nullptr &&
            device_->readSectors(static_cast<uint64_t>(block) * 4, 4, buffer);
 }
 
-bool Volume::readRecord(const FileStatus& directory, uint32_t offset,
-                        uint8_t* block, const uint8_t*& record,
-                        uint32_t& nextOffset) {
+Iso9660FileSystem::RecordResult Iso9660FileSystem::readRecord(
+    const Node& directory, uint32_t offset, uint8_t* block,
+    const uint8_t*& record, uint32_t& nextOffset) {
     while (offset < directory.size) {
-        const uint32_t blockIndex = offset / isoBlockSize;
+        const uint32_t blockIndex  = offset / isoBlockSize;
         const uint32_t blockOffset = offset % isoBlockSize;
-        if (!readBlock(directory.extent + blockIndex, block)) return false;
+        if (!readBlock(directory.extent + blockIndex, block))
+            return RecordResult::Error;
         const uint8_t length = block[blockOffset];
         if (length == 0) {
             offset = (blockIndex + 1) * isoBlockSize;
             continue;
         }
         if (length < 34 || blockOffset + length > isoBlockSize ||
-            offset + length > directory.size) {
-            return false;
+            length > directory.size - offset ||
+            block[blockOffset + 32] > length - 33) {
+            return RecordResult::Error;
         }
-        record = block + blockOffset;
+        record     = block + blockOffset;
         nextOffset = offset + length;
-        return true;
+        return RecordResult::Entry;
     }
-    return false;
+    return RecordResult::End;
 }
 
-bool Volume::findInDirectory(const FileStatus& directory, const char* name,
-                             size_t nameLength, FileStatus& status) {
+bool Iso9660FileSystem::findInDirectory(const Node& directory, const char* name,
+                                        size_t nameLength, Node& status) {
     uint8_t block[isoBlockSize]{};
     uint32_t offset = 0;
     while (offset < directory.size) {
         const uint8_t* record = nullptr;
-        uint32_t nextOffset = 0;
-        if (!readRecord(directory, offset, block, record, nextOffset)) {
+        uint32_t nextOffset   = 0;
+        if (readRecord(directory, offset, block, record, nextOffset) !=
+            RecordResult::Entry) {
             return false;
         }
-        offset = nextOffset;
+        offset               = nextOffset;
         const uint8_t length = record[32];
         if (length == 1 && (record[33] == 0 || record[33] == 1)) continue;
         if (sameName(record + 33, length, name, nameLength)) {
@@ -102,26 +103,39 @@ bool Volume::findInDirectory(const FileStatus& directory, const char* name,
     return false;
 }
 
-bool Volume::lookup(const char* path, FileStatus& status) {
+bool Iso9660FileSystem::lookup(const char* path, vfs::FileStatus& status) {
+    Node node{};
+    if (!resolve(path, node)) return false;
+    status.inode = node.extent;
+    status.mode  = node.directory ? vfs::modeDirectory | 0555 : vfs::modeRegular | 0444;
+    status.size  = node.size;
+    status.links = node.directory ? 2 : 1;
+    return true;
+}
+
+bool Iso9660FileSystem::resolve(const char* path, Node& status) {
     if (device_ == nullptr || path == nullptr || path[0] != '/') return false;
-    status = root_;
+    status            = root_;
     uint32_t position = 1;
     while (path[position] != '\0') {
         while (path[position] == '/') ++position;
         if (path[position] == '\0') break;
         const uint32_t start = position;
         while (path[position] != '\0' && path[position] != '/') ++position;
+        Node child{};
         if (!status.directory ||
-            !findInDirectory(status, path + start, position - start, status)) {
+            !findInDirectory(status, path + start, position - start, child)) {
             return false;
         }
+        status = child;
     }
     return true;
 }
 
-int64_t Volume::read(const FileStatus& status, uint64_t offset, void* buffer,
-                     size_t size) {
-    if (status.directory || buffer == nullptr || offset >= status.size) {
+int64_t Iso9660FileSystem::read(const vfs::FileStatus& status, uint64_t offset,
+                                void* buffer, size_t size) {
+    if ((status.mode & 0xf000U) == vfs::modeDirectory || buffer == nullptr ||
+        offset >= status.size) {
         return offset == status.size ? 0 : -1;
     }
     if (size > status.size - offset) size = status.size - offset;
@@ -129,44 +143,48 @@ int64_t Volume::read(const FileStatus& status, uint64_t offset, void* buffer,
     size_t copied = 0;
     while (copied < size) {
         const uint64_t current = offset + copied;
-        if (!readBlock(status.extent + current / isoBlockSize, block)) return -1;
+        if (!readBlock(status.inode + current / isoBlockSize, block)) return -1;
         const uint32_t within = static_cast<uint32_t>(current % isoBlockSize);
-        size_t chunk = isoBlockSize - within;
+        size_t chunk          = isoBlockSize - within;
         if (chunk > size - copied) chunk = size - copied;
         for (size_t index = 0; index < chunk; ++index) {
-            static_cast<uint8_t*>(buffer)[copied + index] = block[within + index];
+            static_cast<uint8_t*>(buffer)[copied + index] =
+                block[within + index];
         }
         copied += chunk;
     }
     return static_cast<int64_t>(copied);
 }
 
-int Volume::readDirectory(const char* path, uint32_t index,
-                          DirectoryEntry& entry) {
-    FileStatus directory{};
-    if (!lookup(path, directory) || !directory.directory) return -1;
+int Iso9660FileSystem::readDirectory(const char* path, uint32_t index,
+                                     vfs::DirectoryEntry& entry) {
+    Node directory{};
+    if (!resolve(path, directory) || !directory.directory) return -1;
     uint8_t block[isoBlockSize]{};
-    uint32_t offset = 0;
+    uint32_t offset  = 0;
     uint32_t current = 0;
     while (offset < directory.size) {
         const uint8_t* record = nullptr;
-        uint32_t nextOffset = 0;
-        if (!readRecord(directory, offset, block, record, nextOffset)) return -1;
-        offset = nextOffset;
+        uint32_t nextOffset   = 0;
+        const RecordResult result =
+            readRecord(directory, offset, block, record, nextOffset);
+        if (result == RecordResult::End) return 1;
+        if (result == RecordResult::Error) return -1;
+        offset               = nextOffset;
         const uint8_t length = record[32];
         if (length == 1 && (record[33] == 0 || record[33] == 1)) continue;
         if (current++ != index) continue;
-        entry.directory = (record[25] & 2U) != 0;
+        entry.type            = (record[25] & 2U) != 0 ? 2 : 1;
         uint32_t outputLength = 0;
         while (outputLength < length && outputLength + 1 < sizeof(entry.name) &&
                record[33 + outputLength] != ';') {
             entry.name[outputLength] = lower(record[33 + outputLength]);
             ++outputLength;
         }
+        if (outputLength != 0 && entry.name[outputLength - 1] == '.')
+            --outputLength;
         entry.name[outputLength] = '\0';
         return 0;
     }
     return 1;
 }
-
-}  // namespace fs::iso9660

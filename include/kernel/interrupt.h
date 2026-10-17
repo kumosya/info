@@ -6,7 +6,8 @@ namespace kernel {
 
 struct BootInfo;
 
-struct InterruptContext {
+namespace interrupt {
+struct [[gnu::packed]] Context {
     uint64_t r15;
     uint64_t r14;
     uint64_t r13;
@@ -30,19 +31,21 @@ struct InterruptContext {
     uint64_t rsp;
     uint64_t ss;
 };
-
-using InterruptHandler = void (*)(InterruptContext* context);
+using Handler = void (*)(Context* context);
 
 void initIdt();
 void loadIdt();
-void initInterruptControllers(const BootInfo* bootInfo);
-bool configureIrq(uint8_t irq, uint8_t vector, uint32_t apicId);
+void initControllers(const BootInfo* bootInfo);
+bool setIrq(uint8_t irq, uint8_t vector, uint32_t apicId, bool levelTriggered = false);
 void maskIrq(uint8_t irq);
-bool registerInterruptHandler(uint8_t vector, InterruptHandler handler);
-void unregisterInterruptHandler(uint8_t vector);
-void handleException(InterruptContext* context);
-void handlePageFault(InterruptContext* context);
+bool registerHandler(uint8_t vector, Handler handler);
+void unregisterHandler(uint8_t vector);
+void handleException(Context* context);
+void handlePageFault(Context* context);
 
-extern "C" void interruptDispatch(InterruptContext* context);
-
+}  // namespace interrupt
 }  // namespace kernel
+
+namespace kernel::interrupt {
+extern "C" void interruptDispatch(Context* context);
+}

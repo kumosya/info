@@ -1,2 +1,0 @@
-alpha  0123456789abcdef
-beta   fedcba9876543210

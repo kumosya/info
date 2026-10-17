@@ -4,10 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "os/c_api.h"
+#include "os_adapter.h"
 
 #define LIBC_THREAD_CAPACITY 64
 #define LIBC_DEFAULT_STACK_SIZE (64U * 1024U)
+extern void __libc_release_errno(void);
 
 typedef struct {
     uint32_t used;
@@ -24,6 +25,7 @@ typedef struct {
 typedef struct {
     uint32_t used;
     pthread_t id;
+    struct __pthread_cleanup* cleanup;
     void* values[PTHREAD_KEYS_MAX];
 } ThreadSpecificValues;
 
@@ -39,7 +41,7 @@ static volatile uint8_t registry_lock;
 
 static void lock_registry(void) {
     while (__atomic_test_and_set(&registry_lock, __ATOMIC_ACQUIRE)) {
-        os_yield();
+        __libc_os_yield();
     }
 }
 
@@ -78,7 +80,7 @@ static void reap_detached(void) {
             continue;
         }
         unlock_registry();
-        if (os_wait_thread(control->id, &exit_code, 1) == 0) {
+        if (__libc_os_wait_thread(control->id, &exit_code, 1) == 0) {
             release_control(control);
         }
     }
@@ -102,6 +104,30 @@ static ThreadSpecificValues* find_specific(pthread_t id, int create) {
         return free_slot;
     }
     return NULL;
+}
+
+void __pthread_cleanup_push(struct __pthread_cleanup* node, void (*routine)(void*), void* argument) {
+    *node=(struct __pthread_cleanup){routine,argument,NULL};
+    lock_registry();
+    ThreadSpecificValues* values=find_specific(pthread_self(),1);
+    if (values) { node->previous=values->cleanup; values->cleanup=node; }
+    unlock_registry();
+}
+void __pthread_cleanup_pop(struct __pthread_cleanup* node,int execute) {
+    lock_registry();
+    ThreadSpecificValues* values=find_specific(pthread_self(),0);
+    if(values && values->cleanup==node) values->cleanup=node->previous;
+    unlock_registry();
+    if(execute) node->routine(node->argument);
+}
+static void run_cleanup(void) {
+    while(1) {
+        lock_registry(); ThreadSpecificValues* values=find_specific(pthread_self(),0);
+        struct __pthread_cleanup* node=values?values->cleanup:NULL;
+        if(node) values->cleanup=node->previous;
+        unlock_registry(); if(!node) return;
+        node->routine(node->argument);
+    }
 }
 
 static void run_specific_destructors(void) {
@@ -145,7 +171,8 @@ static void thread_entry(void* argument) {
     void* result = control->start(control->argument);
     run_specific_destructors();
     control->result = result;
-    os_exit_thread(0);
+    __libc_release_errno();
+    __libc_os_exit_thread(0);
 }
 
 static int valid_time(const struct timespec* value) {
@@ -233,7 +260,7 @@ int pthread_create(pthread_t* thread, const pthread_attr_t* attr,
     control->start = start;
     control->argument = argument;
     stack_top = ((uint64_t)(uintptr_t)control->stack + stack_size) & ~15ULL;
-    control->id = os_create_thread(thread_entry, control, stack_top);
+    control->id = __libc_os_create_thread(thread_entry, control, stack_top);
     if (control->id == 0) {
         release_control(control);
         return EAGAIN;
@@ -258,7 +285,7 @@ int pthread_join(pthread_t thread, void** result) {
     }
     control->join_claimed = 1;
     unlock_registry();
-    if (os_wait_thread(thread, &exit_code, 0) != 0) {
+    if (__libc_os_wait_thread(thread, &exit_code, 0) != 0) {
         lock_registry();
         control->join_claimed = 0;
         unlock_registry();
@@ -284,24 +311,26 @@ int pthread_detach(pthread_t thread) {
     }
     control->detached = 1;
     unlock_registry();
-    if (os_wait_thread(thread, &exit_code, 1) == 0) {
+    if (__libc_os_wait_thread(thread, &exit_code, 1) == 0) {
         release_control(control);
     }
     return 0;
 }
 
-pthread_t pthread_self(void) { return os_get_thread_id(); }
+pthread_t pthread_self(void) { return __libc_os_get_thread_id(); }
 
 int pthread_equal(pthread_t left, pthread_t right) { return left == right; }
 
 void pthread_exit(void* result) {
     ThreadControl* control;
+    run_cleanup();
     run_specific_destructors();
     lock_registry();
     control = find_control(pthread_self());
     if (control != NULL) control->result = result;
     unlock_registry();
-    os_exit_thread(0);
+    __libc_release_errno();
+    __libc_os_exit_thread(0);
 }
 
 int pthread_mutexattr_init(pthread_mutexattr_t* attr) {
@@ -385,7 +414,7 @@ int pthread_mutex_lock(pthread_mutex_t* mutex) {
         return 0;
     }
     while (__atomic_exchange_n(&mutex->state, 2, __ATOMIC_ACQUIRE) != 0) {
-        os_wait_address(&mutex->state, 2);
+        __libc_os_wait_address(&mutex->state, 2);
     }
     __atomic_store_n(&mutex->owner, self, __ATOMIC_RELEASE);
     mutex->recursion = 1;
@@ -398,7 +427,7 @@ int pthread_mutex_timedlock(pthread_mutex_t* mutex,
     if (!valid_time(absolute_time)) return EINVAL;
     while ((result = pthread_mutex_trylock(mutex)) == EBUSY) {
         if (deadline_reached(absolute_time)) return ETIMEDOUT;
-        os_sleep(1);
+        __libc_os_sleep(1);
     }
     return result;
 }
@@ -416,7 +445,7 @@ int pthread_mutex_unlock(pthread_mutex_t* mutex) {
     mutex->recursion = 0;
     __atomic_store_n(&mutex->owner, 0, __ATOMIC_RELEASE);
     previous = __atomic_exchange_n(&mutex->state, 0, __ATOMIC_RELEASE);
-    if (previous == 2) os_wake_address(&mutex->state, 1);
+    if (previous == 2) __libc_os_wake_address(&mutex->state, 1);
     return 0;
 }
 
@@ -467,7 +496,7 @@ int pthread_cond_wait(pthread_cond_t* condition, pthread_mutex_t* mutex) {
     sequence = __atomic_load_n(&condition->sequence, __ATOMIC_ACQUIRE);
     result = pthread_mutex_unlock(mutex);
     if (result != 0) return result;
-    os_wait_address(&condition->sequence, sequence);
+    __libc_os_wait_address(&condition->sequence, sequence);
     return pthread_mutex_lock(mutex);
 }
 
@@ -486,7 +515,7 @@ int pthread_cond_timedwait(pthread_cond_t* condition, pthread_mutex_t* mutex,
             pthread_mutex_lock(mutex);
             return ETIMEDOUT;
         }
-        os_sleep(1);
+        __libc_os_sleep(1);
     }
     return pthread_mutex_lock(mutex);
 }
@@ -494,14 +523,14 @@ int pthread_cond_timedwait(pthread_cond_t* condition, pthread_mutex_t* mutex,
 int pthread_cond_signal(pthread_cond_t* condition) {
     if (condition == NULL) return EINVAL;
     __atomic_add_fetch(&condition->sequence, 1, __ATOMIC_RELEASE);
-    os_wake_address(&condition->sequence, 1);
+    __libc_os_wake_address(&condition->sequence, 1);
     return 0;
 }
 
 int pthread_cond_broadcast(pthread_cond_t* condition) {
     if (condition == NULL) return EINVAL;
     __atomic_add_fetch(&condition->sequence, 1, __ATOMIC_RELEASE);
-    os_wake_address(&condition->sequence, UINT32_MAX);
+    __libc_os_wake_address(&condition->sequence, UINT32_MAX);
     return 0;
 }
 
@@ -512,11 +541,11 @@ int pthread_once(pthread_once_t* once, void (*initializer)(void)) {
                                     __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
         initializer();
         __atomic_store_n(&once->state, 2, __ATOMIC_RELEASE);
-        os_wake_address(&once->state, UINT32_MAX);
+        __libc_os_wake_address(&once->state, UINT32_MAX);
         return 0;
     }
     while (__atomic_load_n(&once->state, __ATOMIC_ACQUIRE) != 2) {
-        os_wait_address(&once->state, 1);
+        __libc_os_wait_address(&once->state, 1);
     }
     return 0;
 }
@@ -700,9 +729,9 @@ int pthread_barrier_wait(pthread_barrier_t* barrier) {
     return 0;
 }
 
-int pthread_spin_init(pthread_spinlock_t* lock, int process_shared) {
+int pthread_spin_init(pthread_spinlock_t* lock, int task_shared) {
     if (lock == NULL) return EINVAL;
-    if (process_shared != PTHREAD_PROCESS_PRIVATE) return ENOTSUP;
+    if (task_shared != PTHREAD_PROCESS_PRIVATE) return ENOTSUP;
     *lock = 0;
     return 0;
 }
@@ -714,7 +743,7 @@ int pthread_spin_destroy(pthread_spinlock_t* lock) {
 
 int pthread_spin_lock(pthread_spinlock_t* lock) {
     if (lock == NULL) return EINVAL;
-    while (__atomic_exchange_n(lock, 1, __ATOMIC_ACQUIRE)) os_yield();
+    while (__atomic_exchange_n(lock, 1, __ATOMIC_ACQUIRE)) __libc_os_yield();
     return 0;
 }
 

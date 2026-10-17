@@ -2,15 +2,14 @@
 
 #include "kernel/boot.h"
 #include "kernel/cpu.h"
-#include "kernel/heap.h"
 #include "kernel/interrupt.h"
 #include "kernel/ipc.h"
 #include "kernel/mm.h"
 #include "kernel/new.h"
 #include "kernel/page.h"
-#include "kernel/process.h"
 #include "kernel/serial.h"
 #include "kernel/spinlock.h"
+#include "kernel/task.h"
 
 namespace {
 
@@ -19,7 +18,7 @@ constexpr uint8_t irqVectorBase = 64;
 constexpr uint8_t maximumIrq    = 15;
 kernel::SpinLock pciLock;
 kernel::SpinLock bindingLock;
-kernel::InterruptBinding* bindings[16];
+kernel::device::InterruptBinding* bindings[16];
 kernel::FramebufferInfo bootFramebuffer{};
 
 uint64_t alignDown(uint64_t value) { return value & ~(pageSize - 1); }
@@ -27,8 +26,6 @@ uint64_t alignDown(uint64_t value) { return value & ~(pageSize - 1); }
 uint64_t alignUp(uint64_t value) {
     return (value + pageSize - 1) & ~(pageSize - 1);
 }
-
-bool isPs2Port(uint16_t port) { return port == 0x60 || port == 0x64; }
 
 uint32_t pciAddress(const os::PciFunctionInfo& function, uint16_t offset) {
     return 0x80000000U | (static_cast<uint32_t>(function.bus) << 16) |
@@ -56,68 +53,55 @@ bool validFunction(const os::PciFunctionInfo& function) {
            function.function < 8;
 }
 
-void irqHandler(kernel::InterruptContext* context) {
+void irqHandler(kernel::interrupt::Context* context) {
     const uint64_t vector = context->vector;
     if (vector < irqVectorBase || vector > irqVectorBase + maximumIrq) {
         return;
     }
-    kernel::InterruptBinding* binding = bindings[vector - irqVectorBase];
+    kernel::device::InterruptBinding* binding =
+        bindings[vector - irqVectorBase];
     if (binding != nullptr) {
-        kernel::notifyEndpointFromInterrupt(binding->endpoint(), 0x495251,
-                                            binding->irq());
+        if (binding->requiresAcknowledgement())
+            kernel::interrupt::maskIrq(binding->irq());
+        (binding->endpoint())->notifyFromInterrupt(0x495251, binding->irq());
     }
 }
 
 }  // namespace
 
-namespace kernel {
+namespace kernel::device {
 
-void initDeviceSubsystem(const BootInfo* bootInfo) {
-    bootFramebuffer = bootInfo == nullptr ? FramebufferInfo{}
-                                          : bootInfo->framebuffer;
-    serialWrite("[DISPLAY] boot framebuffer address=");
-    serialWriteHex(bootFramebuffer.address);
-    serialWrite(" width=");
-    serialWriteDecimal(bootFramebuffer.width);
-    serialWrite(" height=");
-    serialWriteDecimal(bootFramebuffer.height);
-    serialWrite(" pitch=");
-    serialWriteDecimal(bootFramebuffer.pitch);
-    serialWrite(" bpp=");
-    serialWriteDecimal(bootFramebuffer.bitsPerPixel);
-    serialWrite(" type=");
-    serialWriteDecimal(bootFramebuffer.type);
-    serialWrite("\n");
+void init(const BootInfo* bootInfo) {
+    bootFramebuffer =
+        bootInfo == nullptr ? FramebufferInfo{} : bootInfo->framebuffer;
+    serial::serialWrite("[DISPLAY] boot framebuffer address=");
+    serial::serialWriteHex(bootFramebuffer.address);
+    serial::serialWrite(" width=");
+    serial::serialWriteDecimal(bootFramebuffer.width);
+    serial::serialWrite(" height=");
+    serial::serialWriteDecimal(bootFramebuffer.height);
+    serial::serialWrite(" pitch=");
+    serial::serialWriteDecimal(bootFramebuffer.pitch);
+    serial::serialWrite(" bpp=");
+    serial::serialWriteDecimal(bootFramebuffer.bitsPerPixel);
+    serial::serialWrite(" type=");
+    serial::serialWriteDecimal(bootFramebuffer.type);
+    serial::serialWrite("\n");
 }
 
-bool PortAccess::read8(const Process& process, uint16_t port, uint8_t& value) {
-    if (!process.hasCapability(processCapabilityDevice) || !isPs2Port(port)) {
-        return false;
-    }
-    asm volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
-    return true;
-}
-
-bool PortAccess::write8(const Process& process, uint16_t port, uint8_t value) {
-    if (!process.hasCapability(processCapabilityDevice) || !isPs2Port(port)) {
-        return false;
-    }
-    asm volatile("outb %0, %1" : : "a"(value), "Nd"(port));
-    return true;
-}
-
-bool DisplayAccess::mapFramebuffer(Process& process, uint64_t userAddress,
+bool DisplayAccess::mapFramebuffer(Task& task, uint64_t userAddress,
                                    os::DisplayInfo& info) {
-    if (!process.hasCapability(processCapabilityDisplay) ||
+    if (!task.hasCapability(taskCapabilityDisplay) ||
         bootFramebuffer.address == 0 || bootFramebuffer.width == 0 ||
         bootFramebuffer.height == 0 || bootFramebuffer.pitch == 0 ||
         bootFramebuffer.bitsPerPixel < 24 ||
         (userAddress & (pageSize - 1)) != 0 || userAddress < 0x10000) {
-        serialWrite("[DISPLAY] framebuffer mapping validation failed\n");
+        serial::serialWrite(
+            "[DISPLAY] framebuffer mapping validation failed\n");
         return false;
     }
     const uint64_t physicalBase = alignDown(bootFramebuffer.address);
-    const uint64_t offset = bootFramebuffer.address - physicalBase;
+    const uint64_t offset       = bootFramebuffer.address - physicalBase;
     const uint64_t visibleSize =
         static_cast<uint64_t>(bootFramebuffer.pitch) * bootFramebuffer.height;
     if (visibleSize == 0 || visibleSize > 64ULL * 1024 * 1024 ||
@@ -129,35 +113,36 @@ bool DisplayAccess::mapFramebuffer(Process& process, uint64_t userAddress,
         userAddress + mappedSize >= 0x0000800000000000ULL) {
         return false;
     }
-    PreemptionSpinLockGuard addressGuard(process.addressSpace().lock());
+    PreemptionSpinLockGuard addressGuard(task.addressSpace().lock());
     uint64_t mapped = 0;
     for (; mapped < mappedSize; mapped += pageSize) {
-        if (!mapPageInAddressSpace(
-                process.addressSpace().rootPhysicalAddress(),
-                userAddress + mapped, physicalBase + mapped,
+        if (!memory::mapPageInAddressSpace(
+                task.addressSpace().rootPhysicalAddress(), userAddress + mapped,
+                physicalBase + mapped,
                 pageUser | pageWritable | pageNoExecute | pageCacheDisable |
                     pageExternal)) {
-            serialWrite("[DISPLAY] framebuffer page mapping failed at ");
-            serialWriteHex(mapped);
-            serialWrite("\n");
+            serial::serialWrite(
+                "[DISPLAY] framebuffer page mapping failed at ");
+            serial::serialWriteHex(mapped);
+            serial::serialWrite("\n");
             while (mapped != 0) {
                 mapped -= pageSize;
-                unmapPageInAddressSpace(
-                    process.addressSpace().rootPhysicalAddress(),
+                memory::unmapPageInAddressSpace(
+                    task.addressSpace().rootPhysicalAddress(),
                     userAddress + mapped);
             }
             return false;
         }
     }
-    info.address = userAddress + offset;
-    info.size = mappedSize;
-    info.width = bootFramebuffer.width;
-    info.height = bootFramebuffer.height;
-    info.pitch = bootFramebuffer.pitch;
-    info.bitsPerPixel = bootFramebuffer.bitsPerPixel;
-    info.redPosition = bootFramebuffer.redPosition;
+    info.address       = userAddress + offset;
+    info.size          = mappedSize;
+    info.width         = bootFramebuffer.width;
+    info.height        = bootFramebuffer.height;
+    info.pitch         = bootFramebuffer.pitch;
+    info.bitsPerPixel  = bootFramebuffer.bitsPerPixel;
+    info.redPosition   = bootFramebuffer.redPosition;
     info.greenPosition = bootFramebuffer.greenPosition;
-    info.bluePosition = bootFramebuffer.bluePosition;
+    info.bluePosition  = bootFramebuffer.bluePosition;
     if (bootFramebuffer.bitsPerPixel == 32 &&
         bootFramebuffer.redPosition == 16 &&
         bootFramebuffer.greenPosition == 8 &&
@@ -278,8 +263,7 @@ bool PciAccess::getMemoryBar(const os::PciFunctionInfo& function,
     return base != 0 && size != 0;
 }
 
-MmioRegion* MmioRegion::map(Process& process,
-                            const os::PciFunctionInfo& function,
+MmioRegion* MmioRegion::map(Task& task, const os::PciFunctionInfo& function,
                             uint8_t barIndex, uint64_t userAddress,
                             uint64_t size) {
     uint64_t barBase;
@@ -293,21 +277,21 @@ MmioRegion* MmioRegion::map(Process& process,
         return nullptr;
     }
     for (uint64_t offset = 0; offset < size; offset += pageSize) {
-        if (!mapPageInAddressSpace(
-                process.addressSpace().rootPhysicalAddress(),
-                userAddress + offset, barBase + offset,
+        if (!memory::mapPageInAddressSpace(
+                task.addressSpace().rootPhysicalAddress(), userAddress + offset,
+                barBase + offset,
                 pageUser | pageWritable | pageNoExecute | pageCacheDisable |
                     pageExternal)) {
             while (offset != 0) {
                 offset -= pageSize;
-                unmapPageInAddressSpace(
-                    process.addressSpace().rootPhysicalAddress(),
+                memory::unmapPageInAddressSpace(
+                    task.addressSpace().rootPhysicalAddress(),
                     userAddress + offset);
             }
             return nullptr;
         }
     }
-    void* storage = kernelAllocate(sizeof(MmioRegion));
+    void* storage = heap::kernelAllocate(sizeof(MmioRegion));
     MmioRegion* region =
         storage == nullptr ? nullptr : new (storage) MmioRegion;
     if (region == nullptr) {
@@ -319,24 +303,24 @@ MmioRegion* MmioRegion::map(Process& process,
     return region;
 }
 
-DmaBuffer* DmaBuffer::create(Process& process, uint64_t userAddress,
+DmaBuffer* DmaBuffer::create(Task& task, uint64_t userAddress,
                              os::DmaBufferInfo& info) {
     if ((userAddress & (pageSize - 1)) != 0 || userAddress < 0x10000 ||
         userAddress + pageSize < userAddress ||
         userAddress + pageSize >= 0x0000800000000000ULL) {
         return nullptr;
     }
-    const uint64_t physical = allocatePhysicalPage();
+    const uint64_t physical = memory::allocatePhysicalPage();
     if (physical == 0 ||
-        !mapPageInAddressSpace(process.addressSpace().rootPhysicalAddress(),
-                               userAddress, physical,
-                               pageUser | pageWritable | pageNoExecute)) {
+        !memory::mapPageInAddressSpace(
+            task.addressSpace().rootPhysicalAddress(), userAddress, physical,
+            pageUser | pageWritable | pageNoExecute)) {
         if (physical != 0) {
-            freePhysicalPage(physical);
+            memory::freePhysicalPage(physical);
         }
         return nullptr;
     }
-    void* storage     = kernelAllocate(sizeof(DmaBuffer));
+    void* storage     = heap::kernelAllocate(sizeof(DmaBuffer));
     DmaBuffer* buffer = storage == nullptr ? nullptr : new (storage) DmaBuffer;
     if (buffer == nullptr) {
         return nullptr;
@@ -350,8 +334,8 @@ DmaBuffer* DmaBuffer::create(Process& process, uint64_t userAddress,
     return buffer;
 }
 
-InterruptBinding* InterruptBinding::create(Process&, uint8_t irq,
-                                           Endpoint* endpoint) {
+InterruptBinding* InterruptBinding::create(Task& task, uint8_t irq,
+                                           Endpoint* endpoint, bool levelTriggered) {
     if (irq > maximumIrq || endpoint == nullptr) {
         return nullptr;
     }
@@ -359,19 +343,23 @@ InterruptBinding* InterruptBinding::create(Process&, uint8_t irq,
     if (bindings[irq] != nullptr) {
         return nullptr;
     }
-    void* storage = kernelAllocate(sizeof(InterruptBinding));
+    void* storage = heap::kernelAllocate(sizeof(InterruptBinding));
     InterruptBinding* binding =
         storage == nullptr ? nullptr : new (storage) InterruptBinding;
     if (binding == nullptr ||
-        !registerInterruptHandler(irqVectorBase + irq, irqHandler)) {
+        !interrupt::registerHandler(irqVectorBase + irq, irqHandler)) {
         return nullptr;
     }
-    if (!configureIrq(irq, irqVectorBase + irq, getCurrentCpu()->apicId)) {
-        unregisterInterruptHandler(irqVectorBase + irq);
+    const uint32_t apicId = cpu::getCurrent()->getApicId();
+    if (!interrupt::setIrq(irq, irqVectorBase + irq, apicId, levelTriggered)) {
+        interrupt::unregisterHandler(irqVectorBase + irq);
         return nullptr;
     }
     binding->irq_      = irq;
     binding->endpoint_ = endpoint;
+    binding->owner_ = &task;
+    binding->apicId_ = apicId;
+    binding->levelTriggered_ = levelTriggered;
     bindings[irq]      = binding;
     return binding;
 }
@@ -380,4 +368,9 @@ uint8_t InterruptBinding::irq() const { return irq_; }
 
 Endpoint* InterruptBinding::endpoint() const { return endpoint_; }
 
-}  // namespace kernel
+bool InterruptBinding::acknowledge(Task& task) const {
+    return owner_ == &task && (!levelTriggered_ ||
+        interrupt::setIrq(irq_, irqVectorBase + irq_, apicId_, true));
+}
+
+}  // namespace kernel::device

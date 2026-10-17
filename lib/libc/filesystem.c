@@ -1,4 +1,24 @@
 #include "internal.h"
+#include <errno.h>
+
+int rename(const char* existing, const char* newPath) {
+    char source[LIBC_PATH_CAPACITY], destination[LIBC_PATH_CAPACITY];
+    OsFileStat first, second;
+    libcCopyPath(source, existing); libcCopyPath(destination, newPath);
+    if (!__libc_os_stat_file(libcFsService(), source, &first)) { errno = ENOENT; return -1; }
+    // Compare the destination parent, which exists even when its leaf does not.
+    char parent[LIBC_PATH_CAPACITY];
+    size_t length = 0;
+    while (destination[length]) ++length;
+    while (length > 1 && destination[length - 1] == '/') --length;
+    while (length > 1 && destination[length - 1] != '/') --length;
+    for (size_t i = 0; i < length; ++i) parent[i] = destination[i];
+    parent[length > 1 ? length - 1 : 1] = 0;
+    if (!__libc_os_stat_file(libcFsService(), parent, &second)) { errno = ENOENT; return -1; }
+    if (first.device != second.device) { errno = EXDEV; return -1; }
+    if (!__libc_os_rename_file(libcFsService(), source, destination)) { errno = EIO; return -1; }
+    return 0;
+}
 
 #include <errno.h>
 #include <fcntl.h>
@@ -6,6 +26,10 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+static mode_t creation_mask=0022;
+mode_t umask(mode_t mode) { return __atomic_exchange_n(&creation_mask,mode&0777,__ATOMIC_RELAXED); }
+mode_t libcCreationMode(mode_t mode) { return mode & ~__atomic_load_n(&creation_mask,__ATOMIC_RELAXED); }
 
 int stat(const char* path, struct stat* result) {
     char absolute[LIBC_PATH_CAPACITY];
@@ -15,20 +39,21 @@ int stat(const char* path, struct stat* result) {
         return -1;
     }
     libcCopyPath(absolute, path);
-    if (!os_stat_file(libcFsService(), absolute, &status)) {
+    if (!__libc_os_stat_file(libcFsService(), absolute, &status)) {
         errno = ENOENT;
         return -1;
     }
-    result->st_mode = status.mode |
-                      (status.type == OS_FILE_TYPE_DIRECTORY ? S_IFDIR
-                                                             : S_IFREG);
+    result->st_mode = status.mode;
+    if ((result->st_mode & S_IFMT) == 0) {
+        result->st_mode |= status.type == OS_FILE_TYPE_DIRECTORY ? S_IFDIR : S_IFREG;
+    }
     result->st_size = (off_t)status.size;
-    result->st_dev = 1;
+    result->st_dev = status.device;
     result->st_ino = status.inode;
     result->st_nlink = status.links;
     result->st_uid = status.uid;
     result->st_gid = status.gid;
-    result->st_rdev = 0;
+    result->st_rdev = status.specialDevice;
     result->st_blksize = 4096;
     result->st_blocks = (blkcnt_t)((status.size + 511) / 512);
     result->st_atim.tv_sec = (time_t)status.accessTime;
@@ -46,17 +71,19 @@ int fstat(int fileDescriptor, struct stat* result) {
         errno = EBADF;
         return -1;
     }
-    return stat(value->path, result);
+    int status = __libc_file_stat(value->fileObject, result);
+    if (status < 0) { errno = -status; return -1; }
+    return 0;
 }
 
 int mkdir(const char* path, mode_t mode) {
     char absolute[LIBC_PATH_CAPACITY];
     libcCopyPath(absolute, path);
-    if (!os_make_directory(libcFsService(), absolute)) {
+    if (!__libc_os_make_directory(libcFsService(), absolute)) {
         errno = EIO;
         return -1;
     }
-    if (!os_change_file_mode(libcFsService(), absolute, mode)) {
+    if (!__libc_os_change_file_mode(libcFsService(), absolute, libcCreationMode(mode))) {
         errno = EIO;
         return -1;
     }
@@ -66,14 +93,23 @@ int mkdir(const char* path, mode_t mode) {
 int unlink(const char* path) {
     char absolute[LIBC_PATH_CAPACITY];
     libcCopyPath(absolute, path);
-    if (!os_remove_path(libcFsService(), absolute)) {
+    struct stat value;
+    if (stat(absolute,&value)) return -1;
+    if (S_ISDIR(value.st_mode)) { errno=EISDIR; return -1; }
+    if (!__libc_os_remove_path(libcFsService(), absolute)) {
         errno = ENOENT;
         return -1;
     }
     return 0;
 }
 
-int rmdir(const char* path) { return unlink(path); }
+int rmdir(const char* path) {
+    char absolute[LIBC_PATH_CAPACITY]; libcCopyPath(absolute,path);
+    struct stat value; if(stat(absolute,&value)) return -1;
+    if(!S_ISDIR(value.st_mode)) { errno=ENOTDIR; return -1; }
+    if(!__libc_os_remove_path(libcFsService(),absolute)) { errno=ENOTEMPTY; return -1; }
+    return 0;
+}
 
 int link(const char* existing, const char* newPath) {
     char oldAbsolute[LIBC_PATH_CAPACITY];
@@ -84,7 +120,7 @@ int link(const char* existing, const char* newPath) {
     }
     libcCopyPath(oldAbsolute, existing);
     libcCopyPath(newAbsolute, newPath);
-    if (!os_link_file(libcFsService(), oldAbsolute, newAbsolute)) {
+    if (!__libc_os_link_file(libcFsService(), oldAbsolute, newAbsolute)) {
         errno = EIO;
         return -1;
     }
@@ -103,7 +139,6 @@ int linkat(int oldDirectory, const char* existing, int newDirectory,
 int symlink(const char* target, const char* linkPath) {
     (void)target;
     (void)linkPath;
-    os_posix_unsupported(OS_POSIX_FILE_LINKS_AND_METADATA);
     errno = ENOSYS;
     return -1;
 }
@@ -112,7 +147,6 @@ ssize_t readlink(const char* path, char* buffer, size_t size) {
     (void)path;
     (void)buffer;
     (void)size;
-    os_posix_unsupported(OS_POSIX_FILE_LINKS_AND_METADATA);
     errno = ENOSYS;
     return -1;
 }
@@ -167,7 +201,7 @@ int truncate(const char* path, off_t length) {
         return -1;
     }
     libcCopyPath(absolute, path);
-    if (!os_truncate_file(libcFsService(), absolute)) {
+    if (!__libc_os_truncate_file(libcFsService(), absolute)) {
         errno = EIO;
         return -1;
     }
@@ -185,7 +219,7 @@ int ftruncate(int fileDescriptor, off_t length) {
             errno = EACCES;
             return -1;
         }
-        if (os_resize_shared_memory(value->handle, (uint64_t)length) != 0) {
+        if (__libc_os_resize_shared_memory(value->handle, (uint64_t)length) != 0) {
             errno = EINVAL;
             return -1;
         }
@@ -217,7 +251,7 @@ int chmod(const char* path, mode_t mode) {
         return -1;
     }
     libcCopyPath(absolute, path);
-    if (!os_change_file_mode(libcFsService(), absolute, mode)) {
+    if (!__libc_os_change_file_mode(libcFsService(), absolute, mode)) {
         errno = EIO;
         return -1;
     }
@@ -243,14 +277,14 @@ int chown(const char* path, uid_t owner, gid_t group) {
         return -1;
     }
     libcCopyPath(absolute, path);
-    if (!os_stat_file(libcFsService(), absolute, &status)) {
+    if (!__libc_os_stat_file(libcFsService(), absolute, &status)) {
         errno = ENOENT;
         return -1;
     }
     uid = owner == (uid_t)-1 ? status.uid : owner;
     gid = group == (gid_t)-1 ? status.gid : group;
     if (uid > 0xffffU || gid > 0xffffU ||
-        !os_change_file_owner(libcFsService(), absolute, uid, gid)) {
+        !__libc_os_change_file_owner(libcFsService(), absolute, uid, gid)) {
         errno = EINVAL;
         return -1;
     }
@@ -271,11 +305,13 @@ int lchown(const char* path, uid_t owner, gid_t group) {
 }
 
 int fstatat(int directory, const char* path, struct stat* status, int flags) {
-    if (directory != AT_FDCWD || flags != 0) {
+    if (flags & ~AT_SYMLINK_NOFOLLOW) {
         errno = ENOTSUP;
         return -1;
     }
-    return stat(path, status);
+    char absolute[LIBC_PATH_CAPACITY];
+    if(libcPathAt(directory,path,absolute)) return -1;
+    return stat(absolute, status);
 }
 
 int utimensat(int directory, const char* path,
@@ -285,12 +321,12 @@ int utimensat(int directory, const char* path,
     struct timespec now;
     uint64_t accessTime;
     uint64_t modificationTime;
-    if (directory != AT_FDCWD || flags != 0 || path == NULL) {
+    if ((flags & ~AT_SYMLINK_NOFOLLOW) != 0 || path == NULL) {
         errno = flags != 0 ? ENOTSUP : EINVAL;
         return -1;
     }
-    libcCopyPath(absolute, path);
-    if (!os_stat_file(libcFsService(), absolute, &status)) {
+    if(libcPathAt(directory,path,absolute)) return -1;
+    if (!__libc_os_stat_file(libcFsService(), absolute, &status)) {
         errno = ENOENT;
         return -1;
     }
@@ -309,7 +345,7 @@ int utimensat(int directory, const char* path,
          ((times[0].tv_nsec < 0 && times[0].tv_nsec != UTIME_OMIT) ||
           (times[1].tv_nsec < 0 && times[1].tv_nsec != UTIME_OMIT))) ||
         accessTime > UINT32_MAX || modificationTime > UINT32_MAX ||
-        !os_change_file_times(libcFsService(), absolute, accessTime,
+        !__libc_os_change_file_times(libcFsService(), absolute, accessTime,
                               modificationTime)) {
         errno = EINVAL;
         return -1;

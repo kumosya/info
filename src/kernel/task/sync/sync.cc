@@ -8,11 +8,12 @@ namespace {
 
 void appendWaiter(kernel::Thread*& head, kernel::Thread*& tail,
                   kernel::Thread* thread) {
-    thread->waitNext = nullptr;
+    kernel::Thread::prepareWait();
+    thread->setWaitNext(nullptr);
     if (tail == nullptr) {
         head = thread;
     } else {
-        tail->waitNext = thread;
+        tail->setWaitNext(thread);
     }
     tail = thread;
 }
@@ -22,11 +23,11 @@ kernel::Thread* removeWaiter(kernel::Thread*& head, kernel::Thread*& tail) {
     if (thread == nullptr) {
         return nullptr;
     }
-    head = thread->waitNext;
+    head = thread->getWaitNext();
     if (head == nullptr) {
         tail = nullptr;
     }
-    thread->waitNext = nullptr;
+    thread->setWaitNext(nullptr);
     return thread;
 }
 
@@ -38,35 +39,35 @@ void markOnce(void* argument) {
 
 namespace kernel {
 
-void WaitQueue::initialize() {
-    lock_.initialize();
+void WaitQueue::init() {
+    lock_.init();
     head_ = nullptr;
     tail_ = nullptr;
 }
 
 void WaitQueue::wait() {
-    Thread* current = getCurrentThread();
+    Thread* current = Thread::getCurrent();
     if (current == nullptr) {
         return;
     }
-    const uint64_t flags = disableInterrupts();
+    const uint64_t flags = interrupt::disable();
     lock_.lock();
     appendWaiter(head_, tail_, current);
     lock_.unlock();
-    blockThread();
-    restoreInterrupts(flags);
+    Thread::blockCurrent();
+    interrupt::restore(flags);
 }
 
 bool WaitQueue::wakeOne() {
     Thread* thread;
-    const uint64_t flags = disableInterrupts();
+    const uint64_t flags = interrupt::disable();
     lock_.lock();
     thread = removeWaiter(head_, tail_);
     lock_.unlock();
     if (thread != nullptr) {
-        wakeThread(thread);
+        Thread::wake(thread);
     }
-    restoreInterrupts(flags);
+    interrupt::restore(flags);
     return thread != nullptr;
 }
 
@@ -78,103 +79,103 @@ uint32_t WaitQueue::wakeAll() {
     return count;
 }
 
-void Mutex::initialize() {
-    lock_.initialize();
-    owner_ = nullptr;
-    waiters_ = nullptr;
+void Mutex::init() {
+    lock_.init();
+    owner_       = nullptr;
+    waiters_     = nullptr;
     waitersTail_ = nullptr;
 }
 
 void Mutex::lock() {
-    Thread* current = getCurrentThread();
+    Thread* current = Thread::getCurrent();
     if (current == nullptr) {
         return;
     }
     while (true) {
-        const uint64_t flags = disableInterrupts();
+        const uint64_t flags = interrupt::disable();
         lock_.lock();
         if (owner_ == nullptr) {
             owner_ = current;
             lock_.unlock();
-            restoreInterrupts(flags);
+            interrupt::restore(flags);
             return;
         }
         appendWaiter(waiters_, waitersTail_, current);
         lock_.unlock();
-        blockThread();
-        restoreInterrupts(flags);
+        Thread::blockCurrent();
+        interrupt::restore(flags);
     }
 }
 
 bool Mutex::tryLock() {
-    Thread* current = getCurrentThread();
-    const uint64_t flags = disableInterrupts();
+    Thread* current      = Thread::getCurrent();
+    const uint64_t flags = interrupt::disable();
     lock_.lock();
     const bool acquired = owner_ == nullptr && current != nullptr;
     if (acquired) {
         owner_ = current;
     }
     lock_.unlock();
-    restoreInterrupts(flags);
+    interrupt::restore(flags);
     return acquired;
 }
 
 void Mutex::unlock() {
-    Thread* waiter = nullptr;
-    const uint64_t flags = disableInterrupts();
+    Thread* waiter       = nullptr;
+    const uint64_t flags = interrupt::disable();
     lock_.lock();
-    if (owner_ == getCurrentThread()) {
+    if (owner_ == Thread::getCurrent()) {
         owner_ = nullptr;
         waiter = removeWaiter(waiters_, waitersTail_);
     }
     lock_.unlock();
     if (waiter != nullptr) {
-        wakeThread(waiter);
+        Thread::wake(waiter);
     }
-    restoreInterrupts(flags);
+    interrupt::restore(flags);
 }
 
-void Semaphore::initialize(uint32_t count) {
-    lock_.initialize();
-    count_ = count;
-    waiters_ = nullptr;
+void Semaphore::init(uint32_t count) {
+    lock_.init();
+    count_       = count;
+    waiters_     = nullptr;
     waitersTail_ = nullptr;
 }
 
 void Semaphore::wait() {
-    Thread* current = getCurrentThread();
+    Thread* current = Thread::getCurrent();
     if (current == nullptr) {
         return;
     }
-    const uint64_t flags = disableInterrupts();
+    const uint64_t flags = interrupt::disable();
     lock_.lock();
     if (count_ != 0) {
         --count_;
         lock_.unlock();
-        restoreInterrupts(flags);
+        interrupt::restore(flags);
         return;
     }
     appendWaiter(waiters_, waitersTail_, current);
     lock_.unlock();
-    blockThread();
-    restoreInterrupts(flags);
+    Thread::blockCurrent();
+    interrupt::restore(flags);
 }
 
 bool Semaphore::tryWait() {
-    const uint64_t flags = disableInterrupts();
+    const uint64_t flags = interrupt::disable();
     lock_.lock();
     const bool acquired = count_ != 0;
     if (acquired) {
         --count_;
     }
     lock_.unlock();
-    restoreInterrupts(flags);
+    interrupt::restore(flags);
     return acquired;
 }
 
 void Semaphore::signal() {
-    Thread* waiter = nullptr;
-    const uint64_t flags = disableInterrupts();
+    Thread* waiter       = nullptr;
+    const uint64_t flags = interrupt::disable();
     lock_.lock();
     waiter = removeWaiter(waiters_, waitersTail_);
     if (waiter == nullptr) {
@@ -182,15 +183,15 @@ void Semaphore::signal() {
     }
     lock_.unlock();
     if (waiter != nullptr) {
-        wakeThread(waiter);
+        Thread::wake(waiter);
     }
-    restoreInterrupts(flags);
+    interrupt::restore(flags);
 }
 
-void Once::initialize() {
-    lock_.initialize();
-    state_ = 0;
-    waiters_ = nullptr;
+void Once::init() {
+    lock_.init();
+    state_       = 0;
+    waiters_     = nullptr;
     waitersTail_ = nullptr;
 }
 
@@ -198,31 +199,31 @@ void Once::run(Initializer initializer, void* argument) {
     if (initializer == nullptr) {
         return;
     }
-    Thread* current = getCurrentThread();
-    const uint64_t flags = disableInterrupts();
+    Thread* current      = Thread::getCurrent();
+    const uint64_t flags = interrupt::disable();
     lock_.lock();
     if (state_ == 2) {
         lock_.unlock();
-        restoreInterrupts(flags);
+        interrupt::restore(flags);
         return;
     }
     if (state_ == 0) {
         state_ = 1;
         lock_.unlock();
-        restoreInterrupts(flags);
+        interrupt::restore(flags);
         initializer(argument);
 
         lock_.lock();
-        state_ = 2;
+        state_          = 2;
         Thread* waiters = waiters_;
-        waiters_ = nullptr;
-        waitersTail_ = nullptr;
+        waiters_        = nullptr;
+        waitersTail_    = nullptr;
         lock_.unlock();
         while (waiters != nullptr) {
             Thread* waiter = waiters;
-            waiters = waiters->waitNext;
-            waiter->waitNext = nullptr;
-            wakeThread(waiter);
+            waiters        = waiters->getWaitNext();
+            waiter->setWaitNext(nullptr);
+            Thread::wake(waiter);
         }
         return;
     }
@@ -231,46 +232,46 @@ void Once::run(Initializer initializer, void* argument) {
     }
     lock_.unlock();
     if (current != nullptr) {
-        blockThread();
+        Thread::blockCurrent();
     }
-    restoreInterrupts(flags);
+    interrupt::restore(flags);
 }
 
-void runSynchronizationSelfTest() {
+void sync::runSynchronizationSelfTest() {
     SpinLock spin;
-    spin.initialize();
+    spin.init();
     if (!spin.tryLock()) {
-        serialWrite("[SYNC] spinlock self-test failed\n");
-        haltCpu();
+        serial::serialWrite("[SYNC] spinlock self-test failed\n");
+        cpu::halt();
     }
     spin.unlock();
 
     Mutex mutex;
-    mutex.initialize();
+    mutex.init();
     if (!mutex.tryLock()) {
-        serialWrite("[SYNC] mutex self-test failed\n");
-        haltCpu();
+        serial::serialWrite("[SYNC] mutex self-test failed\n");
+        cpu::halt();
     }
     mutex.unlock();
 
     Semaphore semaphore;
-    semaphore.initialize(1);
+    semaphore.init(1);
     if (!semaphore.tryWait() || semaphore.tryWait()) {
-        serialWrite("[SYNC] semaphore self-test failed\n");
-        haltCpu();
+        serial::serialWrite("[SYNC] semaphore self-test failed\n");
+        cpu::halt();
     }
     semaphore.signal();
 
     Once once;
     uint32_t marker = 0;
-    once.initialize();
+    once.init();
     once.run(markOnce, &marker);
     once.run(markOnce, &marker);
     if (marker != 0x6f6e6365U) {
-        serialWrite("[SYNC] once self-test failed\n");
-        haltCpu();
+        serial::serialWrite("[SYNC] once self-test failed\n");
+        cpu::halt();
     }
-    serialWrite("[SYNC] SMP synchronization primitives initialized\n");
+    serial::serialWrite("[SYNC] SMP synchronization primitives initialized\n");
 }
 
 }  // namespace kernel

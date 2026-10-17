@@ -86,7 +86,7 @@ const kernel::AcpiSdtHeader* findInRoot(uint64_t rootPhysicalAddress,
 
 }  // namespace
 
-namespace kernel {
+namespace kernel::acpi {
 
 const AcpiSdtHeader* findAcpiTable(const BootInfo* bootInfo,
                                    const char signature[4]) {
@@ -110,4 +110,4 @@ const AcpiSdtHeader* findAcpiTable(const BootInfo* bootInfo,
     return findInRoot(rsdp->rsdtAddress, false, signature);
 }
 
-}  // namespace kernel
+}  // namespace kernel::acpi

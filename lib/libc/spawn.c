@@ -8,11 +8,12 @@
 #include <unistd.h>
 
 #include "internal.h"
+#include "os_adapter.h"
 
 #define SPAWN_ACTION_CLOSE 1
 #define SPAWN_ACTION_DUP2 2
 #define SPAWN_ACTION_OPEN 3
-#define SPAWN_ARGUMENT_CAPACITY 8
+#define SPAWN_ARGUMENT_CAPACITY 64
 
 static int append_action(posix_spawn_file_actions_t* actions, int type,
                          int file_descriptor, int new_file_descriptor,
@@ -30,16 +31,14 @@ static int append_action(posix_spawn_file_actions_t* actions, int type,
     return 0;
 }
 
-static int spawn_impl(pid_t* process_id, const char* path,
+static int spawn_impl(pid_t* task_id, const char* path,
                       const posix_spawn_file_actions_t* file_actions,
                       const posix_spawnattr_t* attributes,
                       char* const arguments[], char* const environment[]) {
     int argument_count = 0;
     unsigned int index;
-    pid_t process;
-    if (process_id == NULL || path == NULL || arguments == NULL) return EINVAL;
-    if (attributes != NULL &&
-        (attributes->flags & POSIX_SPAWN_SETPGROUP) != 0) return ENOTSUP;
+    pid_t task;
+    if (task_id == NULL || path == NULL || arguments == NULL) return EINVAL;
     while (arguments[argument_count] != NULL) {
         if (argument_count == SPAWN_ARGUMENT_CAPACITY) return E2BIG;
         ++argument_count;
@@ -63,9 +62,14 @@ static int spawn_impl(pid_t* process_id, const char* path,
             }
         }
     }
-    process = fork();
-    if (process < 0) return errno;
-    if (process == 0) {
+    task = fork();
+    if (task < 0) return errno;
+    if (task == 0) {
+        if (attributes != NULL &&
+            (attributes->flags & POSIX_SPAWN_SETPGROUP) != 0 &&
+            __libc_os_set_task_group((uint64_t)attributes->task_group) != 0) {
+            _exit(127);
+        }
         if (file_actions != NULL) {
             for (index = 0; index < file_actions->count; ++index) {
                 const posix_spawn_file_action_t* action =
@@ -110,19 +114,19 @@ static int spawn_impl(pid_t* process_id, const char* path,
         execve(path, arguments, environment);
         _exit(127);
     }
-    *process_id = process;
+    *task_id = task;
     return 0;
 }
 
-int posix_spawn(pid_t* process_id, const char* path,
+int posix_spawn(pid_t* task_id, const char* path,
                 const posix_spawn_file_actions_t* file_actions,
                 const posix_spawnattr_t* attributes,
                 char* const arguments[], char* const environment[]) {
-    return spawn_impl(process_id, path, file_actions, attributes, arguments,
+    return spawn_impl(task_id, path, file_actions, attributes, arguments,
                       environment);
 }
 
-int posix_spawnp(pid_t* process_id, const char* file,
+int posix_spawnp(pid_t* task_id, const char* file,
                  const posix_spawn_file_actions_t* file_actions,
                  const posix_spawnattr_t* attributes,
                  char* const arguments[], char* const environment[]) {
@@ -130,14 +134,14 @@ int posix_spawnp(pid_t* process_id, const char* file,
     size_t length;
     if (file == NULL) return EINVAL;
     if (file[0] == '/') {
-        return spawn_impl(process_id, file, file_actions, attributes, arguments,
+        return spawn_impl(task_id, file, file_actions, attributes, arguments,
                           environment);
     }
     length = strlen(file);
     if (length + 6 >= sizeof(path)) return ENAMETOOLONG;
     memcpy(path, "/bin/", 5);
     memcpy(path + 5, file, length + 1);
-    return spawn_impl(process_id, path, file_actions, attributes, arguments,
+    return spawn_impl(task_id, path, file_actions, attributes, arguments,
                       environment);
 }
 
@@ -204,16 +208,16 @@ int posix_spawnattr_setflags(posix_spawnattr_t* attributes, short flags) {
 }
 
 int posix_spawnattr_getpgroup(const posix_spawnattr_t* attributes,
-                              pid_t* process_group) {
-    if (attributes == NULL || process_group == NULL) return EINVAL;
-    *process_group = attributes->process_group;
+                              pid_t* task_group) {
+    if (attributes == NULL || task_group == NULL) return EINVAL;
+    *task_group = attributes->task_group;
     return 0;
 }
 
 int posix_spawnattr_setpgroup(posix_spawnattr_t* attributes,
-                              pid_t process_group) {
-    if (attributes == NULL || process_group < 0) return EINVAL;
-    attributes->process_group = process_group;
+                              pid_t task_group) {
+    if (attributes == NULL || task_group < 0) return EINVAL;
+    attributes->task_group = task_group;
     return 0;
 }
 

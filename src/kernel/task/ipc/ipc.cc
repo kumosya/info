@@ -1,12 +1,10 @@
 #include "kernel/ipc.h"
 
 #include "kernel/cpu.h"
-#include "kernel/heap.h"
-#include "kernel/process.h"
-#include "kernel/pipe.h"
-#include "kernel/pty.h"
+#include "kernel/mm.h"
 #include "kernel/serial.h"
 #include "kernel/spinlock.h"
+#include "kernel/task.h"
 #include "kernel/thread.h"
 
 namespace kernel {
@@ -14,7 +12,6 @@ namespace kernel {
 namespace {
 
 constexpr uint32_t queueCapacity = 8;
-constexpr uint32_t grantCapacity = 16;
 
 struct PendingCall;
 
@@ -24,13 +21,14 @@ struct QueuedMessage {
 };
 
 struct AccessGrant {
-    Process* process;
+    Task* task;
     uint32_t rights;
+    AccessGrant* next;
 };
 
 struct PendingCall {
     Thread* caller;
-    Process* callerProcess;
+    Task* callerTask;
     Thread* server;
     IpcMessage* replyTarget;
     PendingCall* next;
@@ -49,8 +47,9 @@ struct EndpointImplementation {
     Thread* receiverWaiters;
     Thread* senderWaiters;
     PendingCall* pendingCalls;
-    AccessGrant grants[grantCapacity];
+    AccessGrant* grants;
     bool destroyed;
+    uint16_t pendingIrqs;
 };
 
 namespace {
@@ -64,17 +63,18 @@ void clearMemory(void* address, uint64_t size) {
     }
 }
 
-bool hasRightLocked(const Endpoint* endpoint, const Process* process,
+bool hasRightLocked(const Endpoint* endpoint, const Task* task,
                     uint32_t right) {
-    if (endpoint == nullptr || endpoint->implementation == nullptr ||
-        process == nullptr) {
+    if (endpoint == nullptr || endpoint->getImplementation() == nullptr ||
+        task == nullptr) {
         return false;
     }
-    if (endpoint->owner == process) {
+    if (endpoint->getOwner() == task) {
         return true;
     }
-    for (const AccessGrant& grant : endpoint->implementation->grants) {
-        if (grant.process == process && (grant.rights & right) == right) {
+    for (const AccessGrant* grant = endpoint->getImplementation()->grants;
+         grant != nullptr; grant = grant->next) {
+        if (grant->task == task && (grant->rights & right) == right) {
             return true;
         }
     }
@@ -87,54 +87,64 @@ bool validateMessage(const IpcMessage* message) {
 }
 
 void stampSender(IpcMessage* message) {
-    Process* process   = getCurrentProcess();
-    Thread* thread     = getCurrentThread();
-    message->senderPid = process == nullptr ? 0 : process->id();
-    message->senderTid = thread == nullptr ? 0 : thread->id;
+    Task* task         = task::getCurrent();
+    Thread* thread     = Thread::getCurrent();
+    message->senderPid = task == nullptr ? 0 : task->id();
+    message->senderTid = thread == nullptr ? 0 : thread->getId();
 }
 
 void addWaiter(Thread*& waiters, Thread* thread) {
-    thread->waitNext = waiters;
-    waiters          = thread;
+    Thread::prepareWait();
+    thread->setWaitNext(waiters);
+    waiters = thread;
 }
 
 void wakeOne(Thread*& waiters) {
     if (waiters == nullptr) {
         return;
     }
-    Thread* thread   = waiters;
-    waiters          = thread->waitNext;
-    thread->waitNext = nullptr;
-    wakeThread(thread);
+    Thread* thread = waiters;
+    waiters        = thread->getWaitNext();
+    thread->setWaitNext(nullptr);
+    Thread::wake(thread);
 }
 
-bool grantTransferredEndpoint(Endpoint* endpoint, Process* process,
-                              uint32_t rights) {
-    if (endpoint == nullptr || endpoint->implementation == nullptr ||
-        process == nullptr) {
+bool grantTransferredEndpoint(Endpoint* endpoint, Task* task, uint32_t rights) {
+    if (endpoint == nullptr || endpoint->getImplementation() == nullptr ||
+        task == nullptr) {
         return false;
     }
-    if (endpoint->owner == process) {
+    if (endpoint->getOwner() == task) {
         return true;
     }
-    EndpointImplementation* implementation = endpoint->implementation;
+    EndpointImplementation* implementation = endpoint->getImplementation();
     InterruptSpinLockGuard guard(implementation->lock);
     if (implementation->destroyed) {
         return false;
     }
-    for (AccessGrant& grant : implementation->grants) {
-        if (grant.process == process || grant.process == nullptr ||
-            grant.process->isTerminated()) {
-            grant.process = process;
-            grant.rights  = rights & (endpointRightSend | endpointRightReceive |
-                                     endpointRightManage);
+    AccessGrant* reusable = nullptr;
+    for (AccessGrant* grant = implementation->grants; grant != nullptr;
+         grant = grant->next) {
+        if (grant->task == task) {
+            grant->rights |= rights;
             return true;
         }
+        if (grant->task == nullptr || grant->task->isTerminated())
+            reusable = grant;
     }
-    return false;
+    if (reusable == nullptr) {
+        reusable = static_cast<AccessGrant*>(heap::kernelAllocate(sizeof(AccessGrant)));
+        if (reusable == nullptr) return false;
+        reusable->next = implementation->grants;
+        implementation->grants = reusable;
+    }
+    reusable->task = task;
+    reusable->rights = rights & (endpointRightSend | endpointRightReceive |
+                                endpointRightManage);
+    return true;
 }
 
-bool transferHandles(IpcMessage* message, Process* sender, Process* receiver) {
+bool transferHandles(IpcMessage* message, Task* sender, Task* receiver) {
     if (message == nullptr || sender == nullptr || receiver == nullptr) {
         return message != nullptr && message->handleCount == 0;
     }
@@ -144,8 +154,8 @@ bool transferHandles(IpcMessage* message, Process* sender, Process* receiver) {
         uint32_t rights;
         if (!sender->handles().inspect(message->handles[index], &object, &type,
                                        &rights) ||
-            (type != HandleType::Endpoint && type != HandleType::Process &&
-             type != HandleType::Pipe && type != HandleType::Pty)) {
+            (type != HandleType::Endpoint && type != HandleType::Task &&
+             type != HandleType::Pipe && type != HandleType::Channel)) {
             return false;
         }
         if (type == HandleType::Endpoint &&
@@ -154,12 +164,9 @@ bool transferHandles(IpcMessage* message, Process* sender, Process* receiver) {
             return false;
         }
         uint64_t receiverHandle = 0;
-        if (type == HandleType::Pipe) {
-            receiverHandle = duplicatePipeHandle(*sender, *receiver,
-                                                 message->handles[index]);
-        } else if (type == HandleType::Pty) {
-            receiverHandle = duplicatePtyHandle(*sender, *receiver,
-                                                message->handles[index]);
+        if (type == HandleType::Pipe || type == HandleType::Channel) {
+            receiverHandle = Pipe::duplicateHandle(*sender, *receiver,
+                                                   message->handles[index]);
         } else {
             receiverHandle = receiver->handles().add(object, type, rights);
         }
@@ -172,9 +179,9 @@ bool transferHandles(IpcMessage* message, Process* sender, Process* receiver) {
 }
 
 int enqueueMessage(Endpoint* endpoint, IpcMessage* message,
-                   PendingCall* pendingCall, Process* sender) {
-    EndpointImplementation* implementation = endpoint->implementation;
-    if (!transferHandles(message, sender, endpoint->owner)) {
+                   PendingCall* pendingCall, Task* sender) {
+    EndpointImplementation* implementation = endpoint->getImplementation();
+    if (!transferHandles(message, sender, endpoint->getOwner())) {
         return -1;
     }
     while (true) {
@@ -199,43 +206,47 @@ int enqueueMessage(Endpoint* endpoint, IpcMessage* message,
                 wakeOne(implementation->receiverWaiters);
                 return 0;
             }
-            addWaiter(implementation->senderWaiters, getCurrentThread());
+            addWaiter(implementation->senderWaiters, Thread::getCurrent());
         }
-        blockThread();
+        Thread::blockCurrent();
     }
 }
 
 }  // namespace
 
-void initIpc() { serialWrite("[IPC] synchronous endpoint IPC initialized\n"); }
+void Endpoint::init() {
+    serial::serialWrite("[IPC] synchronous endpoint IPC initialized\n");
+}
 
-Endpoint* createEndpoint() {
-    Process* owner = getCurrentProcess();
+Endpoint* Endpoint::create() {
+    Task* owner = task::getCurrent();
     if (owner == nullptr) {
         return nullptr;
     }
     Endpoint* endpoint =
-        static_cast<Endpoint*>(kernelAllocate(sizeof(Endpoint)));
+        static_cast<Endpoint*>(heap::kernelAllocate(sizeof(Endpoint)));
     EndpointImplementation* implementation =
         static_cast<EndpointImplementation*>(
-            kernelAllocate(sizeof(EndpointImplementation)));
+            heap::kernelAllocate(sizeof(EndpointImplementation)));
     if (endpoint == nullptr || implementation == nullptr) {
         return nullptr;
     }
     clearMemory(implementation, sizeof(EndpointImplementation));
-    endpoint->id = __atomic_fetch_add(&nextEndpointId, 1ULL, __ATOMIC_RELAXED);
-    endpoint->owner          = owner;
-    endpoint->implementation = implementation;
+    endpoint->setId(
+        __atomic_fetch_add(&nextEndpointId, 1ULL, __ATOMIC_RELAXED));
+    endpoint->setOwner(owner);
+    endpoint->setImplementation(implementation);
     return endpoint;
 }
 
-void destroyEndpoint(Endpoint* endpoint) {
-    if (endpoint == nullptr || endpoint->implementation == nullptr) {
+void Endpoint::destroy() {
+    Endpoint* endpoint = this;
+    if (endpoint->getImplementation() == nullptr) {
         return;
     }
-    EndpointImplementation* implementation = endpoint->implementation;
+    EndpointImplementation* implementation = endpoint->getImplementation();
     InterruptSpinLockGuard guard(implementation->lock);
-    if (!hasRightLocked(endpoint, getCurrentProcess(), endpointRightManage) ||
+    if (!hasRightLocked(endpoint, task::getCurrent(), endpointRightManage) ||
         implementation->destroyed) {
         return;
     }
@@ -250,37 +261,28 @@ void destroyEndpoint(Endpoint* endpoint) {
          call              = call->next) {
         call->result = -1;
         __atomic_store_n(&call->completed, true, __ATOMIC_RELEASE);
-        wakeThread(call->caller);
+        Thread::wake(call->caller);
     }
 }
 
-bool grantEndpointAccess(Endpoint* endpoint, Process* process,
-                         uint32_t rights) {
-    if (endpoint == nullptr || endpoint->implementation == nullptr ||
-        process == nullptr) {
+bool Endpoint::grantAccess(Task* task, uint32_t rights) {
+    Endpoint* endpoint = this;
+    if (endpoint->getImplementation() == nullptr || task == nullptr) {
         return false;
     }
-    EndpointImplementation* implementation = endpoint->implementation;
-    InterruptSpinLockGuard guard(implementation->lock);
-    if (implementation->destroyed ||
-        !hasRightLocked(endpoint, getCurrentProcess(), endpointRightManage)) {
-        return false;
+    {
+        EndpointImplementation* implementation = endpoint->getImplementation();
+        InterruptSpinLockGuard guard(implementation->lock);
+        if (implementation->destroyed ||
+            !hasRightLocked(endpoint, task::getCurrent(), endpointRightManage))
+            return false;
     }
-    for (AccessGrant& grant : implementation->grants) {
-        if (grant.process == process || grant.process == nullptr ||
-            grant.process->isTerminated()) {
-            grant.process = process;
-            grant.rights  = rights & (endpointRightSend | endpointRightReceive |
-                                     endpointRightManage);
-            return true;
-        }
-    }
-    return false;
+    return grantTransferredEndpoint(endpoint, task, rights);
 }
 
-uint64_t duplicateEndpointHandle(Process* source, Process* destination,
-                                 uint64_t handle,
-                                 uint64_t destinationHandle) {
+uint64_t Endpoint::duplicateHandle(Task* source, Task* destination,
+                                   uint64_t handle,
+                                   uint64_t destinationHandle) {
     if (source == nullptr || destination == nullptr) {
         return 0;
     }
@@ -302,36 +304,45 @@ uint64_t duplicateEndpointHandle(Process* source, Process* destination,
     return destination->handles().add(object, type, rights);
 }
 
-int sendMessage(Endpoint* endpoint, IpcMessage* message) {
-    if (!validateMessage(message) || endpoint == nullptr ||
-        endpoint->implementation == nullptr) {
+int Endpoint::send(IpcMessage* message) {
+    Endpoint* endpoint = this;
+    if (!validateMessage(message) || endpoint->getImplementation() == nullptr) {
         return -1;
     }
     IpcMessage copy = *message;
     stampSender(&copy);
-    return enqueueMessage(endpoint, &copy, nullptr, getCurrentProcess());
+    return enqueueMessage(endpoint, &copy, nullptr, task::getCurrent());
 }
 
-int receiveMessage(Endpoint* endpoint, IpcMessage* message) {
-    if (message == nullptr || endpoint == nullptr ||
-        endpoint->implementation == nullptr) {
+int Endpoint::receive(IpcMessage* message) {
+    Endpoint* endpoint = this;
+    if (message == nullptr || endpoint->getImplementation() == nullptr) {
         return -1;
     }
-    EndpointImplementation* implementation = endpoint->implementation;
+    EndpointImplementation* implementation = endpoint->getImplementation();
     while (true) {
         {
             InterruptSpinLockGuard guard(implementation->lock);
             if (implementation->destroyed ||
-                !hasRightLocked(endpoint, getCurrentProcess(),
+                !hasRightLocked(endpoint, task::getCurrent(),
                                 endpointRightReceive)) {
                 return -1;
+            }
+            if (implementation->pendingIrqs != 0) {
+                const uint32_t irq = __builtin_ctz(implementation->pendingIrqs);
+                implementation->pendingIrqs &= static_cast<uint16_t>(~(1U << irq));
+                *message = {};
+                message->type = 0x495251;
+                message->length = 1;
+                message->data[0] = irq;
+                return 0;
             }
             if (implementation->count != 0) {
                 QueuedMessage& queued =
                     implementation->queue[implementation->head];
                 *message = queued.message;
                 if (queued.pendingCall != nullptr) {
-                    queued.pendingCall->server = getCurrentThread();
+                    queued.pendingCall->server = Thread::getCurrent();
                 }
                 queued.pendingCall = nullptr;
                 implementation->head =
@@ -340,28 +351,28 @@ int receiveMessage(Endpoint* endpoint, IpcMessage* message) {
                 wakeOne(implementation->senderWaiters);
                 return 0;
             }
-            addWaiter(implementation->receiverWaiters, getCurrentThread());
+            addWaiter(implementation->receiverWaiters, Thread::getCurrent());
         }
-        blockThread();
+        Thread::blockCurrent();
     }
 }
 
-int replyMessage(Endpoint* endpoint, IpcMessage* message) {
-    if (!validateMessage(message) || endpoint == nullptr ||
-        endpoint->implementation == nullptr) {
+int Endpoint::reply(IpcMessage* message) {
+    Endpoint* endpoint = this;
+    if (!validateMessage(message) || endpoint->getImplementation() == nullptr) {
         return -1;
     }
-    EndpointImplementation* implementation = endpoint->implementation;
+    EndpointImplementation* implementation = endpoint->getImplementation();
     PendingCall* call;
     {
         InterruptSpinLockGuard guard(implementation->lock);
         if (implementation->destroyed ||
-            !hasRightLocked(endpoint, getCurrentProcess(),
+            !hasRightLocked(endpoint, task::getCurrent(),
                             endpointRightReceive)) {
             return -1;
         }
         PendingCall** link = &implementation->pendingCalls;
-        while (*link != nullptr && (*link)->server != getCurrentThread()) {
+        while (*link != nullptr && (*link)->server != Thread::getCurrent()) {
             link = &(*link)->next;
         }
         if (*link == nullptr) {
@@ -373,46 +384,55 @@ int replyMessage(Endpoint* endpoint, IpcMessage* message) {
     IpcMessage reply = *message;
     stampSender(&reply);
     call->result =
-        transferHandles(&reply, getCurrentProcess(), call->callerProcess) ? 0
-                                                                          : -1;
+        transferHandles(&reply, task::getCurrent(), call->callerTask) ? 0 : -1;
     if (call->result == 0) {
         *call->replyTarget = reply;
     }
     __atomic_store_n(&call->completed, true, __ATOMIC_RELEASE);
-    wakeThread(call->caller);
+    Thread::wake(call->caller);
     return 0;
 }
 
-int callService(Endpoint* endpoint, IpcMessage* request, IpcMessage* reply) {
-    if (!validateMessage(request) || reply == nullptr || endpoint == nullptr ||
-        endpoint->implementation == nullptr) {
+int Endpoint::call(IpcMessage* request, IpcMessage* reply) {
+    Endpoint* endpoint = this;
+    if (!validateMessage(request) || reply == nullptr ||
+        endpoint->getImplementation() == nullptr) {
         return -1;
     }
     PendingCall callStorage{};
     PendingCall* call = &callStorage;
-    call->caller        = getCurrentThread();
-    call->callerProcess = getCurrentProcess();
-    call->replyTarget   = reply;
-    IpcMessage copy     = *request;
+    call->caller      = Thread::getCurrent();
+    call->callerTask  = task::getCurrent();
+    call->replyTarget = reply;
+    call->caller->setActiveIpcCall(true);
+    IpcMessage copy   = *request;
     stampSender(&copy);
     const int result =
-        enqueueMessage(endpoint, &copy, call, getCurrentProcess());
+        enqueueMessage(endpoint, &copy, call, task::getCurrent());
     if (result != 0) {
+        call->caller->setActiveIpcCall(false);
         return result;
     }
     while (!__atomic_load_n(&call->completed, __ATOMIC_ACQUIRE)) {
-        blockThread();
+        Thread::blockCurrent();
     }
+    call->caller->setActiveIpcCall(false);
     return call->result;
 }
 
-bool notifyEndpointFromInterrupt(Endpoint* endpoint, uint64_t type,
-                                 uint64_t value) {
-    if (endpoint == nullptr || endpoint->implementation == nullptr) {
+bool Endpoint::notifyFromInterrupt(uint64_t type, uint64_t value) {
+    Endpoint* endpoint = this;
+    if (endpoint->getImplementation() == nullptr) {
         return false;
     }
-    EndpointImplementation* implementation = endpoint->implementation;
+    EndpointImplementation* implementation = endpoint->getImplementation();
     implementation->lock.lock();
+    if (!implementation->destroyed && type == 0x495251 && value < 16) {
+        implementation->pendingIrqs |= static_cast<uint16_t>(1U << value);
+        wakeOne(implementation->receiverWaiters);
+        implementation->lock.unlock();
+        return true;
+    }
     if (implementation->destroyed || implementation->count == queueCapacity) {
         implementation->lock.unlock();
         return false;

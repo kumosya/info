@@ -1,6 +1,6 @@
-# 引导子系统（src/kernel/boot/）
+# 内核启动（src/kernel/boot/）
 
-本文档描述 `src/kernel/boot/` 的实现：Multiboot2 引导头、32→64 位引导跳板（`head.S`）、Multiboot2 信息解析（`multiboot.cc`）与串口驱动（`serial.cc`）。对应头文件 `include/kernel/boot.h`、`include/kernel/serial.h`。
+本文档描述 `src/kernel/boot/` 的实现：Multiboot2 引导头、32→64 位引导跳板（`head.S`）、Multiboot2 信息解析（`multiboot.cc`）与串口驱动（`serial.cc`，位于 `src/kernel/device/`）。对应头文件 `include/kernel/boot.h`、`include/kernel/serial.h`。
 
 ## 1. Multiboot2 引导头（head.S `.multiboot` 节）
 
@@ -9,9 +9,9 @@
 | 字段 | 值 | 说明 |
 |---|---|---|
 | magic | `0xe85250d6` | Multiboot2 魔数 |
-| architecture | `0` | i386（32 位保护模式入口） |
+| arch | `0` | i386（32 位保护模式入口） |
 | header_length | 头实际长度 | |
-| checksum | `-(magic + architecture + length)` | |
+| checksum | `-(magic + arch + length)` | |
 
 标签（tag）：
 
@@ -70,13 +70,15 @@ GRUB 以 32 位保护模式进入 `_start`，`eax = 0x36d76289`（Multiboot2 引
    - `rcx` = `__kernelLoadEnd`（内核加载结束）。
 5. `kernelEntry` 返回后 `cli; hlt` 死循环。
 
-`kernelEntry`（`multiboot.cc`）先 `initSerial()`，再 `parseMultibootInfo`，把 `pageTableRoot`、`bootstrapStart`、`bootstrapEnd` 填入 `BootInfo`，最后进入 `kernelMain`（见 [overview.md](overview.md) 的初始化序列）。
+`kernelEntry`（`multiboot.cc`）先 `kernel::serial::initSerial()`，再 `kernel::parseMultibootInfo`，把 `pageTableRoot`、`bootstrapStart`、`bootstrapEnd` 填入 `BootInfo`，最后进入 `kernelMain`（见 [overview.md](overview.md) 的初始化序列）。
 
 ## 4. Multiboot2 信息解析（multiboot.cc）
 
 ### BootInfo 结构（boot.h）
 
 ```cpp
+namespace kernel {
+
 struct BootInfo {
     const MemoryRegion* memoryMap;   // 内存映射数组
     uint32_t memoryMapCount;
@@ -94,6 +96,8 @@ struct BootInfo {
     uint64_t bootstrapStart;         // 由 kernelEntry 填入
     uint64_t bootstrapEnd;           // 由 kernelEntry 填入
 };
+
+}  // namespace kernel
 ```
 
 辅助结构：
@@ -127,11 +131,13 @@ tag 类型常量：`multibootTagEnd=0`、`multibootTagBootCommandLine=1`、`mult
 4. 所有指针都换算为直接映射虚拟地址（`物理地址 + 0xffff800000000000`）。
 5. 若最终没有内存映射（`memoryMapCount == 0`），打印 `[BOOT] memory map tag missing` 并返回 false。
 
-静态存储：`memoryRegions[128]` 与 `bootModules[32]` 为静态数组，`BootInfo` 指向它们。
+静态存储：`memoryRegions[128]` 与 `bootModules[32]` 为匿名命名空间静态数组，`BootInfo` 指向它们。
 
 ## 5. 串口驱动（serial.cc）
 
 COM1（`0x3f8`），8250/16550，115200 波特、8 数据位、无校验、1 停止位。
+
+所有函数位于 `namespace kernel::serial`：
 
 `initSerial()` 初始化序列：
 
@@ -145,11 +151,15 @@ COM1（`0x3f8`），8250/16550，115200 波特、8 数据位、无校验、1 停
 输出接口（`serial.h`）：
 
 ```cpp
+namespace kernel::serial {
+
 void initSerial();
 void serialWrite(char value);          // 轮询 THR 空，最多 100000 次
 void serialWrite(const char* value);   // \n 自动转 \r\n
 void serialWriteHex(uint64_t value);   // 0x 前缀 + 16 位十六进制
 void serialWriteDecimal(uint64_t value);
+
+}  // namespace kernel::serial
 ```
 
 串口是内核唯一的早期诊断通道，在帧缓冲控制台可用之前以及内核 panic 路径上使用。

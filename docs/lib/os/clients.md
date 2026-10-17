@@ -1,4 +1,4 @@
-# os 服务客户端（service.cc / process.cc / file.cc / gui.cc / input.cc）
+# os 服务客户端（service.cc / task.cc / file.cc / gui.cc / input.cc）
 
 本文档描述 os 运行时库中访问各用户态服务的 IPC 客户端。
 
@@ -15,84 +15,48 @@ uint64_t lookupService(uint64_t registry, const char* name, uint32_t attempts = 
 - `registerService`：发送 `RegistryRequest::Register`，名字拷入 `message.data`，endpoint 作为 `handles[0]` 传递（句柄传递式 IPC）。
 - `lookupService`：发送 `RegistryRequest::Lookup`，最多重试 `attempts` 次，每次失败 `sleep(1)`；成功返回回复携带的句柄；失败返回 0。
 
-## 2. 进程客户端（process.cc，task 服务）
+## 2. 进程客户端（task.cc，task 服务）
 
-常量：`maximumArgumentCount = 8`，`executePayloadSize = 56` 字节。
+常量：`maximumArgumentCount = 64`，`executePayloadSize = 56` 字节。
 
 ```cpp
-ProcessHandle execute(const char* path);
-ProcessHandle execute(const char* path, int argumentCount, const char* const* arguments);
-ProcessHandle executeWithIo(const char* path, int argumentCount, const char* const* arguments,
+TaskHandle execute(const char* path);
+TaskHandle execute(const char* path, int argumentCount, const char* const* arguments);
+TaskHandle executeWithIo(const char* path, int argumentCount, const char* const* arguments,
                             uint64_t standardInputHandle, uint64_t standardOutputHandle,
                             uint64_t standardErrorHandle = 0);
-int waitProcess(ProcessHandle process, int* exitCode);
-bool listProcess(uint32_t index, ProcessListEntry& entry);
-bool killProcess(uint64_t processId);
+int waitTask(TaskHandle task, int* exitCode);
+bool listTask(uint32_t index, TaskListEntry& entry);
+bool killTask(uint64_t taskId);
 ```
 
 - `execute` 默认继承三个标准句柄（`getStandardHandle(0/1/2)`）。
 - `executeWithIo`：查找 registry 与 task 服务（各重试 1000 次）；构造 `TaskRequest::Execute`：`data[0] = argumentCount | ((terminalId+1) << 32)`；`data[1..]` 为 56 字节 payload（path + 各参数，NUL 结尾）；`handles[0] = registry`；stdin/stdout/stderr 非 0 时追加到 handles 并置 `taskExecuteHasStdin/Stdout/Stderr` 标志。成功时回复携带子进程句柄。
-- `waitProcess`：循环发送 `TaskRequest::Wait`；回复 `data[0]==1` 表示退出（取 `data[1]` 为退出码，关闭句柄）；`==2` 返回 `ErrorCode::Interrupted`；其它 `sleep(1)` 重试。
-- `listProcess`：`TaskRequest::List`，回复 id、state、48 字节名字。
-- `killProcess`：即 `sendSignal(processId, 15)`（SIGTERM）。
+- `waitTask`：循环发送 `TaskRequest::Wait`；回复 `data[0]==1` 表示退出（取 `data[1]` 为退出码，关闭句柄）；`==2` 返回 `ErrorCode::Interrupted`；其它 `sleep(1)` 重试。
+- `listTask`：`TaskRequest::List`，回复 id、state、48 字节名字。
+- `killTask`：即 `sendSignal(taskId, 15)`（SIGTERM）。
 
-## 3. 文件客户端（file.cc，fs 服务）
+## 3. 文件客户端（os::File，fs 服务）
 
-所有函数第一参数 `fs` 是文件系统服务端点。
-
-### 同步操作
+`include/os-c++/os/file.h` 提供可移动、不可复制的 RAII File 类。服务端点属于对象状态，方法不再重复接受 fs 参数。
 
 ```cpp
-uint64_t openFile(uint64_t fs, const char* path);
-bool closeFile(uint64_t fs, uint64_t descriptor);
-int64_t readFile(uint64_t fs, uint64_t descriptor, void* buffer, size_t size);
-int64_t writeFile(uint64_t fs, uint64_t descriptor, const void* buffer, size_t size);
-bool seekFile(uint64_t fs, uint64_t descriptor, uint64_t offset);          // 绝对偏移
-bool seekFilePosition(uint64_t fs, uint64_t descriptor, int64_t offset, int whence, uint64_t& position);
-bool createFile(uint64_t fs, const char* path);
-bool makeDirectory(uint64_t fs, const char* path);
-bool removePath(uint64_t fs, const char* path);
-bool truncateFile(uint64_t fs, const char* path);
-bool statFile(uint64_t fs, const char* path, FileStat& stat);
-bool linkFile(uint64_t fs, const char* existing, const char* newPath);
-bool changeFileMode(uint64_t fs, const char* path, uint32_t mode);
-bool changeFileOwner(uint64_t fs, const char* path, uint32_t uid, uint32_t gid);
-bool changeFileTimes(uint64_t fs, const char* path, uint64_t atime, uint64_t mtime);
-bool readDirectory(uint64_t fs, const char* path, uint64_t index, DirectoryEntry& entry);
-int64_t readDirectoryBatch(uint64_t fs, const char* path, uint64_t index, DirectoryEntry* entries, size_t capacity);
-bool mountFileSystem(uint64_t fs, const char* device, const char* target, const char* type);
-bool unmountFileSystem(uint64_t fs, const char* target);
-bool listMount(uint64_t fs, uint32_t index, MountInfo& info);
-bool formatFileSystem(uint64_t fs, const char* device, const char* type);
+os::File file;
+if (file.open("/tmp/example", O_RDWR | O_CREAT, 0640) == 0) {
+    file.write("hello", 5);
+    file.lseek(0, SEEK_SET);
+    const auto size = file.getSize();
+    const auto mode = file.getMode();
+}
 ```
 
-- 读/写分块：`readFile` 每块最多 4112 字节（`(515-1)*8`）；`writeFile` 每块最多 4104 字节（`(515-2)*8`）。循环直到完成或短读/写失败。
-- `FileStat`：type、size、mode、inode、links、uid、gid、atime、mtime、ctime。
+open 接受 POSIX flags/mode，read/write/pread/pwrite 使用字节数和 off_t 偏移，lseek 接受 SEEK_SET/CUR/END。失败返回负 errno。pread/pwrite 使用定位读写 RPC，保持共享文件偏移不变。
 
-### 异步操作
+元数据保存在私有成员中，通过 getType/getSize/getMode/getInode/getLinks/getUid/getGid/getAccessTime/getModificationTime/getChangeTime/getDevice/getSpecialDevice 查询；refresh 显式更新缓存。没有公开的 FileStat 结构。
 
-```cpp
-bool readFileAsync(uint64_t fs, uint64_t descriptor, uint64_t offset, size_t size,
-                   uint64_t completionEndpoint, uint64_t requestId);
-bool writeFileAsync(uint64_t fs, uint64_t descriptor, uint64_t offset, const void* buffer, size_t size,
-                    uint64_t completionEndpoint, uint64_t requestId);
-bool waitFileOperation(uint64_t completionEndpoint, FileOperationResult& result,
-                       void* buffer = nullptr, size_t capacity = 0);
-```
+目录、挂载、权限、所有权和异步请求也由 File 方法承载。borrow 创建不拥有句柄的临时视图；adopt 接管所有权；releaseNativeHandle 释放对象的所有权。File 为 pipe、终端、共享内存描述符提供后端视图。toDescriptor 移交所有权，fromDescriptor 访问 fd 引用的对象。
 
-- 异步请求用 `sendMessage` 单向发送，完成端点作为传递句柄 `handles[0]`。
-- `waitFileOperation`：阻塞接收，过滤 `type == fsCompletionNotification`（"FSCMPL"）的消息，取 requestId、status、transferred，读数据在 `data[3..]`。
-- 单次异步传输上限 `maximumAsyncFileTransfer = 4088` 字节。
-
-### fork 支持
-
-```cpp
-bool cloneFileDescriptors(uint64_t fs, uint64_t parentPid, uint64_t old[], uint64_t new[], size_t capacity);
-```
-
-`FsRequest::CloneDescriptors`，fork 后子进程认领父进程的文件句柄（回复为 old/new 句柄对数组）。
-
-## 4. 窗口客户端（gui.cc，window 服务）
+## 4. 窗口客户端（gui.cc，guiw 服务）
 
 内部事件订阅缓存：`EventSubscription {service, window, endpoint}`，容量 16，`std::mutex` 保护。`eventEndpoint()` 先查缓存，未命中则 `createEndpoint()` 并发送 `SubscribeEvents` 注册；窗口销毁时关闭端点。
 

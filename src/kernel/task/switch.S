@@ -57,6 +57,21 @@ enterUserMode:
     iretq
 .size enterUserMode, . - enterUserMode
 
+.global enterSystemService
+.type enterSystemService, @function
+enterSystemService:
+    cli
+    movw $0x10, %ax
+    movw %ax, %ds
+    movw %ax, %es
+    movq %rdi, %rax
+    movq %rsi, %rsp
+    movq %rdx, %rdi
+    xorq %rbp, %rbp
+    sti
+    jmp *%rax
+.size enterSystemService, . - enterSystemService
+
 .global resumeUserContext
 .type resumeUserContext, @function
 resumeUserContext:

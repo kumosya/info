@@ -5,7 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "os/c_api.h"
+#include "os_adapter.h"
 
 static struct sigaction actions[NSIG];
 static volatile uint64_t signal_generation;
@@ -16,7 +16,7 @@ static int valid_signal(int signal_number) {
 }
 
 static void lock_actions(void) {
-    while (__atomic_test_and_set(&action_lock, __ATOMIC_ACQUIRE)) os_yield();
+    while (__atomic_test_and_set(&action_lock, __ATOMIC_ACQUIRE)) __libc_os_yield();
 }
 
 static void unlock_actions(void) {
@@ -25,7 +25,7 @@ static void unlock_actions(void) {
 
 __attribute__((naked, noreturn)) static void signal_restorer(void) {
     __asm__ volatile("movq %rsp, %rdi\n\t"
-                     "call os_signal_return\n\t"
+                     "call __libc_os_signal_return\n\t"
                      "ud2");
 }
 
@@ -114,7 +114,7 @@ int sigaction(int signal_number, const struct sigaction* action,
         kernel_action.restorer = (uint64_t)(uintptr_t)signal_restorer;
         new_pointer = &kernel_action;
     }
-    if (os_set_signal_action((uint32_t)signal_number, new_pointer,
+    if (__libc_os_set_signal_action((uint32_t)signal_number, new_pointer,
                              &kernel_old) != 0) {
         errno = EINVAL;
         return -1;
@@ -141,7 +141,7 @@ int raise(int signal_number) { return kill(getpid(), signal_number); }
 int pthread_sigmask(int how, const sigset_t* set, sigset_t* old_set) {
     uint64_t old_mask = 0;
     if (how < SIG_BLOCK || how > SIG_SETMASK) return EINVAL;
-    if (os_set_signal_mask(how, set == NULL ? 0 : *set, &old_mask) != 0) {
+    if (__libc_os_set_signal_mask(how, set == NULL ? 0 : *set, &old_mask) != 0) {
         return EINVAL;
     }
     if (old_set != NULL) *old_set = old_mask;
@@ -158,7 +158,7 @@ int sigprocmask(int how, const sigset_t* set, sigset_t* old_set) {
 }
 
 int sigpending(sigset_t* set) {
-    if (set == NULL || os_get_pending_signals(set) != 0) {
+    if (set == NULL || __libc_os_get_pending_signals(set) != 0) {
         errno = EINVAL;
         return -1;
     }
@@ -168,9 +168,9 @@ int sigpending(sigset_t* set) {
 int sigwait(const sigset_t* set, int* signal_number) {
     int result;
     if (set == NULL || signal_number == NULL || *set == 0) return EINVAL;
-    while ((result = os_wait_signal(*set)) < 0) {
+    while ((result = __libc_os_wait_signal(*set)) < 0) {
         if (result != -6) return EINVAL;
-        os_yield();
+        __libc_os_yield();
     }
     *signal_number = result;
     return 0;
@@ -199,19 +199,19 @@ int sigtimedwait(const sigset_t* set, siginfo_t* info,
         errno = EINVAL;
         return -1;
     }
-    deadline = os_get_monotonic_time() +
+    deadline = __libc_os_get_monotonic_time() +
                (uint64_t)timeout->tv_sec * 1000000000ULL +
                (uint64_t)timeout->tv_nsec;
-    while ((result = os_wait_signal(*set)) < 0) {
+    while ((result = __libc_os_wait_signal(*set)) < 0) {
         if (result != -6) {
             errno = EINVAL;
             return -1;
         }
-        if (os_get_monotonic_time() >= deadline) {
+        if (__libc_os_get_monotonic_time() >= deadline) {
             errno = EAGAIN;
             return -1;
         }
-        os_sleep(1);
+        __libc_os_sleep(1);
     }
     if (info != NULL) {
         memset(info, 0, sizeof(*info));
@@ -224,7 +224,7 @@ int pause(void) {
     uint64_t generation =
         __atomic_load_n(&signal_generation, __ATOMIC_ACQUIRE);
     while (__atomic_load_n(&signal_generation, __ATOMIC_ACQUIRE) == generation) {
-        os_sleep(1);
+        __libc_os_sleep(1);
     }
     errno = EINTR;
     return -1;
@@ -239,7 +239,7 @@ int sigsuspend(const sigset_t* mask) {
     }
     generation = __atomic_load_n(&signal_generation, __ATOMIC_ACQUIRE);
     while (__atomic_load_n(&signal_generation, __ATOMIC_ACQUIRE) == generation) {
-        os_sleep(1);
+        __libc_os_sleep(1);
     }
     (void)pthread_sigmask(SIG_SETMASK, &old_mask, NULL);
     errno = EINTR;
@@ -249,6 +249,6 @@ int sigsuspend(const sigset_t* mask) {
 int pthread_kill(uint64_t thread, int signal_number) {
     int result;
     if (signal_number < 0 || signal_number >= NSIG) return EINVAL;
-    result = os_send_thread_signal(thread, (uint32_t)signal_number);
+    result = __libc_os_send_thread_signal(thread, (uint32_t)signal_number);
     return result == 0 ? 0 : (result == -4 ? ESRCH : EINVAL);
 }

@@ -6,7 +6,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include "os/c_api.h"
+#include "os_adapter.h"
 
 #define NAMED_SEMAPHORE_CAPACITY 16
 #define NAMED_SEMAPHORE_PAGE_SIZE 4096
@@ -22,7 +22,7 @@ static volatile uint8_t named_semaphore_lock;
 
 static void lock_named_semaphores(void) {
     while (__atomic_test_and_set(&named_semaphore_lock, __ATOMIC_ACQUIRE)) {
-        os_yield();
+        __libc_os_yield();
     }
 }
 
@@ -74,12 +74,12 @@ static int deadline_reached(const struct timespec* absolute_time) {
             now.tv_nsec >= absolute_time->tv_nsec);
 }
 
-int sem_init(sem_t* semaphore, int process_shared, unsigned int value) {
+int sem_init(sem_t* semaphore, int task_shared, unsigned int value) {
     if (semaphore == NULL || value > SEM_VALUE_MAX) {
         errno = EINVAL;
         return -1;
     }
-    (void)process_shared;
+    (void)task_shared;
     semaphore->value = value;
     semaphore->initialized = 1;
     return 0;
@@ -117,7 +117,7 @@ int sem_wait(sem_t* semaphore) {
     }
     while (sem_trywait(semaphore) != 0) {
         if (errno != EAGAIN) return -1;
-        os_wait_address(&semaphore->value, 0);
+        __libc_os_wait_address(&semaphore->value, 0);
     }
     return 0;
 }
@@ -133,7 +133,7 @@ int sem_timedwait(sem_t* semaphore, const struct timespec* absolute_time) {
             errno = ETIMEDOUT;
             return -1;
         }
-        os_sleep(1);
+        __libc_os_sleep(1);
     }
     return 0;
 }
@@ -153,7 +153,7 @@ int sem_post(sem_t* semaphore) {
     } while (!__atomic_compare_exchange_n(&semaphore->value, &value, value + 1,
                                            0, __ATOMIC_RELEASE,
                                            __ATOMIC_RELAXED));
-    os_wake_address(&semaphore->value, 1);
+    __libc_os_wake_address(&semaphore->value, 1);
     return 0;
 }
 
@@ -214,7 +214,7 @@ sem_t* sem_open(const char* name, int flags, ...) {
         __atomic_store_n(&semaphore->initialized, 1, __ATOMIC_RELEASE);
     } else {
         while (__atomic_load_n(&semaphore->initialized, __ATOMIC_ACQUIRE) == 0) {
-            os_yield();
+            __libc_os_yield();
         }
     }
     if (!register_named_semaphore(semaphore, descriptor)) {

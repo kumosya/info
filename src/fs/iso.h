@@ -4,38 +4,34 @@
 #include <stdint.h>
 
 #include "block.h"
+#include "vfs.h"
 
-namespace fs::iso9660 {
-
-struct FileStatus {
-    uint32_t extent;
-    uint32_t size;
-    bool directory;
-};
-
-struct DirectoryEntry {
-    bool directory;
-    char name[48];
-};
-
-class Volume {
+class Iso9660FileSystem final : public vfs::FileSystem {
    public:
-    bool mount(SectorDevice& device);
-    bool lookup(const char* path, FileStatus& status);
-    int64_t read(const FileStatus& status, uint64_t offset, void* buffer,
-                 size_t size);
-    int readDirectory(const char* path, uint32_t index, DirectoryEntry& entry);
+    bool mount(vfs::SectorDevice& device) override;
+    bool lookup(const char* path, vfs::FileStatus& status) override;
+    int64_t read(const vfs::FileStatus& status, uint64_t offset, void* buffer,
+                 size_t size) override;
+    int readDirectory(const char* path, uint32_t index,
+                      vfs::DirectoryEntry& entry) override;
+    bool readOnly() const override { return true; }
 
    private:
+    struct Node {
+        uint32_t extent;
+        uint32_t size;
+        bool directory;
+    };
+
     bool readBlock(uint32_t block, void* buffer);
-    bool findInDirectory(const FileStatus& directory, const char* name,
-                         size_t nameLength, FileStatus& status);
-    bool readRecord(const FileStatus& directory, uint32_t offset,
-                    uint8_t* block, const uint8_t*& record,
-                    uint32_t& nextOffset);
+    bool findInDirectory(const Node& directory, const char* name,
+                         size_t nameLength, Node& status);
+    enum class RecordResult { Entry, End, Error };
+    RecordResult readRecord(const Node& directory, uint32_t offset,
+                            uint8_t* block, const uint8_t*& record,
+                            uint32_t& nextOffset);
+    bool resolve(const char* path, Node& status);
 
-    SectorDevice* device_ = nullptr;
-    FileStatus root_{};
+    vfs::SectorDevice* device_ = nullptr;
+    Node root_{};
 };
-
-}  // namespace fs::iso9660

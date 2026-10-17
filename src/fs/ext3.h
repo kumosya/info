@@ -7,11 +7,16 @@
 
 namespace fs::ext3 {
 
+using vfs::SectorDevice;
+
 constexpr uint16_t superMagic          = 0xef53;
 constexpr uint32_t rootInode           = 2;
-constexpr uint16_t modeDirectory       = 0x4000;
-constexpr uint16_t modeRegular         = 0x8000;
-constexpr uint32_t blockCacheSlotCount = 16;
+constexpr uint16_t modeDirectory       = vfs::modeDirectory;
+constexpr uint16_t modeRegular         = vfs::modeRegular;
+constexpr uint32_t blockCacheSlotCount = 256;
+constexpr uint32_t cacheHashBuckets    = 512;
+constexpr uint32_t cacheNoSlot         = 0xffffffffU;
+constexpr uint32_t readaheadWindow     = 4;
 
 #pragma pack(push, 1)
 struct Superblock {
@@ -93,46 +98,39 @@ static_assert(sizeof(Superblock) == 1024);
 static_assert(sizeof(GroupDescriptor) == 32);
 static_assert(sizeof(Inode) == 128);
 
-struct FileStatus {
-    uint32_t inode;
-    uint16_t mode;
-    uint64_t size;
-    uint16_t uid;
-    uint16_t gid;
-    uint16_t links;
-    uint32_t accessTime;
-    uint32_t modificationTime;
-    uint32_t changeTime;
-};
+using FileStatus     = vfs::FileStatus;
+using DirectoryEntry = vfs::DirectoryEntry;
 
-struct DirectoryEntry {
-    uint32_t inode;
-    uint8_t type;
-    char name[48];
-};
-
-class Volume {
+class Filesystem final : public vfs::FileSystem {
    public:
-    bool mount(SectorDevice& device);
-    bool lookup(const char* path, FileStatus& status);
+    bool mount(vfs::SectorDevice& device) override;
+    bool lookup(const char* path, FileStatus& status) override;
+    int64_t read(const FileStatus& status, uint64_t offset, void* buffer,
+                 size_t size) override;
     int64_t read(uint32_t inode, uint64_t offset, void* buffer, size_t size);
     int64_t write(uint32_t inode, uint64_t offset, const void* buffer,
                   size_t size);
-    bool truncate(uint32_t inode);
-    bool create(const char* path, bool directory);
-    bool remove(const char* path);
-    bool link(const char* existing, const char* newPath);
-    bool changeMode(const char* path, uint16_t mode);
-    bool changeOwner(const char* path, uint16_t uid, uint16_t gid);
+    int64_t write(const FileStatus& status, uint64_t offset, const void* buffer,
+                  size_t size) override;
+    bool truncate(uint32_t inode) override;
+    bool create(const char* path, bool directory) override;
+    bool remove(const char* path) override;
+    bool rename(const char* existing, const char* newPath) override;
+    bool link(const char* existing, const char* newPath) override;
+    bool changeMode(const char* path, uint16_t mode) override;
+    bool changeOwner(const char* path, uint16_t uid, uint16_t gid) override;
     bool changeTimes(const char* path, uint32_t accessTime,
-                     uint32_t modificationTime);
-    int readDirectory(const char* path, uint32_t index, DirectoryEntry& entry);
+                     uint32_t modificationTime) override;
+    int readDirectory(const char* path, uint32_t index,
+                      DirectoryEntry& entry) override;
     int readDirectoryBatch(const char* path, uint32_t index,
-                           DirectoryEntry* entries, uint32_t capacity);
-    bool sync();
+                           DirectoryEntry* entries, uint32_t capacity) override;
+    bool sync() override;
+    bool readOnly() const override;
 
    private:
     bool readBlock(uint32_t block, void* buffer);
+    bool fetchBlock(uint32_t block, void* buffer);
     bool writeBlock(uint32_t block, const void* buffer);
     bool readSuperblock();
     bool writeSuperblock();
@@ -159,6 +157,13 @@ class Volume {
     bool directoryEmpty(const Inode& directory);
     bool readPointer(uint32_t block, uint32_t index, uint32_t& value);
     bool writePointer(uint32_t block, uint32_t index, uint32_t value);
+    uint32_t findCachedBlock(uint32_t block) const;
+    uint32_t evictCacheSlot();
+    void insertCacheSlot(uint32_t slot, uint32_t block);
+    void removeCacheSlot(uint32_t slot);
+    void prefetchBlock(uint32_t block);
+    void prefetchAhead(uint32_t inodeNumber, const Inode& inode,
+                       uint32_t logical);
 
     SectorDevice* device_ = nullptr;
     Superblock superblock_{};
@@ -167,8 +172,12 @@ class Volume {
     uint8_t blockCache_[blockCacheSlotCount][4096]{};
     uint32_t cachedBlocks_[blockCacheSlotCount]{};
     uint32_t cacheAges_[blockCacheSlotCount]{};
+    uint32_t cacheNext_[blockCacheSlotCount]{};
+    uint32_t cacheHash_[cacheHashBuckets]{};
     bool cacheValid_[blockCacheSlotCount]{};
-    uint32_t cacheClock_ = 0;
+    uint32_t cacheClock_           = 0;
+    uint32_t readaheadInode_       = 0;
+    uint32_t readaheadLastLogical_ = 0;
 };
 
 }  // namespace fs::ext3

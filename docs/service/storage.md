@@ -1,81 +1,39 @@
-# storage 服务（src/storage/）
+# 存储服务（src/storage）
 
-storage 服务（注册名 `"storage"`）实现 **VirtIO Block（virtio-blk）PCI 现代（1.0+）驱动**、MBR/GPT 分区解析与同步/异步块 I/O。由内核内置镜像加载，授予 `processCapabilityDevice`。
+storage 管理 PCI 发现的 VirtIO Block，提供 512 字节块 I/O、刷新和分区枚举。fs 负责格式探测与挂载，storage 不指定根卷或光盘。
 
-## 1. 设备模型
+## 枚举和身份
 
-协议头 `os::BlockDeviceType` 预留 `VirtioBlock=1, Ahci, Nvme, UsbStorage`，但**实际驱动仅实现 VirtIO Block**（PCI vendor `0x1af4`、device `0x1042`）。
+每块整盘和每个有效分区都有独立节点，明确保存驱动索引、起始 LBA、长度、父设备和分区号。不再按节点序号猜测所属磁盘。
 
-设备容量上限 `deviceCapacity = 2`：
+- 最多 8 个 VirtIO 控制器、32 个块节点。
+- 整盘命名 vda、vdb，分区命名 vda1、vda2 等。
+- 主号 252，次号为“控制器索引 × 256 + 分区号”，整盘分区号为 0。
+- PCI 位置形成 pci-0000:BB:DD.F[-partN]，供 fs 提供 by-path。
+- partition.h 解析 MBR 主分区与全部有效 GPT 分区，校验 GPT 头及分区表 CRC。
+- GPT PARTUUID 来自唯一分区 GUID；MBR 使用磁盘签名和原始分区槽号。
+- 相同 PCI IRQ 只绑定一次，按 PCI INTx 配置为低电平触发。内核先屏蔽该 IRQ，通知后检查各控制器完成队列并读取设备 ISR，最后使用绑定句柄调用 acknowledgeIrq 重新启用中断，避免未确认的高优先级中断压住调度时钟。
+- 在分区探测发起首个 I/O 前启动中断处理线程，及时确认设备中断。
 
-- **设备 0**：第一块 virtio-blk 盘的**第一个分区**（MBR 或 GPT 解析），作为根文件系统；
-- **设备 1**：若存在第二块盘，则为整盘 `{0, blockCount, 0}`，作为 cdrom 介质。
+设备号和 vda 名称仅保证当前启动唯一。跨启动特指设备用 UUID/PARTUUID/LABEL/PCI 位置。fs 检测 ISO 后才生成 /dev/cdrom，只读不等于光盘。
 
-## 2. 关键常量
+## IPC
 
-| 常量 | 值 | 说明 |
-|---|---|---|
-| `blockSize` | 512 | 扇区大小 |
-| `queueSize` | 32 | virtqueue 深度 |
-| `requestSlotCount` | 7 | 并发请求槽 |
-| `requestStride` | 544 | 16 字节头 + 512 数据 + 1 状态 + 对齐 |
-| `ioTimeoutNanoseconds` | 2 s | I/O 超时 |
-| DMA 队列区 | `0x30000000` | virtqueue 描述符/available/used |
-| DMA 请求区 | `0x30001000`（每设备 +0x2000） | 请求缓冲 |
-| MMIO 基址 | `0x40000000` | 每 BAR 0x10000、每设备 0x100000 |
+| 请求 | 语义 |
+|---|---|
+| GetCount | 状态和本次枚举的节点数 |
+| GetInfo | 参数为节点 ID；前六字沿用状态、块数、块大小、传输限制、类型、只读，后附 StorageDeviceIdentity |
+| ReadBlocks/WriteBlocks | 设备 ID 和相对 LBA，转换到对应驱动物理 LBA |
+| Flush | 刷新节点所属物理设备 |
+| ReadRange/WriteRange | 一次传输最多 7 个连续扇区，校验节点边界和消息长度；整批只提交一次 VirtIO 请求 |
+| ReadAsync/WriteAsync | 完成端点、请求标识，校验分区范围并转换 LBA |
 
-## 3. VirtIO PCI 传输层
+完成通知为 storageCompletionNotification。设备 ID 在请求首字高 8 位，低 56 位是相对 LBA。每次请求按明确映射路由并校验边界。
 
-`VirtioPciTransport`：
+StorageDeviceIdentity 位于 include/os-c++/os/storage.h，包含节点 ID、主次号、父节点、分区号、起始块、名字、PARTUUID、PCI 路径。文件系统 UUID/LABEL 由 fs 读取卷元数据获得。
 
-- 遍历 PCI 能力链表（cap pointer @0x34，最多 48 步），识别 `VIRTIO_PCI_CAP_ID = 0x09`，按 cfg_type 收集 common(1)/notify(2)/isr(3)/device(4) 四类区域的 BAR/偏移/长度；notify 能力还读取 `notify_off_multiplier`；区域 ≤ 64 KiB。
-- 经 `os::mapDeviceMmio` 映射所需 BAR；使能 PCI 命令寄存器 0x0006（内存空间 + 总线主控）。
+## 驱动与验证
 
-## 4. 驱动初始化（标准 virtio 1.0 握手）
+VirtIO 1.0  transport 发现 common/notify/ISR/device capability，映射 BAR、协商只读/flush、分配 DMA 队列及请求缓冲。每个请求槽使用独立 DMA 页，可传输连续扇区，短暂轮询后才让出 CPU；提交与完成由锁保护。fs 的 BlockDeviceClient 用同步批量请求代替逐扇区传递完成端点，IPC 缓冲放在受锁保护的实例内，避免挤占启动线程栈。多设备采用独立 MMIO/DMA 区域。当前不包括 AHCI/NVMe、MBR 扩展分区链或热插拔。
 
-1. 状态复位 → ACKNOWLEDGE | DRIVER；
-2. 读设备特性（sel 0/1）；**强制要求 `VIRTIO_F_VERSION_1`（bit 32）**；
-3. 协商特性 = VERSION_1 | READONLY(bit 5) | FLUSH(bit 9)，写回并验证 FeaturesOk；
-4. 队列设置：选队列 0，查最大尺寸（≥32），写大小；描述符表/available/used 三段布局在同一 4 KiB DMA 页内（`availableOffset = 16*32 = 512`，used 4 字节对齐）；写三个 64 位物理地址（common 偏移 32/40/48），读 notify_off（偏移 30），置 queue_enable；
-5. 读设备配置 `capacity`（8 字节 @0）；
-6. 绑定中断（要求 IRQ ≤ 15）；
-7. DRIVER_OK。
-
-## 5. I/O 提交
-
-```cpp
-struct VirtioBlockRequest { uint32_t type; uint32_t reserved; uint64_t sector; };  // 16 字节
-```
-
-类型：0=读、1=写、4=FLUSH。
-
-- 每请求 3 个描述符：头（设备读）→ 数据 512 字节（读请求为 WRITE 标志）→ 1 字节状态（设备写，预置 0xFF）；FLUSH 只有头 + 状态 2 个描述符。
-- 提交后更新 available ring（release 屏障）并 notify；完成经 used ring（acquire 屏障）回收。
-- 2 秒超时 → 标记设备离线并置 FAILED 状态。
-- 中断线程读 ISR 寄存器确认中断后处理 used ring。
-
-## 6. 分区解析（`GptParser::findFirstPartition`）
-
-1. 读 LBA0：校验 `0x55AA`；扫描 4 个 MBR 表项（偏移 446+16i），取第一个类型非 0、非 0xEE、范围合法的分区 `{start, count, type}`。
-2. 无 MBR 分区则读 LBA1 验证 GPT：签名 `"EFI PART"`、头大小 92-512、头 CRC32（多项式 0xEDB88320）、表项数 ≤128、表项大小 128-512 且整除 512、first/last usable 合法；逐项累计表项 CRC32，取第一个非空 GUID 分区 `{start, end-start+1, type=1}`，且范围须落在 usable 区间内。
-
-## 7. IPC 请求（`os::StorageRequest`，基值 0x100）
-
-块寻址编码：`data[0] = (deviceId << 56) | (block & ((1<<56)-1))`（`encodeStorageBlock`）。
-
-| 请求 | 值 | 语义 |
-|---|---|---|
-| GetInfo | 0x100 | 回复 blockCount、512、maxTransfer=1、type=VirtioBlock、readOnly |
-| ReadBlocks | 0x101 | `data[1]`=块内偏移、`data[2]`=大小；读上限 4104 字节 |
-| WriteBlocks | 0x102 | 写上限 4096 字节；支持子块读-改-写；只读设备返回 ReadOnly |
-| Flush | 0x103 | 协商了 FLUSH 特性则提交 type=4 请求，否则直接成功 |
-| ReadAsync | 0x104 | `handles[0]`=完成端点、`data[1]`=requestId |
-| WriteAsync | 0x105 | `data[2]`=512，数据占满 `data[3..]` |
-
-异步完成消息（类型 `0x53544f52414745` "STORAGE"）：`data[0]`=requestId、`data[1]`=错误码、`data[2]`=传输字节数、读成功时 `data[3..]`=512 字节数据；随后关闭端点。
-
-错误码 `os::StorageError`：Success=0、DeviceNotFound=-1、DeviceOffline=-2、InvalidBlock=-3、Io=-4、Timeout=-5、ReadOnly=-6、NoSpace=-7、Dma=-8、Corrupted=-9、InvalidArgument=-10。
-
-## 8. 线程模型
-
-1 个 IRQ 线程 + 3 个工作线程 + 主线程，共 5 个线程并发处理请求（内部用自旋锁保护请求槽）。栈基址 `0x30010000`（IRQ）与 `0x30020000`（3 个 64 KiB 工作栈）。
+可通过 `make mkimg` 创建 ext3/ext4/FAT32 分区镜像，再用 `make cpfiles run` 检查设备发现与挂载。

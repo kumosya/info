@@ -1,0 +1,3 @@
+# Supported rule form: USER ALL=(ALL) ALL
+root ALL=(ALL) ALL
+user ALL=(ALL) ALL

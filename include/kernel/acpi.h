@@ -1,4 +1,12 @@
-#pragma once
+/*
+ * Copyright (c) 2026, Kumosya
+ * SPDX-License-Identifier: BSD-2-Clause
+ * acpi.h - ACPI table definitions and helpers
+ *
+ */
+
+#ifndef _KERNEL_ACPI_H_
+#define _KERNEL_ACPI_H_
 
 #include <stdint.h>
 
@@ -18,7 +26,12 @@ struct [[gnu::packed]] AcpiSdtHeader {
     uint32_t creatorRevision;
 };
 
+namespace acpi {
 const AcpiSdtHeader* findAcpiTable(const BootInfo* bootInfo,
                                    const char signature[4]);
 
+}  // namespace acpi
+
 }  // namespace kernel
+
+#endif  // _KERNEL_ACPI_H_

@@ -1,4 +1,12 @@
-#pragma once
+/*
+ * Copyright (c) 2026, Kumosya
+ * SPDX-License-Identifier: BSD-2-Clause
+ * atomic.h - Atomic operations implementation
+ *
+ */
+
+#ifndef _KERNEL_ATOMIC_H_
+#define _KERNEL_ATOMIC_H_
 
 #include <stdint.h>
 
@@ -19,15 +27,19 @@ class Atomic {
     constexpr explicit Atomic(Type value) : value_(value) {}
 
     Type load(MemoryOrder order = MemoryOrder::Sequential) const {
-        return __atomic_load_n(&value_, static_cast<int>(order));
+        Type value;
+        __atomic_load(&value_, &value, static_cast<int>(order));
+        return value;
     }
 
     void store(Type value, MemoryOrder order = MemoryOrder::Sequential) {
-        __atomic_store_n(&value_, value, static_cast<int>(order));
+        __atomic_store(&value_, &value, static_cast<int>(order));
     }
 
     Type exchange(Type value, MemoryOrder order = MemoryOrder::Sequential) {
-        return __atomic_exchange_n(&value_, value, static_cast<int>(order));
+        Type previous;
+        __atomic_exchange(&value_, &value, &previous, static_cast<int>(order));
+        return previous;
     }
 
     bool compareExchange(Type& expected, Type desired,
@@ -51,3 +63,5 @@ class Atomic {
 };
 
 }  // namespace kernel
+
+#endif  // _KERNEL_ATOMIC_H_

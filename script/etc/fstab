@@ -1,2 +1,18 @@
-/dev/hda1   /            ext3     defaults
-/dev/cdrom  /mnt/cdrom   iso9660  ro
+# /etc/fstab -- identifiers are resolved after probing all block devices.
+# source             target       type     options        dump pass
+LABEL=OSINFO_ROOT     /            ext3     defaults       0    1
+LABEL=OSINFO_EXT4     /mnt/ext4    ext4     defaults       0    2
+LABEL=FAT32           /mnt/fat32   fat32    defaults       0    2
+/dev/cdrom            /mnt/cdrom   auto     ro,nofail      0    0
+
+# /dev/cdrom aliases the first detected ISO9660 volume (/dev/sr0).
+# Use UUID=, PARTUUID= or LABEL= to select a particular medium.
+# UUID=11111111-2222-3333-4444-555555555555 /mnt/data ext4 defaults,noauto 0 2
+# PARTUUID=12345678-02 /mnt/data auto defaults,nofail 0 2
+# LABEL=My\040Disc /mnt/disc iso9660 ro,noauto,nofail 0 0
+#
+# Also accepted: /dev/vda1 and /dev/disk/by-{uuid,label,partuuid,path}/...
+# Device names/numbers identify live devices, not persistent enumeration order.
+# Duplicate UUID/LABEL/PARTUUID matches are rejected.
+# Supported options: defaults, ro, rw, auto, noauto, nofail, fail.
+# dump/pass fields are retained; this OS does not run dump or fsck at boot.

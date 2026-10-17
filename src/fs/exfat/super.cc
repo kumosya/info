@@ -1,6 +1,6 @@
 #include "../format.h"
 
-namespace fs {
+namespace vfs {
 
 bool probeExFat(const uint8_t* data, size_t size) {
     if (data == nullptr || size < 512 || data[510] != 0x55 || data[511] != 0xaa)
@@ -12,4 +12,4 @@ bool probeExFat(const uint8_t* data, size_t size) {
     return true;
 }
 
-}  // namespace fs
+}  // namespace vfs

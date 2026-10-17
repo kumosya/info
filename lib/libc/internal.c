@@ -6,7 +6,19 @@ static OpenDescription openDescriptions[LIBC_DESCRIPTOR_CAPACITY];
 FileDescriptor libcDescriptors[LIBC_DESCRIPTOR_CAPACITY];
 
 static uint64_t fsEndpoint;
-static uint8_t fileIoLock;
+static volatile uint32_t fileIoLock;
+static volatile uint32_t descriptorLock;
+
+static void lockWord(volatile uint32_t* lock) {
+    uint32_t expected = 0;
+    if (__atomic_compare_exchange_n(lock, &expected, 1, 0,
+                                    __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return;
+    while (__atomic_exchange_n(lock, 2, __ATOMIC_ACQUIRE) != 0)
+        __libc_os_wait_address(lock, 2);
+}
+static void unlockWord(volatile uint32_t* lock) {
+    if (__atomic_exchange_n(lock, 0, __ATOMIC_RELEASE) == 2) __libc_os_wake_address(lock, 1);
+}
 static char currentDirectory[LIBC_PATH_CAPACITY];
 static uint8_t standardClosed[3];
 
@@ -31,8 +43,16 @@ static size_t stringLength(const char* value) {
 }
 
 uint64_t libcFsService(void) {
-    if (fsEndpoint == 0) fsEndpoint = os_get_fs_service();
-    return fsEndpoint;
+    uint64_t endpoint = __atomic_load_n(&fsEndpoint, __ATOMIC_ACQUIRE);
+    if (endpoint == 0) {
+        const uint64_t discovered = __libc_os_get_fs_service();
+        if (!discovered) return 0;
+        if (__atomic_compare_exchange_n(&fsEndpoint, &endpoint, discovered, 0,
+                                        __ATOMIC_RELEASE, __ATOMIC_ACQUIRE))
+            endpoint = discovered;
+        else __libc_os_close_handle(discovered);
+    }
+    return endpoint;
 }
 
 void libcCopyPath(char* destination, const char* path) {
@@ -72,7 +92,13 @@ OpenDescription* libcDescriptor(int fileDescriptor) {
     FileDescriptor* slot = libcDescriptorSlot(fileDescriptor);
     if (slot == NULL && fileDescriptor >= 0 && fileDescriptor < 3 &&
         standardClosed[fileDescriptor] == 0) {
-        uint64_t handle = os_get_standard_handle((uint32_t)fileDescriptor);
+        lockWord(&descriptorLock);
+        slot = libcDescriptorSlot(fileDescriptor);
+        if (slot != NULL) {
+            unlockWord(&descriptorLock);
+            return slot->description;
+        }
+        uint64_t handle = __libc_os_get_standard_handle((uint32_t)fileDescriptor);
         DescriptorKind kind = fileDescriptor == 0
                                   ? (handle == 0 ? DESCRIPTOR_TERMINAL_READ
                                                  : DESCRIPTOR_PIPE_READ)
@@ -80,10 +106,14 @@ OpenDescription* libcDescriptor(int fileDescriptor) {
                                                  : DESCRIPTOR_PIPE_WRITE);
         OpenDescription* description = allocateOpenDescription(
             handle, "terminal", fileDescriptor == 0 ? 0 : 1, kind);
-        if (description == NULL) return NULL;
+        if (description == NULL) {
+            unlockWord(&descriptorLock);
+            return NULL;
+        }
         libcDescriptors[fileDescriptor].description = description;
         libcDescriptors[fileDescriptor].closeOnExec = 0;
         slot = &libcDescriptors[fileDescriptor];
+        unlockWord(&descriptorLock);
     }
     return slot == NULL ? NULL : slot->description;
 }
@@ -99,6 +129,8 @@ static OpenDescription* allocateOpenDescription(uint64_t handle,
         description->offset = 0;
         description->flags = flags;
         description->kind = kind;
+        description->fileObject = __libc_file_adopt(libcFsService(),handle,path,flags,kind);
+        if (!description->fileObject) { errno=ENOMEM; return NULL; }
         description->referenceCount = 1;
         copyString(description->path, path, sizeof(description->path));
         return description;
@@ -110,25 +142,30 @@ static OpenDescription* allocateOpenDescription(uint64_t handle,
 int libcAllocateDescriptor(uint64_t handle, const char* path, int flags,
                            DescriptorKind kind) {
     int index;
-    OpenDescription* description =
-        allocateOpenDescription(handle, path, flags, kind);
-    if (description == NULL) return -1;
+    OpenDescription* description;
+    lockWord(&descriptorLock);
+    description = allocateOpenDescription(handle, path, flags, kind);
+    if (description == NULL) { unlockWord(&descriptorLock); return -1; }
     for (index = 3; index < LIBC_DESCRIPTOR_CAPACITY; ++index) {
         if (libcDescriptors[index].description != NULL) continue;
         libcDescriptors[index].description = description;
         libcDescriptors[index].closeOnExec = 0;
+        unlockWord(&descriptorLock);
         return index;
     }
     description->referenceCount = 0;
     errno = EMFILE;
+    unlockWord(&descriptorLock);
     return -1;
 }
 
 int libcReleaseDescriptor(int fileDescriptor) {
-    FileDescriptor* slot = libcDescriptorSlot(fileDescriptor);
+    FileDescriptor* slot;
     OpenDescription* description;
     int result;
-    if (slot == NULL) return 0;
+    lockWord(&descriptorLock);
+    slot = libcDescriptorSlot(fileDescriptor);
+    if (slot == NULL) { unlockWord(&descriptorLock); return 0; }
     description = slot->description;
     slot->description = NULL;
     slot->closeOnExec = 0;
@@ -136,20 +173,14 @@ int libcReleaseDescriptor(int fileDescriptor) {
         standardClosed[fileDescriptor] = 1;
     }
     --description->referenceCount;
-    if (description->referenceCount != 0) return 1;
-    if (description->kind == DESCRIPTOR_FILE) {
-        result = os_close_file(libcFsService(), description->handle);
-    } else if ((description->kind == DESCRIPTOR_TERMINAL_READ ||
-                description->kind == DESCRIPTOR_TERMINAL_WRITE) &&
-               description->handle == 0) {
-        result = 1;
-    } else {
-        result = os_close_handle(description->handle);
-    }
+    if (description->referenceCount != 0) { unlockWord(&descriptorLock); return 1; }
+    result = description->fileObject ? __libc_file_close(description->fileObject) : 1;
+    description->fileObject = NULL;
     description->handle = 0;
     description->offset = 0;
     description->flags = 0;
     description->path[0] = '\0';
+    unlockWord(&descriptorLock);
     return result;
 }
 
@@ -186,11 +217,11 @@ int libcDuplicateDescriptor(int fileDescriptor, int minimum, int closeOnExec) {
 }
 
 void libcLockFileIo(void) {
-    while (__atomic_test_and_set(&fileIoLock, __ATOMIC_ACQUIRE)) os_yield();
+    lockWord(&fileIoLock);
 }
 
 void libcUnlockFileIo(void) {
-    __atomic_clear(&fileIoLock, __ATOMIC_RELEASE);
+    unlockWord(&fileIoLock);
 }
 
 void libcSetError(int value) { errno = value; }
@@ -207,14 +238,15 @@ const char* libcGetCurrentDirectory(void) {
     return currentDirectory;
 }
 
-int libcAfterForkChild(pid_t parentProcessId) {
+int libcAfterForkChild(pid_t parentTaskId) {
     uint64_t oldDescriptors[LIBC_DESCRIPTOR_CAPACITY];
     uint64_t newDescriptors[LIBC_DESCRIPTOR_CAPACITY];
-    const int count = os_clone_file_descriptors(
-        libcFsService(), (uint64_t)parentProcessId, oldDescriptors,
+    const int count = __libc_os_clone_file_descriptors(
+        libcFsService(), (uint64_t)parentTaskId, oldDescriptors,
         newDescriptors, LIBC_DESCRIPTOR_CAPACITY);
     uint32_t descriptionIndex;
     fileIoLock = 0;
+    descriptorLock = 0;
     if (count < 0) return -1;
     for (descriptionIndex = 0;
          descriptionIndex < LIBC_DESCRIPTOR_CAPACITY; ++descriptionIndex) {
@@ -227,6 +259,7 @@ int libcAfterForkChild(pid_t parentProcessId) {
         for (mapping = 0; mapping < count; ++mapping) {
             if (description->handle == oldDescriptors[mapping]) {
                 description->handle = newDescriptors[mapping];
+                __libc_file_rebind(description->fileObject,description->handle);
                 break;
             }
         }
@@ -241,6 +274,8 @@ size_t libcExportExecState(LibcExecState* state) {
     state->magic = LIBC_EXEC_STATE_MAGIC;
     state->size = sizeof(*state);
     state->count = 0;
+    state->terminalId = __libc_os_get_terminal_id();
+    state->reserved = 0;
     copyString(state->currentDirectory, libcGetCurrentDirectory(),
                sizeof(state->currentDirectory));
     for (fileDescriptor = 0;
@@ -273,6 +308,7 @@ void __libc_import_exec_state(const LibcExecState* state) {
         state->count > LIBC_DESCRIPTOR_CAPACITY) {
         return;
     }
+    __libc_os_set_terminal_id(state->terminalId);
     copyString(currentDirectory, state->currentDirectory,
                sizeof(currentDirectory));
     for (index = 0; index < state->count; ++index) {
@@ -294,6 +330,8 @@ void __libc_import_exec_state(const LibcExecState* state) {
             description->referenceCount = 0;
             copyString(description->path, input->path,
                        sizeof(description->path));
+            description->fileObject=__libc_file_adopt(libcFsService(),description->handle,description->path,description->flags,description->kind);
+            if (!description->fileObject) { errno=ENOMEM; continue; }
             restored[input->descriptionId] = 1;
         }
         libcDescriptors[input->fileDescriptor].description = description;
@@ -310,9 +348,9 @@ void __libc_import_exec_state(const LibcExecState* state) {
         seen[input->descriptionId] = 1;
         if (restored[input->descriptionId]) continue;
         if ((DescriptorKind)input->kind == DESCRIPTOR_FILE) {
-            os_close_file(libcFsService(), input->handle);
+            __libc_os_close_file(libcFsService(), input->handle);
         } else if (input->handle != 0) {
-            os_close_handle(input->handle);
+            __libc_os_close_handle(input->handle);
         }
     }
     for (index = 0; index < state->count; ++index) {

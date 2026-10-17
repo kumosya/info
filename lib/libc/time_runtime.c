@@ -4,7 +4,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "os/c_api.h"
+#include "os_adapter.h"
 
 #define NANOSECONDS_PER_SECOND 1000000000ULL
 
@@ -14,7 +14,7 @@ static int validTimespec(const struct timespec* value) {
 }
 
 time_t time(time_t* result) {
-    time_t value = (time_t)(os_get_wall_clock_time() / NANOSECONDS_PER_SECOND);
+    time_t value = (time_t)(__libc_os_get_wall_clock_time() / NANOSECONDS_PER_SECOND);
     if (result != NULL) *result = value;
     return value;
 }
@@ -26,8 +26,8 @@ int clock_gettime(int clockId, struct timespec* value) {
         errno = EINVAL;
         return -1;
     }
-    nanoseconds = clockId == CLOCK_MONOTONIC ? os_get_monotonic_time()
-                                             : os_get_wall_clock_time();
+    nanoseconds = clockId == CLOCK_MONOTONIC ? __libc_os_get_monotonic_time()
+                                             : __libc_os_get_wall_clock_time();
     value->tv_sec = (time_t)(nanoseconds / NANOSECONDS_PER_SECOND);
     value->tv_nsec = (long)(nanoseconds % NANOSECONDS_PER_SECOND);
     return 0;
@@ -40,7 +40,7 @@ int clock_getres(clockid_t clockId, struct timespec* value) {
         return -1;
     }
     if (value == NULL) return 0;
-    resolution = os_get_clock_resolution();
+    resolution = __libc_os_get_clock_resolution();
     value->tv_sec = (time_t)(resolution / NANOSECONDS_PER_SECOND);
     value->tv_nsec = (long)(resolution % NANOSECONDS_PER_SECOND);
     return 0;
@@ -54,7 +54,7 @@ int nanosleep(const struct timespec* duration, struct timespec* remaining) {
     }
     milliseconds = (uint64_t)duration->tv_sec * 1000ULL +
                    ((uint64_t)duration->tv_nsec + 999999ULL) / 1000000ULL;
-    os_sleep(milliseconds);
+    __libc_os_sleep(milliseconds);
     if (remaining != NULL) {
         remaining->tv_sec = 0;
         remaining->tv_nsec = 0;
@@ -105,7 +105,7 @@ int gettimeofday(struct timeval* value, void* timezone) {
         errno = EFAULT;
         return -1;
     }
-    nanoseconds = os_get_wall_clock_time();
+    nanoseconds = __libc_os_get_wall_clock_time();
     value->tv_sec = (time_t)(nanoseconds / NANOSECONDS_PER_SECOND);
     value->tv_usec = (long)((nanoseconds % NANOSECONDS_PER_SECOND) / 1000ULL);
     return 0;

@@ -82,9 +82,9 @@ void reserveRange(uint64_t base, uint64_t length) {
 
 }  // namespace
 
-namespace kernel {
+namespace kernel::memory {
 
-void initPhysicalMemory(const BootInfo* bootInfo) {
+void initPhy(const BootInfo* bootInfo) {
     for (uint64_t index = 0; index < bitmapByteCount; ++index) {
         pageBitmap[index]     = 0xff;
         reservedBitmap[index] = 0xff;
@@ -118,11 +118,11 @@ void initPhysicalMemory(const BootInfo* bootInfo) {
                  static_cast<uint64_t>(bootInfo->framebuffer.pitch) *
                      bootInfo->framebuffer.height);
 
-    serialWrite("[MEMORY] physical memory initialized, free pages=");
-    serialWriteDecimal(freePageCount);
-    serialWrite(" highest=");
-    serialWriteHex(highestAddress);
-    serialWrite("\n");
+    serial::serialWrite("[MEMORY] physical memory initialized, free pages=");
+    serial::serialWriteDecimal(freePageCount);
+    serial::serialWrite(" highest=");
+    serial::serialWriteHex(highestAddress);
+    serial::serialWrite("\n");
 }
 
 uint64_t allocatePhysicalPage() {
@@ -159,4 +159,4 @@ uint64_t getFreeMemoryBytes() {
     return freePageCount * pageSize;
 }
 
-}  // namespace kernel
+}  // namespace kernel::memory

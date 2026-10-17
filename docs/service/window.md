@@ -1,6 +1,6 @@
-# window 服务（src/window/）
+# guiw 服务（src/guiw/）
 
-window 服务（注册名 `"window"`）是窗口服务器/合成器：软件合成、窗口管理、输入分发与内置桌面演示控件。由磁盘 `/system/services/window.elf` 加载，授予 `processCapabilityDisplay`。
+guiw 服务（注册名 `"guiw"`）是窗口服务器/合成器：软件合成、窗口管理、输入分发与内置桌面演示控件。它与 `/usr/bin/terminal` 一同由 guiw 软件包交付，程序本体安装在 `/sbin/sys/guiw.elf`，授予 `taskCapabilityDisplay`。
 
 ## 1. 常量
 
@@ -44,7 +44,7 @@ window 服务（注册名 `"window"`）是窗口服务器/合成器：软件合�
 
 绘制类请求（DrawPixel/DrawLine/FillRectangle/DrawText）都绘制到**离屏表面**，需 `Present` 才上屏。所有按句柄的操作都经 `findOwned(senderPid, handle)` 校验所有权。
 
-### 窗口事件（`include/os/gui.h`）
+### 窗口事件（`include/osgui-c++/osgui/gui.h`）
 
 ```cpp
 enum class WindowEventType : uint32_t {
@@ -85,7 +85,7 @@ struct WindowEvent {   // 40 字节
 ```cpp
 struct WidgetBounds { int32_t x, y; uint32_t width, height; };
 class WidgetCanvas { virtual void fillRectangle(...); virtual void drawText(...); };
-class Widget { initialize/render/handlePointer/handleKey/contains; };
+class Widget { init/render/handlePointer/handleKey/contains; };
 class Label;    // 文本 ≤47 字节 + 颜色
 class Button;   // 文本 ≤31 字节；按下态 0x1f6f50、常态 0x2b8a65、顶部高光 0x6fd0aa
 class TextBox;  // 文本 ≤31 字节；焦点态白底/绿边，非焦点灰底/灰边；支持退格与字符输入

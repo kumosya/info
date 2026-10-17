@@ -2,8 +2,8 @@
 
 #include "kernel/mm.h"
 #include "kernel/page.h"
-#include "kernel/process.h"
 #include "kernel/spinlock.h"
+#include "kernel/task.h"
 
 namespace {
 
@@ -267,8 +267,8 @@ kernel::ElfLoadError mapSegments(uint64_t root, const uint8_t* image,
         }
         for (uint64_t pageAddress = alignDown(segment.virtualAddress);
              pageAddress < pageEnd; pageAddress += PAGE_SIZE) {
-            if (kernel::getPhysicalAddressInAddressSpace(root, pageAddress) !=
-                0) {
+            if (kernel::memory::getPhysicalAddressInAddressSpace(
+                    root, pageAddress) != 0) {
                 continue;
             }
             const PagePermissions permissions =
@@ -281,8 +281,8 @@ kernel::ElfLoadError mapSegments(uint64_t root, const uint8_t* image,
                 pageFlags |= kernel::pageNoExecute;
             }
             const kernel::UserPageMapResult mapResult =
-                kernel::allocateUserPageInAddressSpace(root, pageAddress,
-                                                       pageFlags);
+                kernel::memory::allocateUserPageInAddressSpace(
+                    root, pageAddress, pageFlags);
             if (mapResult == kernel::UserPageMapResult::OutOfMemory) {
                 return kernel::ElfLoadError::OutOfMemory;
             }
@@ -297,18 +297,20 @@ kernel::ElfLoadError mapSegments(uint64_t root, const uint8_t* image,
         if (!isLoadable(segment) || segment.fileSize == 0) {
             continue;
         }
-        if (!kernel::copyToAddressSpace(root, segment.virtualAddress,
-                                        image + segment.offset,
-                                        segment.fileSize)) {
+        if (!kernel::memory::copyToAddressSpace(root, segment.virtualAddress,
+                                                image + segment.offset,
+                                                segment.fileSize)) {
             return kernel::ElfLoadError::MappingFailed;
         }
     }
     return kernel::ElfLoadError::None;
 }
 
-kernel::ElfLoadError mapSegmentsFromAddressSpace(
-    uint64_t root, uint64_t sourceRoot, uint64_t sourceAddress,
-    const ProgramHeader* headers, uint16_t headerCount) {
+kernel::ElfLoadError mapSegmentsFromAddressSpace(uint64_t root,
+                                                 uint64_t sourceRoot,
+                                                 uint64_t sourceAddress,
+                                                 const ProgramHeader* headers,
+                                                 uint16_t headerCount) {
     for (uint16_t index = 0; index < headerCount; ++index) {
         const ProgramHeader& segment = headers[index];
         if (!isLoadable(segment)) {
@@ -320,8 +322,8 @@ kernel::ElfLoadError mapSegmentsFromAddressSpace(
         }
         for (uint64_t pageAddress = alignDown(segment.virtualAddress);
              pageAddress < pageEnd; pageAddress += PAGE_SIZE) {
-            if (kernel::getPhysicalAddressInAddressSpace(root, pageAddress) !=
-                0) {
+            if (kernel::memory::getPhysicalAddressInAddressSpace(
+                    root, pageAddress) != 0) {
                 continue;
             }
             const PagePermissions permissions =
@@ -334,8 +336,8 @@ kernel::ElfLoadError mapSegmentsFromAddressSpace(
                 pageFlags |= kernel::pageNoExecute;
             }
             const kernel::UserPageMapResult mapResult =
-                kernel::allocateUserPageInAddressSpace(root, pageAddress,
-                                                       pageFlags);
+                kernel::memory::allocateUserPageInAddressSpace(
+                    root, pageAddress, pageFlags);
             if (mapResult == kernel::UserPageMapResult::OutOfMemory) {
                 return kernel::ElfLoadError::OutOfMemory;
             }
@@ -348,16 +350,15 @@ kernel::ElfLoadError mapSegmentsFromAddressSpace(
     uint8_t buffer[PAGE_SIZE];
     for (uint16_t index = 0; index < headerCount; ++index) {
         const ProgramHeader& segment = headers[index];
-        uint64_t copied = 0;
+        uint64_t copied              = 0;
         while (isLoadable(segment) && copied < segment.fileSize) {
             const uint64_t remaining = segment.fileSize - copied;
-            const uint64_t chunk = remaining < sizeof(buffer)
-                                       ? remaining
-                                       : sizeof(buffer);
-            if (!kernel::copyFromAddressSpace(
-                    buffer, sourceRoot,
-                    sourceAddress + segment.offset + copied, chunk) ||
-                !kernel::copyToAddressSpace(
+            const uint64_t chunk =
+                remaining < sizeof(buffer) ? remaining : sizeof(buffer);
+            if (!kernel::memory::copyFromAddressSpace(
+                    buffer, sourceRoot, sourceAddress + segment.offset + copied,
+                    chunk) ||
+                !kernel::memory::copyToAddressSpace(
                     root, segment.virtualAddress + copied, buffer, chunk)) {
                 return kernel::ElfLoadError::MappingFailed;
             }
@@ -367,8 +368,7 @@ kernel::ElfLoadError mapSegmentsFromAddressSpace(
     return kernel::ElfLoadError::None;
 }
 
-void rollbackMappedSegments(uint64_t root,
-                            const ProgramHeader* headers,
+void rollbackMappedSegments(uint64_t root, const ProgramHeader* headers,
                             uint16_t headerCount) {
     for (uint16_t index = 0; index < headerCount; ++index) {
         const ProgramHeader& segment = headers[index];
@@ -382,12 +382,13 @@ void rollbackMappedSegments(uint64_t root,
         for (uint64_t pageAddress = alignDown(segment.virtualAddress);
              pageAddress < pageEnd; pageAddress += PAGE_SIZE) {
             const uint64_t physical =
-                kernel::getPhysicalAddressInAddressSpace(root, pageAddress);
+                kernel::memory::getPhysicalAddressInAddressSpace(root,
+                                                                 pageAddress);
             if (physical == 0) {
                 continue;
             }
-            if (kernel::unmapPageInAddressSpace(root, pageAddress)) {
-                kernel::freePhysicalPage(physical & ~(PAGE_SIZE - 1));
+            if (kernel::memory::unmapPageInAddressSpace(root, pageAddress)) {
+                kernel::memory::freePhysicalPage(physical & ~(PAGE_SIZE - 1));
             }
         }
     }
@@ -397,7 +398,7 @@ void rollbackMappedSegments(uint64_t root,
 
 namespace kernel {
 
-ElfLoadError ElfLoader::load(Process& process, const void* image, size_t size,
+ElfLoadError ElfLoader::load(Task& task, const void* image, size_t size,
                              ElfLoadResult& result) {
     result = {};
     if (image == nullptr || size < sizeof(ElfHeader)) {
@@ -419,8 +420,8 @@ ElfLoadError ElfLoader::load(Process& process, const void* image, size_t size,
         return segmentError;
     }
 
-    PreemptionSpinLockGuard addressGuard(process.addressSpace().lock());
-    const uint64_t root = process.addressSpace().rootPhysicalAddress();
+    PreemptionSpinLockGuard addressGuard(task.addressSpace().lock());
+    const uint64_t root = task.addressSpace().rootPhysicalAddress();
     for (uint16_t index = 0; index < header.programHeaderCount; ++index) {
         const ProgramHeader& segment = headers[index];
         if (!isLoadable(segment)) {
@@ -433,7 +434,8 @@ ElfLoadError ElfLoader::load(Process& process, const void* image, size_t size,
         }
         for (uint64_t pageAddress = alignDown(segment.virtualAddress);
              pageAddress < pageEnd; pageAddress += PAGE_SIZE) {
-            if (getPhysicalAddressInAddressSpace(root, pageAddress) != 0) {
+            if (memory::getPhysicalAddressInAddressSpace(root, pageAddress) !=
+                0) {
                 result = {};
                 return ElfLoadError::MappingFailed;
             }
@@ -451,25 +453,28 @@ ElfLoadError ElfLoader::load(Process& process, const void* image, size_t size,
     return ElfLoadError::None;
 }
 
-ElfLoadError ElfLoader::loadFromAddressSpace(
-    Process& process, uint64_t sourceRoot, uint64_t sourceAddress, size_t size,
-    ElfLoadResult& result) {
-    PreemptionSpinLockGuard addressGuard(process.addressSpace().lock());
-    return loadFromAddressSpace(process.addressSpace().rootPhysicalAddress(),
+ElfLoadError ElfLoader::loadFromAddressSpace(Task& task, uint64_t sourceRoot,
+                                             uint64_t sourceAddress,
+                                             size_t size,
+                                             ElfLoadResult& result) {
+    PreemptionSpinLockGuard addressGuard(task.addressSpace().lock());
+    return loadFromAddressSpace(task.addressSpace().rootPhysicalAddress(),
                                 sourceRoot, sourceAddress, size, result);
 }
 
-ElfLoadError ElfLoader::loadFromAddressSpace(
-    uint64_t destinationRoot, uint64_t sourceRoot, uint64_t sourceAddress,
-    size_t size, ElfLoadResult& result) {
+ElfLoadError ElfLoader::loadFromAddressSpace(uint64_t destinationRoot,
+                                             uint64_t sourceRoot,
+                                             uint64_t sourceAddress,
+                                             size_t size,
+                                             ElfLoadResult& result) {
     result = {};
     if (destinationRoot == 0 || sourceRoot == 0 || sourceAddress == 0 ||
         size < sizeof(ElfHeader)) {
         return ElfLoadError::InvalidArgument;
     }
     ElfHeader header{};
-    if (!copyFromAddressSpace(&header, sourceRoot, sourceAddress,
-                              sizeof(header))) {
+    if (!memory::copyFromAddressSpace(&header, sourceRoot, sourceAddress,
+                                      sizeof(header))) {
         return ElfLoadError::InvalidArgument;
     }
     const ElfLoadError headerError = validateHeader(header, size);
@@ -478,10 +483,11 @@ ElfLoadError ElfLoader::loadFromAddressSpace(
     }
     ProgramHeader headers[MAXIMUM_PROGRAM_HEADERS]{};
     const uint64_t headerBytes =
-        static_cast<uint64_t>(header.programHeaderCount) * sizeof(ProgramHeader);
-    if (!copyFromAddressSpace(headers, sourceRoot,
-                              sourceAddress + header.programHeaderOffset,
-                              headerBytes)) {
+        static_cast<uint64_t>(header.programHeaderCount) *
+        sizeof(ProgramHeader);
+    if (!memory::copyFromAddressSpace(
+            headers, sourceRoot, sourceAddress + header.programHeaderOffset,
+            headerBytes)) {
         return ElfLoadError::InvalidHeader;
     }
     const ElfLoadError segmentError = validateSegments(
@@ -504,15 +510,15 @@ ElfLoadError ElfLoader::loadFromAddressSpace(
         }
         for (uint64_t pageAddress = alignDown(segment.virtualAddress);
              pageAddress < pageEnd; pageAddress += PAGE_SIZE) {
-            if (getPhysicalAddressInAddressSpace(root, pageAddress) != 0) {
+            if (memory::getPhysicalAddressInAddressSpace(root, pageAddress) !=
+                0) {
                 result = {};
                 return ElfLoadError::MappingFailed;
             }
         }
     }
     const ElfLoadError mappingError = mapSegmentsFromAddressSpace(
-        root, sourceRoot, sourceAddress, headers,
-        header.programHeaderCount);
+        root, sourceRoot, sourceAddress, headers, header.programHeaderCount);
     if (mappingError != ElfLoadError::None) {
         rollbackMappedSegments(root, headers, header.programHeaderCount);
         result = {};
@@ -522,7 +528,7 @@ ElfLoadError ElfLoader::loadFromAddressSpace(
     return ElfLoadError::None;
 }
 
-const char* getElfLoadErrorName(ElfLoadError error) {
+const char* ElfLoader::errorName(ElfLoadError error) {
     switch (error) {
         case ElfLoadError::None:
             return "none";
@@ -566,7 +572,7 @@ const char* getElfLoadErrorName(ElfLoadError error) {
     return "unknown";
 }
 
-bool runElfLoaderValidationSelfTest(Process& process) {
+bool ElfLoader::runValidationSelfTest(Task& task) {
     struct TestImage {
         ElfHeader header;
         ProgramHeader segments[2];
@@ -596,7 +602,7 @@ bool runElfLoaderValidationSelfTest(Process& process) {
 
     ElfLoadResult result{};
     image.header.identifier[0] = 0;
-    if (ElfLoader::load(process, &image, sizeof(image), result) !=
+    if (ElfLoader::load(task, &image, sizeof(image), result) !=
         ElfLoadError::InvalidMagic) {
         return false;
     }
@@ -604,7 +610,7 @@ bool runElfLoaderValidationSelfTest(Process& process) {
     image.header.identifier[0] = 0x7f;
     image.segments[0].flags =
         SEGMENT_FLAG_READABLE | SEGMENT_FLAG_WRITABLE | SEGMENT_FLAG_EXECUTABLE;
-    if (ElfLoader::load(process, &image, sizeof(image), result) !=
+    if (ElfLoader::load(task, &image, sizeof(image), result) !=
         ElfLoadError::InvalidPermissions) {
         return false;
     }
@@ -616,14 +622,14 @@ bool runElfLoaderValidationSelfTest(Process& process) {
     image.segments[1].virtualAddress = 0x400800;
     image.segments[1].memorySize     = PAGE_SIZE;
     image.segments[1].alignment      = 1;
-    if (ElfLoader::load(process, &image, sizeof(image), result) !=
+    if (ElfLoader::load(task, &image, sizeof(image), result) !=
         ElfLoadError::OverlappingSegments) {
         return false;
     }
 
     image.header.programHeaderCount = 1;
     image.header.entry              = 0x600000;
-    if (ElfLoader::load(process, &image, sizeof(image), result) !=
+    if (ElfLoader::load(task, &image, sizeof(image), result) !=
         ElfLoadError::InvalidEntryPoint) {
         return false;
     }
@@ -639,22 +645,22 @@ bool runElfLoaderValidationSelfTest(Process& process) {
     image.segments[1].offset =
         __builtin_offsetof(TestImage, data) + sizeof(image.data) / 2;
     image.segments[1].flags = SEGMENT_FLAG_READABLE | SEGMENT_FLAG_WRITABLE;
-    if (ElfLoader::load(process, &image, sizeof(image), result) !=
+    if (ElfLoader::load(task, &image, sizeof(image), result) !=
         ElfLoadError::InvalidPermissions) {
         return false;
     }
 
     image.segments[1].flags = SEGMENT_FLAG_READABLE;
-    if (ElfLoader::load(process, &image, sizeof(image), result) !=
+    if (ElfLoader::load(task, &image, sizeof(image), result) !=
             ElfLoadError::None ||
         result.entryPoint != 0x400000 || result.imageBase != 0x400000 ||
         result.imageEnd != 0x401000) {
         return false;
     }
     uint64_t flags = 0;
-    return getPhysicalAddressInAddressSpace(
-               process.addressSpace().rootPhysicalAddress(), 0x400000,
-               &flags) != 0 &&
+    return memory::getPhysicalAddressInAddressSpace(
+               task.addressSpace().rootPhysicalAddress(), 0x400000, &flags) !=
+               0 &&
            (flags & pageUser) != 0 && (flags & pageWritable) == 0 &&
            (flags & pageNoExecute) == 0;
 }

@@ -1,8 +1,10 @@
 # device 服务（src/device/）
 
-device 服务（注册名 `"device"`）由内核内置镜像加载，授予 `processCapabilityDevice`。同一进程内还承载 **input 服务**（注册名 `"input"`）。
+device 服务（注册名 `"device"`）由内核内置镜像加载，授予 `taskCapabilityDevice`，以可信系统服务身份在 Ring 0 运行。同一进程内还承载 **input 服务**（注册名 `"input"`）。
 
 ## 1. PCI 设备管理
+
+独立的 `pci` 服务由内置镜像在 Ring 0 启动，注册名为 `"pci"`。device/storage 通过 IPC 请求枚举和配置访问；只有 pci 服务持有 `taskCapabilityPci`，可向内核 `CallPciService` 提交请求。PCI 配置端口操作由内核 `PciAccess` 完成。
 
 ```cpp
 enum class DeviceCategory : uint8_t { Pci, Storage, Keyboard, Mouse, Display, Network, Timer, Serial };
@@ -18,7 +20,7 @@ enum class DriverState : uint8_t { Created, Initialized, Running, Stopping, Stop
 | 请求 | 值 | 语义 |
 |---|---|---|
 | List | 1 | 回复设备数、驱动数、Storage/Network/Display 分类计数 |
-| ListNode | 2 | `data[0]`=索引，枚举固定 12 个节点：`zero`、`cdrom`、`hda1`、`tty1`..`tty7`、`ptmx`、`pts`；`data[1]`=是否目录（仅 `pts`）；`data[2..7]`=名字 |
+| ListNode | 2 | 枚举 zero、null、tty1..tty7、ptmx、pts；块节点由 fs 根据 storage 的探测结果生成 |
 | ReadNode | 3 | 仅支持 `zero` 节点；`data[6]`=请求大小（≤4104 字节）；回复全零数据 |
 
 其他类型回复 2。`/dev` 虚拟目录由 fs 服务基于这些接口合成（见 [fs.md](fs.md)）。
@@ -45,7 +47,7 @@ enum class DriverState : uint8_t { Created, Initialized, Running, Stopping, Stop
 
 ### 事件队列（InputQueue）
 
-- 容量 256 的环形事件队列 + 最多 4 个订阅者（`Subscriber { processId, nextSequence, wakeEndpoint, notified }`）。
+- 容量 256 的环形事件队列 + 最多 4 个订阅者（`Subscriber { taskId, nextSequence, wakeEndpoint, notified }`）。
 - 连续 MouseMove/MouseWheel 在无订阅者追平时合并增量；队列满时丢弃最旧事件。
 
 ### IPC 请求（`os::InputRequest`，基值 0x200）
@@ -56,7 +58,7 @@ enum class DriverState : uint8_t { Created, Initialized, Running, Stopping, Stop
 | GetState | 0x201 | 回复该订阅者积压事件数 |
 | Subscribe | 0x202 | `handles[0]`=唤醒端点；有新事件时发送 `0x494e505554`（"INPUT"）通知；发送失败自动退订 |
 
-### 输入事件结构（`include/os/input.h`）
+### 输入事件结构（`include/os-c++/os/input.h`）
 
 ```cpp
 enum class InputEventType : uint32_t { None, KeyDown, KeyUp, MouseMove, MouseButtonDown, MouseButtonUp, MouseWheel };
@@ -72,3 +74,13 @@ struct InputEvent { InputEventType type; uint32_t reserved; uint64_t timestamp; 
 ## 4. 线程模型
 
 主线程处理 DeviceRequest；`inputServiceMain`（请求循环）与 `inputIrqMain`（IRQ 循环）各占 64 KiB 栈（基址 `0x60000000` 与 `0x60010000`）。
+
+块设备发现、稳定标识及别名见 [fs 服务](fs.md)。
+
+## 系统服务执行级别
+
+内核仅在加载固定的内置 PciServer / DeviceServer / StorageServer 镜像时设置系统服务身份。磁盘 ELF、普通 spawn、root 身份和权限位不能获得该身份。服务使用高地址 supervisor 栈，普通用户程序使用 Ring 3。
+
+`os::SystemService::readPort8/writePort8` 先检查当前 CS，再执行端口指令；普通进程调用返回失败。端口访问系统调用已删除。服务其余系统调用通过 DPL 0 的 int 0x80 入口进入统一分派，普通用户不能使用该门。
+
+Ring 0 服务属于内核信任边界，服务自身的错误具有内核级影响。可执行文件的路径或用户身份不会改变执行级别。

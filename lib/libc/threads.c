@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <threads.h>
 
-#include "os/c_api.h"
+#include "os_adapter.h"
 
 typedef struct {
     thrd_start_t start;
@@ -62,7 +62,7 @@ int thrd_sleep(const struct timespec* duration, struct timespec* remaining) {
     return nanosleep(duration, remaining) == 0 ? 0 : -1;
 }
 
-void thrd_yield(void) { os_yield(); }
+void thrd_yield(void) { __libc_os_yield(); }
 
 int mtx_init(mtx_t* mutex, int type) {
     pthread_mutexattr_t attr;

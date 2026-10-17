@@ -1,9 +1,10 @@
-#include "kernel/mm.h"
 #include "kernel/boot.h"
+#include "kernel/mm.h"
 #include "kernel/page.h"
 #include "kernel/serial.h"
 #include "kernel/smp.h"
 #include "kernel/spinlock.h"
+#include "kernel/task.h"
 
 namespace {
 
@@ -26,7 +27,7 @@ uint64_t getTablePhysicalAddress(const PageTable* table) {
 }
 
 PageTable* allocateTable() {
-    const uint64_t physicalAddress = kernel::allocatePhysicalPage();
+    const uint64_t physicalAddress = kernel::memory::allocatePhysicalPage();
     if (physicalAddress == 0) {
         return nullptr;
     }
@@ -81,10 +82,10 @@ void releaseUserPageTables(uint64_t tablePhysicalAddress, uint32_t level) {
         if (level > 1 && (entry & (1ULL << 7)) == 0) {
             releaseUserPageTables(entry & pageMask, level - 1);
         } else if ((entry & kernel::pageExternal) == 0) {
-            kernel::freePhysicalPage(entry & pageMask);
+            kernel::memory::freePhysicalPage(entry & pageMask);
         }
     }
-    kernel::freePhysicalPage(tablePhysicalAddress);
+    kernel::memory::freePhysicalPage(tablePhysicalAddress);
 }
 
 bool mapPageLocked(uint64_t rootPhysicalAddress, uint64_t virtualAddress,
@@ -150,19 +151,21 @@ bool protectPageLocked(uint64_t rootPhysicalAddress, uint64_t virtualAddress,
     const uint64_t pdptIndex = (virtualAddress >> 30) & 0x1ff;
     const uint64_t pdIndex   = (virtualAddress >> 21) & 0x1ff;
     const uint64_t ptIndex   = (virtualAddress >> 12) & 0x1ff;
-    PageTable* pml4 = getTable(rootPhysicalAddress);
+    PageTable* pml4          = getTable(rootPhysicalAddress);
     if ((pml4->entries[pml4Index] & kernel::pagePresent) == 0) return false;
     PageTable* pdpt = getTable(pml4->entries[pml4Index]);
     if ((pdpt->entries[pdptIndex] & kernel::pagePresent) == 0 ||
-        (pdpt->entries[pdptIndex] & (1ULL << 7)) != 0) return false;
+        (pdpt->entries[pdptIndex] & (1ULL << 7)) != 0)
+        return false;
     PageTable* pd = getTable(pdpt->entries[pdptIndex]);
     if ((pd->entries[pdIndex] & kernel::pagePresent) == 0 ||
-        (pd->entries[pdIndex] & (1ULL << 7)) != 0) return false;
-    PageTable* pt = getTable(pd->entries[pdIndex]);
+        (pd->entries[pdIndex] & (1ULL << 7)) != 0)
+        return false;
+    PageTable* pt   = getTable(pd->entries[pdIndex]);
     uint64_t& entry = pt->entries[ptIndex];
     if ((entry & kernel::pagePresent) == 0) return false;
     const uint64_t preserved = entry & (pageMask | kernel::pageExternal);
-    entry = preserved | flags | kernel::pagePresent;
+    entry                    = preserved | flags | kernel::pagePresent;
     return true;
 }
 
@@ -210,27 +213,28 @@ uint64_t translateLocked(uint64_t rootPhysicalAddress, uint64_t virtualAddress,
 
 }  // namespace
 
-namespace kernel {
+namespace kernel::memory {
 
-void initVirtualMemory(const BootInfo* bootInfo) {
+void initVir(const BootInfo* bootInfo) {
     if (bootInfo == nullptr || bootInfo->pageTableRoot == 0) {
-        serialWrite("[MEMORY] missing bootstrap page table root\n");
+        serial::serialWrite("[MEMORY] missing bootstrap page table root\n");
         while (true) {
             asm volatile("cli; hlt");
         }
     }
     kernelAddressSpaceRoot = bootInfo->pageTableRoot;
-    PageTable* pml4 = getTable(kernelAddressSpaceRoot);
-    pml4->entries[0] = 0;
+    PageTable* pml4        = getTable(kernelAddressSpaceRoot);
+    pml4->entries[0]       = 0;
     asm volatile("mov %0, %%cr3" : : "r"(kernelAddressSpaceRoot) : "memory");
-    serialWrite(
+    serial::serialWrite(
         "[MEMORY] higher-half direct map active; identity map removed\n");
 }
 
 bool mapPage(uint64_t virtualAddress, uint64_t physicalAddress,
              uint64_t flags) {
-    return mapPageInAddressSpace(getKernelAddressSpaceRoot(), virtualAddress,
-                                 physicalAddress, flags);
+    return memory::mapPageInAddressSpace(memory::getKernelAddressSpaceRoot(),
+                                         virtualAddress, physicalAddress,
+                                         flags);
 }
 
 bool mapPageInAddressSpace(uint64_t rootPhysicalAddress,
@@ -252,7 +256,8 @@ bool mapPageInAddressSpace(uint64_t rootPhysicalAddress,
 }
 
 bool unmapPage(uint64_t virtualAddress) {
-    return unmapPageInAddressSpace(getKernelAddressSpaceRoot(), virtualAddress);
+    return memory::unmapPageInAddressSpace(memory::getKernelAddressSpaceRoot(),
+                                           virtualAddress);
 }
 
 bool unmapPageInAddressSpace(uint64_t rootPhysicalAddress,
@@ -269,7 +274,7 @@ bool unmapPageInAddressSpace(uint64_t rootPhysicalAddress,
         }
     }
     if (unmapped) {
-        requestTlbShootdown(virtualAddress);
+        smp::requestTlbShootdown(virtualAddress);
     }
     return unmapped;
 }
@@ -280,19 +285,19 @@ bool protectPageInAddressSpace(uint64_t rootPhysicalAddress,
     bool protectedPage;
     {
         InterruptSpinLockGuard guard(virtualMemoryLock);
-        protectedPage = protectPageLocked(rootPhysicalAddress, virtualAddress,
-                                          flags);
+        protectedPage =
+            protectPageLocked(rootPhysicalAddress, virtualAddress, flags);
         if (protectedPage) {
             asm volatile("invlpg (%0)" : : "r"(virtualAddress) : "memory");
         }
     }
-    if (protectedPage) requestTlbShootdown(virtualAddress);
+    if (protectedPage) smp::requestTlbShootdown(virtualAddress);
     return protectedPage;
 }
 
 uint64_t getPhysicalAddress(uint64_t virtualAddress) {
-    return getPhysicalAddressInAddressSpace(getKernelAddressSpaceRoot(),
-                                            virtualAddress);
+    return memory::getPhysicalAddressInAddressSpace(
+        memory::getKernelAddressSpaceRoot(), virtualAddress);
 }
 
 uint64_t getPhysicalAddressInAddressSpace(uint64_t rootPhysicalAddress,
@@ -308,7 +313,11 @@ bool validateUserMemory(uint64_t rootPhysicalAddress, uint64_t address,
         return true;
     }
     const uint64_t end = address + size - 1;
-    if (end < address || end >= 0x0000800000000000ULL) {
+    Task* caller = task::getCurrent();
+    const bool supervisor = caller && caller->isSystemService() &&
+                            caller->addressSpace().rootPhysicalAddress() == rootPhysicalAddress &&
+                            address >= 0xffff800000000000ULL;
+    if (end < address || (!supervisor && end >= 0x0000800000000000ULL)) {
         return false;
     }
     InterruptSpinLockGuard guard(virtualMemoryLock);
@@ -317,7 +326,7 @@ bool validateUserMemory(uint64_t rootPhysicalAddress, uint64_t address,
     while (true) {
         uint64_t flags = 0;
         if (translateLocked(rootPhysicalAddress, page, &flags) == 0 ||
-            (flags & pageUser) == 0 ||
+            (!supervisor && (flags & pageUser) == 0) ||
             (writable && (flags & pageWritable) == 0)) {
             return false;
         }
@@ -340,7 +349,7 @@ UserPageMapResult allocateUserPageInAddressSpace(uint64_t rootPhysicalAddress,
         return UserPageMapResult::InvalidArgument;
     }
 
-    const uint64_t physicalAddress = allocatePhysicalPage();
+    const uint64_t physicalAddress = memory::allocatePhysicalPage();
     if (physicalAddress == 0) {
         return UserPageMapResult::OutOfMemory;
     }
@@ -348,9 +357,9 @@ UserPageMapResult allocateUserPageInAddressSpace(uint64_t rootPhysicalAddress,
     for (uint64_t index = 0; index < pageSize; ++index) {
         page[index] = 0;
     }
-    if (!mapPageInAddressSpace(rootPhysicalAddress, virtualAddress,
-                               physicalAddress, flags)) {
-        freePhysicalPage(physicalAddress);
+    if (!memory::mapPageInAddressSpace(rootPhysicalAddress, virtualAddress,
+                                       physicalAddress, flags)) {
+        memory::freePhysicalPage(physicalAddress);
         return UserPageMapResult::MappingFailed;
     }
     return UserPageMapResult::Success;
@@ -390,7 +399,7 @@ bool copyToAddressSpace(uint64_t rootPhysicalAddress, uint64_t destination,
 
 bool copyFromAddressSpace(void* destination, uint64_t rootPhysicalAddress,
                           uint64_t source, uint64_t size) {
-    constexpr uint64_t pageSize = 4096;
+    constexpr uint64_t pageSize       = 4096;
     constexpr uint64_t userAddressEnd = 0x0000800000000000ULL;
     if (destination == nullptr || size == 0 || source < pageSize ||
         source >= userAddressEnd || size > userAddressEnd - source) {
@@ -420,18 +429,16 @@ bool copyFromAddressSpace(void* destination, uint64_t rootPhysicalAddress,
     return true;
 }
 
-uint64_t getKernelAddressSpaceRoot() {
-    return kernelAddressSpaceRoot;
-}
+uint64_t getKernelAddressSpaceRoot() { return kernelAddressSpaceRoot; }
 
 uint64_t createAddressSpaceRoot() {
     InterruptSpinLockGuard guard(virtualMemoryLock);
-    const uint64_t rootPhysicalAddress = allocatePhysicalPage();
+    const uint64_t rootPhysicalAddress = memory::allocatePhysicalPage();
     if (rootPhysicalAddress == 0) {
         return 0;
     }
     PageTable* root       = getTable(rootPhysicalAddress);
-    PageTable* kernelRoot = getTable(getKernelAddressSpaceRoot());
+    PageTable* kernelRoot = getTable(memory::getKernelAddressSpaceRoot());
     for (uint32_t index = 0; index < 256; ++index) {
         root->entries[index] = 0;
     }
@@ -477,12 +484,13 @@ bool cloneAddressSpaceRoot(uint64_t sourceRootPhysicalAddress,
                         (static_cast<uint64_t>(pdIndex) << 21) |
                         (static_cast<uint64_t>(ptIndex) << 12);
                     const uint64_t sourcePhysical = entry & pageMask;
-                    uint64_t destinationPhysical = sourcePhysical;
+                    uint64_t destinationPhysical  = sourcePhysical;
                     if ((entry & pageExternal) == 0) {
-                        destinationPhysical = allocatePhysicalPage();
+                        destinationPhysical = memory::allocatePhysicalPage();
                         if (destinationPhysical == 0) return false;
-                        const uint8_t* source = reinterpret_cast<const uint8_t*>(
-                            directMapBase + sourcePhysical);
+                        const uint8_t* source =
+                            reinterpret_cast<const uint8_t*>(directMapBase +
+                                                             sourcePhysical);
                         uint8_t* destination = reinterpret_cast<uint8_t*>(
                             directMapBase + destinationPhysical);
                         for (uint32_t byte = 0; byte < 4096; ++byte) {
@@ -493,7 +501,7 @@ bool cloneAddressSpaceRoot(uint64_t sourceRootPhysicalAddress,
                                        virtualAddress, destinationPhysical,
                                        entry & preservedFlags)) {
                         if ((entry & pageExternal) == 0) {
-                            freePhysicalPage(destinationPhysical);
+                            memory::freePhysicalPage(destinationPhysical);
                         }
                         return false;
                     }
@@ -506,7 +514,7 @@ bool cloneAddressSpaceRoot(uint64_t sourceRootPhysicalAddress,
 
 void destroyAddressSpaceRoot(uint64_t rootPhysicalAddress) {
     if (rootPhysicalAddress == 0 ||
-        rootPhysicalAddress == getKernelAddressSpaceRoot()) {
+        rootPhysicalAddress == memory::getKernelAddressSpaceRoot()) {
         return;
     }
     InterruptSpinLockGuard guard(virtualMemoryLock);
@@ -517,12 +525,12 @@ void destroyAddressSpaceRoot(uint64_t rootPhysicalAddress) {
             releaseUserPageTables(entry & pageMask, 3);
         }
     }
-    freePhysicalPage(rootPhysicalAddress);
+    memory::freePhysicalPage(rootPhysicalAddress);
 }
 
 void switchAddressSpace(uint64_t rootPhysicalAddress) {
     if (rootPhysicalAddress == 0) {
-        rootPhysicalAddress = getKernelAddressSpaceRoot();
+        rootPhysicalAddress = memory::getKernelAddressSpaceRoot();
     }
     uint64_t currentRoot;
     asm volatile("movq %%cr3, %0" : "=r"(currentRoot));
@@ -531,4 +539,4 @@ void switchAddressSpace(uint64_t rootPhysicalAddress) {
     }
 }
 
-}  // namespace kernel
+}  // namespace kernel::memory

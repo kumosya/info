@@ -24,7 +24,7 @@ static void* aio_worker(void* argument) {
     size_t capacity = control->_operation == AIO_OPERATION_READ
                           ? control->aio_nbytes
                           : 0;
-    if (os_wait_file_operation(control->_endpoint, &result, buffer, capacity)) {
+    if (__libc_os_wait_file_operation(control->_endpoint, &result, buffer, capacity)) {
         control->_error = result.status == 0 ? 0 : EIO;
         control->_return_value = result.status == 0
                                      ? (ssize_t)result.transferred
@@ -33,10 +33,10 @@ static void* aio_worker(void* argument) {
         control->_error = EIO;
         control->_return_value = -1;
     }
-    os_close_handle(control->_endpoint);
+    __libc_os_close_handle(control->_endpoint);
     control->_endpoint = 0;
     __atomic_store_n(&control->_state, AIO_STATE_DONE, __ATOMIC_RELEASE);
-    os_wake_address(&control->_state, UINT32_MAX);
+    __libc_os_wake_address(&control->_state, UINT32_MAX);
     return NULL;
 }
 
@@ -65,7 +65,7 @@ static int start_operation(struct aiocb* control, int operation) {
         errno = EBUSY;
         return -1;
     }
-    control->_endpoint = os_create_endpoint();
+    control->_endpoint = __libc_os_create_endpoint();
     if (control->_endpoint == 0) {
         errno = EAGAIN;
         return -1;
@@ -76,19 +76,19 @@ static int start_operation(struct aiocb* control, int operation) {
     control->_operation = operation;
     __atomic_store_n(&control->_state, AIO_STATE_PROGRESS, __ATOMIC_RELEASE);
     if (operation == AIO_OPERATION_READ) {
-        sent = os_read_file_async(libcFsService(), description->handle,
+        sent = __libc_os_read_file_async(libcFsService(), description->handle,
                                   (uint64_t)control->aio_offset,
                                   control->aio_nbytes, control->_endpoint,
                                   (uint64_t)(uintptr_t)control);
     } else {
-        sent = os_write_file_async(libcFsService(), description->handle,
+        sent = __libc_os_write_file_async(libcFsService(), description->handle,
                                    (uint64_t)control->aio_offset,
                                    (const void*)control->aio_buf,
                                    control->aio_nbytes, control->_endpoint,
                                    (uint64_t)(uintptr_t)control);
     }
     if (!sent) {
-        os_close_handle(control->_endpoint);
+        __libc_os_close_handle(control->_endpoint);
         control->_endpoint = 0;
         control->_state = AIO_STATE_IDLE;
         errno = EIO;
@@ -160,18 +160,18 @@ int aio_suspend(const struct aiocb* const controls[], int count,
     if (timeout != NULL) {
         uint64_t duration = (uint64_t)timeout->tv_sec * 1000000000ULL +
                             (uint64_t)timeout->tv_nsec;
-        deadline = os_get_monotonic_time() + duration;
+        deadline = __libc_os_get_monotonic_time() + duration;
     }
     while (1) {
         for (index = 0; index < count; ++index) {
             if (controls[index] != NULL &&
                 aio_error(controls[index]) != EINPROGRESS) return 0;
         }
-        if (timeout != NULL && os_get_monotonic_time() >= deadline) {
+        if (timeout != NULL && __libc_os_get_monotonic_time() >= deadline) {
             errno = EAGAIN;
             return -1;
         }
-        os_sleep(1);
+        __libc_os_sleep(1);
     }
 }
 
@@ -189,7 +189,7 @@ int aio_fsync(int operation, struct aiocb* control) {
     return 0;
 }
 
-int lio_listio(int mode, struct aiocb* const controls[], int count,
+int lio_listio(int mode, struct aiocb* restrict const controls[restrict], int count,
                struct sigevent* notification) {
     int index;
     int failed = 0;

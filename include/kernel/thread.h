@@ -4,7 +4,7 @@
 
 namespace kernel {
 
-struct Process;
+class Task;
 struct SyscallContext;
 
 enum class ThreadState : uint8_t {
@@ -17,11 +17,28 @@ enum class ThreadState : uint8_t {
     Terminated
 };
 
-enum class ThreadType : uint8_t { Kernel, User };
+enum class ThreadType : uint8_t { Kernel, User, SystemService };
 
 using ThreadEntry = void (*)(void* argument);
 
-struct CpuContext {
+class CpuContext {
+   public:
+    uint64_t getStackPointer() const { return stackPointer; }
+    uint64_t setStackPointer(uint64_t value) {
+        stackPointer = value;
+        return stackPointer;
+    }
+    uint64_t& accessStackPointer() { return stackPointer; }
+    uint64_t setRip(uint64_t value) {
+        rip = value;
+        return rip;
+    }
+    uint64_t setRflags(uint64_t value) {
+        rflags = value;
+        return rflags;
+    }
+
+   private:
     uint64_t stackPointer;
     uint64_t rax;
     uint64_t rbx;
@@ -45,7 +62,213 @@ struct CpuContext {
     uint64_t gsBase;
 };
 
-struct Thread {
+class Thread {
+   public:
+    bool migrate(uint32_t cpuId);
+    bool setAffinity(uint64_t cpuMask);
+    static void init();
+    static Thread* create(Task* task, ThreadEntry entryPoint, void* argument,
+                          ThreadType type   = ThreadType::Kernel,
+                          bool makeRunnable = true);
+    static Thread* createUser(Task* task, uint64_t entryPoint,
+                              uint64_t userStackPointer, uint64_t argument = 0,
+                              uint64_t initialStackSize = 0);
+    static Thread* createForkedUser(Task* task, const SyscallContext& context,
+                                    uint64_t signalMask);
+    [[noreturn]] static void exitCurrent(int exitCode);
+    static void blockCurrent();
+    static void prepareWait();
+    bool hasActiveIpcCall() const { return __atomic_load_n(&activeIpcCall, __ATOMIC_ACQUIRE); }
+    void setActiveIpcCall(bool active) { __atomic_store_n(&activeIpcCall, active, __ATOMIC_RELEASE); }
+    static void wake(Thread* thread);
+    static void sleepCurrent(uint64_t milliseconds);
+    void switchTo(Thread* next);
+    void resetFloatingPointState();
+    void restoreFloatingPointState();
+    static Thread* getCurrent();
+    static void terminateCurrentFromException(int exitCode);
+
+    static void bootstrap();
+
+    uint64_t getId() const { return id; }
+    uint64_t setId(uint64_t value) {
+        id = value;
+        return id;
+    }
+    ThreadState getState() const { return state; }
+    ThreadState setState(ThreadState value) {
+        state = value;
+        return state;
+    }
+    ThreadType getType() const { return type; }
+    ThreadType setType(ThreadType value) {
+        type = value;
+        return type;
+    }
+    void* getKernelStack() const { return kernelStack; }
+    void* setKernelStack(void* value) {
+        kernelStack = value;
+        return kernelStack;
+    }
+    void* getKernelStackTop() const { return kernelStackTop; }
+    void* setKernelStackTop(void* value) {
+        kernelStackTop = value;
+        return kernelStackTop;
+    }
+    void* getUserStack() const { return userStack; }
+    void* setUserStack(void* value) {
+        userStack = value;
+        return userStack;
+    }
+    CpuContext& getContext() { return context; }
+    const CpuContext& getContext() const { return context; }
+    Task* getTask() const { return task; }
+    Task* setTask(Task* value) {
+        task = value;
+        return task;
+    }
+    uint64_t getCpuId() const { return cpuId; }
+    uint64_t setCpuId(uint64_t value) {
+        cpuId = value;
+        return cpuId;
+    }
+    uint64_t getCpuAffinity() const { return cpuAffinity; }
+    uint64_t setCpuAffinity(uint64_t value) {
+        cpuAffinity = value;
+        return cpuAffinity;
+    }
+    uint64_t getVruntime() const { return vruntime; }
+    uint64_t setVruntime(uint64_t value) {
+        vruntime = value;
+        return vruntime;
+    }
+    uint64_t getRuntime() const { return runtime; }
+    uint64_t setRuntime(uint64_t value) {
+        runtime = value;
+        return runtime;
+    }
+    uint64_t getTimeSlice() const { return timeSlice; }
+    uint64_t setTimeSlice(uint64_t value) {
+        timeSlice = value;
+        return timeSlice;
+    }
+    uint64_t getSliceRuntime() const { return sliceRuntime; }
+    uint64_t setSliceRuntime(uint64_t value) {
+        sliceRuntime = value;
+        return sliceRuntime;
+    }
+    uint32_t getWeight() const { return weight; }
+    uint32_t setWeight(uint32_t value) {
+        weight = value;
+        return weight;
+    }
+    ThreadEntry getEntryPoint() const { return entryPoint; }
+    ThreadEntry setEntryPoint(ThreadEntry value) {
+        entryPoint = value;
+        return entryPoint;
+    }
+    void* getArgument() const { return argument; }
+    void* setArgument(void* value) {
+        argument = value;
+        return argument;
+    }
+    void* getUserArgument() const { return userArgument; }
+    void* setUserArgument(void* value) {
+        userArgument = value;
+        return userArgument;
+    }
+    int getExitCode() const { return exitCode; }
+    int setExitCode(int value) {
+        exitCode = value;
+        return exitCode;
+    }
+    Thread* getRbParent() const { return rbParent; }
+    Thread* setRbParent(Thread* value) {
+        rbParent = value;
+        return rbParent;
+    }
+    Thread* getRbLeft() const { return rbLeft; }
+    Thread* setRbLeft(Thread* value) {
+        rbLeft = value;
+        return rbLeft;
+    }
+    Thread*& accessRbLeft() { return rbLeft; }
+    Thread* getRbRight() const { return rbRight; }
+    Thread* setRbRight(Thread* value) {
+        rbRight = value;
+        return rbRight;
+    }
+    Thread*& accessRbRight() { return rbRight; }
+    bool getRbRed() const { return rbRed; }
+    bool setRbRed(bool value) {
+        rbRed = value;
+        return rbRed;
+    }
+    bool getInRunQueue() const { return inRunQueue; }
+    bool setInRunQueue(bool value) {
+        inRunQueue = value;
+        return inRunQueue;
+    }
+    bool& accessWakePending() { return wakePending; }
+    ThreadState getStateBeforeStop() const { return stateBeforeStop; }
+    ThreadState setStateBeforeStop(ThreadState value) {
+        stateBeforeStop = value;
+        return stateBeforeStop;
+    }
+    Thread* getWaitNext() const { return waitNext; }
+    Thread* setWaitNext(Thread* value) {
+        waitNext = value;
+        return waitNext;
+    }
+    Thread*& accessWaitNext() { return waitNext; }
+    Thread* getJoinWaiters() const { return joinWaiters; }
+    Thread* setJoinWaiters(Thread* value) {
+        joinWaiters = value;
+        return joinWaiters;
+    }
+    Thread* getJoinWaitersTail() const { return joinWaitersTail; }
+    Thread* setJoinWaitersTail(Thread* value) {
+        joinWaitersTail = value;
+        return joinWaitersTail;
+    }
+    volatile uint32_t* getWaitAddress() const { return waitAddress; }
+    volatile uint32_t* setWaitAddress(volatile uint32_t* value) {
+        waitAddress = value;
+        return waitAddress;
+    }
+    uint64_t getWaitKey() const { return waitKey; }
+    uint64_t setWaitKey(uint64_t value) {
+        waitKey = value;
+        return waitKey;
+    }
+    uint64_t getSignalMask() const { return signalMask; }
+    uint64_t setSignalMask(uint64_t value) {
+        signalMask = value;
+        return signalMask;
+    }
+    uint64_t getPendingSignals() const { return pendingSignals; }
+    uint64_t setPendingSignals(uint64_t value) {
+        pendingSignals = value;
+        return pendingSignals;
+    }
+    Thread* getTaskNext() const { return taskNext; }
+    Thread* setTaskNext(Thread* value) {
+        taskNext = value;
+        return taskNext;
+    }
+    uint64_t getWakeDeadlineNanoseconds() const {
+        return wakeDeadlineNanoseconds;
+    }
+    uint64_t setWakeDeadlineNanoseconds(uint64_t value) {
+        wakeDeadlineNanoseconds = value;
+        return wakeDeadlineNanoseconds;
+    }
+
+   private:
+    static void clearThread(Thread* thread);
+    static uint64_t* buildInitialStack(void* stackTop);
+    static void forkedUserEntry(void* argument);
+
     uint64_t id;
     ThreadState state;
     ThreadType type;
@@ -53,7 +276,7 @@ struct Thread {
     void* kernelStackTop;
     void* userStack;
     CpuContext context;
-    Process* process;
+    Task* task;
     uint64_t cpuId;
     uint64_t cpuAffinity;
     uint64_t vruntime;
@@ -66,13 +289,13 @@ struct Thread {
     void* argument;
     void* userArgument;
     int exitCode;
-
     Thread* rbParent;
     Thread* rbLeft;
     Thread* rbRight;
     bool rbRed;
     bool inRunQueue;
     bool wakePending;
+    bool activeIpcCall;
     ThreadState stateBeforeStop;
     Thread* waitNext;
     Thread* joinWaiters;
@@ -81,32 +304,17 @@ struct Thread {
     uint64_t waitKey;
     uint64_t signalMask;
     uint64_t pendingSignals;
-    Thread* processNext;
+    Thread* taskNext;
     uint64_t wakeDeadlineNanoseconds;
+    alignas(16) uint8_t floatingPointState[512];
 };
 
-void initThreadSubsystem();
-Thread* createThread(Process* process, ThreadEntry entryPoint, void* argument,
-                     ThreadType type = ThreadType::Kernel,
-                     bool makeRunnable = true);
-Thread* createUserThread(Process* process, uint64_t entryPoint,
-                         uint64_t userStackPointer,
-                         uint64_t argument = 0);
-Thread* createForkedUserThread(Process* process,
-                               const SyscallContext& context,
-                               uint64_t signalMask);
-[[noreturn]] void exitThread(int exitCode);
-void blockThread();
-void wakeThread(Thread* thread);
-void sleepThread(uint64_t milliseconds);
-void switchThread(Thread* previous, Thread* next);
-Thread* getCurrentThread();
-void terminateCurrentThreadFromException(int exitCode);
-
-extern "C" void threadBootstrap();
 extern "C" [[noreturn]] void enterUserMode(uint64_t entryPoint,
                                            uint64_t stackPointer,
                                            uint64_t argument);
+extern "C" [[noreturn]] void enterSystemService(uint64_t entryPoint,
+                                                uint64_t stackPointer,
+                                                uint64_t argument);
 extern "C" [[noreturn]] void resumeUserContext(SyscallContext* context);
 extern "C" void switchThreadContext(uint64_t* previousStackPointer,
                                     uint64_t nextStackPointer);

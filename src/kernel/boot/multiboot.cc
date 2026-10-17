@@ -56,9 +56,9 @@ const char* stringAfterHeader(const MultibootTag* tag) {
 namespace kernel {
 
 bool parseMultibootInfo(uint64_t address, BootInfo* bootInfo) {
-    //serialWrite("[BOOT] Multiboot2 address=");
-    //serialWriteHex(address);
-    serialWrite("\n");
+    // serial::serialWrite("[BOOT] Multiboot2 address=");
+    // serial::serialWriteHex(address);
+    serial::serialWrite("\n");
     if (bootInfo == nullptr || address == 0) {
         return false;
     }
@@ -77,9 +77,9 @@ bool parseMultibootInfo(uint64_t address, BootInfo* bootInfo) {
 
     const uint32_t* header   = reinterpret_cast<const uint32_t*>(address);
     const uint32_t totalSize = header[0];
-    /*serialWrite("[BOOT] Multiboot2 size=");
-    serialWriteDecimal(totalSize);
-    serialWrite("\n");*/
+    /*serial::serialWrite("[BOOT] Multiboot2 size=");
+    serial::serialWriteDecimal(totalSize);
+    serial::serialWrite("\n");*/
     if (totalSize < 16 || totalSize > (16 * 1024 * 1024)) {
         return false;
     }
@@ -89,11 +89,11 @@ bool parseMultibootInfo(uint64_t address, BootInfo* bootInfo) {
     const uint8_t* end = reinterpret_cast<const uint8_t*>(address) + totalSize;
     while (cursor + sizeof(MultibootTag) <= end) {
         const MultibootTag* tag = reinterpret_cast<const MultibootTag*>(cursor);
-        /*serialWrite("[BOOT] tag type=");
-        serialWriteDecimal(tag->type);
-        serialWrite(" size=");
-        serialWriteDecimal(tag->size);
-        serialWrite("\n");*/
+        /*serial::serialWrite("[BOOT] tag type=");
+        serial::serialWriteDecimal(tag->type);
+        serial::serialWrite(" size=");
+        serial::serialWriteDecimal(tag->size);
+        serial::serialWrite("\n");*/
         if (tag->size < 8 || cursor + tag->size > end) {
             return false;
         }
@@ -142,10 +142,9 @@ bool parseMultibootInfo(uint64_t address, BootInfo* bootInfo) {
             bootInfo->framebuffer.width        = framebuffer->width;
             bootInfo->framebuffer.height       = framebuffer->height;
             bootInfo->framebuffer.bitsPerPixel = framebuffer->bitsPerPixel;
-            bootInfo->framebuffer.type          = framebuffer->framebufferType;
-            if (framebuffer->framebufferType == 1 && tag->size >=
-                                                        sizeof(
-                                                            MultibootFramebufferTag)) {
+            bootInfo->framebuffer.type         = framebuffer->framebufferType;
+            if (framebuffer->framebufferType == 1 &&
+                tag->size >= sizeof(MultibootFramebufferTag)) {
                 bootInfo->framebuffer.redPosition = framebuffer->redPosition;
                 bootInfo->framebuffer.redMaskSize = framebuffer->redMaskSize;
                 bootInfo->framebuffer.greenPosition =
@@ -167,7 +166,7 @@ bool parseMultibootInfo(uint64_t address, BootInfo* bootInfo) {
     }
 
     if (bootInfo->memoryMapCount == 0) {
-        serialWrite("[BOOT] memory map tag missing\n");
+        serial::serialWrite("[BOOT] memory map tag missing\n");
         return false;
     }
     return true;

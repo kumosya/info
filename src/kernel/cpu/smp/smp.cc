@@ -3,13 +3,13 @@
 #include "kernel/acpi.h"
 #include "kernel/boot.h"
 #include "kernel/cpu.h"
-#include "kernel/heap.h"
 #include "kernel/interrupt.h"
+#include "kernel/mm.h"
 #include "kernel/page.h"
-#include "kernel/scheduler.h"
 #include "kernel/serial.h"
 #include "kernel/spinlock.h"
 #include "kernel/syscall.h"
+#include "kernel/task.h"
 #include "kernel/thread.h"
 
 namespace {
@@ -32,7 +32,7 @@ struct [[gnu::packed]] MadtEntryHeader {
 
 struct [[gnu::packed]] MadtLocalApic {
     MadtEntryHeader header;
-    uint8_t processorId;
+    uint8_t taskorId;
     uint8_t apicId;
     uint32_t flags;
 };
@@ -42,7 +42,7 @@ struct [[gnu::packed]] MadtLocalX2Apic {
     uint16_t reserved;
     uint32_t x2ApicId;
     uint32_t flags;
-    uint32_t processorId;
+    uint32_t taskorId;
 };
 
 kernel::CpuDescriptor* cpuDescriptors;
@@ -79,9 +79,9 @@ void startupDelay(uint32_t iterations) {
     }
 }
 
-bool processorEnabled(uint32_t flags) { return (flags & 1U) != 0; }
+bool taskorEnabled(uint32_t flags) { return (flags & 1U) != 0; }
 
-uint32_t countEnabledProcessors(const Madt* madt) {
+uint32_t countEnabledTaskors(const Madt* madt) {
     uint32_t count = 0;
     const uint8_t* cursor =
         reinterpret_cast<const uint8_t*>(madt) + sizeof(Madt);
@@ -95,12 +95,12 @@ uint32_t countEnabledProcessors(const Madt* madt) {
             break;
         }
         if (header->type == 0 && header->length >= sizeof(MadtLocalApic) &&
-            processorEnabled(
+            taskorEnabled(
                 reinterpret_cast<const MadtLocalApic*>(cursor)->flags)) {
             ++count;
         } else if (header->type == 9 &&
                    header->length >= sizeof(MadtLocalX2Apic) &&
-                   processorEnabled(
+                   taskorEnabled(
                        reinterpret_cast<const MadtLocalX2Apic*>(cursor)
                            ->flags)) {
             ++count;
@@ -111,22 +111,22 @@ uint32_t countEnabledProcessors(const Madt* madt) {
 }
 
 void initializeDescriptor(kernel::CpuDescriptor& descriptor, uint32_t cpuId,
-                          uint32_t processorId, uint32_t apicId,
+                          uint32_t taskorId, uint32_t apicId,
                           kernel::CpuState state) {
-    descriptor.cpuId       = cpuId;
-    descriptor.processorId = processorId;
-    descriptor.apicId      = apicId;
-    descriptor.enabled     = true;
-    descriptor.localData   = nullptr;
-    descriptor.state.store(state, kernel::MemoryOrder::Relaxed);
-    descriptor.startupStage.store(0, kernel::MemoryOrder::Relaxed);
+    descriptor.setCpuId(cpuId);
+    descriptor.setTaskorId(taskorId);
+    descriptor.setApicId(apicId);
+    descriptor.setEnabled(true);
+    descriptor.setLocalData(nullptr);
+    descriptor.getState().store(state, kernel::MemoryOrder::Relaxed);
+    descriptor.getStartupStage().store(0, kernel::MemoryOrder::Relaxed);
 }
 
-void rescheduleIpiHandler(kernel::InterruptContext*) {
-    kernel::requestReschedule();
+void rescheduleIpiHandler(kernel::interrupt::Context*) {
+    kernel::schedule::requestReschedule();
 }
 
-void tlbShootdownIpiHandler(kernel::InterruptContext*) {
+void tlbShootdownIpiHandler(kernel::interrupt::Context*) {
     const uint64_t address =
         tlbShootdownAddress.load(kernel::MemoryOrder::Acquire);
     asm volatile("invlpg (%0)" : : "r"(address) : "memory");
@@ -135,16 +135,16 @@ void tlbShootdownIpiHandler(kernel::InterruptContext*) {
 
 }  // namespace
 
-namespace kernel {
+namespace kernel::smp {
 
 void initSmp(const BootInfo* bootInfo) {
     const Madt* madt =
-        reinterpret_cast<const Madt*>(findAcpiTable(bootInfo, "APIC"));
+        reinterpret_cast<const Madt*>(acpi::findAcpiTable(bootInfo, "APIC"));
     if (madt == nullptr || madt->header.length < sizeof(Madt)) {
-        serialWrite("[SMP] ACPI MADT unavailable; using BSP only\n");
+        serial::serialWrite("[SMP] ACPI MADT unavailable; using BSP only\n");
         discoveredCpuCount = 1;
     } else {
-        discoveredCpuCount = countEnabledProcessors(madt);
+        discoveredCpuCount = countEnabledTaskors(madt);
         if (discoveredCpuCount == 0) {
             discoveredCpuCount = 1;
         } else if (discoveredCpuCount > maximumSupportedCpus) {
@@ -153,15 +153,15 @@ void initSmp(const BootInfo* bootInfo) {
     }
 
     cpuDescriptors = static_cast<CpuDescriptor*>(
-        kernelAllocate(sizeof(CpuDescriptor) * discoveredCpuCount));
+        heap::kernelAllocate(sizeof(CpuDescriptor) * discoveredCpuCount));
     if (cpuDescriptors == nullptr) {
-        serialWrite("[SMP] unable to allocate CPU descriptors\n");
-        haltCpu();
+        serial::serialWrite("[SMP] unable to allocate CPU descriptors\n");
+        cpu::halt();
     }
     clearMemory(cpuDescriptors, sizeof(CpuDescriptor) * discoveredCpuCount);
-    initializeDescriptor(cpuDescriptors[0], 0, 0, getCurrentCpu()->apicId,
-                         CpuState::Online);
-    cpuDescriptors[0].localData = getCurrentCpu();
+    initializeDescriptor(cpuDescriptors[0], 0, 0,
+                         cpu::getCurrent()->getApicId(), CpuState::Online);
+    cpuDescriptors[0].setLocalData(cpu::getCurrent());
 
     uint32_t nextCpuId = 1;
     if (madt != nullptr) {
@@ -177,30 +177,29 @@ void initSmp(const BootInfo* bootInfo) {
                 cursor + header->length > end) {
                 break;
             }
-            uint32_t processorId = 0;
-            uint32_t apicId      = 0xffffffffU;
-            uint32_t flags       = 0;
+            uint32_t taskorId = 0;
+            uint32_t apicId   = 0xffffffffU;
+            uint32_t flags    = 0;
             if (header->type == 0 && header->length >= sizeof(MadtLocalApic)) {
                 const MadtLocalApic* entry =
                     reinterpret_cast<const MadtLocalApic*>(cursor);
-                processorId = entry->processorId;
-                apicId      = entry->apicId;
-                flags       = entry->flags;
+                taskorId = entry->taskorId;
+                apicId   = entry->apicId;
+                flags    = entry->flags;
             } else if (header->type == 9 &&
                        header->length >= sizeof(MadtLocalX2Apic)) {
                 const MadtLocalX2Apic* entry =
                     reinterpret_cast<const MadtLocalX2Apic*>(cursor);
-                processorId = entry->processorId;
-                apicId      = entry->x2ApicId;
-                flags       = entry->flags;
+                taskorId = entry->taskorId;
+                apicId   = entry->x2ApicId;
+                flags    = entry->flags;
             }
-            if (processorEnabled(flags)) {
-                if (apicId == getCurrentCpu()->apicId) {
-                    cpuDescriptors[0].processorId = processorId;
+            if (taskorEnabled(flags)) {
+                if (apicId == cpu::getCurrent()->getApicId()) {
+                    cpuDescriptors[0].setTaskorId(taskorId);
                 } else if (apicId <= 0xff) {
                     initializeDescriptor(cpuDescriptors[nextCpuId], nextCpuId,
-                                         processorId, apicId,
-                                         CpuState::Offline);
+                                         taskorId, apicId, CpuState::Offline);
                     ++nextCpuId;
                 }
             }
@@ -209,26 +208,26 @@ void initSmp(const BootInfo* bootInfo) {
     }
     discoveredCpuCount = nextCpuId == 0 ? 1 : nextCpuId;
     onlineCpuCount.store(1, MemoryOrder::Release);
-    registerInterruptHandler(rescheduleIpiVector, rescheduleIpiHandler);
-    registerInterruptHandler(tlbShootdownIpiVector, tlbShootdownIpiHandler);
-    serialWrite("[SMP] discovered CPUs=");
-    serialWriteDecimal(discoveredCpuCount);
-    serialWrite(" BSP APIC ID=");
-    serialWriteDecimal(getCurrentCpu()->apicId);
-    serialWrite("\n");
+    interrupt::registerHandler(rescheduleIpiVector, rescheduleIpiHandler);
+    interrupt::registerHandler(tlbShootdownIpiVector, tlbShootdownIpiHandler);
+    serial::serialWrite("[SMP] discovered CPUs=");
+    serial::serialWriteDecimal(discoveredCpuCount);
+    serial::serialWrite(" BSP APIC ID=");
+    serial::serialWriteDecimal(cpu::getCurrent()->getApicId());
+    serial::serialWrite("\n");
 }
 
-void startApplicationProcessors() {
+void startApplicationTaskors() {
     if (discoveredCpuCount <= 1) {
-        serialWrite("[SMP] no application processors to start\n");
+        serial::serialWrite("[SMP] no application taskors to start\n");
         return;
     }
     const uint64_t trampolineSize =
         reinterpret_cast<uint64_t>(&apTrampolineEnd) -
         reinterpret_cast<uint64_t>(&apTrampolineStart);
     if (trampolineSize > 4096 ||
-        !mapPage(trampolineAddress, trampolineAddress, pageWritable)) {
-        serialWrite("[SMP] unable to map AP trampoline\n");
+        !memory::mapPage(trampolineAddress, trampolineAddress, pageWritable)) {
+        serial::serialWrite("[SMP] unable to map AP trampoline\n");
         return;
     }
     uint8_t* trampoline =
@@ -240,49 +239,53 @@ void startApplicationProcessors() {
 
     for (uint32_t cpuId = 1; cpuId < discoveredCpuCount; ++cpuId) {
         CpuDescriptor& descriptor = cpuDescriptors[cpuId];
-        descriptor.localData = prepareCpuLocalData(cpuId, descriptor.apicId);
-        if (descriptor.localData == nullptr) {
-            descriptor.state.store(CpuState::Failed, MemoryOrder::Release);
+        descriptor.setLocalData(
+            CpuLocalData::prepare(cpuId, descriptor.getApicId()));
+        if (descriptor.getLocalData() == nullptr) {
+            descriptor.getState().store(CpuState::Failed, MemoryOrder::Release);
             continue;
         }
-        descriptor.state.store(CpuState::Starting, MemoryOrder::Release);
-        descriptor.startupStage.store(1, MemoryOrder::Release);
-        *trampolinePointer(&apStartupCr3) = getKernelAddressSpaceRoot();
-        *trampolinePointer(&apStartupStack) =
-            reinterpret_cast<uint64_t>(descriptor.localData->kernelStack);
+        descriptor.getState().store(CpuState::Starting, MemoryOrder::Release);
+        descriptor.getStartupStage().store(1, MemoryOrder::Release);
+        *trampolinePointer(&apStartupCr3) = memory::getKernelAddressSpaceRoot();
+        *trampolinePointer(&apStartupStack) = reinterpret_cast<uint64_t>(
+            descriptor.getLocalData()->getKernelStack());
         *trampolinePointer(&apStartupCpuLocal) =
-            reinterpret_cast<uint64_t>(descriptor.localData);
+            reinterpret_cast<uint64_t>(descriptor.getLocalData());
         *trampolinePointer(&apStartupEntry) =
-            reinterpret_cast<uint64_t>(applicationProcessorEntry);
+            reinterpret_cast<uint64_t>(smp::applicationTaskorEntry);
 
-        sendInitInterProcessorInterrupt(descriptor.apicId);
+        localapic::sendInitInterTaskorInterrupt(descriptor.getApicId());
         startupDelay(1000000);
-        sendStartupInterProcessorInterrupt(descriptor.apicId, trampolineVector);
+        localapic::sendStartupInterTaskorInterrupt(descriptor.getApicId(),
+                                                   trampolineVector);
         startupDelay(200000);
-        sendStartupInterProcessorInterrupt(descriptor.apicId, trampolineVector);
+        localapic::sendStartupInterTaskorInterrupt(descriptor.getApicId(),
+                                                   trampolineVector);
 
         uint32_t timeout = 100000000;
-        while (descriptor.state.load(MemoryOrder::Acquire) ==
+        while (descriptor.getState().load(MemoryOrder::Acquire) ==
                    CpuState::Starting &&
                timeout-- != 0) {
             asm volatile("pause");
         }
-        if (descriptor.state.load(MemoryOrder::Acquire) != CpuState::Online) {
-            descriptor.state.store(CpuState::Failed, MemoryOrder::Release);
-            serialWrite("[SMP] AP startup failed cpu=");
-            serialWriteDecimal(cpuId);
-            serialWrite(" apic=");
-            serialWriteDecimal(descriptor.apicId);
-            serialWrite(" stage=");
-            serialWriteDecimal(
-                descriptor.startupStage.load(MemoryOrder::Acquire));
-            serialWrite("\n");
+        if (descriptor.getState().load(MemoryOrder::Acquire) !=
+            CpuState::Online) {
+            descriptor.getState().store(CpuState::Failed, MemoryOrder::Release);
+            serial::serialWrite("[SMP] AP startup failed cpu=");
+            serial::serialWriteDecimal(cpuId);
+            serial::serialWrite(" apic=");
+            serial::serialWriteDecimal(descriptor.getApicId());
+            serial::serialWrite(" stage=");
+            serial::serialWriteDecimal(
+                descriptor.getStartupStage().load(MemoryOrder::Acquire));
+            serial::serialWrite("\n");
         }
     }
-    unmapPage(trampolineAddress);
-    serialWrite("[SMP] online CPUs=");
-    serialWriteDecimal(getOnlineCpuCount());
-    serialWrite("\n");
+    memory::unmapPage(trampolineAddress);
+    serial::serialWrite("[SMP] online CPUs=");
+    serial::serialWriteDecimal(smp::getOnlineCpuCount());
+    serial::serialWrite("\n");
 }
 
 uint32_t getDiscoveredCpuCount() { return discoveredCpuCount; }
@@ -296,61 +299,63 @@ CpuDescriptor* getCpuDescriptor(uint32_t cpuId) {
 }
 
 CpuLocalData* getCpuLocalData(uint32_t cpuId) {
-    CpuDescriptor* descriptor = getCpuDescriptor(cpuId);
-    return descriptor == nullptr ? nullptr : descriptor->localData;
+    CpuDescriptor* descriptor = smp::getCpuDescriptor(cpuId);
+    return descriptor == nullptr ? nullptr : descriptor->getLocalData();
 }
 
 void requestRemoteReschedule(uint32_t cpuId) {
-    CpuDescriptor* descriptor = getCpuDescriptor(cpuId);
-    if (descriptor != nullptr && cpuId != getCurrentCpuId() &&
-        descriptor->state.load(MemoryOrder::Acquire) == CpuState::Online) {
-        sendInterProcessorInterrupt(descriptor->apicId, rescheduleIpiVector);
+    CpuDescriptor* descriptor = smp::getCpuDescriptor(cpuId);
+    if (descriptor != nullptr && cpuId != cpu::getCurrentId() &&
+        descriptor->getState().load(MemoryOrder::Acquire) == CpuState::Online) {
+        localapic::sendInterTaskorInterrupt(descriptor->getApicId(),
+                                            rescheduleIpiVector);
     }
 }
 
 void requestTlbShootdown(uint64_t virtualAddress) {
-    if (getOnlineCpuCount() <= 1) {
+    if (smp::getOnlineCpuCount() <= 1) {
         return;
     }
     tlbShootdownLock.lock();
-    const uint64_t flags = disableInterrupts();
+    const uint64_t flags = interrupt::disable();
     tlbShootdownAddress.store(virtualAddress, MemoryOrder::Release);
     tlbShootdownAcknowledgements.store(0, MemoryOrder::Release);
     uint32_t targets = 0;
     for (uint32_t cpuId = 0; cpuId < discoveredCpuCount; ++cpuId) {
         CpuDescriptor& descriptor = cpuDescriptors[cpuId];
-        if (cpuId != getCurrentCpuId() &&
-            descriptor.state.load(MemoryOrder::Acquire) == CpuState::Online) {
+        if (cpuId != cpu::getCurrentId() &&
+            descriptor.getState().load(MemoryOrder::Acquire) ==
+                CpuState::Online) {
             ++targets;
-            sendInterProcessorInterrupt(descriptor.apicId,
-                                        tlbShootdownIpiVector);
+            localapic::sendInterTaskorInterrupt(descriptor.getApicId(),
+                                                tlbShootdownIpiVector);
         }
     }
     while (tlbShootdownAcknowledgements.load(MemoryOrder::Acquire) < targets) {
         asm volatile("pause");
     }
-    restoreInterrupts(flags);
+    interrupt::restore(flags);
     tlbShootdownLock.unlock();
 }
 
-extern "C" [[noreturn]] void applicationProcessorEntry(CpuLocalData* cpu) {
+extern "C" [[noreturn]] void applicationTaskorEntry(CpuLocalData* cpu) {
     CpuDescriptor* descriptor =
-        cpu == nullptr ? nullptr : getCpuDescriptor(cpu->cpuId);
+        cpu == nullptr ? nullptr : smp::getCpuDescriptor(cpu->getCpuId());
     if (descriptor == nullptr) {
-        haltCpu();
+        cpu::halt();
     }
-    descriptor->startupStage.store(2, MemoryOrder::Release);
-    initApplicationProcessorCpu(cpu);
-    descriptor->startupStage.store(3, MemoryOrder::Release);
-    loadIdt();
-    initSyscall();
-    initThreadSubsystem();
-    initScheduler();
-    descriptor->startupStage.store(4, MemoryOrder::Release);
-    descriptor->state.store(CpuState::Online, MemoryOrder::Release);
+    descriptor->getStartupStage().store(2, MemoryOrder::Release);
+    cpu->initApplicationTaskorCpu();
+    descriptor->getStartupStage().store(3, MemoryOrder::Release);
+    interrupt::loadIdt();
+    syscall::init();
+    Thread::init();
+    schedule::init();
+    descriptor->getStartupStage().store(4, MemoryOrder::Release);
+    descriptor->getState().store(CpuState::Online, MemoryOrder::Release);
     onlineCpuCount.fetchAdd(1, MemoryOrder::Release);
-    exitThread(0);
-    haltCpu();
+    Thread::exitCurrent(0);
+    cpu::halt();
 }
 
-}  // namespace kernel
+}  // namespace kernel::smp

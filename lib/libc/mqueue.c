@@ -4,7 +4,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 
-#include "os/c_api.h"
+#include "os_adapter.h"
 
 static int valid_time(const struct timespec* value) {
     return value != NULL && value->tv_sec >= 0 && value->tv_nsec >= 0 &&
@@ -46,7 +46,7 @@ mqd_t mq_open(const char* name, int flags, ...) {
         }
     }
     {
-        uint64_t descriptor = os_open_message_queue(
+        uint64_t descriptor = __libc_os_open_message_queue(
             name, flags, maximum_messages, message_size);
         if ((int64_t)descriptor < 0 || descriptor == 0) {
             errno = (flags & O_EXCL) ? EEXIST : ENOENT;
@@ -57,7 +57,7 @@ mqd_t mq_open(const char* name, int flags, ...) {
 }
 
 int mq_close(mqd_t descriptor) {
-    if (!os_close_handle(descriptor)) {
+    if (!__libc_os_close_handle(descriptor)) {
         errno = EBADF;
         return -1;
     }
@@ -65,7 +65,7 @@ int mq_close(mqd_t descriptor) {
 }
 
 int mq_unlink(const char* name) {
-    if (name == NULL || os_unlink_message_queue(name) != 0) {
+    if (name == NULL || __libc_os_unlink_message_queue(name) != 0) {
         errno = ENOENT;
         return -1;
     }
@@ -79,7 +79,7 @@ int mq_send(mqd_t descriptor, const char* message, size_t length,
         errno = EINVAL;
         return -1;
     }
-    result = os_send_message_queue(descriptor, message, length, priority);
+    result = __libc_os_send_message_queue(descriptor, message, length, priority);
     if (result != 0) {
         errno = result == -6 ? EAGAIN : EINVAL;
         return -1;
@@ -95,7 +95,7 @@ ssize_t mq_receive(mqd_t descriptor, char* message, size_t length,
         errno = EINVAL;
         return -1;
     }
-    result = os_receive_message_queue(descriptor, message, length, &value);
+    result = __libc_os_receive_message_queue(descriptor, message, length, &value);
     if (result < 0) {
         errno = result == -6 ? EAGAIN : EMSGSIZE;
         return -1;
@@ -107,7 +107,7 @@ ssize_t mq_receive(mqd_t descriptor, char* message, size_t length,
 int mq_getattr(mqd_t descriptor, struct mq_attr* attributes) {
     OsMessageQueueAttributes value;
     if (attributes == NULL ||
-        os_get_message_queue_attributes(descriptor, &value) != 0) {
+        __libc_os_get_message_queue_attributes(descriptor, &value) != 0) {
         errno = EINVAL;
         return -1;
     }
@@ -122,7 +122,7 @@ int mq_setattr(mqd_t descriptor, const struct mq_attr* attributes,
                struct mq_attr* old_attributes) {
     uint64_t old_flags;
     if (attributes == NULL || (attributes->mq_flags & ~O_NONBLOCK) != 0 ||
-        os_set_message_queue_flags(descriptor,
+        __libc_os_set_message_queue_flags(descriptor,
                                    (uint64_t)attributes->mq_flags,
                                    &old_flags) != 0) {
         errno = EINVAL;
@@ -153,7 +153,7 @@ int mq_timedsend(mqd_t descriptor, const char* message, size_t length,
             if (errno == EAGAIN) errno = ETIMEDOUT;
             return -1;
         }
-        os_sleep(1);
+        __libc_os_sleep(1);
     }
     (void)mq_setattr(descriptor, &attributes, NULL);
     return 0;
@@ -178,7 +178,7 @@ ssize_t mq_timedreceive(mqd_t descriptor, char* message, size_t length,
             if (errno == EAGAIN) errno = ETIMEDOUT;
             return -1;
         }
-        os_sleep(1);
+        __libc_os_sleep(1);
     }
     (void)mq_setattr(descriptor, &attributes, NULL);
     return result;
@@ -195,7 +195,7 @@ int mq_notify(mqd_t descriptor, const struct sigevent* notification) {
         errno = EINVAL;
         return -1;
     }
-    result = os_register_message_queue_notification(
+    result = __libc_os_register_message_queue_notification(
         descriptor,
         notification == NULL
             ? 0

@@ -1,0 +1,1 @@
+Portable math, complex and selected C/POSIX routines from musl 1.2.5 (https://musl.libc.org/releases/musl-1.2.5.tar.gz). Original file licenses and COPYRIGHT apply. OS-specific interfaces use the osinfo libc ABI; musl syscall and pthread implementations are not imported.

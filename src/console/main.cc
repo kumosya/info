@@ -1,9 +1,10 @@
 #include <signal.h>
 
 #include "os/abi.h"
+#include "os/ansi.h"
 #include "os/file.h"
-#include "os/font.h"
-#include "os/gui.h"
+#include "osgui/font.h"
+#include "osgui/gui.h"
 #include "os/input.h"
 #include "os/protocol.h"
 #include "os/service.h"
@@ -32,7 +33,7 @@ struct Cell {
 
 class DisplayConsole {
    public:
-    bool initialize() {
+    bool init() {
         return os::mapFramebuffer(framebufferAddress, info_) == 0 &&
                info_.address != 0 && info_.width >= cellWidth &&
                info_.height >= cellHeight &&
@@ -77,22 +78,12 @@ class DisplayConsole {
     void invalidate() { valid_ = false; }
 
    private:
-    static uint32_t color(uint8_t index, bool bright) {
-        constexpr uint32_t normal[]  = {0x00171a1f, 0x00b84040, 0x004aa36b,
-                                        0x00c49a44, 0x004a82bd, 0x009c5caf,
-                                        0x003aa6a0, 0x00d9dde3};
-        constexpr uint32_t intense[] = {0x00646b75, 0x00ef6666, 0x006ed596,
-                                        0x00f0c674, 0x007fb7e8, 0x00c792ea,
-                                        0x005fd7d1, 0x00ffffff};
-        return bright ? intense[index & 7U] : normal[index & 7U];
-    }
-
     void drawCell(uint32_t column, uint32_t row, const Cell& cell,
                   bool cursor) {
         const bool bright   = (cell.attributes & 1U) != 0;
-        uint32_t foreground = color(cell.foreground, bright);
-        uint32_t background = color(cell.background, false);
-        if (cursor) {
+        uint32_t foreground = os::terminal::color(cell.foreground, bright);
+        uint32_t background = os::terminal::color(cell.background);
+        if (cursor != ((cell.attributes & 4U) != 0)) {
             const uint32_t temporary = foreground;
             foreground               = background;
             background               = temporary;
@@ -135,9 +126,10 @@ class DisplayConsole {
 
 class Tty {
    public:
-    void initialize(uint32_t id, uint32_t columns, uint32_t rows) {
+    void init(uint32_t id, uint32_t columns, uint32_t rows) {
         os::clearMemory(this, sizeof(*this));
         insertMode_ = true;
+        echo_ = true;
         id_         = id;
         columns_    = columns;
         rows_       = rows;
@@ -168,8 +160,8 @@ class Tty {
                 lineLength_      = 0;
                 lineCursor_      = 0;
                 historyPosition_ = historyCount_;
-                if (foregroundProcess_ != 0) {
-                    os::sendSignal(foregroundProcess_,
+                if (foregroundTask_ != 0) {
+                    os::sendSignal(static_cast<uint64_t>(-static_cast<int64_t>(foregroundTask_)),
                                    keyCode == os::KeyCode::C ? SIGINT
                                                             : SIGTSTP);
                 } else {
@@ -188,6 +180,20 @@ class Tty {
             } else {
                 write(notation, 2);
                 appendControlCharacter(static_cast<char>(letter - 'A' + 1));
+            }
+            return;
+        }
+        if (!echo_) {
+            if (keyCode == os::KeyCode::Enter || keyCode == os::KeyCode::KeypadEnter) {
+                commitLine(true);
+            } else if (keyCode == os::KeyCode::Backspace) {
+                if (lineLength_) line_[--lineLength_] = 0;
+                lineCursor_ = lineLength_;
+            } else {
+                os::KeyEvent translated = key; translated.keyCode = keyCode;
+                const char character = keyCharacter(translated);
+                if (character && lineLength_ + 1 < lineCapacity) line_[lineLength_++] = character;
+                lineCursor_ = lineLength_;
             }
             return;
         }
@@ -276,9 +282,12 @@ class Tty {
     const Cell* cells() const { return cells_; }
     uint32_t cursorX() const { return cursorX_; }
     uint32_t cursorY() const { return cursorY_; }
-    void setForegroundProcess(uint64_t processId) {
-        foregroundProcess_ = processId;
+    void setForegroundTask(uint64_t taskId) {
+        foregroundTask_ = taskId;
+        if (!taskId) echo_ = true;
     }
+    bool echo() const { return echo_; }
+    void setEcho(bool enabled) { echo_ = enabled; }
 
    private:
     static os::KeyCode navigationKey(const os::KeyEvent& key) {
@@ -434,7 +443,7 @@ class Tty {
     }
 
     void commitLine(bool newline) {
-        rememberLine();
+        if (echo_) rememberLine();
         for (uint32_t index = 0; index < lineLength_; ++index) {
             enqueue(line_[index]);
         }
@@ -539,36 +548,15 @@ class Tty {
     }
 
     void consume(char character) {
-        if (ansiState_ == 1) {
-            ansiState_ = character == '[' ? 2 : 0;
-            return;
-        }
-        if (ansiState_ == 2) {
-            if (character >= '0' && character <= '9') {
-                uint16_t& parameter =
-                    secondParameter_ ? parameterTwo_ : parameterOne_;
-                parameter =
-                    static_cast<uint16_t>(parameter * 10 + character - '0');
-                return;
-            }
-            if (character == ';') {
-                secondParameter_ = true;
-                return;
-            }
-            applyAnsi(character);
-            ansiState_    = 0;
-            parameterOne_ = parameterTwo_ = 0;
-            secondParameter_              = false;
-            return;
-        }
-        if (character == '\033') {
-            ansiState_ = 1;
-        } else {
-            put(character);
-        }
+        const auto result = ansi_.feed(static_cast<uint8_t>(character));
+        if (result == os::terminal::EscapeParser::Result::Text) put(character);
+        else if (result == os::terminal::EscapeParser::Result::Command)
+            applyAnsi(ansi_.command());
     }
 
     void applyAnsi(char command) {
+        const uint16_t parameterOne_ = ansi_.parameter(0);
+        const uint16_t parameterTwo_ = ansi_.parameter(1);
         const uint32_t first = parameterOne_ == 0 ? 1 : parameterOne_;
         if (command == 'A') {
             cursorY_ = first > cursorY_ ? 0 : cursorY_ - first;
@@ -591,26 +579,8 @@ class Tty {
                 cells_[cursorY_ * columns_ + column] = blankCell();
             }
         } else if (command == 'm') {
-            applyStyle(parameterOne_);
-            if (secondParameter_) {
-                applyStyle(parameterTwo_);
-            }
-        }
-    }
-
-    void applyStyle(uint16_t value) {
-        if (value == 0) {
-            foreground_ = 7;
-            background_ = 0;
-            attributes_ = 0;
-        } else if (value == 1) {
-            attributes_ |= 1;
-        } else if (value == 4) {
-            attributes_ |= 2;
-        } else if (value >= 30 && value <= 37) {
-            foreground_ = static_cast<uint8_t>(value - 30);
-        } else if (value >= 40 && value <= 47) {
-            background_ = static_cast<uint8_t>(value - 40);
+            for (uint32_t i = 0; i < ansi_.count(); ++i)
+                style_.apply(ansi_.parameter(i));
         }
     }
 
@@ -640,8 +610,8 @@ class Tty {
         if (character < 32 || character > 126) {
             return;
         }
-        cells_[cursorY_ * columns_ + cursorX_] = {character, foreground_,
-                                                  background_, attributes_};
+        cells_[cursorY_ * columns_ + cursorX_] = {character, style_.foreground(),
+                                                  style_.background(), style_.attributes()};
         if (++cursorX_ == columns_) {
             cursorX_ = 0;
             advanceRow();
@@ -672,10 +642,8 @@ class Tty {
             cells_[index] = blankCell();
         }
         cursorX_ = cursorY_ = 0;
-        foreground_         = 7;
-        background_         = 0;
-        attributes_         = 0;
-        ansiState_          = 0;
+        style_ = {};
+        ansi_ = {};
     }
 
     uint32_t id_;
@@ -692,16 +660,12 @@ class Tty {
     uint32_t lineCursor_;
     uint32_t historyCount_;
     uint32_t historyPosition_;
-    uint64_t foregroundProcess_;
+    uint64_t foregroundTask_;
+    bool echo_;
     uint32_t cursorX_;
     uint32_t cursorY_;
-    uint16_t parameterOne_;
-    uint16_t parameterTwo_;
-    uint8_t foreground_;
-    uint8_t background_;
-    uint8_t attributes_;
-    uint8_t ansiState_;
-    bool secondParameter_;
+    os::terminal::Style style_;
+    os::terminal::EscapeParser ansi_;
     bool eofPending_;
     bool insertMode_;
 };
@@ -710,10 +674,10 @@ Tty terminalStorage[os::textTerminalCount];
 
 class ConsoleService {
    public:
-    bool initialize(uint64_t registry) {
+    bool init(uint64_t registry) {
         registry_ = registry;
         endpoint_ = os::createEndpoint();
-        if (registry_ == 0 || endpoint_ == 0 || !display_.initialize() ||
+        if (registry_ == 0 || endpoint_ == 0 || !display_.init() ||
             !os::registerService(registry_, os::consoleServiceName,
                                  endpoint_) ||
             !os::registerService(registry_, os::terminalServiceName,
@@ -721,7 +685,7 @@ class ConsoleService {
             return false;
         }
         for (uint32_t index = 0; index < os::textTerminalCount; ++index) {
-            terminals_[index].initialize(index, display_.columns(),
+            terminals_[index].init(index, display_.columns(),
                                          display_.rows());
         }
         loadConfiguration();
@@ -744,7 +708,7 @@ class ConsoleService {
             const uint32_t terminal = static_cast<uint32_t>(request.data[0]);
             uint32_t length         = static_cast<uint32_t>(request.data[1]);
             if (terminal >= os::textTerminalCount ||
-                length > 6 * sizeof(uint64_t)) {
+                length > 512 || request.length < 2 + (length + 7) / 8) {
                 reply.data[0] = static_cast<uint64_t>(
                     static_cast<int64_t>(os::ErrorCode::InvalidArgument));
             } else {
@@ -752,7 +716,7 @@ class ConsoleService {
                     reinterpret_cast<const char*>(&request.data[2]);
                 terminals_[terminal].write(data, length);
                 if (serialConsole_) {
-                    char serial[6 * sizeof(uint64_t) + 1]{};
+                    char serial[513]{};
                     for (uint32_t index = 0; index < length; ++index) {
                         serial[index] = data[index];
                     }
@@ -803,14 +767,23 @@ class ConsoleService {
             reply.data[3] = display_.columns();
             reply.data[4] = display_.rows();
             reply.length  = 5;
+        } else if (operation == os::TerminalRequest::GetEcho || operation == os::TerminalRequest::SetEcho) {
+            const uint32_t terminal = static_cast<uint32_t>(request.data[0]);
+            if (terminal >= os::textTerminalCount) reply.data[0] = 1;
+            else {
+                reply.data[0] = 0;
+                reply.data[1] = terminals_[terminal].echo();
+                reply.length = 2;
+                if (operation == os::TerminalRequest::SetEcho) terminals_[terminal].setEcho(request.data[1] != 0);
+            }
         } else if (operation ==
-                   os::TerminalRequest::SetForegroundProcess) {
+                   os::TerminalRequest::SetForegroundTask) {
             const uint32_t terminal = static_cast<uint32_t>(request.data[0]);
             if (terminal >= os::textTerminalCount) {
                 reply.data[0] = static_cast<uint64_t>(
                     static_cast<int64_t>(os::ErrorCode::InvalidArgument));
             } else {
-                terminals_[terminal].setForegroundProcess(request.data[1]);
+                terminals_[terminal].setForegroundTask(request.data[1]);
                 reply.data[0] = 0;
             }
         } else {
@@ -848,7 +821,7 @@ class ConsoleService {
             return false;
         }
         const uint64_t window =
-            os::lookupService(registry_, os::windowServiceName,
+            os::lookupService(registry_, os::guiwServiceName,
                               terminal == os::graphicalTerminalId ? 100 : 1);
         if (window != 0) {
             os::setWindowSessionActive(window,
@@ -881,14 +854,14 @@ class ConsoleService {
         const uint64_t fs =
             os::lookupService(registry_, os::fsServiceName, 5000);
         const uint64_t file =
-            fs == 0 ? 0 : os::openFile(fs, "/etc/console.conf");
+            fs == 0 ? 0 : ([&]() -> uint64_t { os::File opened(fs); return opened.open("/etc/console.conf", O_RDONLY) == 0 ? opened.releaseNativeHandle() : 0; }());
         if (file == 0) {
             return;
         }
         char configuration[256]{};
         const int64_t count =
-            os::readFile(fs, file, configuration, sizeof(configuration) - 1);
-        os::closeFile(fs, file);
+            os::File::borrow(fs, file).read(configuration, sizeof(configuration) - 1);
+        os::File::borrow(fs, file).close();
         if (count <= 0) {
             return;
         }
@@ -953,10 +926,10 @@ void inputMain() {
 
 }  // namespace
 
-extern "C" int userMain() {
+int main(int, char**) {
     os::log("[CONSOLE] Console and TTY service started in Ring 3\n");
     registryEndpoint = os::getBootstrapHandle();
-    if (!consoleService.initialize(registryEndpoint) ||
+    if (!consoleService.init(registryEndpoint) ||
         os::mapMemory(inputStackAddress, inputStackSize, 1) !=
             inputStackAddress ||
         os::createThread(inputMain, inputStackAddress + inputStackSize) == 0) {

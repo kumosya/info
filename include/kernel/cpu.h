@@ -1,14 +1,41 @@
 #pragma once
 
+#define KERNEL_CPU_STACK_OFFSET 48
+#define KERNEL_CPU_USER_STACK_OFFSET 88
+
+#ifndef __ASSEMBLER__
+
 #include <stdint.h>
 
 namespace kernel {
 
-struct Thread;
-struct Process;
-struct RunQueue;
+class Thread;
+class Task;
+class RunQueue;
 
-struct CpuFeatures {
+class CpuFeatures {
+   public:
+    CpuFeatures()
+        : longMode(false),
+          noExecute(false),
+          sse(false),
+          sse2(false),
+          apic(false),
+          x2Apic(false),
+          tsc(false),
+          invariantTsc(false) {}
+    void detect();
+
+    bool hasLongMode() const { return longMode; }
+    bool hasNoExecute() const { return noExecute; }
+    bool hasSse() const { return sse; }
+    bool hasSse2() const { return sse2; }
+    bool hasApic() const { return apic; }
+    bool hasX2Apic() const { return x2Apic; }
+    bool hasTsc() const { return tsc; }
+    bool hasInvariantTsc() const { return invariantTsc; }
+
+   private:
     bool longMode;
     bool noExecute;
     bool sse;
@@ -19,7 +46,7 @@ struct CpuFeatures {
     bool invariantTsc;
 };
 
-struct [[gnu::packed]] TaskStateSegment {
+struct [[gnu::packed]] TssTable {
     uint32_t reserved0;
     uint64_t rsp0;
     uint64_t rsp1;
@@ -37,48 +64,120 @@ struct [[gnu::packed]] TaskStateSegment {
     uint16_t ioMapBase;
 };
 
-struct CpuLocalData {
-    CpuLocalData* self;
+struct [[gnu::packed]] DescriptorTablePointer {
+    uint16_t limit;
+    uint64_t base;
+};
+
+struct CpuArchData {
+    kernel::TssTable tss;
+    alignas(16) uint64_t gdt[7];
+};
+
+class CpuLocalData {
+   public:
+    constexpr CpuLocalData()
+        : self_(this),
+          cpuId(0),
+          apicId(0),
+          currentThread(nullptr),
+          currentTask(nullptr),
+          runQueue(nullptr),
+          idleThread(nullptr),
+          kernelStack(nullptr),
+          tss(nullptr),
+          idt(nullptr),
+          rescheduleRequested(false),
+          tickCount(0),
+          syscallUserStack(0),
+          archData(nullptr),
+          preemptionCount(0) {}
+    static CpuLocalData* prepare(uint32_t cpuId, uint32_t apicId);
+    void initApplicationTaskorCpu();
+    void initDescriptorTables(CpuArchData* arch);
+
+    void setCpuId(uint32_t id) { cpuId = id; }
+    void setApicId(uint32_t id) { apicId = id; }
+    void setKernelStack(void* stackTop);
+    void setCurrentThread(Thread* thread) { currentThread = thread; }
+    void setCurrentTask(Task* task) { currentTask = task; }
+    void setRunQueue(RunQueue* queue) { runQueue = queue; }
+    void setIdleThread(Thread* thread) { idleThread = thread; }
+    void setRescheduleRequested(bool requested) {
+        rescheduleRequested = requested;
+    }
+    void addTickCount(uint64_t count) { tickCount += count; }
+    void addPreemptionCount(uint32_t count) { preemptionCount += count; }
+    void setIdt(void* idtPointer) { idt = idtPointer; }
+
+    uint32_t getCpuId() const { return cpuId; }
+    uint32_t getApicId() const { return apicId; }
+    Thread* getCurrentThread() const { return currentThread; }
+    Task* getCurrentTask() const { return currentTask; }
+    RunQueue* getRunQueue() const { return runQueue; }
+    Thread* getIdleThread() const { return idleThread; }
+    void* getKernelStack() const { return kernelStack; }
+    void* getIdt() const { return idt; }
+    bool isRescheduleRequested() const { return rescheduleRequested; }
+    uint32_t getPreemptionCount() const { return preemptionCount; }
+    static constexpr bool hasAssemblyLayout() {
+        return __builtin_offsetof(CpuLocalData, self_) == 0 &&
+               __builtin_offsetof(CpuLocalData, kernelStack) ==
+                   KERNEL_CPU_STACK_OFFSET &&
+               __builtin_offsetof(CpuLocalData, syscallUserStack) ==
+                   KERNEL_CPU_USER_STACK_OFFSET;
+    }
+
+   private:
+    CpuLocalData* self_;
     uint32_t cpuId;
     uint32_t apicId;
     Thread* currentThread;
-    Process* currentProcess;
+    Task* currentTask;
     RunQueue* runQueue;
     Thread* idleThread;
     void* kernelStack;
-    TaskStateSegment* tss;
+    TssTable* tss;
     void* idt;
     bool rescheduleRequested;
     uint64_t tickCount;
     uint64_t syscallUserStack;
-    void* architectureData;
+    void* archData;
     uint32_t preemptionCount;
 };
 
-void initCpu();
-CpuLocalData* prepareCpuLocalData(uint32_t cpuId, uint32_t apicId);
-void initApplicationProcessorCpu(CpuLocalData* cpu);
+namespace cpu {
+void init();
+
 const CpuFeatures& getCpuFeatures();
-CpuLocalData* getCurrentCpu();
-uint32_t getCurrentCpuId();
-void setKernelStack(void* stackTop);
+CpuLocalData* getCurrent();
+uint32_t getCurrentId();
 
 uint64_t readMsr(uint32_t msr);
 void writeMsr(uint32_t msr, uint64_t value);
 
-void initLocalApic();
-void configureLocalApicTimer(uint8_t vector, uint32_t initialCount);
-void sendEndOfInterrupt();
-void sendInterProcessorInterrupt(uint32_t apicId, uint8_t vector);
-void sendInitInterProcessorInterrupt(uint32_t apicId);
-void sendStartupInterProcessorInterrupt(uint32_t apicId, uint8_t vector);
-
-uint64_t disableInterrupts();
-void restoreInterrupts(uint64_t flags);
-void enableInterrupts();
 void disablePreemption();
 void enablePreemption();
 bool isPreemptionEnabled();
-[[noreturn]] void haltCpu();
+[[noreturn]] void halt();
+}  // namespace cpu
+
+namespace localapic {
+void init();
+void initTimer(uint8_t vector, uint32_t initialCount);
+
+void sendEndOfInterrupt();
+void sendInterTaskorInterrupt(uint32_t apicId, uint8_t vector);
+void sendInitInterTaskorInterrupt(uint32_t apicId);
+void sendStartupInterTaskorInterrupt(uint32_t apicId, uint8_t vector);
+}  // namespace localapic
+
+namespace interrupt {
+uint64_t disable();
+void restore(uint64_t flags);
+void enable();
+}  // namespace interrupt
 
 }  // namespace kernel
+
+#endif  // __ASSEMBLER__

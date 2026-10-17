@@ -62,7 +62,7 @@ _start:
 
 bootFailure:
     movw $0x3f8, %dx
-    movb $0x42, %al
+    movb $0x42, %al     # 'B'
     outb %al, %dx
 1:
     cli

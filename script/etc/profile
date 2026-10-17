@@ -1,0 +1,4 @@
+# System-wide login shell environment.
+export PATH="$HOME/app/bin:/usr/bin:/usr/sbin:/bin:/sbin"
+export TERM=osinfo
+export LANG=C.UTF-8

@@ -1,5 +1,6 @@
 #include "os/abi.h"
 #include "os/input.h"
+#include "os/pci.h"
 #include "os/protocol.h"
 #include "os/service.h"
 #include "os/sync.h"
@@ -55,9 +56,9 @@ class InputQueue {
         return true;
     }
 
-    bool dequeue(uint64_t processId, os::InputEvent& event) {
+    bool dequeue(uint64_t taskId, os::InputEvent& event) {
         os::SpinLockGuard guard(lock_);
-        Subscriber* subscriber = findSubscriber(processId);
+        Subscriber* subscriber = findSubscriber(taskId);
         if (subscriber == nullptr) {
             return false;
         }
@@ -76,18 +77,18 @@ class InputQueue {
         return true;
     }
 
-    bool subscribe(uint64_t processId, uint64_t wakeEndpoint) {
-        if (processId == 0 || wakeEndpoint == 0) {
+    bool subscribe(uint64_t taskId, uint64_t wakeEndpoint) {
+        if (taskId == 0 || wakeEndpoint == 0) {
             return false;
         }
         os::SpinLockGuard guard(lock_);
-        Subscriber* existing = findSubscriber(processId);
+        Subscriber* existing = findSubscriber(taskId);
         if (existing != nullptr) {
             return existing->wakeEndpoint == wakeEndpoint;
         }
         for (Subscriber& subscriber : subscribers_) {
-            if (subscriber.processId == 0) {
-                subscriber = {processId, nextSequence_, wakeEndpoint, false};
+            if (subscriber.taskId == 0) {
+                subscriber = {taskId, nextSequence_, wakeEndpoint, false};
                 return true;
             }
         }
@@ -101,7 +102,7 @@ class InputQueue {
         os::SpinLockGuard guard(lock_);
         uint32_t count = 0;
         for (Subscriber& subscriber : subscribers_) {
-            if (subscriber.processId == 0 || subscriber.wakeEndpoint == 0 ||
+            if (subscriber.taskId == 0 || subscriber.wakeEndpoint == 0 ||
                 subscriber.notified) {
                 continue;
             }
@@ -130,9 +131,9 @@ class InputQueue {
         }
     }
 
-    uint32_t size(uint64_t processId) {
+    uint32_t size(uint64_t taskId) {
         os::SpinLockGuard guard(lock_);
-        Subscriber* subscriber = findSubscriber(processId);
+        Subscriber* subscriber = findSubscriber(taskId);
         if (subscriber == nullptr) {
             return 0;
         }
@@ -144,7 +145,7 @@ class InputQueue {
 
    private:
     struct Subscriber {
-        uint64_t processId;
+        uint64_t taskId;
         uint64_t nextSequence;
         uint64_t wakeEndpoint;
         bool notified;
@@ -152,7 +153,7 @@ class InputQueue {
 
     bool canCoalesceLast() const {
         for (const Subscriber& subscriber : subscribers_) {
-            if (subscriber.processId != 0 &&
+            if (subscriber.taskId != 0 &&
                 subscriber.nextSequence == nextSequence_) {
                 return false;
             }
@@ -160,12 +161,12 @@ class InputQueue {
         return true;
     }
 
-    Subscriber* findSubscriber(uint64_t processId) {
-        if (processId == 0) {
+    Subscriber* findSubscriber(uint64_t taskId) {
+        if (taskId == 0) {
             return nullptr;
         }
         for (Subscriber& subscriber : subscribers_) {
-            if (subscriber.processId == processId) {
+            if (subscriber.taskId == taskId) {
                 return &subscriber;
             }
         }
@@ -182,10 +183,10 @@ class InputQueue {
 
 class Ps2Controller {
    public:
-    bool initialize() {
+    bool init() {
         uint8_t ignored;
         for (uint32_t index = 0; index < 32 && outputReady(); ++index) {
-            os::readIoPort(0x60, ignored);
+            os::SystemService::readPort8(0x60, ignored);
         }
         if (!writeCommand(0xad) || !writeCommand(0xa7) || !writeCommand(0x20) ||
             !readData(configuration_)) {
@@ -203,8 +204,8 @@ class Ps2Controller {
 
     bool readInterruptByte(uint8_t& value, bool& mouse) {
         uint8_t status;
-        if (os::readIoPort(0x64, status) != 0 || (status & 1U) == 0 ||
-            os::readIoPort(0x60, value) != 0) {
+        if (os::SystemService::readPort8(0x64, status) != 0 || (status & 1U) == 0 ||
+            os::SystemService::readPort8(0x60, value) != 0) {
             return false;
         }
         mouse = (status & 0x20U) != 0;
@@ -217,7 +218,7 @@ class Ps2Controller {
     bool inputReady() {
         for (uint32_t attempt = 0; attempt < 100000; ++attempt) {
             uint8_t status;
-            if (os::readIoPort(0x64, status) == 0 && (status & 2U) == 0) {
+            if (os::SystemService::readPort8(0x64, status) == 0 && (status & 2U) == 0) {
                 return true;
             }
             asm volatile("pause");
@@ -227,13 +228,13 @@ class Ps2Controller {
 
     bool outputReady() {
         uint8_t status;
-        return os::readIoPort(0x64, status) == 0 && (status & 1U) != 0;
+        return os::SystemService::readPort8(0x64, status) == 0 && (status & 1U) != 0;
     }
 
     bool readData(uint8_t& value) {
         for (uint32_t attempt = 0; attempt < 100000; ++attempt) {
             if (outputReady()) {
-                return os::readIoPort(0x60, value) == 0;
+                return os::SystemService::readPort8(0x60, value) == 0;
             }
             asm volatile("pause");
         }
@@ -241,11 +242,11 @@ class Ps2Controller {
     }
 
     bool writeCommand(uint8_t value) {
-        return inputReady() && os::writeIoPort(0x64, value) == 0;
+        return inputReady() && os::SystemService::writePort8(0x64, value) == 0;
     }
 
     bool writeData(uint8_t value) {
-        return inputReady() && os::writeIoPort(0x60, value) == 0;
+        return inputReady() && os::SystemService::writePort8(0x60, value) == 0;
     }
 
     bool sendKeyboard(uint8_t value) {
@@ -517,7 +518,7 @@ class KeyboardDriver {
 
 class MouseDriver {
    public:
-    void initialize(uint8_t packetSize) { packetSize_ = packetSize; }
+    void init(uint8_t packetSize) { packetSize_ = packetSize; }
 
     void consume(uint8_t value, InputQueue& queue) {
         if (packetIndex_ == 0 && (value & 0x08U) == 0) {
@@ -575,17 +576,17 @@ class MouseDriver {
 
 class InputService {
    public:
-    bool initialize(uint64_t registry) {
+    bool init(uint64_t registry) {
         requestEndpoint_ = os::createEndpoint();
         irqEndpoint_     = os::createEndpoint();
         if (requestEndpoint_ == 0 || irqEndpoint_ == 0 ||
-            !controller_.initialize() || os::bindIrq(1, irqEndpoint_) == 0 ||
+            !controller_.init() || os::bindIrq(1, irqEndpoint_) == 0 ||
             os::bindIrq(12, irqEndpoint_) == 0 ||
             !os::registerService(registry, os::inputServiceName,
                                  requestEndpoint_)) {
             return false;
         }
-        mouse_.initialize(controller_.mousePacketSize());
+        mouse_.init(controller_.mousePacketSize());
         return true;
     }
 
@@ -651,7 +652,7 @@ class InputService {
         }
         // One IRQ can represent several bytes already buffered by the 8042.
         // Drain the controller so keyboard traffic cannot stall mouse packets.
-        for (uint32_t index = 0; index < 32; ++index) {
+        for (uint32_t index = 0;; ++index) {
             uint8_t value;
             bool mouseData;
             if (!controller_.readInterruptByte(value, mouseData)) {
@@ -662,6 +663,9 @@ class InputService {
             } else {
                 keyboard_.consume(value, queue_);
             }
+            // Do not leave the controller's output buffer asserted after a
+            // burst; an edge-triggered IRQ need not fire again for those bytes.
+            if ((index & 63U) == 63U) os::yield();
         }
         notifySubscribers();
     }
@@ -695,7 +699,7 @@ void inputIrqMain() { inputService.runIrq(); }
 
 class Device {
    public:
-    void initialize(const os::PciFunctionInfo& function) {
+    void init(const os::PciFunctionInfo& function) {
         function_ = function;
         category_ = classify(function);
     }
@@ -728,7 +732,7 @@ class Driver {
         state_  = DriverState::Created;
     }
 
-    bool initialize() {
+    bool init() {
         if (device_ == nullptr || state_ != DriverState::Created) {
             return false;
         }
@@ -791,7 +795,7 @@ class PciBus {
             return 0;
         }
         for (int index = 0; index < count; ++index) {
-            devices[index].initialize(functions[index]);
+            devices[index].init(functions[index]);
         }
         return static_cast<uint32_t>(count);
     }
@@ -799,12 +803,12 @@ class PciBus {
 
 class DeviceManager {
    public:
-    bool initialize() {
+    bool init() {
         deviceCount_ = bus_.enumerate(devices_, 64);
         driverCount_ = 0;
         for (uint32_t index = 0; index < deviceCount_; ++index) {
             drivers_[driverCount_].create(&devices_[index]);
-            if (drivers_[driverCount_].initialize() &&
+            if (drivers_[driverCount_].init() &&
                 drivers_[driverCount_].start()) {
                 ++driverCount_;
             }
@@ -835,8 +839,8 @@ class DeviceManager {
 
 }  // namespace
 
-extern "C" int userMain() {
-    os::log("[DEVICE] Device Server started in Ring 3\n");
+int main(int, char**) {
+    os::log("[DEVICE] Device Server started in Ring 0\n");
     const uint64_t registry = os::getBootstrapHandle();
     const uint64_t endpoint = os::createEndpoint();
     if (registry == 0 || endpoint == 0 ||
@@ -846,7 +850,7 @@ extern "C" int userMain() {
     }
 
     DeviceManager manager;
-    if (!manager.initialize()) {
+    if (!manager.init()) {
         os::log("[DEVICE] driver initialization failed\n");
         return 2;
     }
@@ -856,7 +860,7 @@ extern "C" int userMain() {
     constexpr uint64_t inputStackBase    = 0x0000000060000000ULL;
     constexpr uint64_t inputStackSize    = 64 * 1024;
     constexpr uint64_t inputIrqStackBase = inputStackBase + inputStackSize;
-    if (!inputService.initialize(registry) ||
+    if (!inputService.init(registry) ||
         os::mapMemory(inputStackBase, inputStackSize, 1) != inputStackBase ||
         os::mapMemory(inputIrqStackBase, inputStackSize, 1) !=
             inputIrqStackBase ||
@@ -886,8 +890,9 @@ extern "C" int userMain() {
         } else if (request.type ==
                    static_cast<uint64_t>(os::DeviceRequest::ListNode)) {
             constexpr const char* nodes[] = {
-                "zero", "cdrom", "hda1", "tty1", "tty2", "tty3",
-                "tty4", "tty5", "tty6", "tty7", "ptmx", "pts"};
+                "zero", "null",
+                "tty1", "tty2", "tty3", "tty4", "tty5", "tty6", "tty7",
+                "ptmx", "pts"};
             const uint32_t index = static_cast<uint32_t>(request.data[0]);
             if (index >= sizeof(nodes) / sizeof(nodes[0])) {
                 reply.data[0] = 1;
