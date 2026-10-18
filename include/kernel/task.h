@@ -12,11 +12,25 @@ namespace kernel {
 
 class Thread;
 class Task;
+class TaskReference {
+   public:
+    TaskReference(Task* task = nullptr);
+    TaskReference(TaskReference&& other);
+    TaskReference& operator=(TaskReference&& other);
+    ~TaskReference();
+    TaskReference(const TaskReference&) = delete;
+    TaskReference& operator=(const TaskReference&) = delete;
+    Task* operator->() const { return task_; }
+    operator Task*() const { return task_; }
+   private:
+    Task* task_;
+    ThreadCleanup cleanup_;
+};
 namespace posix { class FileTable; }
 namespace task {
 void init();
-Task* find(uint64_t taskId);
-Task* at(uint32_t index);
+TaskReference find(uint64_t taskId);
+TaskReference at(uint32_t index);
 }  // namespace task
 
 enum class TaskState : uint8_t { Created, Running, Terminated, Stopped };
@@ -52,22 +66,44 @@ constexpr uint32_t handleRightManage = 1U << 2;
 
 class HandleTable {
    public:
+    class Transfer;
+    class Pin;
     uint32_t capacity();
-    bool init(uint32_t capacity);
+    bool init(uint32_t capacity, Task* owner = nullptr);
     uint64_t add(void* object, HandleType type, uint32_t rights);
     bool addAt(uint64_t handle, void* object, HandleType type, uint32_t rights);
     void* get(uint64_t handle, HandleType type, uint32_t requiredRights);
     bool close(uint64_t handle);
     void closeAll();
+    void dispose();
+    uint64_t duplicate(uint64_t handle, uint32_t rights, uint32_t flags = 0);
+    uint64_t copyTo(HandleTable& destination, uint64_t handle,
+                    uint64_t destinationHandle = 0);
+    bool restrictRights(uint64_t handle, uint32_t rights);
+    bool setFlags(uint64_t handle, uint32_t flags);
+    void closeOnExec();
+    bool getFlags(uint64_t handle, uint32_t& flags);
+    bool hasObjectRights(void* object, HandleType type, uint32_t rights);
     bool inspect(uint64_t handle, void** object, HandleType* type,
                  uint32_t* rights);
     bool inspectAt(uint32_t index, uint64_t* handle, void** object,
                    HandleType* type, uint32_t* rights);
 
    private:
+    struct Reference {
+        void* object;
+        HandleType type;
+        uint32_t count;
+        static void retain(Reference* reference);
+        static void release(Reference* reference);
+    };
+    uint64_t installLocked(Reference* reference, uint32_t rights, uint32_t flags);
+    bool validLocked(uint64_t handle) const;
     bool growLocked(uint32_t required);
     class HandleEntry {
        public:
+        Reference* reference;
+        uint32_t flags;
         HandleEntry() = default;
         HandleEntry(void* objectValue, uint32_t rightsValue, uint16_t typeValue,
                     uint16_t generationValue)
@@ -106,6 +142,37 @@ class HandleTable {
     HandleEntry* entries_;
     uint32_t capacity_;
     SpinLock lock_;
+    Task* owner_ = nullptr;
+};
+
+class HandleTable::Pin {
+   public:
+    Pin(HandleTable& table, uint64_t handle, HandleType type, uint32_t rights);
+    ~Pin();
+    Pin(const Pin&) = delete;
+    Pin& operator=(const Pin&) = delete;
+    template <typename T> T* as() const {
+        return reference_ ? static_cast<T*>(reference_->object) : nullptr;
+    }
+   private:
+    Reference* reference_ = nullptr;
+    ThreadCleanup cleanup_;
+};
+
+// A queued message owns references, not handles in an endpoint owner's table.
+class HandleTable::Transfer {
+   public:
+    bool capture(HandleTable& source, const os::IpcMessage& message, bool commitMove = true);
+    bool install(HandleTable& destination, os::IpcMessage& message);
+    void clear();
+
+   private:
+    Reference* references_[4]{};
+    uint32_t rights_[4]{};
+    uint32_t count_ = 0;
+    HandleTable* moveSource_ = nullptr;
+    uint64_t moveHandles_[4]{};
+    bool installLocked(HandleTable& destination, os::IpcMessage& message);
 };
 
 constexpr uint64_t taskCapabilityDevice  = 1ULL << 0;
@@ -117,13 +184,18 @@ constexpr uint64_t taskCapabilityPci = 1ULL << 4;
 class Task {
    public:
     static Task* create(const char* name, Task* parent = nullptr);
+    void retain();
+    void release();
+    static void setInitTask(Task* task);
 
     uint64_t id() const;
     const char* name() const;
     TaskState state();
     AddressSpace& addressSpace();
     HandleTable& handles();
-    Task* parent() const;
+    Task* parent();
+    uint64_t parentId();
+    TaskReference parentReference();
     bool isTerminated();
     int exitCode();
     bool inheritForFork(Task& parent);
@@ -142,6 +214,8 @@ class Task {
     bool hasCapability(uint64_t capability) const;
     bool isSystemService() const { return systemService_; }
     void setSystemService(bool value) { systemService_ = value; }
+    os::ServiceRole serviceRole() const { return serviceRole_; }
+    void setServiceRole(os::ServiceRole role) { serviceRole_ = role; }
     uint32_t uid() const { return uid_; }
     uint32_t gid() const { return gid_; }
     uint32_t effectiveUid() const { return effectiveUid_; }
@@ -171,14 +245,16 @@ class Task {
     uint32_t uid_ = 0, gid_ = 0, effectiveUid_ = 0, effectiveGid_ = 0;
     uint32_t terminalId_ = 0;
     bool systemService_ = false;
+    os::ServiceRole serviceRole_ = os::ServiceRole::None;
     posix::FileTable* fileTable_ = nullptr;
     friend void task::init();
-    friend Task* task::find(uint64_t taskId);
-    friend Task* task::at(uint32_t index);
+    friend TaskReference task::find(uint64_t taskId);
+    friend TaskReference task::at(uint32_t index);
     friend bool signal::sendSignalToTaskGroup(uint64_t taskGroupId,
-                                              uint32_t signal);
+                                              uint32_t signal, Task* caller);
 
     bool init(const char* name, uint64_t rootPhysicalAddress, Task* parent);
+    void adoptChildren();
 
     uint64_t id_;
     char name_[64];
@@ -207,13 +283,15 @@ class Task {
     uint64_t pendingSignals_;
     Task* nextGlobal_;
     SpinLock lock_;
+    uint32_t references_ = 1;
+    uint32_t resourceState_ = 0;
 };
 
 namespace task {
 void init();
 Task* getCurrent();
 Task* getIdle();
-Task* find(uint64_t taskId);
+TaskReference find(uint64_t taskId);
 [[noreturn]] void exitCurrent(int exitCode);
 }  // namespace task
 
@@ -299,6 +377,8 @@ void blockCurrentThread();
 void wakeThread(Thread* thread);
 void finishContextSwitch();
 void dequeueThread(Thread* thread);
+void terminateThread(Thread* thread);
+void quiesceTask(Task* task);
 Thread* pickNextThread();
 void schedule();
 void yieldThread();
@@ -321,11 +401,11 @@ class UserProgramLoader {
 
     static Task* startInitial(const BootInfo* bootInfo);
 
-    static Task* load(os::ProgramId program, Task* parent,
+    static TaskReference load(os::ProgramId program, Task* parent,
                       uint64_t bootstrapHandle = 0, uint32_t argumentCount = 0,
                       const char* const* arguments = nullptr,
                       ElfLoadError* loadError      = nullptr);
-    static Task* loadImage(uint64_t sourceAddress, size_t imageSize,
+    static TaskReference loadImage(uint64_t sourceAddress, size_t imageSize,
                            const char* name, Task* source, Task* parent,
                            uint64_t bootstrapHandle, uint64_t capabilities,
                            uint64_t standardInputHandle,
@@ -334,7 +414,8 @@ class UserProgramLoader {
                            const char* const* arguments,
                            const ElfSharedImage* sharedImages,
                            uint32_t sharedImageCount,
-                           ElfLoadError* loadError = nullptr);
+                           ElfLoadError* loadError = nullptr,
+                           os::ServiceRole serviceRole = os::ServiceRole::None);
 };
 
 }  // namespace kernel

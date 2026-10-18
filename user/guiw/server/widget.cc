@@ -19,7 +19,7 @@ bool Widget::contains(int32_t x, int32_t y) const {
 void Label::init(const WidgetBounds& bounds, const char* text,
                        uint32_t color) {
     Widget::init(bounds);
-    os::copyString(text_, text, sizeof(text_));
+    os::Runtime::copyString(text_, text, sizeof(text_));
     color_ = color;
 }
 
@@ -29,7 +29,7 @@ void Label::render(WidgetCanvas& canvas) const {
 
 void Button::init(const WidgetBounds& bounds, const char* text) {
     Widget::init(bounds);
-    os::copyString(text_, text, sizeof(text_));
+    os::Runtime::copyString(text_, text, sizeof(text_));
     pressed_ = false;
 }
 
@@ -54,8 +54,8 @@ bool Button::pressed() const { return pressed_; }
 
 void TextBox::init(const WidgetBounds& bounds, const char* text) {
     Widget::init(bounds);
-    os::copyString(text_, text, sizeof(text_));
-    length_ = static_cast<uint32_t>(os::stringLength(text_));
+    os::Runtime::copyString(text_, text, sizeof(text_));
+    length_ = static_cast<uint32_t>(os::Runtime::stringLength(text_));
     focused_ = false;
 }
 

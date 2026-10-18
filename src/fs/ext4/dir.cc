@@ -8,8 +8,8 @@ using namespace detail;
 
 bool Filesystem::lookupInDirectory(const uint8_t* directory, const char* name,
                                    size_t nameLength, uint32_t& inodeNumber) {
-    if ((read16(directory) & 0xf000U) != modeDirectory) return false;
-    uint64_t directorySize = read32(directory + 4);
+    if ((DiskEncoding::read16(directory) & 0xf000U) != modeDirectory) return false;
+    uint64_t directorySize = DiskEncoding::read32(directory + 4);
     const uint32_t blockCount =
         static_cast<uint32_t>((directorySize + blockSize_ - 1) / blockSize_);
     for (uint32_t logical = 0; logical < blockCount; ++logical) {
@@ -18,15 +18,15 @@ bool Filesystem::lookupInDirectory(const uint8_t* directory, const char* name,
         uint32_t offset = 0;
         while (offset + 8 <= blockSize_) {
             const uint8_t* entry          = blockBuffer_ + offset;
-            const uint32_t inode          = read32(entry);
-            const uint16_t recordLength   = read16(entry + 4);
+            const uint32_t inode          = DiskEncoding::read32(entry);
+            const uint16_t recordLength   = DiskEncoding::read16(entry + 4);
             const uint8_t entryNameLength = entry[6];
             if (recordLength < 8 || offset + recordLength > blockSize_ ||
                 entryNameLength > recordLength - 8) {
                 return false;
             }
             if (inode != 0 && entryNameLength == nameLength &&
-                namesEqual(reinterpret_cast<const char*>(entry + 8), name,
+                DiskEncoding::namesEqual(reinterpret_cast<const char*>(entry + 8), name,
                            nameLength)) {
                 inodeNumber = inode;
                 return true;
@@ -48,14 +48,14 @@ bool Filesystem::resolve(const char* path, uint32_t& number, uint8_t* inode) {
         if (path[position] == '\0') break;
         const size_t start = position;
         while (path[position] != '\0' && path[position] != '/') ++position;
-        if ((read16(current) & 0xf000U) != modeDirectory ||
+        if ((DiskEncoding::read16(current) & 0xf000U) != modeDirectory ||
             !lookupInDirectory(current, path + start, position - start,
                                number) ||
             !readInode(number, current)) {
             return false;
         }
     }
-    os::copyBytes(inode, current, inodeSize_);
+    os::Runtime::copyBytes(inode, current, inodeSize_);
     return true;
 }
 
@@ -76,7 +76,7 @@ bool Filesystem::resolveParent(const char* path, uint32_t& parentNumber,
         (nameLength == 2 && path[start] == '.' && path[start + 1] == '.')) {
         return false;
     }
-    os::copyBytes(name, path + start, nameLength);
+    os::Runtime::copyBytes(name, path + start, nameLength);
     name[nameLength] = '\0';
     char parentPath[256]{};
     if (start <= 1) {
@@ -85,11 +85,11 @@ bool Filesystem::resolveParent(const char* path, uint32_t& parentNumber,
     } else {
         const size_t parentLength = start - 1;
         if (parentLength >= sizeof(parentPath)) return false;
-        os::copyBytes(parentPath, path, parentLength);
+        os::Runtime::copyBytes(parentPath, path, parentLength);
         parentPath[parentLength] = '\0';
     }
     return resolve(parentPath, parentNumber, parent) &&
-           (read16(parent) & 0xf000U) == modeDirectory;
+           (DiskEncoding::read16(parent) & 0xf000U) == modeDirectory;
 }
 
 bool Filesystem::addDirectoryEntry(uint32_t directoryNumber, uint8_t* directory,
@@ -102,8 +102,8 @@ bool Filesystem::addDirectoryEntry(uint32_t directoryNumber, uint8_t* directory,
     }();
     if (nameLength == 0 || nameLength > 255) return false;
     const uint16_t required =
-        alignedDirectoryEntry(static_cast<uint32_t>(8 + nameLength));
-    uint64_t directorySize = read32(directory + 4);
+        DiskEncoding::alignedDirectoryEntry(static_cast<uint32_t>(8 + nameLength));
+    uint64_t directorySize = DiskEncoding::read32(directory + 4);
     uint32_t blockCount =
         static_cast<uint32_t>((directorySize + blockSize_ - 1) / blockSize_);
     for (uint32_t logical = 0; logical < blockCount; ++logical) {
@@ -112,30 +112,30 @@ bool Filesystem::addDirectoryEntry(uint32_t directoryNumber, uint8_t* directory,
         uint32_t offset = 0;
         while (offset + 8 <= blockSize_) {
             uint8_t* entry              = blockBuffer_ + offset;
-            const uint16_t recordLength = read16(entry + 4);
+            const uint16_t recordLength = DiskEncoding::read16(entry + 4);
             if (recordLength < 8 || offset + recordLength > blockSize_) {
                 return false;
             }
             const uint32_t used =
-                read32(entry) == 0 ? 0
-                                   : alignedDirectoryEntry(
+                DiskEncoding::read32(entry) == 0 ? 0
+                                   : DiskEncoding::alignedDirectoryEntry(
                                          8 + static_cast<uint32_t>(entry[6]));
-            if ((read32(entry) == 0 && recordLength >= required) ||
-                (read32(entry) != 0 && recordLength - used >= required)) {
-                if (read32(entry) != 0) {
-                    write16(entry + 4, static_cast<uint16_t>(used));
+            if ((DiskEncoding::read32(entry) == 0 && recordLength >= required) ||
+                (DiskEncoding::read32(entry) != 0 && recordLength - used >= required)) {
+                if (DiskEncoding::read32(entry) != 0) {
+                    DiskEncoding::write16(entry + 4, static_cast<uint16_t>(used));
                     offset += used;
                     entry = blockBuffer_ + offset;
-                    write16(entry + 4,
+                    DiskEncoding::write16(entry + 4,
                             static_cast<uint16_t>(recordLength - used));
                 } else {
-                    os::clearMemory(entry, recordLength);
-                    write16(entry + 4, recordLength);
+                    os::Runtime::clearMemory(entry, recordLength);
+                    DiskEncoding::write16(entry + 4, recordLength);
                 }
-                write32(entry, child);
+                DiskEncoding::write32(entry, child);
                 entry[6] = static_cast<uint8_t>(nameLength);
                 entry[7] = type;
-                os::copyBytes(entry + 8, name, nameLength);
+                os::Runtime::copyBytes(entry + 8, name, nameLength);
                 return writeBlock(physical, blockBuffer_);
             }
             offset += recordLength;
@@ -145,35 +145,35 @@ bool Filesystem::addDirectoryEntry(uint32_t directoryNumber, uint8_t* directory,
     const uint32_t logical  = blockCount;
     const uint64_t physical = ensureDataBlock(directory, logical);
     if (physical == 0) return false;
-    os::clearMemory(blockBuffer_, blockSize_);
-    write32(blockBuffer_, child);
-    write16(blockBuffer_ + 4, static_cast<uint16_t>(blockSize_));
+    os::Runtime::clearMemory(blockBuffer_, blockSize_);
+    DiskEncoding::write32(blockBuffer_, child);
+    DiskEncoding::write16(blockBuffer_ + 4, static_cast<uint16_t>(blockSize_));
     blockBuffer_[6] = static_cast<uint8_t>(nameLength);
     blockBuffer_[7] = type;
-    os::copyBytes(blockBuffer_ + 8, name, nameLength);
+    os::Runtime::copyBytes(blockBuffer_ + 8, name, nameLength);
     if (!writeBlock(physical, blockBuffer_)) return false;
     directorySize += blockSize_;
-    write32(directory + 4, static_cast<uint32_t>(directorySize));
+    DiskEncoding::write32(directory + 4, static_cast<uint32_t>(directorySize));
     return writeInode(directoryNumber, directory);
 }
 
 bool Filesystem::removeDirectoryEntry(const uint8_t* directory, const char* name) {
     size_t length = 0;
     while (name[length]) ++length;
-    const uint32_t blocks = (read32(directory + 4) + blockSize_ - 1) / blockSize_;
+    const uint32_t blocks = (DiskEncoding::read32(directory + 4) + blockSize_ - 1) / blockSize_;
     for (uint32_t logical = 0; logical < blocks; ++logical) {
         const uint64_t physical = getDataBlock(directory, logical);
         if (!physical || !readBlock(physical, blockBuffer_)) return false;
         uint8_t* previous = nullptr;
         for (uint32_t offset = 0; offset + 8 <= blockSize_;) {
             uint8_t* entry = blockBuffer_ + offset;
-            const uint16_t record = read16(entry + 4);
+            const uint16_t record = DiskEncoding::read16(entry + 4);
             if (record < 8 || (record & 3) || record > blockSize_ - offset || entry[6] > record - 8)
                 return false;
-            if (read32(entry) && entry[6] == length &&
-                namesEqual(reinterpret_cast<const char*>(entry + 8), name, length)) {
-                if (previous) write16(previous + 4, read16(previous + 4) + record);
-                else write32(entry, 0);
+            if (DiskEncoding::read32(entry) && entry[6] == length &&
+                DiskEncoding::namesEqual(reinterpret_cast<const char*>(entry + 8), name, length)) {
+                if (previous) DiskEncoding::write16(previous + 4, DiskEncoding::read16(previous + 4) + record);
+                else DiskEncoding::write32(entry, 0);
                 return writeBlock(physical, blockBuffer_);
             }
             previous = entry;
@@ -184,18 +184,18 @@ bool Filesystem::removeDirectoryEntry(const uint8_t* directory, const char* name
 }
 
 bool Filesystem::directoryEmpty(const uint8_t* directory) {
-    const uint32_t blocks = (read32(directory + 4) + blockSize_ - 1) / blockSize_;
+    const uint32_t blocks = (DiskEncoding::read32(directory + 4) + blockSize_ - 1) / blockSize_;
     for (uint32_t logical = 0; logical < blocks; ++logical) {
         const uint64_t physical = getDataBlock(directory, logical);
         if (!physical || !readBlock(physical, blockBuffer_)) return false;
         for (uint32_t offset = 0; offset + 8 <= blockSize_;) {
             const uint8_t* entry = blockBuffer_ + offset;
-            const uint16_t record = read16(entry + 4);
+            const uint16_t record = DiskEncoding::read16(entry + 4);
             if (record < 8 || (record & 3) || record > blockSize_ - offset || entry[6] > record - 8)
                 return false;
             const bool dot = entry[6] == 1 && entry[8] == '.';
             const bool parent = entry[6] == 2 && entry[8] == '.' && entry[9] == '.';
-            if (read32(entry) && !dot && !parent) return false;
+            if (DiskEncoding::read32(entry) && !dot && !parent) return false;
             offset += record;
         }
     }
@@ -213,10 +213,10 @@ int Filesystem::readDirectoryBatch(const char* path, uint32_t index,
     if (entries == nullptr || capacity == 0) return -1;
     uint32_t number = 0;
     if (!resolve(path, number, inodeBuffer_) ||
-        (read16(inodeBuffer_) & 0xf000U) != modeDirectory) {
+        (DiskEncoding::read16(inodeBuffer_) & 0xf000U) != modeDirectory) {
         return -1;
     }
-    const uint64_t directorySize = read32(inodeBuffer_ + 4);
+    const uint64_t directorySize = DiskEncoding::read32(inodeBuffer_ + 4);
     const uint32_t blockCount =
         static_cast<uint32_t>((directorySize + blockSize_ - 1) / blockSize_);
     uint32_t visible = 0;
@@ -227,8 +227,8 @@ int Filesystem::readDirectoryBatch(const char* path, uint32_t index,
         uint32_t offset = 0;
         while (offset + 8 <= blockSize_) {
             const uint8_t* raw          = blockBuffer_ + offset;
-            const uint32_t inode        = read32(raw);
-            const uint16_t recordLength = read16(raw + 4);
+            const uint32_t inode        = DiskEncoding::read32(raw);
+            const uint16_t recordLength = DiskEncoding::read16(raw + 4);
             const uint8_t nameLength    = raw[6];
             if (recordLength < 8 || offset + recordLength > blockSize_ ||
                 nameLength > recordLength - 8) {
@@ -246,7 +246,7 @@ int Filesystem::readDirectoryBatch(const char* path, uint32_t index,
                 const size_t copyLength = nameLength < sizeof(output.name) - 1
                                               ? nameLength
                                               : sizeof(output.name) - 1;
-                os::copyBytes(output.name, name, copyLength);
+                os::Runtime::copyBytes(output.name, name, copyLength);
                 if (count == capacity) return static_cast<int>(count);
             }
             offset += recordLength;

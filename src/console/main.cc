@@ -1,3 +1,4 @@
+#include "os/task.h"
 #include <signal.h>
 
 #include "os/abi.h"
@@ -34,7 +35,7 @@ struct Cell {
 class DisplayConsole {
    public:
     bool init() {
-        return os::mapFramebuffer(framebufferAddress, info_) == 0 &&
+        return os::Device::mapFramebuffer(framebufferAddress, info_) == 0 &&
                info_.address != 0 && info_.width >= cellWidth &&
                info_.height >= cellHeight &&
                (info_.bitsPerPixel == 24 || info_.bitsPerPixel == 32);
@@ -81,8 +82,8 @@ class DisplayConsole {
     void drawCell(uint32_t column, uint32_t row, const Cell& cell,
                   bool cursor) {
         const bool bright   = (cell.attributes & 1U) != 0;
-        uint32_t foreground = os::terminal::color(cell.foreground, bright);
-        uint32_t background = os::terminal::color(cell.background);
+        uint32_t foreground = os::terminal::Palette::color(cell.foreground, bright);
+        uint32_t background = os::terminal::Palette::color(cell.background);
         if (cursor != ((cell.attributes & 4U) != 0)) {
             const uint32_t temporary = foreground;
             foreground               = background;
@@ -127,7 +128,7 @@ class DisplayConsole {
 class Tty {
    public:
     void init(uint32_t id, uint32_t columns, uint32_t rows) {
-        os::clearMemory(this, sizeof(*this));
+        os::Runtime::clearMemory(this, sizeof(*this));
         insertMode_ = true;
         echo_ = true;
         id_         = id;
@@ -161,7 +162,7 @@ class Tty {
                 lineCursor_      = 0;
                 historyPosition_ = historyCount_;
                 if (foregroundTask_ != 0) {
-                    os::sendSignal(static_cast<uint64_t>(-static_cast<int64_t>(foregroundTask_)),
+                    os::Process::sendSignal(static_cast<uint64_t>(-static_cast<int64_t>(foregroundTask_)),
                                    keyCode == os::KeyCode::C ? SIGINT
                                                             : SIGTSTP);
                 } else {
@@ -678,9 +679,9 @@ class ConsoleService {
         registry_ = registry;
         endpoint_ = os::createEndpoint();
         if (registry_ == 0 || endpoint_ == 0 || !display_.init() ||
-            !os::registerService(registry_, os::consoleServiceName,
+            !os::ServiceRegistry::registerService(registry_, os::consoleServiceName,
                                  endpoint_) ||
-            !os::registerService(registry_, os::terminalServiceName,
+            !os::ServiceRegistry::registerService(registry_, os::terminalServiceName,
                                  endpoint_)) {
             return false;
         }
@@ -720,7 +721,7 @@ class ConsoleService {
                     for (uint32_t index = 0; index < length; ++index) {
                         serial[index] = data[index];
                     }
-                    os::log(serial);
+                    os::System::log(serial);
                 }
                 if (activeTerminal_ == terminal) {
                     redrawLocked();
@@ -821,10 +822,10 @@ class ConsoleService {
             return false;
         }
         const uint64_t window =
-            os::lookupService(registry_, os::guiwServiceName,
+            os::ServiceRegistry::lookupService(registry_, os::guiwServiceName,
                               terminal == os::graphicalTerminalId ? 100 : 1);
         if (window != 0) {
-            os::setWindowSessionActive(window,
+            os::Window::setWindowSessionActive(window,
                                        terminal == os::graphicalTerminalId);
         }
         activeTerminal_                       = terminal;
@@ -833,7 +834,7 @@ class ConsoleService {
             "[CONSOLE] switched to tty3\n", "[CONSOLE] switched to tty4\n",
             "[CONSOLE] switched to tty5\n", "[CONSOLE] switched to tty6\n",
             "[CONSOLE] switched to tty7\n"};
-        os::log(terminalNames[activeTerminal_]);
+        os::System::log(terminalNames[activeTerminal_]);
         if (activeTerminal_ < os::textTerminalCount) {
             display_.invalidate();
             redrawLocked();
@@ -852,7 +853,7 @@ class ConsoleService {
         defaultTerminal_ = 0;
         serialConsole_   = false;
         const uint64_t fs =
-            os::lookupService(registry_, os::fsServiceName, 5000);
+            os::ServiceRegistry::lookupService(registry_, os::fsServiceName, 5000);
         const uint64_t file =
             fs == 0 ? 0 : ([&]() -> uint64_t { os::File opened(fs); return opened.open("/etc/console.conf", O_RDONLY) == 0 ? opened.releaseNativeHandle() : 0; }());
         if (file == 0) {
@@ -901,20 +902,23 @@ class ConsoleService {
     bool serialConsole_       = false;
 };
 
+class ConsoleApplication {
+ public:
+    static void inputMain(void* self) { static_cast<ConsoleApplication*>(self)->inputLoop(); }
 ConsoleService consoleService;
 uint64_t registryEndpoint;
 
-void inputMain() {
+void inputLoop() {
     const uint64_t input =
-        os::lookupService(registryEndpoint, os::inputServiceName, 5000);
+        os::ServiceRegistry::lookupService(registryEndpoint, os::inputServiceName, 5000);
     os::InputClient client;
     if (!client.connect(input)) {
-        os::log("[CONSOLE] input service unavailable\n");
+        os::System::log("[CONSOLE] input service unavailable\n");
         return;
     }
     while (true) {
         if (!client.wait()) {
-            os::log("[CONSOLE] input subscription failed\n");
+            os::System::log("[CONSOLE] input subscription failed\n");
             return;
         }
         os::InputEvent event{};
@@ -924,19 +928,18 @@ void inputMain() {
     }
 }
 
-}  // namespace
 
-int main(int, char**) {
-    os::log("[CONSOLE] Console and TTY service started in Ring 3\n");
+int run() {
+    os::System::log("[CONSOLE] Console and TTY service started in Ring 0\n");
     registryEndpoint = os::getBootstrapHandle();
     if (!consoleService.init(registryEndpoint) ||
         os::mapMemory(inputStackAddress, inputStackSize, 1) !=
             inputStackAddress ||
-        os::createThread(inputMain, inputStackAddress + inputStackSize) == 0) {
-        os::log("[CONSOLE] initialization failed\n");
+        os::createThread(inputMain, inputStackAddress + inputStackSize, this) == 0) {
+        os::System::log("[CONSOLE] initialization failed\n");
         return 1;
     }
-    os::log("[CONSOLE] tty1-tty6 and tty7 session switching online\n");
+    os::System::log("[CONSOLE] tty1-tty6 and tty7 session switching online\n");
     while (true) {
         os::IpcMessage request{};
         if (os::receiveMessage(consoleService.endpoint(), request) != 0) {
@@ -944,6 +947,9 @@ int main(int, char**) {
         }
         os::IpcMessage reply{};
         consoleService.handle(request, reply);
-        os::replyMessage(consoleService.endpoint(), reply);
+        os::replyMessage(consoleService.endpoint(), request.replyToken, reply);
     }
 }
+};
+}  // namespace
+int main(int, char**) { static ConsoleApplication application; return application.run(); }

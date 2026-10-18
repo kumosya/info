@@ -40,19 +40,19 @@ int64_t Filesystem::read(uint32_t number, uint64_t offset, void* buffer,
         const uint32_t within   = static_cast<uint32_t>(position % blockSize_);
         const uint32_t block    = getDataBlock(inode, logical);
         if (block == 0) {
-            os::clearMemory(blockData, blockSize_);
+            os::Runtime::clearMemory(blockData, blockSize_);
         } else if (!readBlock(block, blockData)) {
             return -1;
         }
         size_t count = blockSize_ - within;
         if (count > size - copied) count = size - copied;
-        os::copyBytes(static_cast<uint8_t*>(buffer) + copied,
+        os::Runtime::copyBytes(static_cast<uint8_t*>(buffer) + copied,
                       blockData + within, count);
         copied += count;
         prefetchAhead(number, inode, logical);
     }
     const uint32_t now = static_cast<uint32_t>(
-        os::getWallClockTime() / 1000000000ULL);
+        os::Clock::getWallClockTime() / 1000000000ULL);
     if (!device_->readOnly() && now > inode.accessTime + 3600) {
         inode.accessTime = now;
         writeInode(number, inode);
@@ -82,7 +82,7 @@ int64_t Filesystem::write(uint32_t number, uint64_t offset, const void* buffer,
         if (block == 0 || !readBlock(block, blockData)) return -1;
         size_t count = blockSize_ - within;
         if (count > size - copied) count = size - copied;
-        os::copyBytes(blockData + within,
+        os::Runtime::copyBytes(blockData + within,
                       static_cast<const uint8_t*>(buffer) + copied, count);
         if (!writeBlock(block, blockData)) return -1;
         copied += count;
@@ -90,7 +90,7 @@ int64_t Filesystem::write(uint32_t number, uint64_t offset, const void* buffer,
     if (offset + size > inode.size)
         inode.size = static_cast<uint32_t>(offset + size);
     const uint32_t now = static_cast<uint32_t>(
-        os::getWallClockTime() / 1000000000ULL);
+        os::Clock::getWallClockTime() / 1000000000ULL);
     inode.modificationTime = now;
     inode.changeTime = now;
     return writeInode(number, inode) && sync() ? static_cast<int64_t>(copied)
@@ -101,7 +101,7 @@ bool Filesystem::truncate(uint32_t number) {
     Inode inode{};
     if (!readInode(number, inode) || !clearInodeBlocks(inode)) return false;
     const uint32_t now = static_cast<uint32_t>(
-        os::getWallClockTime() / 1000000000ULL);
+        os::Clock::getWallClockTime() / 1000000000ULL);
     inode.modificationTime = now;
     inode.changeTime = now;
     return writeInode(number, inode) && sync();
@@ -124,7 +124,7 @@ bool Filesystem::create(const char* path, bool directory) {
         (directory ? modeDirectory : modeRegular) | (directory ? 0755 : 0644));
     inode.linksCount = directory ? 2 : 1;
     const uint32_t now = static_cast<uint32_t>(
-        os::getWallClockTime() / 1000000000ULL);
+        os::Clock::getWallClockTime() / 1000000000ULL);
     inode.accessTime = now;
     inode.changeTime = now;
     inode.modificationTime = now;
@@ -137,7 +137,7 @@ bool Filesystem::create(const char* path, bool directory) {
         }
         auto* dot         = reinterpret_cast<RawDirectoryEntry*>(data);
         dot->inode        = number;
-        dot->recordLength = alignedEntrySize(1);
+        dot->recordLength = DirectoryEncoding::alignedEntrySize(1);
         dot->nameLength   = 1;
         dot->fileType     = 2;
         reinterpret_cast<char*>(dot + 1)[0] = '.';
@@ -186,13 +186,13 @@ bool Filesystem::remove(const char* path) {
     if (!directory && inode.linksCount > 1) {
         --inode.linksCount;
         inode.changeTime = static_cast<uint32_t>(
-            os::getWallClockTime() / 1000000000ULL);
+            os::Clock::getWallClockTime() / 1000000000ULL);
         return writeInode(number, inode) && sync();
     }
     clearInodeBlocks(inode);
     inode = {};
     inode.deletionTime = static_cast<uint32_t>(
-        os::getWallClockTime() / 1000000000ULL);
+        os::Clock::getWallClockTime() / 1000000000ULL);
     if (!writeInode(number, inode)) return false;
     freeInode(number, directory);
     return sync();
@@ -271,7 +271,7 @@ bool Filesystem::link(const char* existing, const char* newPath) {
     }
     ++inode.linksCount;
     inode.changeTime = static_cast<uint32_t>(
-        os::getWallClockTime() / 1000000000ULL);
+        os::Clock::getWallClockTime() / 1000000000ULL);
     if (!writeInode(number, inode)) {
         removeDirectoryEntry(parentNumber, parent, name);
         return false;
@@ -285,7 +285,7 @@ bool Filesystem::changeMode(const char* path, uint16_t mode) {
     if (device_->readOnly() || !resolve(path, number, &inode)) return false;
     inode.mode = static_cast<uint16_t>((inode.mode & 0xf000U) | (mode & 07777U));
     inode.changeTime = static_cast<uint32_t>(
-        os::getWallClockTime() / 1000000000ULL);
+        os::Clock::getWallClockTime() / 1000000000ULL);
     return writeInode(number, inode) && sync();
 }
 
@@ -296,7 +296,7 @@ bool Filesystem::changeOwner(const char* path, uint16_t uid, uint16_t gid) {
     inode.uid = uid;
     inode.gid = gid;
     inode.changeTime = static_cast<uint32_t>(
-        os::getWallClockTime() / 1000000000ULL);
+        os::Clock::getWallClockTime() / 1000000000ULL);
     return writeInode(number, inode) && sync();
 }
 
@@ -308,7 +308,7 @@ bool Filesystem::changeTimes(const char* path, uint32_t accessTime,
     inode.accessTime = accessTime;
     inode.modificationTime = modificationTime;
     inode.changeTime = static_cast<uint32_t>(
-        os::getWallClockTime() / 1000000000ULL);
+        os::Clock::getWallClockTime() / 1000000000ULL);
     return writeInode(number, inode) && sync();
 }
 

@@ -29,14 +29,17 @@ struct TerminalWindowSize {
     uint32_t pixelHeight;
 };
 
-bool createPty(PtyHandles& handles);
-bool getPtyAttributes(uint64_t handle, TerminalAttributes& attributes);
-bool setPtyAttributes(uint64_t handle,
+class Pty {
+   public:
+    static bool setPtyNonblocking(uint64_t handle, bool enabled);
+    static bool setPtyForegroundGroup(uint64_t handle, uint64_t taskGroupId);
+    static bool setPtyWindowSize(uint64_t handle, const TerminalWindowSize& size);
+    static bool getPtyWindowSize(uint64_t handle, TerminalWindowSize& size);
+    static bool setPtyAttributes(uint64_t handle,
                       const TerminalAttributes& attributes);
-bool getPtyWindowSize(uint64_t handle, TerminalWindowSize& size);
-bool setPtyWindowSize(uint64_t handle, const TerminalWindowSize& size);
-bool setPtyForegroundGroup(uint64_t handle, uint64_t taskGroupId);
-bool setPtyNonblocking(uint64_t handle, bool enabled);
+    static bool getPtyAttributes(uint64_t handle, TerminalAttributes& attributes);
+    static bool createPty(PtyHandles& handles);
+};
 
 }  // namespace os
 

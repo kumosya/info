@@ -78,30 +78,27 @@ pid_t libcRegisterChild(uint64_t handle) {
     return -1;
 }
 
-pid_t getpid(void) { return (pid_t)os_syscall(OS_SYS_GET_TASK_ID, 0, 0, 0, 0, 0, 0); }
+pid_t getpid(void) { return (pid_t)__libc_os_get_task_id(); }
 
 pid_t getppid(void) {
     OsTaskIdentifiers ids;
-    return os_syscall(OS_SYS_GET_TASK_IDENTIFIERS, (long)&ids, 0,
-                      0, 0, 0, 0) == 0 ? (pid_t)ids.parentId : 0;
+    return __libc_os_get_task_identifiers(&ids, 0) == 0 ? (pid_t)ids.parentId : 0;
 }
 
 pid_t getpgrp(void) {
     OsTaskIdentifiers ids;
-    return os_syscall(OS_SYS_GET_TASK_IDENTIFIERS, (long)&ids, 0,
-                      0, 0, 0, 0) == 0 ? (pid_t)ids.taskGroupId : 0;
+    return __libc_os_get_task_identifiers(&ids, 0) == 0 ? (pid_t)ids.taskGroupId : 0;
 }
 
 pid_t getsid(pid_t taskId) {
     OsTaskIdentifiers ids;
-    const long result = os_syscall(OS_SYS_GET_TASK_IDENTIFIERS,
-                                   (long)&ids, taskId, 0, 0, 0, 0);
+    const long result = __libc_os_get_task_identifiers(&ids, taskId);
     if (result < 0) { errno = result == -4 ? ESRCH : EINVAL; return -1; }
     return (pid_t)ids.sessionId;
 }
 
 pid_t setsid(void) {
-    int64_t result = os_syscall(OS_SYS_CREATE_SESSION, 0, 0, 0, 0, 0, 0);
+    int64_t result = __libc_os_create_session();
     if (result < 0) {
         errno = EPERM;
         return -1;
@@ -114,7 +111,7 @@ int kill(pid_t taskId, int signal) {
         errno = ENOSYS;
         return -1;
     }
-    const long result = os_syscall(OS_SYS_SEND_SIGNAL, taskId, signal, 0, 0, 0, 0);
+    const long result = __libc_os_send_signal(taskId, signal);
     if (result < 0) {
         errno = result == -4 ? ESRCH : result == -3 ? EPERM : EINVAL;
         return -1;

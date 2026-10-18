@@ -99,7 +99,7 @@ class CpuLocalData {
     void setCpuId(uint32_t id) { cpuId = id; }
     void setApicId(uint32_t id) { apicId = id; }
     void setKernelStack(void* stackTop);
-    void setCurrentThread(Thread* thread) { currentThread = thread; }
+    void setCurrentThread(Thread* thread) { __atomic_store_n(&currentThread, thread, __ATOMIC_RELEASE); }
     void setCurrentTask(Task* task) { currentTask = task; }
     void setRunQueue(RunQueue* queue) { runQueue = queue; }
     void setIdleThread(Thread* thread) { idleThread = thread; }
@@ -112,7 +112,7 @@ class CpuLocalData {
 
     uint32_t getCpuId() const { return cpuId; }
     uint32_t getApicId() const { return apicId; }
-    Thread* getCurrentThread() const { return currentThread; }
+    Thread* getCurrentThread() const { return __atomic_load_n(&currentThread, __ATOMIC_ACQUIRE); }
     Task* getCurrentTask() const { return currentTask; }
     RunQueue* getRunQueue() const { return runQueue; }
     Thread* getIdleThread() const { return idleThread; }

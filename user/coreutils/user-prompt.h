@@ -22,14 +22,14 @@ inline bool password(const char* prompt, char* output, size_t capacity) {
     uint64_t terminal = 0;
     bool previousEcho = true;
     if (handle) {
-        if (!os::getPtyAttributes(handle, attributes)) return false;
+        if (!os::Pty::getPtyAttributes(handle, attributes)) return false;
         const auto hidden = [&] { auto value = attributes; value.echo = false; return value; }();
-        if (!os::setPtyAttributes(handle, hidden)) return false;
+        if (!os::Pty::setPtyAttributes(handle, hidden)) return false;
     } else {
-        terminal = os::lookupService(os::serviceRegistry(), os::terminalServiceName, 2000);
+        terminal = os::ServiceRegistry::lookupService(os::ServiceRegistry::serviceRegistry(), os::terminalServiceName, 2000);
         os::IpcMessage request{}, reply{};
         request.type = static_cast<uint64_t>(os::TerminalRequest::SetEcho);
-        request.data[0] = os::getTerminalId(); request.data[1] = 0; request.length = 2;
+        request.data[0] = os::Terminal::getId(); request.data[1] = 0; request.length = 2;
         if (!terminal || os::callService(terminal, request, reply) || reply.data[0]) {
             if (terminal) os::closeHandle(terminal);
             return false;
@@ -41,11 +41,11 @@ inline bool password(const char* prompt, char* output, size_t capacity) {
     char* newline = ok ? strchr(output, '\n') : nullptr;
     if (newline) *newline = 0;
     else if (ok) { while (true) { const int c = getchar(); if (c == '\n' || c == EOF) break; } ok = false; }
-    if (handle) os::setPtyAttributes(handle, attributes);
+    if (handle) os::Pty::setPtyAttributes(handle, attributes);
     else {
         os::IpcMessage request{}, reply{};
         request.type = static_cast<uint64_t>(os::TerminalRequest::SetEcho);
-        request.data[0] = os::getTerminalId(); request.data[1] = previousEcho; request.length = 2;
+        request.data[0] = os::Terminal::getId(); request.data[1] = previousEcho; request.length = 2;
         os::callService(terminal, request, reply); os::closeHandle(terminal);
     }
     puts(""); return ok;

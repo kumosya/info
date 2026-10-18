@@ -67,7 +67,7 @@ static int spawn_impl(pid_t* task_id, const char* path,
     if (task == 0) {
         if (attributes != NULL &&
             (attributes->flags & POSIX_SPAWN_SETPGROUP) != 0 &&
-            __libc_os_set_task_group((uint64_t)attributes->task_group) != 0) {
+            __libc_os_set_task_group((uint64_t)attributes->task_group, 0) != 0) {
             _exit(127);
         }
         if (file_actions != NULL) {

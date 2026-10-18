@@ -1,5 +1,6 @@
 #include "kernel/elf.h"
 #include "kernel/page.h"
+#include "kernel/services.h"
 
 namespace {
 
@@ -524,13 +525,26 @@ bool symbolHash(uint64_t root, const Image& image, const Symbol& symbol,
 
 bool resolveSymbol(uint64_t root, const Image* images, uint32_t imageCount,
                    const Image& requester, uint32_t symbolIndex,
-                   uint64_t& value) {
+                   uint64_t& value, bool trustedImports) {
     if (symbolIndex == 0) {
         value = 0;
         return true;
     }
     Symbol requested{};
     if (!readSymbol(root, requester, symbolIndex, requested)) return false;
+    if (trustedImports) {
+        char name[128]{};
+        uint32_t i = 0;
+        for (; i + 1 < sizeof(name) && requested.name + i < requester.stringTableSize; ++i) {
+            if (!kernel::memory::copyFromAddressSpace(&name[i], root,
+                    requester.stringTable + requested.name + i, 1)) return false;
+            if (!name[i]) break;
+        }
+        if (i + 1 < sizeof(name) && !name[i]) {
+            value = kernel::Services::resolve(name);
+            if (value) return true;
+        }
+    }
     uint32_t hash;
     if (!symbolHash(root, requester, requested, hash)) return false;
     for (uint32_t imageIndex = 0; imageIndex < imageCount; ++imageIndex) {
@@ -566,7 +580,7 @@ bool resolveSymbol(uint64_t root, const Image* images, uint32_t imageCount,
 kernel::ElfLoadError applyRelocationTable(uint64_t root, const Image* images,
                                           uint32_t imageCount,
                                           const Image& image, uint64_t table,
-                                          uint64_t size) {
+                                          uint64_t size, bool trustedImports) {
     for (uint64_t offset = 0; offset < size; offset += sizeof(Rela)) {
         Rela relocation{};
         if (!kernel::memory::copyFromAddressSpace(
@@ -588,7 +602,7 @@ kernel::ElfLoadError applyRelocationTable(uint64_t root, const Image* images,
                    type == relocationJumpSlot) {
             uint64_t symbolValue = 0;
             if (!resolveSymbol(root, images, imageCount, image, symbol,
-                               symbolValue)) {
+                               symbolValue, trustedImports)) {
                 return kernel::ElfLoadError::UndefinedSymbol;
             }
             value = type == relocation64
@@ -612,7 +626,7 @@ namespace kernel {
 ElfLoadError ElfLoader::loadDynamicSetFromAddressSpace(
     uint64_t destinationRoot, uint64_t sourceRoot, uint64_t executableAddress,
     size_t executableSize, const ElfSharedImage* sharedImages,
-    uint32_t sharedImageCount, ElfLoadResult& result) {
+    uint32_t sharedImageCount, ElfLoadResult& result, bool trustedImports) {
     result = {};
     if (destinationRoot == 0 || sourceRoot == 0 || executableAddress == 0 ||
         executableSize == 0 || sharedImageCount == 0 ||
@@ -640,11 +654,11 @@ ElfLoadError ElfLoader::loadDynamicSetFromAddressSpace(
     for (uint32_t index = 0; index < imageCount; ++index) {
         error = applyRelocationTable(destinationRoot, images, imageCount,
                                      images[index], images[index].rela,
-                                     images[index].relaSize);
+                                     images[index].relaSize, trustedImports);
         if (error != ElfLoadError::None) return error;
         error = applyRelocationTable(destinationRoot, images, imageCount,
                                      images[index], images[index].jumpRela,
-                                     images[index].jumpRelaSize);
+                                     images[index].jumpRelaSize, trustedImports);
         if (error != ElfLoadError::None) return error;
     }
     result.entryPoint = images[0].entryPoint;

@@ -8,9 +8,10 @@
 #include "vfs.h"
 
 namespace vfs {
-namespace {
+class DriverTypes {
+ public:
 
-bool matches(const char* value, const char* expected) {
+static bool matches(const char* value, const char* expected) {
     if (value == nullptr || expected == nullptr) return false;
     while (*value != '\0' && *value == *expected) {
         ++value;
@@ -19,33 +20,35 @@ bool matches(const char* value, const char* expected) {
     return *value == '\0' && *expected == '\0';
 }
 
-}  // namespace
+
 
 template <typename Type>
-FileSystem* create() {
-    void* memory = os::allocateMemory(sizeof(Type));
+static FileSystem* create() {
+    void* memory = os::Memory::allocateMemory(sizeof(Type));
     return memory == nullptr ? nullptr : new (memory) Type{};
 }
 
-FileSystem* createFileSystem(const char* type) {
-    if (matches(type, "ext3")) return create<fs::ext3::Filesystem>();
-    if (matches(type, "ext4")) return create<fs::ext4::Filesystem>();
-    if (matches(type, "fat32")) return create<Fat32FileSystem>();
-    if (matches(type, "iso9660")) return create<Iso9660FileSystem>();
+};
+
+FileSystem* FileSystemFactory::createFileSystem(const char* type) {
+    if (DriverTypes::matches(type, "ext3")) return DriverTypes::create<fs::ext3::Filesystem>();
+    if (DriverTypes::matches(type, "ext4")) return DriverTypes::create<fs::ext4::Filesystem>();
+    if (DriverTypes::matches(type, "fat32")) return DriverTypes::create<Fat32FileSystem>();
+    if (DriverTypes::matches(type, "iso9660")) return DriverTypes::create<Iso9660FileSystem>();
     return nullptr;
 }
 
-void destroyFileSystem(FileSystem* filesystem, const char* type) {
+void FileSystemFactory::destroyFileSystem(FileSystem* filesystem, const char* type) {
     if (filesystem == nullptr) return;
-    if (matches(type, "ext3"))
+    if (DriverTypes::matches(type, "ext3"))
         static_cast<fs::ext3::Filesystem*>(filesystem)->~Filesystem();
-    else if (matches(type, "ext4"))
+    else if (DriverTypes::matches(type, "ext4"))
         static_cast<fs::ext4::Filesystem*>(filesystem)->~Filesystem();
-    else if (matches(type, "fat32"))
+    else if (DriverTypes::matches(type, "fat32"))
         static_cast<Fat32FileSystem*>(filesystem)->~Fat32FileSystem();
-    else if (matches(type, "iso9660"))
+    else if (DriverTypes::matches(type, "iso9660"))
         static_cast<Iso9660FileSystem*>(filesystem)->~Iso9660FileSystem();
-    os::freeMemory(filesystem);
+    os::Memory::freeMemory(filesystem);
 }
 
 }  // namespace vfs

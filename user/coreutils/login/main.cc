@@ -7,7 +7,7 @@ extern "C" char** environ;
 int main(int argc, char** argv) {
     if (argc > 2) { fputs("usage: login [USER]\n", stderr); return 2; }
     os::UserCredentials credentials{};
-    if (argc == 2) os::copyString(credentials.name, argv[1], sizeof(credentials.name));
+    if (argc == 2) os::Runtime::copyString(credentials.name, argv[1], sizeof(credentials.name));
     else {
         fputs("login: ", stdout);
         if (!fgets(credentials.name, sizeof(credentials.name), stdin)) return 1;

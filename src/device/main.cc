@@ -296,7 +296,7 @@ class KeyboardDriver {
         os::InputEvent event{};
         event.type =
             pressed ? os::InputEventType::KeyDown : os::InputEventType::KeyUp;
-        event.timestamp     = os::getMonotonicTime();
+        event.timestamp     = os::Clock::getMonotonicTime();
         event.key.keyCode   = key;
         event.key.modifiers = modifiers_;
         event.key.pressed   = pressed;
@@ -563,7 +563,7 @@ class MouseDriver {
                      int32_t deltaY, int32_t wheel, uint32_t buttons) {
         os::InputEvent event{};
         event.type      = type;
-        event.timestamp = os::getMonotonicTime();
+        event.timestamp = os::Clock::getMonotonicTime();
         event.mouse     = {deltaX, deltaY, wheel, buttons};
         queue.enqueue(event);
     }
@@ -580,9 +580,9 @@ class InputService {
         requestEndpoint_ = os::createEndpoint();
         irqEndpoint_     = os::createEndpoint();
         if (requestEndpoint_ == 0 || irqEndpoint_ == 0 ||
-            !controller_.init() || os::bindIrq(1, irqEndpoint_) == 0 ||
-            os::bindIrq(12, irqEndpoint_) == 0 ||
-            !os::registerService(registry, os::inputServiceName,
+            !controller_.init() || os::Device::bindIrq(1, irqEndpoint_) == 0 ||
+            os::Device::bindIrq(12, irqEndpoint_) == 0 ||
+            !os::ServiceRegistry::registerService(registry, os::inputServiceName,
                                  requestEndpoint_)) {
             return false;
         }
@@ -632,7 +632,7 @@ class InputService {
                 reply.data[0] = 1;
                 reply.length  = 1;
             }
-            os::replyMessage(requestEndpoint_, reply);
+            os::replyMessage(requestEndpoint_, request.replyToken, reply);
             notifySubscribers();
         }
     }
@@ -691,11 +691,7 @@ class InputService {
     InputQueue queue_;
 };
 
-InputService inputService;
 
-void inputServiceMain() { inputService.run(); }
-
-void inputIrqMain() { inputService.runIrq(); }
 
 class Device {
    public:
@@ -771,17 +767,17 @@ class PciDriver : public Driver {
    public:
     bool readConfiguration(uint16_t offset, uint32_t& value) {
         return device() != nullptr &&
-               os::readPciConfig(device()->function(), offset, value) == 0;
+               os::Pci::readPciConfig(device()->function(), offset, value) == 0;
     }
 
     bool writeConfiguration(uint16_t offset, uint32_t value) {
         return device() != nullptr &&
-               os::writePciConfig(device()->function(), offset, value) == 0;
+               os::Pci::writePciConfig(device()->function(), offset, value) == 0;
     }
 
     uint64_t mapBar(uint8_t barIndex, uint64_t address, uint64_t size) {
         return device() == nullptr ? 0
-                                   : os::mapDeviceMmio(device()->function(),
+                                   : os::Device::mapDeviceMmio(device()->function(),
                                                        barIndex, address, size);
     }
 };
@@ -790,7 +786,7 @@ class PciBus {
    public:
     uint32_t enumerate(Device* devices, uint32_t capacity) {
         os::PciFunctionInfo functions[64]{};
-        const int count = os::enumeratePci(functions, capacity);
+        const int count = os::Pci::enumeratePci(functions, capacity);
         if (count < 0) {
             return 0;
         }
@@ -839,23 +835,27 @@ class DeviceManager {
 
 }  // namespace
 
-int main(int, char**) {
-    os::log("[DEVICE] Device Server started in Ring 0\n");
+class DeviceApplication {
+ public:
+    static void inputServiceMain(void* input) { static_cast<InputService*>(input)->run(); }
+    static void inputIrqMain(void* input) { static_cast<InputService*>(input)->runIrq(); }
+    int run() {
+    os::System::log("[DEVICE] Device Server started in Ring 0\n");
     const uint64_t registry = os::getBootstrapHandle();
     const uint64_t endpoint = os::createEndpoint();
     if (registry == 0 || endpoint == 0 ||
-        !os::registerService(registry, os::deviceServiceName, endpoint)) {
-        os::log("[DEVICE] registration failed\n");
+        !os::ServiceRegistry::registerService(registry, os::deviceServiceName, endpoint)) {
+        os::System::log("[DEVICE] registration failed\n");
         return 1;
     }
 
     DeviceManager manager;
     if (!manager.init()) {
-        os::log("[DEVICE] driver initialization failed\n");
+        os::System::log("[DEVICE] driver initialization failed\n");
         return 2;
     }
-    os::log("[DEVICE] PCI discovery and driver matching complete\n");
-    os::log("[DEVICE] drivers entered Running state\n");
+    os::System::log("[DEVICE] PCI discovery and driver matching complete\n");
+    os::System::log("[DEVICE] drivers entered Running state\n");
 
     constexpr uint64_t inputStackBase    = 0x0000000060000000ULL;
     constexpr uint64_t inputStackSize    = 64 * 1024;
@@ -864,14 +864,14 @@ int main(int, char**) {
         os::mapMemory(inputStackBase, inputStackSize, 1) != inputStackBase ||
         os::mapMemory(inputIrqStackBase, inputStackSize, 1) !=
             inputIrqStackBase ||
-        os::createThread(inputServiceMain, inputStackBase + inputStackSize) ==
+        os::createThread(inputServiceMain, inputStackBase + inputStackSize, &inputService) ==
             0 ||
-        os::createThread(inputIrqMain, inputIrqStackBase + inputStackSize) ==
+        os::createThread(inputIrqMain, inputIrqStackBase + inputStackSize, &inputService) ==
             0) {
-        os::log("[INPUT] unable to start PS/2 input service\n");
+        os::System::log("[INPUT] unable to start PS/2 input service\n");
         return 3;
     }
-    os::log("[INPUT] PS/2 keyboard and mouse service online\n");
+    os::System::log("[INPUT] PS/2 keyboard and mouse service online\n");
 
     while (true) {
         os::IpcMessage request{};
@@ -899,8 +899,8 @@ int main(int, char**) {
                 reply.length = 1;
             } else {
                 reply.data[0] = 0;
-                reply.data[1] = os::stringsEqual(nodes[index], "pts") ? 1 : 0;
-                os::copyString(reinterpret_cast<char*>(&reply.data[2]),
+                reply.data[1] = os::Runtime::stringsEqual(nodes[index], "pts") ? 1 : 0;
+                os::Runtime::copyString(reinterpret_cast<char*>(&reply.data[2]),
                                nodes[index], 6 * sizeof(uint64_t));
                 reply.length = 8;
             }
@@ -910,7 +910,7 @@ int main(int, char**) {
             uint64_t size = request.data[6];
             const uint64_t capacity =
                 (os::ipcDataWordCount - 2) * sizeof(uint64_t);
-            if (!os::stringsEqual(name, "zero") || size == 0 ||
+            if (!os::Runtime::stringsEqual(name, "zero") || size == 0 ||
                 size > capacity) {
                 reply.data[0] = static_cast<uint64_t>(
                     static_cast<int64_t>(os::ErrorCode::InvalidArgument));
@@ -925,6 +925,10 @@ int main(int, char**) {
             reply.data[0] = 2;
             reply.length  = 1;
         }
-        os::replyMessage(endpoint, reply);
+        os::replyMessage(endpoint, request.replyToken, reply);
     }
 }
+ private:
+    InputService inputService;
+};
+int main(int, char**) { static DeviceApplication application; return application.run(); }

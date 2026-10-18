@@ -19,11 +19,15 @@ struct PciRequest {
 
 static_assert(sizeof(PciFunctionInfo) == 16);
 
-int enumeratePci(PciFunctionInfo* functions, uint32_t capacity);
-int readPciConfig(const PciFunctionInfo& function, uint16_t offset,
-                  uint32_t& value);
-int writePciConfig(const PciFunctionInfo& function, uint16_t offset,
+class Pci {
+   public:
+    static int writePciConfig(const PciFunctionInfo& function, uint16_t offset,
                    uint32_t value);
+    static int readPciConfig(const PciFunctionInfo& function, uint16_t offset,
+                  uint32_t& value);
+    static int enumeratePci(PciFunctionInfo* functions, uint32_t capacity);
+    static uint64_t pciServiceHandle();
+};
 
 }  // namespace os
 

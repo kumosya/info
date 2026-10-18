@@ -3,7 +3,7 @@
 .global _start
 .type _start, @function
 .extern main
-.extern _ZN2os11runtimeInitEiPPcS1_
+.extern osRuntimeInit
 .extern exit
 .extern __libc_set_environ
 .extern __libc_import_exec_state
@@ -15,7 +15,7 @@ _start:
     leaq 8(%r12), %rsi
     leaq 16(%r12,%rdi,8), %rdx
     movq %rdx, %r14
-    call _ZN2os11runtimeInitEiPPcS1_
+    call osRuntimeInit
     movq %rax, %r13
     movq %r14, %rdi
     call __libc_set_environ

@@ -77,12 +77,16 @@ class Style {
     uint8_t attributes_ = 0;
 };
 
-inline uint32_t color(uint8_t index, bool bright = false) {
+class Palette {
+ public:
+static uint32_t color(uint8_t index, bool bright = false) {
     constexpr uint32_t palette[] = {
         0x171a1f, 0xb84040, 0x4aa36b, 0xc49a44, 0x4a82bd, 0x9c5caf, 0x3aa6a0, 0xd9dde3,
         0x646b75, 0xef6666, 0x6ed596, 0xf0c674, 0x7fb7e8, 0xc792ea, 0x5fd7d1, 0xffffff};
     return palette[(index & 15U) | (bright ? 8U : 0U)];
 }
+
+};
 
 }  // namespace os::terminal
 

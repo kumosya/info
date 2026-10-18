@@ -107,7 +107,10 @@ class FileSystem {
     ~FileSystem() = default;
 };
 
-FileSystem* createFileSystem(const char* type);
-void destroyFileSystem(FileSystem* filesystem, const char* type);
+class FileSystemFactory {
+ public:
+static FileSystem* createFileSystem(const char* type);
+static void destroyFileSystem(FileSystem* filesystem, const char* type);
+};
 
 }  // namespace vfs

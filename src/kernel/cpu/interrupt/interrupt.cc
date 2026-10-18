@@ -76,7 +76,7 @@ void initIdt() {
         } else if (vector == 18) {
             ist = 3;
         }
-        const uint8_t privilege = (vector == 3 || vector == 0x80) ? 3 : 0;
+        const uint8_t privilege = vector == 3 ? 3 : 0;
         setIdtEntry(static_cast<uint8_t>(vector), isrStubTable[vector], ist,
                     privilege);
         handlers[vector] = nullptr;
@@ -142,20 +142,6 @@ void handleException(Context* context) {
 
 namespace kernel::interrupt {
 extern "C" void interruptDispatch(Context* context) {
-    if (context->vector == 0x80) {
-        Task* caller = task::getCurrent();
-        if (!caller || !caller->isSystemService() || (context->cs & 3)) {
-            context->rax = static_cast<uint64_t>(SyscallError::PermissionDenied);
-            return;
-        }
-        // This DPL-0 gate never uses SYSRET or swaps GS. Normal Ring 3 callers
-        // keep the SYSCALL path and cannot enter this service-only gate.
-        interrupt::enable();
-        context->rax = syscall::dispatchSyscall(context->rax, context->rdi, context->rsi,
-                                               context->rdx, context->r10, context->r8, context->r9);
-        interrupt::disable();
-        return;
-    }
     if (context->vector < 32) {
         kernel::interrupt::handleException(context);
         return;

@@ -8,6 +8,7 @@
 #include "kernel/syscall.h"
 #include "kernel/task.h"
 #include "kernel/time.h"
+#include "kernel/ipc.h"
 
 static_assert(sizeof(kernel::CpuContext) == 21 * sizeof(uint64_t));
 
@@ -165,6 +166,8 @@ void Thread::bootstrap() {
     Thread* thread       = Thread::getCurrent();
     thread->setExitCode(exitCode);
     thread->setState(ThreadState::Terminated);
+    Endpoint::cancelThread(thread);
+    ThreadCleanup::releaseAll(*thread);
     if (thread->getTask() != nullptr) {
         thread->getTask()->notifyThreadExit(thread);
     }
@@ -175,10 +178,12 @@ void Thread::bootstrap() {
 }
 
 void Thread::blockCurrent() {
-    schedule::blockCurrentThread();
+    if (!Thread::getCurrent()->waitError()) schedule::blockCurrentThread();
+    if (Thread::getCurrent()->waitError()) Thread::getCurrent()->cancelWait();
 }
 
 void Thread::prepareWait() { schedule::prepareCurrentWait(); }
+
 
 void Thread::wake(Thread* thread) {
     schedule::wakeThread(thread);

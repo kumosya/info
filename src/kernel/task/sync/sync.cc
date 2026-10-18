@@ -6,9 +6,10 @@
 
 namespace {
 
-void appendWaiter(kernel::Thread*& head, kernel::Thread*& tail,
+void appendWaiter(kernel::SpinLock& lock, kernel::Thread*& head, kernel::Thread*& tail,
                   kernel::Thread* thread) {
     kernel::Thread::prepareWait();
+    thread->registerWait(lock, head, &tail);
     thread->setWaitNext(nullptr);
     if (tail == nullptr) {
         head = thread;
@@ -28,6 +29,7 @@ kernel::Thread* removeWaiter(kernel::Thread*& head, kernel::Thread*& tail) {
         tail = nullptr;
     }
     thread->setWaitNext(nullptr);
+    thread->clearWaitRegistration();
     return thread;
 }
 
@@ -52,7 +54,7 @@ void WaitQueue::wait() {
     }
     const uint64_t flags = interrupt::disable();
     lock_.lock();
-    appendWaiter(head_, tail_, current);
+    appendWaiter(lock_, head_, tail_, current);
     lock_.unlock();
     Thread::blockCurrent();
     interrupt::restore(flags);
@@ -100,7 +102,7 @@ void Mutex::lock() {
             interrupt::restore(flags);
             return;
         }
-        appendWaiter(waiters_, waitersTail_, current);
+        appendWaiter(lock_, waiters_, waitersTail_, current);
         lock_.unlock();
         Thread::blockCurrent();
         interrupt::restore(flags);
@@ -155,7 +157,7 @@ void Semaphore::wait() {
         interrupt::restore(flags);
         return;
     }
-    appendWaiter(waiters_, waitersTail_, current);
+    appendWaiter(lock_, waiters_, waitersTail_, current);
     lock_.unlock();
     Thread::blockCurrent();
     interrupt::restore(flags);
@@ -228,7 +230,7 @@ void Once::run(Initializer initializer, void* argument) {
         return;
     }
     if (current != nullptr) {
-        appendWaiter(waiters_, waitersTail_, current);
+        appendWaiter(lock_, waiters_, waitersTail_, current);
     }
     lock_.unlock();
     if (current != nullptr) {

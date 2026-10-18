@@ -2,7 +2,7 @@
 
 namespace vfs {
 
-bool probeExFat(const uint8_t* data, size_t size) {
+bool FormatProbe::probeExFat(const uint8_t* data, size_t size) {
     if (data == nullptr || size < 512 || data[510] != 0x55 || data[511] != 0xaa)
         return false;
     constexpr char name[] = "EXFAT   ";

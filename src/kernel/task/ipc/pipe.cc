@@ -46,8 +46,9 @@ void clearMemory(void* address, size_t size) {
     }
 }
 
-void addWaiter(Thread*& waiters, Thread* thread) {
+void addWaiter(SpinLock& lock, Thread*& waiters, Thread* thread) {
     Thread::prepareWait();
+    thread->registerWait(lock, waiters);
     thread->setWaitNext(waiters);
     waiters = thread;
 }
@@ -59,6 +60,7 @@ void wakeOne(Thread*& waiters) {
     Thread* thread = waiters;
     waiters        = thread->getWaitNext();
     thread->setWaitNext(nullptr);
+    thread->clearWaitRegistration();
     Thread::wake(thread);
 }
 
@@ -106,6 +108,9 @@ bool Pipe::createHandles(Task& task, uint64_t& readHandle,
     PipeEnd* readEnd  = createEnd(pipe, true);
     PipeEnd* writeEnd = createEnd(pipe, false);
     if (readEnd == nullptr || writeEnd == nullptr) {
+        heap::kernelFree(readEnd);
+        heap::kernelFree(writeEnd);
+        heap::kernelFree(pipe);
         return false;
     }
     readHandle = task.handles().add(readEnd, HandleType::Pipe, handleRightRead);
@@ -134,25 +139,45 @@ bool Pipe::createChannelPair(Task& task, uint64_t& firstHandle,
     firstHandle = secondHandle = 0;
     PipeState* firstInput = createState();
     PipeState* secondInput = createState();
-    if (firstInput == nullptr || secondInput == nullptr) return false;
+    if (firstInput == nullptr || secondInput == nullptr) {
+        heap::kernelFree(firstInput);
+        heap::kernelFree(secondInput);
+        return false;
+    }
     PipeEnd* firstRead = createEnd(firstInput, true);
     PipeEnd* secondWrite = createEnd(firstInput, false);
     PipeEnd* secondRead = createEnd(secondInput, true);
     PipeEnd* firstWrite = createEnd(secondInput, false);
-    if (!firstRead || !secondWrite || !secondRead || !firstWrite) return false;
+    if (!firstRead || !secondWrite || !secondRead || !firstWrite) {
+        heap::kernelFree(firstRead); heap::kernelFree(secondWrite);
+        heap::kernelFree(secondRead); heap::kernelFree(firstWrite);
+        heap::kernelFree(firstInput); heap::kernelFree(secondInput);
+        return false;
+    }
     const uint64_t firstId = __atomic_fetch_add(&nextChannelIdentity, 1ULL,
                                                  __ATOMIC_RELAXED);
     const uint64_t secondId = __atomic_fetch_add(&nextChannelIdentity, 1ULL,
                                                   __ATOMIC_RELAXED);
     auto* firstFlags = static_cast<bool*>(heap::kernelAllocate(sizeof(bool)));
     auto* secondFlags = static_cast<bool*>(heap::kernelAllocate(sizeof(bool)));
-    if (!firstFlags || !secondFlags) return false;
+    if (!firstFlags || !secondFlags) {
+        closeHandleObject(firstRead); closeHandleObject(secondWrite);
+        closeHandleObject(secondRead); closeHandleObject(firstWrite);
+        heap::kernelFree(firstFlags); heap::kernelFree(secondFlags);
+        return false;
+    }
     *firstFlags = *secondFlags = false;
     ChannelEnd* first = createChannelEnd(firstRead, firstWrite, firstId,
                                          firstFlags);
     ChannelEnd* second = createChannelEnd(secondRead, secondWrite, secondId,
                                           secondFlags);
-    if (!first || !second) return false;
+    if (!first || !second) {
+        closeHandleObject(firstRead); closeHandleObject(secondWrite);
+        closeHandleObject(secondRead); closeHandleObject(firstWrite);
+        heap::kernelFree(firstFlags); heap::kernelFree(secondFlags);
+        heap::kernelFree(first); heap::kernelFree(second);
+        return false;
+    }
     firstHandle = task.handles().add(first, HandleType::Channel,
                                     handleRightRead | handleRightWrite);
     secondHandle = task.handles().add(second, HandleType::Channel,
@@ -169,22 +194,22 @@ bool Pipe::createChannelPair(Task& task, uint64_t& firstHandle,
 }
 
 uint64_t Pipe::channelIdentity(Task& task, uint64_t handle) {
-    auto* end = static_cast<ChannelEnd*>(
-        task.handles().get(handle, HandleType::Channel, handleRightRead));
+    HandleTable::Pin pin(task.handles(), handle, HandleType::Channel, handleRightRead);
+    auto* end = pin.as<ChannelEnd>();
     return end && !end->closed ? end->identity : 0;
 }
 
 bool Pipe::setChannelNonblocking(Task& task, uint64_t handle, bool enabled) {
-    auto* end = static_cast<ChannelEnd*>(
-        task.handles().get(handle, HandleType::Channel, handleRightRead));
+    HandleTable::Pin pin(task.handles(), handle, HandleType::Channel, handleRightRead);
+    auto* end = pin.as<ChannelEnd>();
     if (!end || end->closed) return false;
     __atomic_store_n(end->nonblocking, enabled, __ATOMIC_RELEASE);
     return true;
 }
 
 bool Pipe::signalChannelEof(Task& task, uint64_t handle) {
-    auto* end = static_cast<ChannelEnd*>(
-        task.handles().get(handle, HandleType::Channel, handleRightWrite));
+    HandleTable::Pin pin(task.handles(), handle, HandleType::Channel, handleRightWrite);
+    auto* end = pin.as<ChannelEnd>();
     if (!end || end->closed) return false;
     PipeState* state = end->output->pipe;
     InterruptSpinLockGuard guard(state->lock);
@@ -195,77 +220,7 @@ bool Pipe::signalChannelEof(Task& task, uint64_t handle) {
 
 uint64_t Pipe::duplicateHandle(Task& source, Task& destination, uint64_t handle,
                                uint64_t destinationHandle) {
-    void* object    = nullptr;
-    HandleType type = HandleType::None;
-    uint32_t rights = 0;
-    if (!source.handles().inspect(handle, &object, &type, &rights) ||
-        (type != HandleType::Pipe && type != HandleType::Channel)) {
-        return 0;
-    }
-    if (type == HandleType::Channel) {
-        auto* original = static_cast<ChannelEnd*>(object);
-        if (original->closed) return 0;
-        PipeEnd* input = nullptr;
-        PipeEnd* output = nullptr;
-        {
-            InterruptSpinLockGuard guard(original->input->pipe->lock);
-            input = createEnd(original->input->pipe, true);
-            if (!input) return 0;
-            ++input->pipe->readers;
-        }
-        {
-            InterruptSpinLockGuard guard(original->output->pipe->lock);
-            output = createEnd(original->output->pipe, false);
-            if (!output) {
-                closeHandleObject(input);
-                return 0;
-            }
-            ++output->pipe->writers;
-        }
-        ChannelEnd* duplicate = createChannelEnd(input, output,
-                                                  original->identity,
-                                                  original->nonblocking);
-        if (!duplicate) {
-            closeHandleObject(input);
-            closeHandleObject(output);
-            return 0;
-        }
-        const uint64_t result = destinationHandle == 0
-            ? destination.handles().add(duplicate, HandleType::Channel, rights)
-            : (destination.handles().addAt(destinationHandle, duplicate,
-                                           HandleType::Channel, rights)
-                   ? destinationHandle : 0);
-        if (!result) closeChannelHandleObject(duplicate);
-        return result;
-    }
-    auto* original     = static_cast<PipeEnd*>(object);
-    PipeEnd* duplicate = nullptr;
-    {
-        InterruptSpinLockGuard guard(original->pipe->lock);
-        if (original->closed) {
-            return 0;
-        }
-        duplicate = createEnd(original->pipe, original->readable);
-        if (duplicate == nullptr) {
-            return 0;
-        }
-        if (duplicate->readable) {
-            ++duplicate->pipe->readers;
-        } else {
-            ++duplicate->pipe->writers;
-        }
-    }
-    const uint64_t result =
-        destinationHandle == 0
-            ? destination.handles().add(duplicate, HandleType::Pipe, rights)
-            : (destination.handles().addAt(destinationHandle, duplicate,
-                                           HandleType::Pipe, rights)
-                   ? destinationHandle
-                   : 0);
-    if (result == 0) {
-        Pipe::closeHandleObject(duplicate);
-    }
-    return result;
+    return source.handles().copyTo(destination.handles(), handle, destinationHandle);
 }
 
 static int64_t readEnd(PipeEnd* end, void* buffer, size_t size,
@@ -299,9 +254,10 @@ static int64_t readEnd(PipeEnd* end, void* buffer, size_t size,
                 return 0;
             }
             if (nonblocking) return -6;
-            addWaiter(pipe->readerWaiters, Thread::getCurrent());
+            addWaiter(pipe->lock, pipe->readerWaiters, Thread::getCurrent());
         }
         Thread::blockCurrent();
+        if (const int error = Thread::getCurrent()->waitError()) return error;
     }
 }
 
@@ -333,9 +289,10 @@ static int64_t writeEnd(PipeEnd* end, const void* buffer, size_t size,
                 return static_cast<int64_t>(count);
             }
             if (nonblocking) return -6;
-            addWaiter(pipe->writerWaiters, Thread::getCurrent());
+            addWaiter(pipe->lock, pipe->writerWaiters, Thread::getCurrent());
         }
         Thread::blockCurrent();
+        if (const int error = Thread::getCurrent()->waitError()) return error;
     }
 }
 
@@ -345,6 +302,9 @@ int64_t Pipe::read(Task& task, uint64_t handle, void* buffer, size_t size) {
     uint32_t rights = 0;
     if (!task.handles().inspect(handle, &object, &type, &rights) ||
         (rights & handleRightRead) == 0) return -2;
+    HandleTable::Pin pin(task.handles(), handle, type, handleRightRead);
+    object = pin.as<void>();
+    if (!object) return -2;
     if (type == HandleType::Channel) {
         auto* channel = static_cast<ChannelEnd*>(object);
         return channel->closed ? -2 : readEnd(channel->input, buffer, size,
@@ -361,6 +321,9 @@ int64_t Pipe::write(Task& task, uint64_t handle, const void* buffer,
     uint32_t rights = 0;
     if (!task.handles().inspect(handle, &object, &type, &rights) ||
         (rights & handleRightWrite) == 0) return -2;
+    HandleTable::Pin pin(task.handles(), handle, type, handleRightWrite);
+    object = pin.as<void>();
+    if (!object) return -2;
     if (type == HandleType::Channel) {
         auto* channel = static_cast<ChannelEnd*>(object);
         return channel->closed ? -2 : writeEnd(channel->output, buffer, size,
@@ -376,22 +339,21 @@ void Pipe::closeHandleObject(void* object) {
         return;
     }
     PipeState* pipe = end->pipe;
-    InterruptSpinLockGuard guard(pipe->lock);
-    if (end->closed) {
-        return;
-    }
-    end->closed = true;
-    if (end->readable) {
-        if (pipe->readers != 0) {
-            --pipe->readers;
+    bool release;
+    {
+        InterruptSpinLockGuard guard(pipe->lock);
+        end->closed = true;
+        if (end->readable) {
+            if (pipe->readers) --pipe->readers;
+            wakeAll(pipe->writerWaiters);
+        } else {
+            if (pipe->writers) --pipe->writers;
+            wakeAll(pipe->readerWaiters);
         }
-        wakeAll(pipe->writerWaiters);
-    } else {
-        if (pipe->writers != 0) {
-            --pipe->writers;
-        }
-        wakeAll(pipe->readerWaiters);
+        release = !pipe->readers && !pipe->writers;
     }
+    heap::kernelFree(end);
+    if (release) heap::kernelFree(pipe);
 }
 
 void Pipe::closeChannelHandleObject(void* object) {
@@ -400,6 +362,8 @@ void Pipe::closeChannelHandleObject(void* object) {
     end->closed = true;
     closeHandleObject(end->input);
     closeHandleObject(end->output);
+    heap::kernelFree(end->nonblocking);
+    heap::kernelFree(end);
 }
 
 }  // namespace kernel

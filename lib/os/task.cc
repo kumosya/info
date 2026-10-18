@@ -1,4 +1,5 @@
 #include "os/task.h"
+#include "os/core_service.h"
 
 #include "os/abi.h"
 #include "os/protocol.h"
@@ -14,44 +15,44 @@ constexpr uint32_t executePayloadSize   = 7 * sizeof(uint64_t);
 
 }  // namespace
 
-TaskHandle execute(const char* path) {
+TaskHandle Process::execute(const char* path) {
     const char* arguments[] = {path};
-    return execute(path, 1, arguments);
+    return Process::execute(path, 1, arguments);
 }
 
-TaskHandle execute(const char* path, int argumentCount,
+TaskHandle Process::execute(const char* path, int argumentCount,
                       const char* const* arguments) {
-    return executeWithIo(path, argumentCount, arguments,
+    return Process::executeWithIo(path, argumentCount, arguments,
                          getStandardHandle(0), getStandardHandle(1),
                          getStandardHandle(2));
 }
 
-TaskHandle executeWithIo(const char* path, int argumentCount,
+TaskHandle Process::executeWithIo(const char* path, int argumentCount,
                             const char* const* arguments,
                             uint64_t standardInputHandle,
                             uint64_t standardOutputHandle,
                             uint64_t standardErrorHandle) {
-    const uint64_t registry = serviceRegistry();
+    const uint64_t registry = ServiceRegistry::serviceRegistry();
     const uint64_t taskService =
-        lookupService(registry, taskServiceName, 1000);
+        ServiceRegistry::lookupService(registry, taskServiceName, 1000);
     if (registry == 0) {
-        log("[RUNTIME] task registry unavailable\n");
+        System::log("[RUNTIME] task registry unavailable\n");
         return 0;
     }
     if (taskService == 0) {
-        log("[RUNTIME] task service unavailable\n");
+        System::log("[RUNTIME] task service unavailable\n");
         return 0;
     }
     if (path == nullptr || argumentCount <= 0 ||
         argumentCount > static_cast<int>(maximumArgumentCount) ||
         arguments == nullptr) {
-        log("[RUNTIME] invalid execute arguments\n");
+        System::log("[RUNTIME] invalid execute arguments\n");
         return 0;
     }
     IpcMessage request{};
     request.type    = static_cast<uint64_t>(TaskRequest::Execute);
     request.data[0] = static_cast<uint64_t>(argumentCount) |
-                      (static_cast<uint64_t>(getTerminalId() + 1) << 32);
+                      (static_cast<uint64_t>(Terminal::getId() + 1) << 32);
     char* payload = reinterpret_cast<char*>(&request.data[1]);
     uint32_t used = 0;
     const char* values[maximumArgumentCount + 1]{};
@@ -61,7 +62,7 @@ TaskHandle executeWithIo(const char* path, int argumentCount,
     }
     for (int index = 0; index <= argumentCount; ++index) {
         const char* argument = values[index];
-        const size_t length  = stringLength(argument) + 1;
+        const size_t length  = Runtime::stringLength(argument) + 1;
         if (argument == nullptr || length > executePayloadSize - used) {
             return 0;
         }
@@ -73,6 +74,8 @@ TaskHandle executeWithIo(const char* path, int argumentCount,
     request.length      = 8;
     request.handleCount = 1;
     request.handles[0]  = registry;
+    request.handleOptions[0] = ipcHandleRestrictRights;
+    request.handleRights[0] = 2;
     if (standardInputHandle != 0) {
         request.data[0] |= taskExecuteHasStdin;
         request.handles[request.handleCount++] = standardInputHandle;
@@ -87,20 +90,20 @@ TaskHandle executeWithIo(const char* path, int argumentCount,
     }
     IpcMessage reply{};
     if (callService(taskService, request, reply) != 0) {
-        log("[RUNTIME] task service call failed\n");
+        System::log("[RUNTIME] task service call failed\n");
         return 0;
     }
     if (reply.data[0] != 0 || reply.handleCount != 1) {
-        log("[RUNTIME] task service rejected execute\n");
+        System::log("[RUNTIME] task service rejected execute\n");
         return 0;
     }
     return reply.handles[0];
 }
 
-int waitTask(TaskHandle task, int* exitCode) {
-    const uint64_t registry = serviceRegistry();
+int Process::waitTask(TaskHandle task, int* exitCode) {
+    const uint64_t registry = ServiceRegistry::serviceRegistry();
     const uint64_t taskService =
-        lookupService(registry, taskServiceName, 1000);
+        ServiceRegistry::lookupService(registry, taskServiceName, 1000);
     if (task == 0 || taskService == 0 || exitCode == nullptr) {
         return static_cast<int>(ErrorCode::InvalidArgument);
     }
@@ -116,6 +119,11 @@ int waitTask(TaskHandle task, int* exitCode) {
         }
         if (reply.data[0] == 1) {
             *exitCode = static_cast<int>(reply.data[1]);
+            TaskInfo info{};
+            if (Process::getTaskInfo(task, info) == 0) {
+                int status = 0;
+                Process::waitChild(static_cast<int64_t>(info.id), status, 1);
+            }
             closeHandle(task);
             return 0;
         }
@@ -126,17 +134,43 @@ int waitTask(TaskHandle task, int* exitCode) {
     }
 }
 
-bool listTask(uint32_t index, TaskListEntry& entry) {
+bool Process::listTask(uint32_t index, TaskListEntry& entry) {
     TaskInfo info{};
-    if (invokeSyscall(SyscallNumber::EnumerateTask, index, reinterpret_cast<uint64_t>(&info)) != 0) return false;
+    if (Process::enumerateTask(index, info) != 0) return false;
     entry.id = info.id;
     entry.state = info.state;
-    copyString(entry.name, info.name, sizeof(entry.name));
+    Runtime::copyString(entry.name, info.name, sizeof(entry.name));
     return true;
 }
 
-bool killTask(uint64_t taskId) {
-    return taskId != 0 && sendSignal(taskId, 15) == 0;
+bool Process::killTask(uint64_t taskId) {
+    return taskId != 0 && Process::sendSignal(taskId, 15) == 0;
 }
 
+}  // namespace os
+
+namespace os {
+int Process::queryTask(uint64_t taskId, TaskInfo& info) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::Query);
+    request.length = 4; request.data[0] = taskId;
+    const int64_t result = CoreServiceClient::result(CoreServiceKind::Task, request, reply);
+    if (!result) Runtime::copyBytes(&info, &reply.data[1], sizeof(info));
+    return result;
+}
+int Process::enumerateTask(uint32_t index, TaskInfo& info) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::Enumerate);
+    request.length = 4; request.data[0] = index;
+    const int64_t result = CoreServiceClient::result(CoreServiceKind::Task, request, reply);
+    if (!result) Runtime::copyBytes(&info, &reply.data[1], sizeof(info));
+    return result;
+}
+int Process::setCredentials(uint64_t taskId, uint32_t uid, uint32_t gid, bool effectiveOnly) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::SetCredentials);
+    request.length = 4;
+    request.data[0] = taskId; request.data[1] = uid; request.data[2] = gid; request.data[3] = effectiveOnly;
+    return CoreServiceClient::result(CoreServiceKind::Task, request, reply);
+}
 }  // namespace os

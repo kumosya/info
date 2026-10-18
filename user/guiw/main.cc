@@ -133,7 +133,7 @@ void consumeOutput(TerminalTab& tab, const uint8_t* bytes, size_t size) {
 }
 
 void drawLabel(int32_t x, int32_t y, const char* text, uint32_t color) {
-    os::drawText(windowService, windowHandle, x, y, text, color);
+    os::Window::drawText(windowService, windowHandle, x, y, text, color);
 }
 
 void render() {
@@ -142,11 +142,11 @@ void render() {
     dirty = false;
     const bool full = paintedTab != activeTab || paintedTabCount != tabCount;
     if (full) {
-    os::fillRectangle(windowService, windowHandle, 0, 0, windowWidth,
-                      windowHeight, os::terminal::color(0));
+    os::Window::fillRectangle(windowService, windowHandle, 0, 0, windowWidth,
+                      windowHeight, os::terminal::Palette::color(0));
     for (uint32_t index = 0; index < tabCount; ++index) {
         const uint32_t color = index == activeTab ? 0x00313a43U : 0x00222930U;
-        os::fillRectangle(windowService, windowHandle,
+        os::Window::fillRectangle(windowService, windowHandle,
                           static_cast<int32_t>(index * tabWidth), 0,
                           tabWidth - 1, 30, color);
         char title[] = "Terminal 1";
@@ -155,7 +155,7 @@ void render() {
                   0x00e7edf3U);
     }
     const int32_t plusX = static_cast<int32_t>(tabCount * tabWidth);
-    os::fillRectangle(windowService, windowHandle, plusX, 0, 36, 30,
+    os::Window::fillRectangle(windowService, windowHandle, plusX, 0, 36, 30,
                       0x002b8a65U);
     drawLabel(plusX + 14, 7, "+", 0x00ffffffU);
     }
@@ -182,8 +182,8 @@ void render() {
                 line[length++] = next.character;
             }
             line[length] = 0;
-            uint32_t foreground = os::terminal::color(cell.foreground, cell.attributes & 1U);
-            uint32_t background = os::terminal::color(cell.background);
+            uint32_t foreground = os::terminal::Palette::color(cell.foreground, cell.attributes & 1U);
+            uint32_t background = os::terminal::Palette::color(cell.background);
             if (cell.attributes & 4U) {
                 const uint32_t temporary = foreground;
                 foreground = background;
@@ -191,18 +191,18 @@ void render() {
             }
             const int32_t x = 8 + static_cast<int32_t>(start * 8);
             const int32_t y = 38 + static_cast<int32_t>(row * 16);
-            os::fillRectangle(windowService, windowHandle, x, y, length * 8, 16, background);
+            os::Window::fillRectangle(windowService, windowHandle, x, y, length * 8, 16, background);
             drawLabel(x, y, line, foreground);
             if (cell.attributes & 2U)
-                os::fillRectangle(windowService, windowHandle, x, y + 14, length * 8, 1, foreground);
+                os::Window::fillRectangle(windowService, windowHandle, x, y + 14, length * 8, 1, foreground);
             start += length;
         }
     }
-    os::fillRectangle(windowService, windowHandle,
+    os::Window::fillRectangle(windowService, windowHandle,
                       8 + static_cast<int32_t>(tab.cursorX * 8),
                       38 + static_cast<int32_t>(tab.cursorY * 16), 8, 2,
                       0x0067d6a3U);
-    os::presentWindow(windowService, windowHandle);
+    os::Window::presentWindow(windowService, windowHandle);
     for (uint32_t row = 0; row < terminalRows; ++row)
         for (uint32_t column = 0; column < terminalColumns; ++column)
             painted[row][column] = tab.cells[row][column];
@@ -216,7 +216,7 @@ void readTab(uint32_t index) {
     uint8_t buffer[256];
     while (tabs[index].active) {
         const int64_t count =
-            os::readPipe(tabs[index].pty.masterHandle, buffer, sizeof(buffer));
+            os::Pipe::readPipe(tabs[index].pty.masterHandle, buffer, sizeof(buffer));
         if (count <= 0) break;
         {
             std::lock_guard<std::mutex> guard(terminalLock);
@@ -242,9 +242,9 @@ bool createTab() {
     const uint32_t index = tabCount;
     TerminalTab& tab = tabs[index];
     clearTab(tab);
-    if (!os::createPty(tab.pty)) return false;
+    if (!os::Pty::createPty(tab.pty)) return false;
     const char* arguments[] = {"sh"};
-    tab.shell = os::executeWithIo("/bin/sh", 1, arguments,
+    tab.shell = os::Process::executeWithIo("/bin/sh", 1, arguments,
                                   tab.pty.slaveHandle, tab.pty.slaveHandle,
                                   tab.pty.slaveHandle);
     if (tab.shell == 0) {
@@ -255,13 +255,13 @@ bool createTab() {
     os::closeHandle(tab.pty.slaveHandle);
     tab.pty.slaveHandle = 0;
     os::TaskInfo info{};
-    if (os::getTaskInfo(tab.shell, info) != 0 ||
-        !os::setPtyForegroundGroup(tab.pty.masterHandle, info.id)) {
+    if (os::Process::getTaskInfo(tab.shell, info) != 0 ||
+        !os::Pty::setPtyForegroundGroup(tab.pty.masterHandle, info.id)) {
         return false;
     }
     const os::TerminalWindowSize size{terminalRows, terminalColumns,
                                       windowWidth, windowHeight - 30};
-    os::setPtyWindowSize(tab.pty.masterHandle, size);
+    os::Pty::setPtyWindowSize(tab.pty.masterHandle, size);
     tab.active = true;
     void (*entries[])() = {readTab0, readTab1, readTab2, readTab3};
     const uint64_t stackAddress = stackBase + stackSize * index;
@@ -329,33 +329,33 @@ void handleKey(const os::WindowEvent& event) {
     if (event.keyCode == os::KeyCode::Right) sequence = right;
     if (event.keyCode == os::KeyCode::Left) sequence = left;
     if (sequence != nullptr) {
-        os::writePipe(tabs[activeTab].pty.masterHandle, sequence, 3);
+        os::Pipe::writePipe(tabs[activeTab].pty.masterHandle, sequence, 3);
         return;
     }
     const char value = translateKey(event.keyCode, event.modifiers);
     if (value != 0) {
-        os::writePipe(tabs[activeTab].pty.masterHandle, &value, 1);
+        os::Pipe::writePipe(tabs[activeTab].pty.masterHandle, &value, 1);
     }
 }
 
 }  // namespace
 
 int main(int, char**) {
-    const uint64_t registry = os::serviceRegistry();
-    windowService = os::lookupService(registry, os::guiwServiceName, 30000);
+    const uint64_t registry = os::ServiceRegistry::serviceRegistry();
+    windowService = os::ServiceRegistry::lookupService(registry, os::guiwServiceName, 30000);
     if (windowService == 0) return 1;
-    windowHandle = os::createWindow(windowService, windowWidth, windowHeight,
+    windowHandle = os::Window::createWindow(windowService, windowWidth, windowHeight,
                                     "Terminal");
     if (windowHandle == 0 || !createTab()) return 2;
-    os::moveWindow(windowService, windowHandle, 130, 90);
-    os::showWindow(windowService, windowHandle);
+    os::Window::moveWindow(windowService, windowHandle, 130, 90);
+    os::Window::showWindow(windowService, windowHandle);
     render();
     const uint64_t renderStack = stackBase + stackSize * tabCapacity;
     if (os::mapMemory(renderStack, stackSize, 1) != renderStack ||
         os::createThread(renderMain, renderStack + stackSize) == 0) return 3;
     while (true) {
         os::WindowEvent event{};
-        if (!os::getNextWindowEvent(windowService, windowHandle, event)) break;
+        if (!os::Window::getNextWindowEvent(windowService, windowHandle, event)) break;
         if (event.type == os::WindowEventType::WindowClose) break;
         if (event.type == os::WindowEventType::KeyDown) {
             handleKey(event);
@@ -374,7 +374,7 @@ int main(int, char**) {
                 terminalRows, terminalColumns,
                 static_cast<uint32_t>(event.x),
                 static_cast<uint32_t>(event.y > 30 ? event.y - 30 : 1)};
-            os::setPtyWindowSize(tabs[activeTab].pty.masterHandle, size);
+            os::Pty::setPtyWindowSize(tabs[activeTab].pty.masterHandle, size);
             { std::lock_guard<std::mutex> guard(terminalLock); dirty = true; }
             render();
         }

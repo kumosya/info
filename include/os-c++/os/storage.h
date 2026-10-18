@@ -60,9 +60,12 @@ struct StorageDeviceIdentity {
     char hardwarePath[64];
 };
 
-constexpr uint64_t deviceNumber(uint32_t major, uint32_t minor) {
+class DeviceNumber {
+ public:
+static constexpr uint64_t deviceNumber(uint32_t major, uint32_t minor) {
     return (static_cast<uint64_t>(major) << 32) | minor;
 }
+};
 
 }  // namespace os
 

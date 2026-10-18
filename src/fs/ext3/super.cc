@@ -2,7 +2,7 @@
 
 namespace vfs {
 
-bool probeExt3(const uint8_t* data, size_t size) {
+bool FormatProbe::probeExt3(const uint8_t* data, size_t size) {
     if (data == nullptr || size < 1124) return false;
     const uint8_t* super = data + 1024;
     const uint16_t magic = static_cast<uint16_t>(super[56]) |

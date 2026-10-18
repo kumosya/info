@@ -1,3 +1,4 @@
+#include "os/task.h"
 #include "server.h"
 #include <fcntl.h>
 #include <errno.h>
@@ -45,7 +46,7 @@ bool FsServer::handle(const os::IpcMessage& request, os::IpcMessage& reply) {
             if (!exists) {
                 if (!create(path,false)) { reply.data[0]=0; reply.data[1]=static_cast<uint64_t>(-EEXIST); break; }
                 os::TaskInfo caller{};
-                if (!os::invokeSyscall(os::SyscallNumber::QueryTask,request.senderPid,reinterpret_cast<uint64_t>(&caller)))
+                if (!os::Process::queryTask(request.senderPid, caller))
                     changeOwner(path,caller.effectiveUid,caller.effectiveGid);
                 changeMode(path,mode);
             }
@@ -77,7 +78,7 @@ bool FsServer::handle(const os::IpcMessage& request, os::IpcMessage& reply) {
             reply.data[0] = create(path, operation == os::FsRequest::MakeDirectory) ? 0 : 1;
             if (!reply.data[0]) {
                 os::TaskInfo caller{};
-                if (!os::invokeSyscall(os::SyscallNumber::QueryTask, request.senderPid, reinterpret_cast<uint64_t>(&caller)))
+                if (!os::Process::queryTask(request.senderPid, caller))
                     changeOwner(path, caller.effectiveUid, caller.effectiveGid);
             }
             break;
@@ -174,54 +175,58 @@ OpenFileDescription* FsServer::getDescriptor(uint64_t ownerPid,
 
 namespace vfs::server {
 
+class FsApplication {
+ public:
+    static void runFsWorker(void* self) { static_cast<FsApplication*>(self)->workerLoop(); }
 FsServer fsServer;
 uint64_t fsEndpoint;
 
-[[noreturn]] void runFsWorker() {
+[[noreturn]] void workerLoop() {
     while (true) {
         os::IpcMessage request{};
         if (os::receiveMessage(fsEndpoint, request) != 0) continue;
         os::IpcMessage reply{};
         if (fsServer.handle(request, reply)) {
-            os::replyMessage(fsEndpoint, reply);
+            os::replyMessage(fsEndpoint, request.replyToken, reply);
         }
     }
 }
 
-}  // namespace vfs::server
 
-int main(int, char**) {
-    using namespace vfs::server;
-    os::log("[FS] FS Server started in Ring 3\n");
+int run() {
+    os::System::log("[FS] FS Server started in Ring 0\n");
     const uint64_t registry = os::getBootstrapHandle();
     fsEndpoint              = os::createEndpoint();
     if (registry == 0 || fsEndpoint == 0 ||
-        !os::registerService(registry, os::fsServiceName, fsEndpoint)) {
-        os::log("[FS] registration failed\n");
+        !os::ServiceRegistry::registerService(registry, os::fsServiceName, fsEndpoint)) {
+        os::System::log("[FS] registration failed\n");
         return 1;
     }
     const uint64_t storage =
-        os::lookupService(registry, os::storageServiceName, 5000);
+        os::ServiceRegistry::lookupService(registry, os::storageServiceName, 5000);
     const uint64_t device =
-        os::lookupService(registry, os::deviceServiceName, 5000);
+        os::ServiceRegistry::lookupService(registry, os::deviceServiceName, 5000);
     if (!fsServer.init(storage, device)) {
-        os::log("[FS] fstab filesystem initialization failed\n");
+        os::System::log("[FS] fstab filesystem initialization failed\n");
         return 2;
     }
     if (os::mapMemory(workerStackAddress, workerStackSize * workerThreadCount,
                       1) != workerStackAddress) {
-        os::log("[FS] worker stack allocation failed\n");
+        os::System::log("[FS] worker stack allocation failed\n");
         return 3;
     }
     for (uint32_t index = 0; index < workerThreadCount; ++index) {
         const uint64_t stackTop =
             workerStackAddress + workerStackSize * (index + 1);
-        if (os::createThread(runFsWorker, stackTop) == 0) {
-            os::log("[FS] unable to start request worker\n");
+        if (os::createThread(runFsWorker, stackTop, this) == 0) {
+            os::System::log("[FS] unable to start request worker\n");
             return 4;
         }
     }
-    os::log("[FS] storage IPC probe complete\n");
-    os::log("[FS] mounted filesystems configured in /etc/fstab\n");
-    runFsWorker();
+    os::System::log("[FS] storage IPC probe complete\n");
+    os::System::log("[FS] mounted filesystems configured in /etc/fstab\n");
+    workerLoop();
 }
+};
+}  // namespace vfs::server
+int main(int, char**) { static vfs::server::FsApplication application; return application.run(); }

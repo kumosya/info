@@ -1,3 +1,4 @@
+#include "os/task.h"
 #include "server.h"
 
 namespace vfs::server {
@@ -72,16 +73,16 @@ uint64_t FsServer::open(uint64_t ownerPid, const char* path) {
     uint32_t inode            = 0;
     uint64_t fileSize         = 0;
     const int deviceIndex     = catalog_.resolve(path);
-    if (startsWithPath(path, "/sys")) {
+    if (PathText::startsWithPath(path, "/sys")) {
         vfs::FileStatus status{};
         if (!vfs::SystemFiles::lookup(path, status) || (status.mode & 0xf000) != vfs::modeRegular) return 0;
         backend = DescriptorBackend::SystemFile;
         inode = status.inode;
         fileSize = status.size;
-    } else if (os::stringsEqual(path, "/dev/zero")) {
+    } else if (os::Runtime::stringsEqual(path, "/dev/zero")) {
         backend  = DescriptorBackend::Zero;
         fileSize = ~0ULL;
-    } else if (os::stringsEqual(path, "/dev/null")) {
+    } else if (os::Runtime::stringsEqual(path, "/dev/null")) {
         backend = DescriptorBackend::Null;
     } else if (deviceIndex >= 0) {
         backend  = DescriptorBackend::BlockDevice;
@@ -126,7 +127,7 @@ uint64_t FsServer::open(uint64_t ownerPid, const char* path) {
         description.accessTime           = status.accessTime;
         description.modificationTime     = status.modificationTime;
         description.changeTime           = status.changeTime;
-        os::copyString(description.path,path,sizeof(description.path));
+        os::Runtime::copyString(description.path,path,sizeof(description.path));
         description.offset               = 0;
         description.size                 = fileSize;
         description.privateData          = status.privateData;
@@ -190,8 +191,7 @@ void FsServer::reapDescriptors() {
     for (auto& entry : descriptors_) {
         if (!entry.description) continue;
         os::TaskInfo info{};
-        const int64_t result = os::invokeSyscall(os::SyscallNumber::QueryTask,
-            entry.ownerPid, reinterpret_cast<uint64_t>(&info));
+        const int64_t result = os::Process::queryTask(entry.ownerPid, info);
         if (result == 0 && info.state != 2) continue;
         OpenFileDescription* description = entry.description;
         entry = {};
@@ -222,7 +222,7 @@ void FsServer::descriptorStat(uint64_t ownerPid, uint64_t descriptor, os::IpcMes
     reply.data[8] = entry->accessTime; reply.data[9] = entry->modificationTime; reply.data[10] = entry->changeTime;
     if (entry->mountIndex != PathBackend::Invalid) {
         const auto* device = catalog_.get(mountTable_[static_cast<uint32_t>(entry->mountIndex)].deviceIndex);
-        if (device) reply.data[11] = os::deviceNumber(device->identity.major, device->identity.minor);
+        if (device) reply.data[11] = os::DeviceNumber::deviceNumber(device->identity.major, device->identity.minor);
     }
     releaseDescription(entry);
 }
@@ -326,7 +326,7 @@ void FsServer::read(uint64_t ownerPid, uint64_t descriptor, uint64_t requested,
         count = readDevice(static_cast<uint32_t>(entry->privateData),
                            entry->offset, &reply.data[1], requested);
     } else if (entry->backend == DescriptorBackend::Zero) {
-        os::clearMemory(&reply.data[1], static_cast<size_t>(requested));
+        os::Runtime::clearMemory(&reply.data[1], static_cast<size_t>(requested));
         count = static_cast<int64_t>(requested);
     } else if (entry->backend == DescriptorBackend::Null) {
         count = 0;
@@ -354,7 +354,7 @@ int64_t FsServer::readDevice(uint32_t index, uint64_t offset, void* buffer,
         size_t chunk            = 512 - within;
         if (chunk > size - copied) chunk = size - copied;
         if (!device.readSector(position / 512, sector)) return -1;
-        os::copyBytes(static_cast<uint8_t*>(buffer) + copied, sector + within,
+        os::Runtime::copyBytes(static_cast<uint8_t*>(buffer) + copied, sector + within,
                       chunk);
         copied += chunk;
     }
@@ -437,17 +437,17 @@ void FsServer::seek(uint64_t ownerPid, uint64_t descriptor, int64_t offset,
 }
 
 void FsServer::stat(const char* path, os::IpcMessage& reply) {
-    if (startsWithPath(path, "/sys")) {
+    if (PathText::startsWithPath(path, "/sys")) {
         vfs::FileStatus status{};
         if (!vfs::SystemFiles::lookup(path, status)) { reply.data[0] = 1; return; }
         setStat(reply, (status.mode & 0xf000) == vfs::modeDirectory ? os::FileType::Directory : os::FileType::File,
                 status.size, status.mode);
         reply.data[4] = status.inode;
         reply.data[5] = status.links;
-        reply.data[11] = os::deviceNumber(0, 2);
+        reply.data[11] = os::DeviceNumber::deviceNumber(0, 2);
         return;
     }
-    if (startsWithPath(path, "/dev")) {
+    if (PathText::startsWithPath(path, "/dev")) {
         vfs::DirectoryEntry probe{};
         if (deviceDirectory(path, 0, probe) >= 0) {
             setStat(reply, os::FileType::Directory, 0, 0755);
@@ -460,8 +460,8 @@ void FsServer::stat(const char* path, os::IpcMessage& reply) {
             setStat(reply, os::FileType::File,
                     devices_[index].sectorCount() * 512, 0x6000U | 0660);
             reply.data[4] =
-                os::deviceNumber(device.identity.major, device.identity.minor);
-            reply.data[11] = os::deviceNumber(0, 1);
+                os::DeviceNumber::deviceNumber(device.identity.major, device.identity.minor);
+            reply.data[11] = os::DeviceNumber::deviceNumber(0, 1);
             reply.data[12] = reply.data[4];
             reply.length   = 13;
             return;
@@ -469,13 +469,13 @@ void FsServer::stat(const char* path, os::IpcMessage& reply) {
         const char* node = path + 5;
         const bool tty   = node[0] == 't' && node[1] == 't' && node[2] == 'y' &&
                          node[3] >= '1' && node[3] <= '7' && node[4] == '\0';
-        if (os::stringsEqual(path, "/dev/zero") ||
-            os::stringsEqual(path, "/dev/null") ||
-            os::stringsEqual(path, "/dev/ptmx") || tty) {
+        if (os::Runtime::stringsEqual(path, "/dev/zero") ||
+            os::Runtime::stringsEqual(path, "/dev/null") ||
+            os::Runtime::stringsEqual(path, "/dev/ptmx") || tty) {
             setStat(reply, os::FileType::File, 0, 0x2000U | 0666);
-            reply.data[12] = tty ? os::deviceNumber(4, node[3] - '0')
-                : os::stringsEqual(path, "/dev/ptmx") ? os::deviceNumber(5, 2)
-                : os::deviceNumber(1, os::stringsEqual(path, "/dev/null") ? 3 : 5);
+            reply.data[12] = tty ? os::DeviceNumber::deviceNumber(4, node[3] - '0')
+                : os::Runtime::stringsEqual(path, "/dev/ptmx") ? os::DeviceNumber::deviceNumber(5, 2)
+                : os::DeviceNumber::deviceNumber(1, os::Runtime::stringsEqual(path, "/dev/null") ? 3 : 5);
             return;
         }
         reply.data[0] = 1;
@@ -507,13 +507,13 @@ void FsServer::stat(const char* path, os::IpcMessage& reply) {
     reply.data[10]          = status.changeTime;
     const MountEntry& mount = mountTable_[static_cast<uint32_t>(backend)];
     const auto& identity    = catalog_.get(mount.deviceIndex)->identity;
-    reply.data[11]          = os::deviceNumber(identity.major, identity.minor);
+    reply.data[11]          = os::DeviceNumber::deviceNumber(identity.major, identity.minor);
     reply.data[12]          = 0;
     reply.length            = 13;
 }
 
 uint64_t FsServer::truncate(const char* path) {
-    if (os::stringsEqual(path, "/dev/null")) return 0;
+    if (os::Runtime::stringsEqual(path, "/dev/null")) return 0;
     const PathBackend backend   = pathBackend(path);
     vfs::FileSystem* filesystem = fileSystem(backend);
     if (filesystem == nullptr || readOnly(backend)) return 1;
@@ -593,8 +593,8 @@ bool FsServer::rename(const char* existing, const char* newPath) {
     const PathBackend backend = pathBackend(existing);
     vfs::FileSystem* filesystem = fileSystem(backend);
     if (!filesystem || pathBackend(newPath) != backend || readOnly(backend) ||
-        startsWithPath(existing, "/dev") || startsWithPath(newPath, "/dev") ||
-        startsWithPath(existing, "/sys") || startsWithPath(newPath, "/sys")) return false;
+        PathText::startsWithPath(existing, "/dev") || PathText::startsWithPath(newPath, "/dev") ||
+        PathText::startsWithPath(existing, "/sys") || PathText::startsWithPath(newPath, "/sys")) return false;
     std::lock_guard<std::mutex> guard(fileSystemLock(backend));
     vfs::FileStatus before{}, after{};
     if (!filesystem->lookup(relativePath(existing, backend), before) ||
@@ -606,7 +606,7 @@ bool FsServer::rename(const char* existing, const char* newPath) {
             description.privateData == before.privateData && description.referenceCount) {
             description.inode = after.inode;
             description.privateData = after.privateData;
-            os::copyString(description.path,newPath,sizeof(description.path));
+            os::Runtime::copyString(description.path,newPath,sizeof(description.path));
         }
     }
     return true;
@@ -659,7 +659,7 @@ void FsServer::setStat(os::IpcMessage& reply, os::FileType type, uint64_t size,
     reply.data[3] = mode;
     for (uint32_t index = 4; index <= 12; ++index) reply.data[index] = 0;
     reply.data[5] = type == os::FileType::Directory ? 2 : 1;
-    reply.data[11] = os::deviceNumber(0, 1);
+    reply.data[11] = os::DeviceNumber::deviceNumber(0, 1);
     reply.length   = 13;
 }
 

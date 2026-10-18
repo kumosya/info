@@ -58,6 +58,7 @@ void irqHandler(kernel::interrupt::Context* context) {
     if (vector < irqVectorBase || vector > irqVectorBase + maximumIrq) {
         return;
     }
+    kernel::InterruptSpinLockGuard guard(bindingLock);
     kernel::device::InterruptBinding* binding =
         bindings[vector - irqVectorBase];
     if (binding != nullptr) {
@@ -295,6 +296,8 @@ MmioRegion* MmioRegion::map(Task& task, const os::PciFunctionInfo& function,
     MmioRegion* region =
         storage == nullptr ? nullptr : new (storage) MmioRegion;
     if (region == nullptr) {
+        for (uint64_t offset = 0; offset < size; offset += pageSize)
+            memory::unmapPageInAddressSpace(task.addressSpace().rootPhysicalAddress(), userAddress + offset);
         return nullptr;
     }
     region->physicalAddress_ = barBase;
@@ -323,6 +326,8 @@ DmaBuffer* DmaBuffer::create(Task& task, uint64_t userAddress,
     void* storage     = heap::kernelAllocate(sizeof(DmaBuffer));
     DmaBuffer* buffer = storage == nullptr ? nullptr : new (storage) DmaBuffer;
     if (buffer == nullptr) {
+        memory::unmapPageInAddressSpace(task.addressSpace().rootPhysicalAddress(), userAddress);
+        memory::freePhysicalPage(physical);
         return nullptr;
     }
     buffer->physicalAddress_ = physical;
@@ -348,15 +353,18 @@ InterruptBinding* InterruptBinding::create(Task& task, uint8_t irq,
         storage == nullptr ? nullptr : new (storage) InterruptBinding;
     if (binding == nullptr ||
         !interrupt::registerHandler(irqVectorBase + irq, irqHandler)) {
+        heap::kernelFree(binding);
         return nullptr;
     }
     const uint32_t apicId = cpu::getCurrent()->getApicId();
     if (!interrupt::setIrq(irq, irqVectorBase + irq, apicId, levelTriggered)) {
         interrupt::unregisterHandler(irqVectorBase + irq);
+        heap::kernelFree(binding);
         return nullptr;
     }
     binding->irq_      = irq;
     binding->endpoint_ = endpoint;
+    endpoint->retain();
     binding->owner_ = &task;
     binding->apicId_ = apicId;
     binding->levelTriggered_ = levelTriggered;
@@ -371,6 +379,19 @@ Endpoint* InterruptBinding::endpoint() const { return endpoint_; }
 bool InterruptBinding::acknowledge(Task& task) const {
     return owner_ == &task && (!levelTriggered_ ||
         interrupt::setIrq(irq_, irqVectorBase + irq_, apicId_, true));
+}
+
+void InterruptBinding::destroy() {
+    {
+        InterruptSpinLockGuard guard(bindingLock);
+        if (bindings[irq_] == this) {
+            interrupt::maskIrq(irq_);
+            bindings[irq_] = nullptr;
+            interrupt::unregisterHandler(irqVectorBase + irq_);
+        }
+    }
+    endpoint_->release();
+    heap::kernelFree(this);
 }
 
 }  // namespace kernel::device

@@ -4,6 +4,7 @@
 #include "kernel/elf.h"
 #include "kernel/interrupt.h"
 #include "kernel/ipc.h"
+#include "kernel/core_service.h"
 #include "kernel/mm.h"
 #include "kernel/page.h"
 #include "kernel/serial.h"
@@ -111,6 +112,7 @@ void ipcServerProbe(void*) {
         return;
     }
     kernel::IpcMessage reply{};
+    reply.replyToken = request.replyToken;
     reply.type    = 0x42;
     reply.length  = 1;
     reply.data[0] = request.data[0] + 1;
@@ -191,6 +193,10 @@ void kernelMain(const BootInfo* bootInfo) {
         cpu::halt();
     }
     Endpoint::init();
+    if (!CoreServices::initialize()) {
+        serial::serialWrite("[SERVICE] unable to create core service objects\n");
+        cpu::halt();
+    }
     ipcProbeEndpoint = Endpoint::create();
     if (ipcProbeEndpoint == nullptr ||
         Thread::create(task::getCurrent(), ipcServerProbe, nullptr) ==

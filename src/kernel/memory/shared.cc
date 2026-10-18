@@ -148,43 +148,7 @@ uint64_t SharedMemory::open(Task& task, const char* name, int flags) {
 uint64_t SharedMemory::duplicateHandle(Task& source, Task& destination,
                                        uint64_t handle,
                                        uint64_t destinationHandle) {
-    void* object    = nullptr;
-    HandleType type = HandleType::None;
-    uint32_t rights = 0;
-    if (!source.handles().inspect(handle, &object, &type, &rights) ||
-        type != HandleType::SharedMemory) {
-        return 0;
-    }
-    auto* original = static_cast<SharedMemoryHandle*>(object);
-    InterruptSpinLockGuard guard(registryLock);
-    if (!original->used || original->object == nullptr) return 0;
-    SharedMemoryHandle* duplicate = nullptr;
-    for (SharedMemoryHandle& candidate : handles) {
-        if (!candidate.used) {
-            duplicate         = &candidate;
-            duplicate->used   = true;
-            duplicate->object = original->object;
-            break;
-        }
-    }
-    if (duplicate == nullptr) return 0;
-    ++duplicate->object->references;
-    const uint64_t result =
-        destinationHandle == 0
-            ? destination.handles().add(duplicate, HandleType::SharedMemory,
-                                        rights)
-            : (destination.handles().addAt(destinationHandle, duplicate,
-                                           HandleType::SharedMemory, rights)
-                   ? destinationHandle
-                   : 0);
-    if (result == 0) {
-        if (duplicate->object->references != 0) {
-            --duplicate->object->references;
-        }
-        duplicate->used   = false;
-        duplicate->object = nullptr;
-    }
-    return result;
+    return source.handles().copyTo(destination.handles(), handle, destinationHandle);
 }
 
 bool SharedMemory::unlink(const char* name) {
@@ -203,6 +167,7 @@ bool SharedMemory::unlink(const char* name) {
 }
 
 bool SharedMemory::resize(Task& task, uint64_t handle, uint64_t size) {
+    HandleTable::Pin pin(task.handles(), handle, HandleType::SharedMemory, 0);
     SharedMemoryHandle* sharedHandle = resolve(task, handle, handleRightManage);
     if (sharedHandle == nullptr || size > pageCapacity * pageSize) return false;
     SharedMemoryObject* object = sharedHandle->object;
@@ -238,6 +203,7 @@ bool SharedMemory::resize(Task& task, uint64_t handle, uint64_t size) {
 uint64_t SharedMemory::map(Task& task, uint64_t handle, uint64_t address,
                            uint64_t size, uint64_t offset,
                            uint64_t protection) {
+    HandleTable::Pin pin(task.handles(), handle, HandleType::SharedMemory, 0);
     const uint64_t end = address + size;
     const uint32_t requiredRights =
         handleRightRead | (((protection & 1) != 0) ? handleRightWrite : 0);

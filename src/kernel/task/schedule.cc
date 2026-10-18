@@ -1,6 +1,7 @@
 #include "kernel/atomic.h"
 #include "kernel/cpu.h"
 #include "kernel/interrupt.h"
+#include "kernel/ipc.h"
 #include "kernel/mm.h"
 #include "kernel/page.h"
 #include "kernel/serial.h"
@@ -12,6 +13,7 @@ namespace {
 
 kernel::Atomic<bool> schedulerInitialized{false};
 kernel::Thread* retiredStacks[64]{};
+kernel::Task* executingTasks[64]{};
 constexpr uint32_t niceWeights[40] = {
     88761, 71755, 56483, 46273, 36291, 29154, 23254, 18705, 14949, 11916,
     9548,  7620,  6100,  4904,  3906,  3121,  2501,  1991,  1586,  1277,
@@ -54,6 +56,7 @@ void init() {
     queue->setMinVruntime(cpu->getCurrentThread()->getVruntime());
     queue->setClock(time::getMonotonicTime());
     cpu->setRunQueue(queue);
+    __atomic_store_n(&executingTasks[cpu->getCpuId()], cpu->getCurrentTask(), __ATOMIC_RELEASE);
     schedulerInitialized.store(true, MemoryOrder::Release);
 
     Thread* idle = Thread::create(nullptr, idleEntry, nullptr);
@@ -197,10 +200,55 @@ void finishContextSwitch() {
     Thread* thread = retired;
     retired = nullptr;
     // A cancelled synchronous call can still have a reply targeting its stack.
-    if (thread && !thread->hasActiveIpcCall() && thread->getKernelStack()) {
+    if (thread && !thread->hasActiveIpcCall() && !thread->hasCleanup() && thread->getKernelStack()) {
         heap::kernelFree(thread->getKernelStack());
         thread->setKernelStack(nullptr);
         thread->setKernelStackTop(nullptr);
+    }
+    __atomic_store_n(&executingTasks[cpu::getCurrentId()], Thread::getCurrent()->getTask(), __ATOMIC_RELEASE);
+    interrupt::restore(flags);
+}
+
+void terminateThread(Thread* thread) {
+    if (!thread) return;
+    CpuLocalData* target = smp::getCpuLocalData(thread->getCpuId());
+    if (target && target->getRunQueue()) {
+        InterruptSpinLockGuard guard(target->getRunQueue()->getLock());
+        if (thread->getInRunQueue()) target->getRunQueue()->removeNode(thread);
+        Thread** link = &target->getRunQueue()->accessSleepingThreads();
+        while (*link && *link != thread) link = &(*link)->accessWaitNext();
+        if (*link) {
+            *link = thread->getWaitNext();
+            thread->setWaitNext(nullptr);
+        }
+        thread->setState(ThreadState::Terminated);
+    } else {
+        thread->setState(ThreadState::Terminated);
+    }
+    smp::requestRemoteReschedule(thread->getCpuId());
+}
+
+void quiesceTask(Task* task) {
+    // No task, address-space or run-queue lock may be held here. The selected
+    // context and the completed stack switch cover both sides of switchTo.
+    const uint64_t flags = interrupt::disable();
+    interrupt::enable();
+    for (;;) {
+        bool busy = false;
+        for (uint32_t id = 0; id < smp::getDiscoveredCpuCount(); ++id) {
+            if (id == cpu::getCurrentId()) continue;
+            auto* target = smp::getCpuLocalData(id);
+            if (!target || !target->getRunQueue()) continue;
+            InterruptSpinLockGuard guard(target->getRunQueue()->getLock());
+            Thread* selected = target->getCurrentThread();
+            Task* executing = __atomic_load_n(&executingTasks[id], __ATOMIC_ACQUIRE);
+            if ((selected && selected->getTask() == task) || executing == task) {
+                busy = true;
+                smp::requestRemoteReschedule(id);
+            }
+        }
+        if (!busy) break;
+        asm volatile("pause" ::: "memory");
     }
     interrupt::restore(flags);
 }
@@ -313,6 +361,7 @@ void schedulerTick() {
         cpu->setRescheduleRequested(true);
     }
     queue->getLock().unlock();
+    Endpoint::expireWaits(now);
 }
 
 void sleepCurrentThread(uint64_t milliseconds) {

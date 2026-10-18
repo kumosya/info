@@ -6,7 +6,7 @@
 int main(int argc, char** argv) {
     if (argc > 2) { fputs("usage: passwd [USER]\n", stderr); return 2; }
     os::UserCredentials credentials{}; credentials.id = getuid();
-    if (argc == 2) os::copyString(credentials.name, argv[1], sizeof(credentials.name));
+    if (argc == 2) os::Runtime::copyString(credentials.name, argv[1], sizeof(credentials.name));
     os::UserProfile profile{};
     if (os::UserClient::request(os::UserOperation::Lookup, credentials, profile)) { fputs("passwd: unknown user\n", stderr); return 1; }
     if (geteuid() && !coreutils::password("Current password: ", credentials.password, sizeof(credentials.password))) return 1;

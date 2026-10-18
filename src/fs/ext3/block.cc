@@ -59,7 +59,7 @@ bool Filesystem::readBlock(uint32_t block, void* buffer) {
     }
     const uint32_t hit = findCachedBlock(block);
     if (hit != cacheNoSlot) {
-        os::copyBytes(buffer, blockCache_[hit], blockSize_);
+        os::Runtime::copyBytes(buffer, blockCache_[hit], blockSize_);
         cacheAges_[hit] = ++cacheClock_;
         return true;
     }
@@ -73,7 +73,7 @@ bool Filesystem::fetchBlock(uint32_t block, void* buffer) {
                               blockCache_[selected])) {
         return false;
     }
-    os::copyBytes(buffer, blockCache_[selected], blockSize_);
+    os::Runtime::copyBytes(buffer, blockCache_[selected], blockSize_);
     insertCacheSlot(selected, block);
     cacheAges_[selected] = ++cacheClock_;
     return true;
@@ -126,7 +126,7 @@ bool Filesystem::writeBlock(uint32_t block, const void* buffer) {
     }
     const uint32_t hit = findCachedBlock(block);
     if (hit != cacheNoSlot) {
-        os::copyBytes(blockCache_[hit], buffer, blockSize_);
+        os::Runtime::copyBytes(blockCache_[hit], buffer, blockSize_);
         cacheAges_[hit] = ++cacheClock_;
     }
     return true;

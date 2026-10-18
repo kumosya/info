@@ -57,7 +57,7 @@ struct EnvironmentEntry {
 class Environment {
    public:
     void init(bool login = true) {
-        os::clearMemory(entries_, sizeof(entries_));
+        os::Runtime::clearMemory(entries_, sizeof(entries_));
         os::UserProfile profile{};
         os::UserCredentials request{}; request.id = geteuid();
         const bool identified = os::UserClient::request(os::UserOperation::Lookup, request, profile) == 0;
@@ -79,7 +79,7 @@ class Environment {
 
     const char* get(const char* name) const {
         for (const EnvironmentEntry& entry : entries_) {
-            if (entry.active && os::stringsEqual(entry.name, name)) {
+            if (entry.active && os::Runtime::stringsEqual(entry.name, name)) {
                 return entry.value;
             }
         }
@@ -93,8 +93,8 @@ class Environment {
         }
         EnvironmentEntry* freeEntry = nullptr;
         for (EnvironmentEntry& entry : entries_) {
-            if (entry.active && os::stringsEqual(entry.name, name)) {
-                os::copyString(entry.value, value, sizeof(entry.value));
+            if (entry.active && os::Runtime::stringsEqual(entry.name, name)) {
+                os::Runtime::copyString(entry.value, value, sizeof(entry.value));
                 return setenv(name, value, 1) == 0;
             }
             if (!entry.active && freeEntry == nullptr) {
@@ -104,15 +104,15 @@ class Environment {
         if (freeEntry == nullptr) {
             return false;
         }
-        os::copyString(freeEntry->name, name, sizeof(freeEntry->name));
-        os::copyString(freeEntry->value, value, sizeof(freeEntry->value));
+        os::Runtime::copyString(freeEntry->name, name, sizeof(freeEntry->name));
+        os::Runtime::copyString(freeEntry->value, value, sizeof(freeEntry->value));
         freeEntry->active = true;
         return setenv(name, value, 1) == 0;
     }
 
     bool unset(const char* name) {
         for (EnvironmentEntry& entry : entries_) {
-            if (entry.active && os::stringsEqual(entry.name, name)) {
+            if (entry.active && os::Runtime::stringsEqual(entry.name, name)) {
                 entry.active = false;
                 return unsetenv(name) == 0;
             }
@@ -205,11 +205,11 @@ class Tokenizer {
                 uint32_t end = position + 1;
                 while (line[end] && line[end] != '/' && line[end] != ' ' && line[end] != '\t' && !isOperator(line[end])) ++end;
                 char home[96]{};
-                if (end == position + 1) os::copyString(home, environment.get("HOME"), sizeof(home));
+                if (end == position + 1) os::Runtime::copyString(home, environment.get("HOME"), sizeof(home));
                 else if (end-position-1 < 32) {
                     os::UserCredentials credentials{}; os::UserProfile profile{};
                     for (uint32_t i=position+1; i<end; ++i) credentials.name[i-position-1] = line[i];
-                    if (!os::UserClient::request(os::UserOperation::Lookup, credentials, profile)) os::copyString(home, profile.home, sizeof(home));
+                    if (!os::UserClient::request(os::UserOperation::Lookup, credentials, profile)) os::Runtime::copyString(home, profile.home, sizeof(home));
                 }
                 if (*home) {
                     for (const char* p=home; *p; ++p) { token.quoted[length] = true; if (!append(token.text,length,*p)) return false; }
@@ -430,7 +430,7 @@ class Parser {
         for (size_t i=0; i<count; ++i) {
             const char* value = result == GLOB_NOMATCH ? token.text : matches.gl_pathv[i];
             if (strlen(value) >= tokenTextCapacity) { globfree(&matches); return false; }
-            os::copyString(redirect ? redirect : command.arguments[command.argumentCount++], value, tokenTextCapacity);
+            os::Runtime::copyString(redirect ? redirect : command.arguments[command.argumentCount++], value, tokenTextCapacity);
         }
         globfree(&matches); return true;
     }
@@ -502,8 +502,8 @@ struct ShellJob {
 class Shell {
    public:
     bool init(bool login = true) {
-        os::clearMemory(jobs_, sizeof(jobs_));
-        os::clearMemory(history_, sizeof(history_));
+        os::Runtime::clearMemory(jobs_, sizeof(jobs_));
+        os::Runtime::clearMemory(history_, sizeof(history_));
         pipelineOutput_.clear();
         nextJobId_ = 1;
         nextHistory_ = 0;
@@ -512,7 +512,7 @@ class Shell {
         builtinStatus_ = 0;
         running_ = true;
         environment_.init(login);
-        os::copyString(currentDirectory_, "/", sizeof(currentDirectory_));
+        os::Runtime::copyString(currentDirectory_, "/", sizeof(currentDirectory_));
         if (!login) {
             if (!getcwd(currentDirectory_,sizeof(currentDirectory_))) return false;
             environment_.set("PWD",currentDirectory_);
@@ -850,38 +850,38 @@ class Shell {
     bool executeBuiltin(const Command& command, TextBuffer& output) {
         builtinStatus_ = 0;
         const char* name = command.arguments[0];
-        if (os::stringsEqual(name, "cd")) {
+        if (os::Runtime::stringsEqual(name, "cd")) {
             builtinStatus_ = changeDirectory(
                 command.argumentCount > 1 ? command.arguments[1]
                                           : environment_.get("HOME"));
-        } else if (os::stringsEqual(name, "pwd")) {
+        } else if (os::Runtime::stringsEqual(name, "pwd")) {
             output.append(currentDirectory_);
             output.append("\n");
-        } else if (os::stringsEqual(name, "export")) {
+        } else if (os::Runtime::stringsEqual(name, "export")) {
             builtinStatus_ = exportVariable(command);
-        } else if (os::stringsEqual(name, "unset")) {
+        } else if (os::Runtime::stringsEqual(name, "unset")) {
             builtinStatus_ = command.argumentCount == 2 &&
                                      environment_.unset(command.arguments[1])
                                  ? 0
                                  : 1;
-        } else if (os::stringsEqual(name, "set")) {
+        } else if (os::Runtime::stringsEqual(name, "set")) {
             printEnvironment(output);
-        } else if (os::stringsEqual(name, "exit") || os::stringsEqual(name, "logout")) {
+        } else if (os::Runtime::stringsEqual(name, "exit") || os::Runtime::stringsEqual(name, "logout")) {
             running_ = false;
             if (command.argumentCount > 1) {
                 builtinStatus_ = static_cast<int>(parseUnsigned(
                     command.arguments[1], static_cast<uint64_t>(lastStatus_)));
             }
-        } else if (os::stringsEqual(name, "history")) {
+        } else if (os::Runtime::stringsEqual(name, "history")) {
             printHistory(output);
-        } else if (os::stringsEqual(name, "jobs")) {
+        } else if (os::Runtime::stringsEqual(name, "jobs")) {
             reapJobs();
             printJobs(output);
-        } else if (os::stringsEqual(name, "fg")) {
+        } else if (os::Runtime::stringsEqual(name, "fg")) {
             builtinStatus_ = foregroundJob(command);
-        } else if (os::stringsEqual(name, "bg")) {
+        } else if (os::Runtime::stringsEqual(name, "bg")) {
             builtinStatus_ = backgroundJob(command, output);
-        } else if (os::stringsEqual(name, "clear")) {
+        } else if (os::Runtime::stringsEqual(name, "clear")) {
             output.append("\033[2J\033[H");
         } else {
             return false;
@@ -1054,7 +1054,7 @@ class Shell {
         char target[tokenTextCapacity]{};
         resolvePath(command.arguments[1], source);
         resolvePath(command.arguments[2], target);
-        if (os::stringsEqual(source, target)) {
+        if (os::Runtime::stringsEqual(source, target)) {
             if (removeSource) {
                 return 0;
             }
@@ -1161,16 +1161,16 @@ class Shell {
     }
 
     void resolvePath(const char* path, char* result) const {
-        if (path == nullptr || *path == '\0' || os::stringsEqual(path, ".")) {
-            os::copyString(result, currentDirectory_, tokenTextCapacity);
+        if (path == nullptr || *path == '\0' || os::Runtime::stringsEqual(path, ".")) {
+            os::Runtime::copyString(result, currentDirectory_, tokenTextCapacity);
             return;
         }
         if (path[0] == '/') {
-            os::copyString(result, path, tokenTextCapacity);
+            os::Runtime::copyString(result, path, tokenTextCapacity);
             return;
         }
-        os::copyString(result, currentDirectory_, tokenTextCapacity);
-        uint32_t length = static_cast<uint32_t>(os::stringLength(result));
+        os::Runtime::copyString(result, currentDirectory_, tokenTextCapacity);
+        uint32_t length = static_cast<uint32_t>(os::Runtime::stringLength(result));
         if (length != 1 && length + 1 < tokenTextCapacity) {
             result[length++] = '/';
             result[length] = '\0';
@@ -1178,7 +1178,7 @@ class Shell {
         if (path[0] == '.' && path[1] == '/') {
             path += 2;
         }
-        os::copyString(result + length, path, tokenTextCapacity - length);
+        os::Runtime::copyString(result + length, path, tokenTextCapacity - length);
     }
 
     bool resolveExecutable(const char* command, char* result) const {
@@ -1225,9 +1225,9 @@ class Shell {
     void setForegroundTask(uint64_t taskId) const {
         const uint64_t terminalHandle = os::getStandardHandle(1);
         if (terminalHandle != 0) {
-            os::setPtyForegroundGroup(terminalHandle, taskId);
+            os::Pty::setPtyForegroundGroup(terminalHandle, taskId);
         } else {
-            os::setTerminalForegroundTask(taskId);
+            os::Terminal::setForegroundTask(taskId);
         }
     }
 
@@ -1241,7 +1241,7 @@ class Shell {
                 job.remainingTasks = 1;
                 job.running = true;
                 job.stopped = stopped;
-                os::copyString(job.command, command, sizeof(job.command));
+                os::Runtime::copyString(job.command, command, sizeof(job.command));
                 TextBuffer output;
                 output.clear();
                 output.append("[");
@@ -1273,7 +1273,7 @@ class Shell {
                     description.append(
                         pipeline.commands[index].arguments[0]);
                 }
-                os::copyString(job.command, description.data(),
+                os::Runtime::copyString(job.command, description.data(),
                                sizeof(job.command));
                 TextBuffer output;
                 output.clear();
@@ -1398,7 +1398,7 @@ class Shell {
     }
 
     void addHistory(const char* line) {
-        os::copyString(history_[nextHistory_ % historyCapacity], line,
+        os::Runtime::copyString(history_[nextHistory_ % historyCapacity], line,
                        lineCapacity);
         ++nextHistory_;
         if (historyCount_ < historyCapacity) {
@@ -1453,13 +1453,13 @@ Shell shell;
 
 int main(int argumentCount, char** arguments) {
     if (argumentCount < 1 || arguments == nullptr ||
-        !os::stringsEqual(arguments[0], "sh")) {
-        os::log("[SHELL] invalid main(argc, argv) state\n");
+        !os::Runtime::stringsEqual(arguments[0], "sh")) {
+        os::System::log("[SHELL] invalid main(argc, argv) state\n");
         return 1;
     }
-    const bool command = argumentCount >= 3 && os::stringsEqual(arguments[1],"-c");
+    const bool command = argumentCount >= 3 && os::Runtime::stringsEqual(arguments[1],"-c");
     if (!shell.init(!command)) {
-        os::log("[SHELL] service discovery failed\n");
+        os::System::log("[SHELL] service discovery failed\n");
         return 2;
     }
     return command ? shell.runCommand(arguments[2]) : shell.run();

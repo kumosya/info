@@ -1,3 +1,4 @@
+#include "os/task.h"
 #include <dirent.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -59,7 +60,7 @@ class PackageManager {
             const bool read = fgets(text, sizeof(text), input) != nullptr; fclose(input);
             const uint64_t pid = strtoul(text, nullptr, 10);
             os::TaskInfo info{};
-            if (!read || !pid || (!os::invokeSyscall(os::SyscallNumber::QueryTask, pid, reinterpret_cast<uint64_t>(&info)) && info.state != 2)) break;
+            if (!read || !pid || (!os::Process::queryTask(pid, info) && info.state != 2)) break;
             if (unlink(owner) || rmdir(lock_)) break;
         }
         fputs("inpkg: another package operation holds this scope\n", stderr); return false;

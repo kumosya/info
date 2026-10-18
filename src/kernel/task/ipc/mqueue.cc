@@ -69,9 +69,10 @@ void copyName(char* destination, const char* source) {
     destination[index] = '\0';
 }
 
-void append(kernel::Thread*& head, kernel::Thread*& tail,
+void append(kernel::SpinLock& lock, kernel::Thread*& head, kernel::Thread*& tail,
             kernel::Thread* thread) {
     kernel::Thread::prepareWait();
+    thread->registerWait(lock, head, &tail);
     thread->setWaitNext(nullptr);
     if (tail == nullptr)
         head = thread;
@@ -86,6 +87,7 @@ kernel::Thread* remove(kernel::Thread*& head, kernel::Thread*& tail) {
     head = result->getWaitNext();
     if (head == nullptr) tail = nullptr;
     result->setWaitNext(nullptr);
+    result->clearWaitRegistration();
     return result;
 }
 
@@ -176,42 +178,7 @@ uint64_t MessageQueue::open(Task& task, const char* name, int flags,
 uint64_t MessageQueue::duplicateHandle(Task& source, Task& destination,
                                        uint64_t handle,
                                        uint64_t destinationHandle) {
-    void* object    = nullptr;
-    HandleType type = HandleType::None;
-    uint32_t rights = 0;
-    if (!source.handles().inspect(handle, &object, &type, &rights) ||
-        type != HandleType::MessageQueue) {
-        return 0;
-    }
-    auto* original = static_cast<MessageQueueHandle*>(object);
-    InterruptSpinLockGuard guard(registryLock);
-    if (!original->used || original->queue == nullptr) return 0;
-    MessageQueueHandle* duplicate = nullptr;
-    for (MessageQueueHandle& candidate : handles) {
-        if (!candidate.used) {
-            duplicate              = &candidate;
-            duplicate->used        = true;
-            duplicate->nonblocking = original->nonblocking;
-            duplicate->queue       = original->queue;
-            break;
-        }
-    }
-    if (duplicate == nullptr) return 0;
-    ++duplicate->queue->references;
-    const uint64_t result =
-        destinationHandle == 0
-            ? destination.handles().add(duplicate, HandleType::MessageQueue,
-                                        rights)
-            : (destination.handles().addAt(destinationHandle, duplicate,
-                                           HandleType::MessageQueue, rights)
-                   ? destinationHandle
-                   : 0);
-    if (result == 0) {
-        if (duplicate->queue->references != 0) --duplicate->queue->references;
-        duplicate->used  = false;
-        duplicate->queue = nullptr;
-    }
-    return result;
+    return source.handles().copyTo(destination.handles(), handle, destinationHandle);
 }
 
 bool MessageQueue::unlink(const char* name) {
@@ -231,6 +198,7 @@ bool MessageQueue::unlink(const char* name) {
 
 int MessageQueue::send(Task& task, uint64_t handle, const void* data,
                        size_t size, uint32_t priority) {
+    HandleTable::Pin pin(task.handles(), handle, HandleType::MessageQueue, 0);
     MessageQueueHandle* queueHandle = resolve(task, handle, handleRightWrite);
     if (queueHandle == nullptr || data == nullptr || priority > 31) return -1;
     MessageQueueState* queue = queueHandle->queue;
@@ -272,15 +240,17 @@ int MessageQueue::send(Task& task, uint64_t handle, const void* data,
             interrupt::restore(flags);
             return 1;
         }
-        append(queue->senders, queue->sendersTail, Thread::getCurrent());
+        append(queue->lock, queue->senders, queue->sendersTail, Thread::getCurrent());
         queue->lock.unlock();
         Thread::blockCurrent();
         interrupt::restore(flags);
+        if (const int error = Thread::getCurrent()->waitError()) return error;
     }
 }
 
 int64_t MessageQueue::receive(Task& task, uint64_t handle, void* data,
                               size_t capacity, uint32_t& priority) {
+    HandleTable::Pin pin(task.handles(), handle, HandleType::MessageQueue, 0);
     MessageQueueHandle* queueHandle = resolve(task, handle, handleRightRead);
     if (queueHandle == nullptr || data == nullptr) return -1;
     MessageQueueState* queue = queueHandle->queue;
@@ -316,15 +286,17 @@ int64_t MessageQueue::receive(Task& task, uint64_t handle, void* data,
             interrupt::restore(flags);
             return -2;
         }
-        append(queue->receivers, queue->receiversTail, Thread::getCurrent());
+        append(queue->lock, queue->receivers, queue->receiversTail, Thread::getCurrent());
         queue->lock.unlock();
         Thread::blockCurrent();
         interrupt::restore(flags);
+        if (const int error = Thread::getCurrent()->waitError()) return error;
     }
 }
 
 bool MessageQueue::getAttributes(Task& task, uint64_t handle,
                                  MessageQueueAttributes& attributes) {
+    HandleTable::Pin pin(task.handles(), handle, HandleType::MessageQueue, 0);
     MessageQueueHandle* queueHandle = resolve(task, handle, 0);
     if (queueHandle == nullptr) return false;
     MessageQueueState* queue = queueHandle->queue;
@@ -336,6 +308,7 @@ bool MessageQueue::getAttributes(Task& task, uint64_t handle,
 
 bool MessageQueue::setFlags(Task& task, uint64_t handle, uint64_t flags,
                             uint64_t& oldFlags) {
+    HandleTable::Pin pin(task.handles(), handle, HandleType::MessageQueue, 0);
     MessageQueueHandle* queueHandle = resolve(task, handle, 0);
     if (queueHandle == nullptr || (flags & ~0x800ULL) != 0) return false;
     oldFlags                 = queueHandle->nonblocking ? 0x800ULL : 0;
@@ -345,6 +318,7 @@ bool MessageQueue::setFlags(Task& task, uint64_t handle, uint64_t flags,
 
 int MessageQueue::registerNotification(Task& task, uint64_t handle, int type,
                                        uint32_t signal) {
+    HandleTable::Pin pin(task.handles(), handle, HandleType::MessageQueue, 0);
     MessageQueueHandle* queueHandle = resolve(task, handle, 0);
     if (queueHandle == nullptr || type < 0 || type > 2 ||
         (type == 2 && !signal::isValidSignal(signal)))

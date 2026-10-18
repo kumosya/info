@@ -9,13 +9,21 @@ namespace os {
 constexpr uint32_t textTerminalCount = 6;
 constexpr uint32_t graphicalTerminalId = 6;
 
-uint32_t getTerminalId();
-void setTerminalId(uint32_t terminalId);
-int64_t readTerminal(void* buffer, size_t size);
-int64_t writeTerminal(const void* buffer, size_t size);
-uint32_t getActiveTerminal();
-bool switchTerminal(uint32_t terminalId);
-bool setTerminalForegroundTask(uint64_t taskId);
+class Terminal {
+   public:
+    static uint32_t getId();
+    static void setId(uint32_t id);
+    static int64_t read(void* buffer, size_t size);
+    static int64_t write(const void* buffer, size_t size);
+    static uint32_t getActive();
+    static bool switchTo(uint32_t id);
+    static bool setForegroundTask(uint64_t taskId);
+    static void initialize();
+
+   private:
+    static uint64_t endpoint_;
+    static uint32_t id_;
+};
 
 }  // namespace os
 

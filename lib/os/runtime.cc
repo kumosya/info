@@ -1,4 +1,6 @@
+#include "os/task.h"
 #include "os/abi.h"
+#include "os/core_service.h"
 #include "os/pci.h"
 #include "os/protocol.h"
 #include "os/service.h"
@@ -16,59 +18,84 @@ namespace os {
 
 namespace {
 
-constexpr uint64_t heapBase           = 0x0000000010000000ULL;
-constexpr uint64_t pageSize           = 4096;
-constexpr uint32_t allocationCapacity = 4096;
+class HeapState {
+ public:
+static constexpr uint64_t heapBase           = 0x0000000010000000ULL;
+static constexpr uint64_t pageSize           = 4096;
+static constexpr uint32_t allocationCapacity = 4096;
 
 struct Allocation {
     uint64_t address;
     uint64_t size;
 };
 
-Allocation allocations[allocationCapacity];
-uint64_t nextAllocationAddress = heapBase;
-uint8_t heapLock;
-uint64_t terminalEndpoint;
-uint32_t terminalId;
+inline static Allocation allocations[allocationCapacity];
+inline static uint64_t nextAllocationAddress = heapBase;
+inline static uint8_t heapLock;
 
-void lockHeap() {
+
+static void lockHeap() {
     while (__atomic_test_and_set(&heapLock, __ATOMIC_ACQUIRE)) {
         asm volatile("pause");
     }
 }
 
-void unlockHeap() { __atomic_clear(&heapLock, __ATOMIC_RELEASE); }
+static void unlockHeap() { __atomic_clear(&heapLock, __ATOMIC_RELEASE); }
 
-uint64_t alignToPage(size_t size) {
+static uint64_t alignToPage(size_t size) {
     if (size == 0 || size > ~0ULL - (pageSize - 1)) {
         return 0;
     }
     return (static_cast<uint64_t>(size) + pageSize - 1) & ~(pageSize - 1);
 }
 
+};
+
 }  // namespace
 
 int64_t invokeSyscall(SyscallNumber number, uint64_t arg1, uint64_t arg2,
                       uint64_t arg3, uint64_t arg4, uint64_t arg5,
                       uint64_t arg6) {
+    uint16_t selector;
+    asm volatile("mov %%cs, %0" : "=r"(selector));
+    if ((selector & 3) != 3) return static_cast<int64_t>(ErrorCode::NotSupported);
     register uint64_t r10 asm("r10") = arg4;
     register uint64_t r8 asm("r8")   = arg5;
     register uint64_t r9 asm("r9")   = arg6;
     uint64_t result;
-    uint16_t selector;
-    asm volatile("mov %%cs, %0" : "=r"(selector));
-    if ((selector & 3) == 0) {
-        asm volatile("int $0x80" : "=a"(result)
-                     : "a"(static_cast<uint64_t>(number)), "D"(arg1), "S"(arg2), "d"(arg3),
-                       "r"(r10), "r"(r8), "r"(r9) : "rcx", "r11", "memory");
-        return static_cast<int64_t>(result);
-    }
     asm volatile("syscall"
                  : "=a"(result)
                  : "a"(static_cast<uint64_t>(number)), "D"(arg1), "S"(arg2),
                    "d"(arg3), "r"(r10), "r"(r8), "r"(r9)
                  : "rcx", "r11", "memory");
     return static_cast<int64_t>(result);
+}
+
+
+uint64_t CoreServiceClient::openHandle(CoreServiceKind kind) {
+    return invokeSyscall(SyscallNumber::GetBootstrapHandle, static_cast<uint64_t>(BootstrapOperation::GetCoreService), static_cast<uint64_t>(kind));
+}
+uint64_t CoreServiceClient::handles_[static_cast<uint64_t>(CoreServiceKind::Count)];
+int CoreServiceClient::call(CoreServiceKind kind, IpcMessage& request, IpcMessage& reply, uint64_t deadline) {
+    if (SystemService::isPrivileged()) return SystemService::coreCall(kind, request, reply, deadline);
+    const auto index = static_cast<uint64_t>(kind);
+    if (index >= static_cast<uint64_t>(CoreServiceKind::Count)) return static_cast<int>(ErrorCode::InvalidArgument);
+    uint64_t handle = __atomic_load_n(&handles_[index], __ATOMIC_ACQUIRE);
+    if (!handle) {
+        const int64_t created = openHandle(kind);
+        if (created <= 0) return static_cast<int>(ErrorCode::NotFound);
+        if (Handle::setFlags(created, handleFlagCloseOnExec) != 0) {
+            closeHandle(created); return static_cast<int>(ErrorCode::InvalidHandle);
+        }
+        uint64_t expected = 0;
+        if (__atomic_compare_exchange_n(&handles_[index], &expected, created, false, __ATOMIC_RELEASE, __ATOMIC_ACQUIRE)) handle = created;
+        else { closeHandle(created); handle = expected; }
+    }
+    return callService(handle, request, reply, deadline);
+}
+int64_t CoreServiceClient::result(CoreServiceKind kind, IpcMessage& request, IpcMessage& reply) {
+    const int status = call(kind, request, reply);
+    return status ? status : static_cast<int64_t>(reply.data[0]);
 }
 
 [[noreturn]] void exitTask(int exitCode) {
@@ -97,10 +124,13 @@ uint64_t createThread(void (*entry)(void*), uint64_t stackPointer,
                          reinterpret_cast<uint64_t>(argument));
 }
 
-int waitThread(uint64_t threadId, int& exitCode, bool noHang) {
-    return static_cast<int>(invokeSyscall(
-        SyscallNumber::WaitThread, threadId,
-        reinterpret_cast<uint64_t>(&exitCode), noHang ? 1 : 0));
+int Process::waitThread(uint64_t threadId, int& exitCode, bool noHang) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::WaitThread); request.length = 4;
+    request.data[0] = threadId; request.data[1] = noHang;
+    const int64_t result = CoreServiceClient::result(CoreServiceKind::Task, request, reply);
+    if (!result) exitCode = reply.data[1];
+    return result;
 }
 
 int waitAddress(volatile uint32_t* address, uint32_t expected) {
@@ -115,27 +145,44 @@ int wakeAddress(volatile uint32_t* address, uint32_t count) {
         count));
 }
 
-int setSignalAction(uint32_t signal, const SignalAction* action,
-                    SignalAction* oldAction) {
-    return static_cast<int>(invokeSyscall(
-        SyscallNumber::SetSignalAction, signal,
-        reinterpret_cast<uint64_t>(action),
-        reinterpret_cast<uint64_t>(oldAction)));
+int Process::setSignalAction(uint32_t signal, const SignalAction* action, SignalAction* oldAction) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::SignalAction);
+    request.length = 4;
+    request.data[0] = signal; request.data[1] = action != nullptr; if (action) Runtime::copyBytes(&request.data[4], action, sizeof(*action)); request.length = 8;
+    const int64_t status = CoreServiceClient::result(CoreServiceKind::Task, request, reply);
+    if (!status && oldAction) Runtime::copyBytes(oldAction, &reply.data[1], sizeof(*oldAction));
+    return status;
 }
 
-int setSignalMask(int how, uint64_t mask, uint64_t& oldMask) {
-    return static_cast<int>(invokeSyscall(
-        SyscallNumber::SetSignalMask, static_cast<uint64_t>(how), mask,
-        reinterpret_cast<uint64_t>(&oldMask)));
+int Process::setSignalMask(int how, uint64_t mask, uint64_t& oldMask) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::SignalMask);
+    request.length = 4;
+    request.data[0] = how; request.data[1] = mask;
+    const int64_t status = CoreServiceClient::result(CoreServiceKind::Task, request, reply);
+    if (!status) oldMask = reply.data[1];
+    return status;
 }
 
-int getPendingSignals(uint64_t& mask) {
-    return static_cast<int>(invokeSyscall(
-        SyscallNumber::GetPendingSignals, reinterpret_cast<uint64_t>(&mask)));
+int Process::getPendingSignals(uint64_t& mask) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::PendingSignals);
+    request.length = 4;
+    
+    const int64_t status = CoreServiceClient::result(CoreServiceKind::Task, request, reply);
+    if (!status) mask = reply.data[1];
+    return status;
 }
 
-int waitSignal(uint64_t mask) {
-    return static_cast<int>(invokeSyscall(SyscallNumber::WaitSignal, mask));
+int Process::waitSignal(uint64_t mask) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::TakeSignal);
+    request.length = 4;
+    request.data[0] = mask;
+    const int64_t status = CoreServiceClient::result(CoreServiceKind::Task, request, reply);
+    
+    return status;
 }
 
 void signalReturn(void* frame) {
@@ -144,92 +191,157 @@ void signalReturn(void* frame) {
     while (true) asm volatile("ud2");
 }
 
-uint64_t openMessageQueue(const char* name, int flags,
+uint64_t MessageQueue::openMessageQueue(const char* name, int flags,
                           uint32_t maximumMessages, uint32_t messageSize) {
-    return invokeSyscall(SyscallNumber::OpenMessageQueue,
-                         reinterpret_cast<uint64_t>(name),
-                         static_cast<uint64_t>(flags), maximumMessages,
-                         messageSize);
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(MessageQueueOperation::Open);
+    request.length = 5;
+    request.data[0] = static_cast<uint32_t>(flags);
+    request.data[1] = maximumMessages;
+    request.data[2] = messageSize;
+    if (!name) return static_cast<int64_t>(ErrorCode::InvalidArgument);
+    Runtime::copyString(reinterpret_cast<char*>(&request.data[3]), name, 64);
+    request.length = 3+8;
+    return CoreServiceClient::result(CoreServiceKind::MessageQueue, request, reply);
 }
 
-int unlinkMessageQueue(const char* name) {
-    return static_cast<int>(invokeSyscall(
-        SyscallNumber::UnlinkMessageQueue,
-        reinterpret_cast<uint64_t>(name)));
+int MessageQueue::unlinkMessageQueue(const char* name) {
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(MessageQueueOperation::Unlink);
+    request.length = 5;
+    if (!name) return static_cast<int64_t>(ErrorCode::InvalidArgument);
+    Runtime::copyString(reinterpret_cast<char*>(&request.data[3]), name, 64);
+    request.length = 3+8;
+    return CoreServiceClient::result(CoreServiceKind::MessageQueue, request, reply);
 }
 
-int sendMessageQueue(uint64_t handle, const void* data, size_t size,
+int MessageQueue::sendMessageQueue(uint64_t handle, const void* data, size_t size,
                      uint32_t priority) {
-    return static_cast<int>(invokeSyscall(
-        SyscallNumber::SendMessageQueue, handle,
-        reinterpret_cast<uint64_t>(data), size, priority));
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(MessageQueueOperation::Send);
+    request.length = 5;
+    request.data[0] = handle;
+    request.data[1] = size;
+    request.data[2] = priority;
+    if ((!data && size) || size > 256) return static_cast<int>(ErrorCode::InvalidArgument);
+    Runtime::copyBytes(&request.data[3], data, size);
+    request.length = 3 + (size + 7) / 8;
+    return CoreServiceClient::result(CoreServiceKind::MessageQueue, request, reply);
 }
 
-int64_t receiveMessageQueue(uint64_t handle, void* data, size_t capacity,
+int64_t MessageQueue::receiveMessageQueue(uint64_t handle, void* data, size_t capacity,
                             uint32_t& priority) {
-    return invokeSyscall(SyscallNumber::ReceiveMessageQueue, handle,
-                         reinterpret_cast<uint64_t>(data), capacity,
-                         reinterpret_cast<uint64_t>(&priority));
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(MessageQueueOperation::Receive);
+    request.length = 5;
+    request.data[0] = handle;
+    request.data[1] = capacity > 256 ? 256 : capacity;
+    if (!data && capacity) return static_cast<int>(ErrorCode::InvalidArgument);
+    const int64_t count = CoreServiceClient::result(CoreServiceKind::MessageQueue, request, reply);
+    if (count >= 0 && static_cast<uint64_t>(count) <= request.data[1]) {
+        Runtime::copyBytes(data, &reply.data[2], count); priority = reply.data[1];
+    }
+    return count;
 }
 
-int getMessageQueueAttributes(uint64_t handle,
+int MessageQueue::getMessageQueueAttributes(uint64_t handle,
                               MessageQueueAttributes& attributes) {
-    return static_cast<int>(invokeSyscall(
-        SyscallNumber::GetMessageQueueAttributes, handle,
-        reinterpret_cast<uint64_t>(&attributes)));
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(MessageQueueOperation::Attributes);
+    request.length = 5;
+    request.data[0] = handle;
+    const int64_t status = CoreServiceClient::result(CoreServiceKind::MessageQueue, request, reply);
+    if (!status) Runtime::copyBytes(&attributes, &reply.data[1], sizeof(attributes));
+    return status;
 }
 
-int setMessageQueueFlags(uint64_t handle, uint64_t flags,
+int MessageQueue::setMessageQueueFlags(uint64_t handle, uint64_t flags,
                          uint64_t& oldFlags) {
-    return static_cast<int>(invokeSyscall(
-        SyscallNumber::SetMessageQueueFlags, handle, flags,
-        reinterpret_cast<uint64_t>(&oldFlags)));
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(MessageQueueOperation::Flags);
+    request.length = 5;
+    request.data[0] = handle;
+    request.data[1] = flags;
+    const int64_t status = CoreServiceClient::result(CoreServiceKind::MessageQueue, request, reply);
+    if (!status) oldFlags = reply.data[1];
+    return status;
 }
 
-uint64_t openSharedMemory(const char* name, int flags) {
-    return invokeSyscall(SyscallNumber::OpenSharedMemory,
-                         reinterpret_cast<uint64_t>(name),
-                         static_cast<uint64_t>(flags));
+uint64_t Memory::openSharedMemory(const char* name, int flags) {
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(MemoryOperation::Open);
+    request.length = 5;
+    request.data[0] = static_cast<uint32_t>(flags);
+    if (!name) return static_cast<int64_t>(ErrorCode::InvalidArgument);
+    Runtime::copyString(reinterpret_cast<char*>(&request.data[5]), name, 64);
+    request.length = 5+8;
+    return CoreServiceClient::result(CoreServiceKind::Memory, request, reply);
 }
 
-int unlinkSharedMemory(const char* name) {
-    return static_cast<int>(invokeSyscall(
-        SyscallNumber::UnlinkSharedMemory,
-        reinterpret_cast<uint64_t>(name)));
+int Memory::unlinkSharedMemory(const char* name) {
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(MemoryOperation::Unlink);
+    request.length = 5;
+    if (!name) return static_cast<int64_t>(ErrorCode::InvalidArgument);
+    Runtime::copyString(reinterpret_cast<char*>(&request.data[5]), name, 64);
+    request.length = 5+8;
+    return CoreServiceClient::result(CoreServiceKind::Memory, request, reply);
 }
 
-int resizeSharedMemory(uint64_t handle, uint64_t size) {
-    return static_cast<int>(
-        invokeSyscall(SyscallNumber::ResizeSharedMemory, handle, size));
+int Memory::resizeSharedMemory(uint64_t handle, uint64_t size) {
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(MemoryOperation::Resize);
+    request.length = 5;
+    request.data[0] = handle;
+    request.data[1] = size;
+    return CoreServiceClient::result(CoreServiceKind::Memory, request, reply);
 }
 
-uint64_t mapSharedMemory(uint64_t handle, uint64_t address, uint64_t size,
+uint64_t Memory::mapSharedMemory(uint64_t handle, uint64_t address, uint64_t size,
                          uint64_t offset, uint64_t protection) {
-    return invokeSyscall(SyscallNumber::MapSharedMemory, handle, address, size,
-                         offset, protection);
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(MemoryOperation::Map);
+    request.length = 5;
+    request.data[0] = handle;
+    request.data[1] = address;
+    request.data[2] = size;
+    request.data[3] = offset;
+    request.data[4] = protection;
+    return CoreServiceClient::result(CoreServiceKind::Memory, request, reply);
 }
 
-int sendThreadSignal(uint64_t threadId, uint32_t signal) {
-    return static_cast<int>(
-        invokeSyscall(SyscallNumber::SendThreadSignal, threadId, signal));
+int Process::sendThreadSignal(uint64_t threadId, uint32_t signal) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::SendThreadSignal);
+    request.length = 4;
+    request.data[0] = threadId; request.data[1] = signal;
+    const int64_t status = CoreServiceClient::result(CoreServiceKind::Task, request, reply);
+    
+    return status;
 }
 
-int registerMessageQueueNotification(uint64_t handle, int type,
+int MessageQueue::registerMessageQueueNotification(uint64_t handle, int type,
                                      uint32_t signal) {
-    return static_cast<int>(invokeSyscall(
-        SyscallNumber::RegisterMessageQueueNotification, handle,
-        static_cast<uint64_t>(type), signal));
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(MessageQueueOperation::Notify);
+    request.length = 5;
+    request.data[0] = handle;
+    request.data[1] = static_cast<uint32_t>(type);
+    request.data[2] = signal;
+    return CoreServiceClient::result(CoreServiceKind::MessageQueue, request, reply);
 }
 
 int64_t forkTask() {
     return invokeSyscall(SyscallNumber::ForkTask);
 }
 
-int64_t waitChild(int64_t taskId, int& status, int options) {
-    return invokeSyscall(SyscallNumber::WaitChild,
-                         static_cast<uint64_t>(taskId),
-                         reinterpret_cast<uint64_t>(&status),
-                         static_cast<uint64_t>(options));
+int64_t Process::waitChild(int64_t taskId, int& status, int options) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::WaitChild); request.length = 4;
+    request.data[0] = taskId; request.data[1] = options;
+    const int64_t result = CoreServiceClient::result(CoreServiceKind::Task, request, reply);
+    if (result >= 0) status = reply.data[1];
+    return result;
 }
 
 int replaceTaskImage(const ExecImageInfo& info) {
@@ -249,98 +361,131 @@ uint64_t mapMemory(uint64_t address, uint64_t size, uint64_t protection) {
 }
 
 uint64_t createEndpoint() {
-    return invokeSyscall(SyscallNumber::CreateEndpoint);
+return invokeSyscall(SyscallNumber::GetBootstrapHandle, static_cast<uint64_t>(BootstrapOperation::CreateEndpoint));
 }
 
-int sendMessage(uint64_t endpoint, IpcMessage& message) {
+int sendMessage(uint64_t endpoint, IpcMessage& message, uint64_t deadline) {
     return static_cast<int>(
         invokeSyscall(SyscallNumber::SendMessage, endpoint,
-                      reinterpret_cast<uint64_t>(&message)));
+                      reinterpret_cast<uint64_t>(&message), deadline));
 }
 
-int receiveMessage(uint64_t endpoint, IpcMessage& message) {
+int receiveMessage(uint64_t endpoint, IpcMessage& message, uint64_t deadline) {
     return static_cast<int>(
         invokeSyscall(SyscallNumber::ReceiveMessage, endpoint,
-                      reinterpret_cast<uint64_t>(&message)));
+                      reinterpret_cast<uint64_t>(&message), deadline));
 }
 
-int callService(uint64_t endpoint, IpcMessage& request, IpcMessage& reply) {
+int callService(uint64_t endpoint, IpcMessage& request, IpcMessage& reply, uint64_t deadline) {
     return static_cast<int>(invokeSyscall(SyscallNumber::CallService, endpoint,
                                           reinterpret_cast<uint64_t>(&request),
-                                          reinterpret_cast<uint64_t>(&reply)));
+                                          reinterpret_cast<uint64_t>(&reply), deadline));
 }
 
-int replyMessage(uint64_t endpoint, IpcMessage& reply) {
+int replyMessage(uint64_t endpoint, uint64_t replyToken, IpcMessage& reply) {
+    reply.replyToken = replyToken;
     return static_cast<int>(invokeSyscall(SyscallNumber::ReplyMessage, endpoint,
                                           reinterpret_cast<uint64_t>(&reply)));
 }
 
-uint64_t spawnProgram(ProgramId program, uint64_t bootstrapHandle,
-                      uint32_t argumentCount, const char* const* arguments) {
-    return invokeSyscall(SyscallNumber::SpawnProgram,
-                         static_cast<uint64_t>(program), bootstrapHandle,
-                         argumentCount, reinterpret_cast<uint64_t>(arguments));
+int cancelIpc(uint64_t endpoint, uint64_t threadId) {
+    return static_cast<int>(invokeSyscall(SyscallNumber::SendMessage, endpoint,
+                                          0, 0, threadId));
 }
 
-uint64_t spawnImage(const SpawnImageInfo& info) {
-    return invokeSyscall(SyscallNumber::SpawnImage,
-                         reinterpret_cast<uint64_t>(&info));
+uint64_t Process::spawnProgram(ProgramId program, uint64_t bootstrapHandle, uint32_t argumentCount, const char* const* arguments) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::SpawnProgram); request.length = 4;
+    request.data[0] = static_cast<uint64_t>(program); request.data[1] = bootstrapHandle; request.data[2] = argumentCount; request.data[3] = reinterpret_cast<uint64_t>(arguments);
+    const int64_t result = CoreServiceClient::result(CoreServiceKind::Task, request, reply);
+    
+    return result;
 }
 
-bool createPipe(PipeHandles& handles) {
+uint64_t Process::spawnImage(const SpawnImageInfo& info) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::SpawnImage); request.length = 4;
+    request.data[0] = reinterpret_cast<uint64_t>(&info);
+    const int64_t result = CoreServiceClient::result(CoreServiceKind::Task, request, reply);
+    
+    return result;
+}
+
+bool Pipe::createPipe(PipeHandles& handles) {
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(PipeOperation::Create);
+    request.length = 5;
     handles = {};
-    return invokeSyscall(SyscallNumber::CreatePipe,
-                         reinterpret_cast<uint64_t>(&handles)) == 0;
+    if (CoreServiceClient::result(CoreServiceKind::Pipe, request, reply) != 0 || reply.handleCount != 2) return false;
+    handles.readHandle = reply.handles[0];
+    handles.writeHandle = reply.handles[1];
+    return true;
 }
 
-bool createChannelPair(ChannelHandles& handles) {
+bool Pipe::createChannelPair(ChannelHandles& handles) {
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(PipeOperation::CreateChannel);
+    request.length = 5;
     handles = {};
-    return invokeSyscall(SyscallNumber::CreateChannelPair,
-                         reinterpret_cast<uint64_t>(&handles)) == 0;
+    if (CoreServiceClient::result(CoreServiceKind::Pipe, request, reply) != 0 || reply.handleCount != 2) return false;
+    handles.firstHandle = reply.handles[0];
+    handles.secondHandle = reply.handles[1];
+    return true;
 }
 
-uint64_t getChannelIdentity(uint64_t handle) {
-    const int64_t result = invokeSyscall(SyscallNumber::GetChannelIdentity,
-                                         handle);
-    return result > 0 ? static_cast<uint64_t>(result) : 0;
+uint64_t Pipe::getChannelIdentity(uint64_t handle) {
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(PipeOperation::Identity);
+    request.length = 5;
+    request.data[0] = handle;
+    const auto value = CoreServiceClient::result(CoreServiceKind::Pipe, request, reply);
+    return value > 0 ? value : 0;
 }
 
-bool setChannelNonblocking(uint64_t handle, bool enabled) {
-    return invokeSyscall(SyscallNumber::SetChannelNonblocking, handle,
-                         enabled ? 1 : 0) == 0;
+bool Pipe::setChannelNonblocking(uint64_t handle, bool enabled) {
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(PipeOperation::Nonblocking);
+    request.length = 5;
+    request.data[0] = handle;
+    request.data[1] = enabled ? 1 : 0;
+    return CoreServiceClient::result(CoreServiceKind::Pipe, request, reply) == 0;
 }
 
-bool signalChannelEof(uint64_t handle) {
-    return invokeSyscall(SyscallNumber::SignalChannelEof, handle) == 0;
+bool Pipe::signalChannelEof(uint64_t handle) {
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(PipeOperation::Eof);
+    request.length = 5;
+    request.data[0] = handle;
+    return CoreServiceClient::result(CoreServiceKind::Pipe, request, reply) == 0;
 }
 
-int64_t readPipe(uint64_t handle, void* buffer, size_t size) {
-    if (buffer == nullptr || size == 0) {
-        return static_cast<int64_t>(ErrorCode::InvalidArgument);
-    }
-    const size_t transfer = size < 512 ? size : 512;
-    return invokeSyscall(SyscallNumber::ReadPipe, handle,
-                         reinterpret_cast<uint64_t>(buffer), transfer);
+int64_t Pipe::readPipe(uint64_t handle, void* buffer, size_t size) {
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(PipeOperation::Read);
+    request.length = 5;
+    request.data[0] = handle;
+    request.data[1] = size > 512 ? 512 : size;
+    if (!buffer || !size) return static_cast<int>(ErrorCode::InvalidArgument);
+    const int64_t count = CoreServiceClient::result(CoreServiceKind::Pipe, request, reply);
+    if (count > 0 && static_cast<uint64_t>(count) <= request.data[1]) Runtime::copyBytes(buffer, &reply.data[1], count);
+    return count;
 }
 
-int64_t writePipe(uint64_t handle, const void* buffer, size_t size) {
-    if (buffer == nullptr) {
-        return static_cast<int64_t>(ErrorCode::InvalidArgument);
-    }
+int64_t Pipe::writePipe(uint64_t handle, const void* buffer, size_t size) {
+if (!buffer && size) return static_cast<int>(ErrorCode::InvalidArgument);
     size_t written = 0;
     while (written < size) {
-        const size_t transfer = size - written < 512 ? size - written : 512;
-        const int64_t result =
-            invokeSyscall(SyscallNumber::WritePipe, handle,
-                          reinterpret_cast<uint64_t>(
-                              static_cast<const uint8_t*>(buffer) + written),
-                          transfer);
-        if (result <= 0) {
-            return written == 0 ? result : static_cast<int64_t>(written);
-        }
-        written += static_cast<size_t>(result);
+        IpcMessage request{}, reply{};
+        request.type = static_cast<uint64_t>(PipeOperation::Write);
+        const size_t chunk = size - written > 512 ? 512 : size - written;
+        request.data[0] = handle; request.data[1] = chunk;
+        Runtime::copyBytes(&request.data[3], static_cast<const uint8_t*>(buffer) + written, chunk);
+        request.length = 3 + (chunk + 7) / 8;
+        const int64_t count = CoreServiceClient::result(CoreServiceKind::Pipe, request, reply);
+        if (count <= 0) return written ? static_cast<int64_t>(written) : count;
+        written += count;
     }
-    return static_cast<int64_t>(written);
+    return written;
 }
 
 uint64_t getStandardHandle(uint32_t index) {
@@ -351,21 +496,26 @@ uint64_t getBootstrapHandle() {
     return invokeSyscall(SyscallNumber::GetBootstrapHandle);
 }
 
-void log(const char* message) {
-    invokeSyscall(SyscallNumber::Log, reinterpret_cast<uint64_t>(message),
-                  stringLength(message));
+void System::log(const char* message) {
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(SystemOperation::Log);
+    request.length = 5;
+    if (!message) return;
+    Runtime::copyString(reinterpret_cast<char*>(request.data), message, 512);
+    request.length = 64;
+    CoreServiceClient::result(CoreServiceKind::System, request, reply);
 }
 
-uint64_t pciServiceHandle() {
+uint64_t Pci::pciServiceHandle() {
     static uint64_t handle;
     if (handle == 0)
-        handle = lookupService(serviceRegistry(), pciServiceName);
+        handle = ServiceRegistry::lookupService(ServiceRegistry::serviceRegistry(), pciServiceName);
     return handle;
 }
 
-int enumeratePci(PciFunctionInfo* functions, uint32_t capacity) {
+int Pci::enumeratePci(PciFunctionInfo* functions, uint32_t capacity) {
     if (functions == nullptr || capacity == 0 || capacity > 64) return -1;
-    const uint64_t service = pciServiceHandle();
+    const uint64_t service = Pci::pciServiceHandle();
     if (service == 0) return -1;
     IpcMessage request{};
     request.type = static_cast<uint64_t>(PciServiceRequest::Enumerate);
@@ -376,18 +526,18 @@ int enumeratePci(PciFunctionInfo* functions, uint32_t capacity) {
     if (result != 0 || reply.data[0] != 0 || reply.data[1] > capacity ||
         reply.length < 2 + (reply.data[1] * sizeof(PciFunctionInfo) + 7) / 8)
         return -1;
-    copyBytes(functions, &reply.data[2], reply.data[1] * sizeof(PciFunctionInfo));
+    Runtime::copyBytes(functions, &reply.data[2], reply.data[1] * sizeof(PciFunctionInfo));
     return static_cast<int>(reply.data[1]);
 }
 
-int readPciConfig(const PciFunctionInfo& function, uint16_t offset,
+int Pci::readPciConfig(const PciFunctionInfo& function, uint16_t offset,
                   uint32_t& value) {
-    const uint64_t service = pciServiceHandle();
+    const uint64_t service = Pci::pciServiceHandle();
     if (service == 0) return -1;
     IpcMessage request{};
     request.type = static_cast<uint64_t>(PciServiceRequest::ReadConfig);
     request.data[0] = offset;
-    copyBytes(&request.data[1], &function, sizeof(function));
+    Runtime::copyBytes(&request.data[1], &function, sizeof(function));
     request.length = 3;
     IpcMessage reply{};
     const int result = callService(service, request, reply);
@@ -397,14 +547,14 @@ int readPciConfig(const PciFunctionInfo& function, uint16_t offset,
     return result;
 }
 
-int writePciConfig(const PciFunctionInfo& function, uint16_t offset,
+int Pci::writePciConfig(const PciFunctionInfo& function, uint16_t offset,
                    uint32_t value) {
-    const uint64_t service = pciServiceHandle();
+    const uint64_t service = Pci::pciServiceHandle();
     if (service == 0) return -1;
     IpcMessage request{};
     request.type = static_cast<uint64_t>(PciServiceRequest::WriteConfig);
     request.data[0] = offset;
-    copyBytes(&request.data[1], &function, sizeof(function));
+    Runtime::copyBytes(&request.data[1], &function, sizeof(function));
     request.data[3] = value;
     request.length = 4;
     IpcMessage reply{};
@@ -412,66 +562,121 @@ int writePciConfig(const PciFunctionInfo& function, uint16_t offset,
     return result == 0 && reply.data[0] == 0 ? 0 : -1;
 }
 
-uint64_t mapDeviceMmio(const PciFunctionInfo& function, uint8_t barIndex,
+uint64_t Device::mapDeviceMmio(const PciFunctionInfo& function, uint8_t barIndex,
                        uint64_t address, uint64_t size) {
-    return invokeSyscall(SyscallNumber::MapDeviceMmio,
-                         reinterpret_cast<uint64_t>(&function), barIndex,
-                         address, size);
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(DeviceOperation::MapMmio);
+    request.length = 5;
+    request.data[0] = barIndex;
+    request.data[1] = address;
+    request.data[2] = size;
+    Runtime::copyBytes(&request.data[3], &function, sizeof(function));
+    return CoreServiceClient::result(CoreServiceKind::Device, request, reply);
 }
 
-int allocateDma(uint64_t address, DmaBufferInfo& info) {
-    return static_cast<int>(invokeSyscall(SyscallNumber::AllocateDma, address,
-                                          reinterpret_cast<uint64_t>(&info)));
+int Device::allocateDma(uint64_t address, DmaBufferInfo& info) {
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(DeviceOperation::AllocateDma);
+    request.length = 5;
+    request.data[0] = address;
+    const auto status = CoreServiceClient::result(CoreServiceKind::Device, request, reply);
+    if (!status) Runtime::copyBytes(&info, &reply.data[1], sizeof(info));
+    return status;
 }
 
-uint64_t bindIrq(uint8_t irq, uint64_t endpoint, bool levelTriggered) {
-    return invokeSyscall(SyscallNumber::BindIrq, irq, endpoint, levelTriggered);
+uint64_t Device::bindIrq(uint8_t irq, uint64_t endpoint, bool levelTriggered) {
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(DeviceOperation::BindIrq);
+    request.length = 5;
+    request.data[0] = irq;
+    request.data[1] = endpoint;
+    request.data[2] = levelTriggered ? 1 : 0;
+    return CoreServiceClient::result(CoreServiceKind::Device, request, reply);
 }
 
-int acknowledgeIrq(uint64_t binding) {
-    return static_cast<int>(invokeSyscall(SyscallNumber::AcknowledgeIrq, binding));
+int Device::acknowledgeIrq(uint64_t binding) {
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(DeviceOperation::AcknowledgeIrq);
+    request.length = 5;
+    request.data[0] = binding;
+    return CoreServiceClient::result(CoreServiceKind::Device, request, reply);
 }
 
-int getTaskState(uint64_t taskHandle, int& exitCode) {
-    return static_cast<int>(
-        invokeSyscall(SyscallNumber::GetTaskState, taskHandle,
-                      reinterpret_cast<uint64_t>(&exitCode)));
+int Process::getTaskState(uint64_t taskHandle, int& exitCode) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::State);
+    request.length = 4;
+    request.data[0] = taskHandle;
+    const int64_t status = CoreServiceClient::result(CoreServiceKind::Task, request, reply);
+    if (status >= 0) exitCode = static_cast<int>(reply.data[1]);
+    return status;
 }
 
-int getTaskInfo(uint64_t taskHandle, TaskInfo& info) {
-    return static_cast<int>(invokeSyscall(
-        SyscallNumber::GetTaskInfo, taskHandle,
-        reinterpret_cast<uint64_t>(&info)));
+int Process::getTaskInfo(uint64_t taskHandle, TaskInfo& info) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::Info);
+    request.length = 4;
+    request.data[0] = taskHandle;
+    const int64_t status = CoreServiceClient::result(CoreServiceKind::Task, request, reply);
+    if (!status) Runtime::copyBytes(&info, &reply.data[1], sizeof(info));
+    return status;
 }
 
-int terminateTask(uint64_t taskHandle, int exitCode) {
-    return static_cast<int>(invokeSyscall(
-        SyscallNumber::TerminateTask, taskHandle,
-        static_cast<uint64_t>(static_cast<int64_t>(exitCode))));
+int Process::terminateTask(uint64_t taskHandle, int exitCode) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::Terminate);
+    request.length = 4;
+    request.data[0] = taskHandle; request.data[1] = static_cast<int64_t>(exitCode);
+    const int64_t status = CoreServiceClient::result(CoreServiceKind::Task, request, reply);
+    
+    return status;
 }
 
-int sendSignal(uint64_t taskId, uint32_t signal) {
-    return static_cast<int>(
-        invokeSyscall(SyscallNumber::SendSignal, taskId, signal));
+int Process::sendSignal(uint64_t taskId, uint32_t signal) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::SendSignal);
+    request.length = 4;
+    request.data[0] = taskId; request.data[1] = signal;
+    const int64_t status = CoreServiceClient::result(CoreServiceKind::Task, request, reply);
+    
+    return status;
 }
 
-int setTaskGroup(uint64_t taskGroupId) {
-    return static_cast<int>(
-        invokeSyscall(SyscallNumber::SetTaskGroup, taskGroupId));
+int Process::setTaskGroup(uint64_t taskGroupId, uint64_t taskId) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::SetGroup);
+    request.length = 4;
+    request.data[0] = taskGroupId; request.data[1] = taskId;
+    const int64_t status = CoreServiceClient::result(CoreServiceKind::Task, request, reply);
+    
+    return status;
 }
 
-int64_t createSession() {
-    return invokeSyscall(SyscallNumber::CreateSession);
+int64_t Process::createSession() {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::CreateSession);
+    request.length = 4;
+    
+    const int64_t status = CoreServiceClient::result(CoreServiceKind::Task, request, reply);
+    
+    return status;
 }
 
-int getTaskIdentifiers(TaskIdentifiers& identifiers) {
-    return static_cast<int>(invokeSyscall(
-        SyscallNumber::GetTaskIdentifiers,
-        reinterpret_cast<uint64_t>(&identifiers)));
+int Process::getTaskIdentifiers(TaskIdentifiers& identifiers, uint64_t taskId) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::Identifiers);
+    request.length = 4;
+    request.data[0] = taskId;
+    const int64_t status = CoreServiceClient::result(CoreServiceKind::Task, request, reply);
+    if (!status) Runtime::copyBytes(&identifiers, &reply.data[1], sizeof(identifiers));
+    return status;
 }
 
-uint64_t getClockResolution() {
-    return invokeSyscall(SyscallNumber::GetClockResolution);
+uint64_t Clock::getClockResolution() {
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(SystemOperation::ClockResolution);
+    request.length = 5;
+    return CoreServiceClient::result(CoreServiceKind::System, request, reply);
 }
 
 
@@ -479,26 +684,70 @@ bool closeHandle(uint64_t handle) {
     return invokeSyscall(SyscallNumber::CloseHandle, handle) == 0;
 }
 
-uint64_t getTaskId() { return invokeSyscall(SyscallNumber::GetTaskId); }
+Handle::~Handle() { reset(); }
+void Handle::reset(uint64_t value) {
+    if (value_) closeHandle(value_);
+    value_ = value;
+}
+int64_t Handle::duplicate(uint64_t handle, uint32_t rights, uint32_t flags) {
+    return invokeSyscall(SyscallNumber::CloseHandle, handle,
+        static_cast<uint64_t>(HandleOperation::Duplicate), rights, flags);
+}
+int Handle::restrictRights(uint64_t handle, uint32_t rights) {
+    return invokeSyscall(SyscallNumber::CloseHandle, handle,
+        static_cast<uint64_t>(HandleOperation::RestrictRights), rights);
+}
+int Handle::setFlags(uint64_t handle, uint32_t flags) {
+    return invokeSyscall(SyscallNumber::CloseHandle, handle,
+        static_cast<uint64_t>(HandleOperation::SetFlags), 0, flags);
+}
+int Handle::state(uint64_t handle) {
+    return invokeSyscall(SyscallNumber::CloseHandle, handle, static_cast<uint64_t>(HandleOperation::GetState));
+}
+
+uint64_t Process::getTaskId() {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::Identity);
+    request.length = 4;
+    
+    const int64_t status = CoreServiceClient::result(CoreServiceKind::Task, request, reply);
+    
+    return status;
+}
 
 uint64_t getThreadId() { return invokeSyscall(SyscallNumber::GetThreadId); }
 
-bool getSystemInfo(SystemInfo& info) {
-    return invokeSyscall(SyscallNumber::GetSystemInfo, reinterpret_cast<uint64_t>(&info)) == 0;
+bool System::getSystemInfo(SystemInfo& info) {
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(SystemOperation::Info);
+    request.length = 5;
+    const auto status = CoreServiceClient::result(CoreServiceKind::System, request, reply);
+    if (!status) Runtime::copyBytes(&info, &reply.data[1], sizeof(info));
+    return status == 0;
 }
 
-uint64_t getMonotonicTime() {
-    return invokeSyscall(SyscallNumber::GetMonotonicTime);
+uint64_t Clock::getMonotonicTime() {
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(SystemOperation::MonotonicTime);
+    request.length = 5;
+    return CoreServiceClient::result(CoreServiceKind::System, request, reply);
 }
 
-uint64_t getWallClockTime() {
-    return invokeSyscall(SyscallNumber::GetWallClockTime);
+uint64_t Clock::getWallClockTime() {
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(SystemOperation::WallClockTime);
+    request.length = 5;
+    return CoreServiceClient::result(CoreServiceKind::System, request, reply);
 }
 
-int mapFramebuffer(uint64_t address, DisplayInfo& info) {
-    return static_cast<int>(invokeSyscall(SyscallNumber::MapFramebuffer,
-                                          address,
-                                          reinterpret_cast<uint64_t>(&info)));
+int Device::mapFramebuffer(uint64_t address, DisplayInfo& info) {
+IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(DeviceOperation::Framebuffer);
+    request.length = 5;
+    request.data[0] = address;
+    const auto status = CoreServiceClient::result(CoreServiceKind::Device, request, reply);
+    if (!status) Runtime::copyBytes(&info, &reply.data[1], sizeof(info));
+    return status;
 }
 
 bool unmapMemory(uint64_t address, uint64_t size) {
@@ -510,71 +759,75 @@ bool protectMemory(uint64_t address, uint64_t size, uint64_t protection) {
                          protection) == 0;
 }
 
-void* allocateMemory(size_t size) {
-    const uint64_t mappedSize = alignToPage(size);
+void* Memory::allocateMemory(size_t size) {
+    const uint64_t mappedSize = HeapState::alignToPage(size);
     if (mappedSize == 0) {
         return nullptr;
     }
-    lockHeap();
-    for (Allocation& allocation : allocations) {
+    HeapState::lockHeap();
+    for (HeapState::Allocation& allocation : HeapState::allocations) {
         if (allocation.address != 0) {
             continue;
         }
-        const uint64_t address = nextAllocationAddress;
+        const uint64_t address = HeapState::nextAllocationAddress;
         if (address + mappedSize < address ||
             mapMemory(address, mappedSize, 1) != address) {
-            unlockHeap();
+            HeapState::unlockHeap();
             return nullptr;
         }
         allocation = {address, mappedSize};
-        nextAllocationAddress += mappedSize + pageSize;
-        unlockHeap();
+        HeapState::nextAllocationAddress += mappedSize + HeapState::pageSize;
+        HeapState::unlockHeap();
         return reinterpret_cast<void*>(address);
     }
-    unlockHeap();
+    HeapState::unlockHeap();
     return nullptr;
 }
 
-bool freeMemory(void* pointer) {
+bool Memory::freeMemory(void* pointer) {
     const uint64_t address = reinterpret_cast<uint64_t>(pointer);
-    lockHeap();
-    for (Allocation& allocation : allocations) {
+    HeapState::lockHeap();
+    for (HeapState::Allocation& allocation : HeapState::allocations) {
         if (allocation.address == address) {
             const uint64_t size = allocation.size;
             allocation          = {};
             const bool result   = unmapMemory(address, size);
-            unlockHeap();
+            HeapState::unlockHeap();
             return result;
         }
     }
-    unlockHeap();
+    HeapState::unlockHeap();
     return false;
 }
 
-int printString(const char* string) {
+int Runtime::printString(const char* string) {
     if (string == nullptr) {
         return static_cast<int>(ErrorCode::InvalidArgument);
     }
-    const int64_t result = writeTerminal(string, stringLength(string));
+    const int64_t result = Terminal::write(string, Runtime::stringLength(string));
     return result < 0 ? static_cast<int>(result) : 0;
 }
 
-uint32_t getTerminalId() { return terminalId; }
+uint64_t Terminal::endpoint_;
+uint32_t Terminal::id_;
 
-void setTerminalId(uint32_t id) {
-    terminalId = id < textTerminalCount ? id : 0;
-    invokeSyscall(SyscallNumber::TerminalId, terminalId);
+void Terminal::initialize() { endpoint_ = 0; id_ = 0; }
+
+uint32_t Terminal::getId() { return id_; }
+
+void Terminal::setId(uint32_t id) {
+    id_ = id <= graphicalTerminalId ? id : 0;
 }
 
-int64_t writeTerminal(const void* buffer, size_t size) {
+int64_t Terminal::write(const void* buffer, size_t size) {
     if (buffer == nullptr) {
         return static_cast<int64_t>(ErrorCode::InvalidArgument);
     }
-    if (terminalEndpoint == 0) {
-        terminalEndpoint =
-            lookupService(serviceRegistry(), terminalServiceName, 1000);
+    if (endpoint_ == 0) {
+        endpoint_ =
+            ServiceRegistry::lookupService(ServiceRegistry::serviceRegistry(), terminalServiceName, 1000);
     }
-    if (terminalEndpoint == 0) {
+    if (endpoint_ == 0) {
         return static_cast<int64_t>(ErrorCode::NotFound);
     }
     size_t offset = 0;
@@ -585,7 +838,7 @@ int64_t writeTerminal(const void* buffer, size_t size) {
         }
         IpcMessage request{};
         request.type    = static_cast<uint64_t>(TerminalRequest::Write);
-        request.data[0] = terminalId;
+        request.data[0] = id_;
         request.data[1] = chunk;
         for (size_t index = 0; index < chunk; ++index) {
             reinterpret_cast<uint8_t*>(&request.data[2])[index] =
@@ -593,7 +846,7 @@ int64_t writeTerminal(const void* buffer, size_t size) {
         }
         request.length = 2 + (chunk + sizeof(uint64_t) - 1) / sizeof(uint64_t);
         IpcMessage reply{};
-        if (callService(terminalEndpoint, request, reply) != 0 ||
+        if (callService(endpoint_, request, reply) != 0 ||
             static_cast<int64_t>(reply.data[0]) != 0) {
             return offset == 0 ? static_cast<int64_t>(ErrorCode::IoError)
                                : static_cast<int64_t>(offset);
@@ -603,26 +856,26 @@ int64_t writeTerminal(const void* buffer, size_t size) {
     return static_cast<int64_t>(offset);
 }
 
-int64_t readTerminal(void* buffer, size_t size) {
+int64_t Terminal::read(void* buffer, size_t size) {
     if (buffer == nullptr || size == 0) {
         return static_cast<int64_t>(ErrorCode::InvalidArgument);
     }
-    if (terminalEndpoint == 0) {
-        terminalEndpoint =
-            lookupService(serviceRegistry(), terminalServiceName, 1000);
+    if (endpoint_ == 0) {
+        endpoint_ =
+            ServiceRegistry::lookupService(ServiceRegistry::serviceRegistry(), terminalServiceName, 1000);
     }
-    if (terminalEndpoint == 0) {
+    if (endpoint_ == 0) {
         return static_cast<int64_t>(ErrorCode::NotFound);
     }
     while (true) {
         IpcMessage request{};
         request.type    = static_cast<uint64_t>(TerminalRequest::Read);
-        request.data[0] = terminalId;
+        request.data[0] = id_;
         request.data[1] =
             size > 6 * sizeof(uint64_t) ? 6 * sizeof(uint64_t) : size;
         request.length = 2;
         IpcMessage reply{};
-        if (callService(terminalEndpoint, request, reply) != 0) {
+        if (callService(endpoint_, request, reply) != 0) {
             return static_cast<int64_t>(ErrorCode::IoError);
         }
         const int64_t status = static_cast<int64_t>(reply.data[0]);
@@ -642,59 +895,57 @@ int64_t readTerminal(void* buffer, size_t size) {
     }
 }
 
-uint32_t getActiveTerminal() {
-    if (terminalEndpoint == 0) {
-        terminalEndpoint =
-            lookupService(serviceRegistry(), terminalServiceName, 1000);
+uint32_t Terminal::getActive() {
+    if (endpoint_ == 0) {
+        endpoint_ =
+            ServiceRegistry::lookupService(ServiceRegistry::serviceRegistry(), terminalServiceName, 1000);
     }
     IpcMessage request{};
     request.type = static_cast<uint64_t>(TerminalRequest::GetActive);
     IpcMessage reply{};
-    return terminalEndpoint != 0 &&
-                   callService(terminalEndpoint, request, reply) == 0
+    return endpoint_ != 0 &&
+                   callService(endpoint_, request, reply) == 0
                ? static_cast<uint32_t>(reply.data[1])
                : 0;
 }
 
-bool switchTerminal(uint32_t id) {
-    if (terminalEndpoint == 0) {
-        terminalEndpoint =
-            lookupService(serviceRegistry(), terminalServiceName, 1000);
+bool Terminal::switchTo(uint32_t id) {
+    if (endpoint_ == 0) {
+        endpoint_ =
+            ServiceRegistry::lookupService(ServiceRegistry::serviceRegistry(), terminalServiceName, 1000);
     }
     IpcMessage request{};
     request.type    = static_cast<uint64_t>(TerminalRequest::Switch);
     request.data[0] = id;
     request.length  = 1;
     IpcMessage reply{};
-    return terminalEndpoint != 0 &&
-           callService(terminalEndpoint, request, reply) == 0 &&
+    return endpoint_ != 0 &&
+           callService(endpoint_, request, reply) == 0 &&
            reply.data[0] == 0;
 }
 
-bool setTerminalForegroundTask(uint64_t taskId) {
-    if (terminalEndpoint == 0) {
-        terminalEndpoint =
-            lookupService(serviceRegistry(), terminalServiceName, 1000);
+bool Terminal::setForegroundTask(uint64_t taskId) {
+    if (endpoint_ == 0) {
+        endpoint_ =
+            ServiceRegistry::lookupService(ServiceRegistry::serviceRegistry(), terminalServiceName, 1000);
     }
     IpcMessage request{};
     request.type    =
         static_cast<uint64_t>(TerminalRequest::SetForegroundTask);
-    request.data[0] = terminalId;
+    request.data[0] = id_;
     request.data[1] = taskId;
     request.length  = 2;
     IpcMessage reply{};
-    return terminalEndpoint != 0 &&
-           callService(terminalEndpoint, request, reply) == 0 &&
+    return endpoint_ != 0 &&
+           callService(endpoint_, request, reply) == 0 &&
            reply.data[0] == 0;
 }
 
-int runtimeInit(int argumentCount, char** arguments, char**) {
-    heapLock              = 0;
-    nextAllocationAddress = heapBase;
-    terminalEndpoint      = 0;
-    const uint64_t inheritedTerminal = invokeSyscall(SyscallNumber::TerminalId, UINT64_MAX);
-    terminalId            = inheritedTerminal < textTerminalCount ? inheritedTerminal : 0;
-    clearMemory(allocations, sizeof(allocations));
+int Runtime::runtimeInit(int argumentCount, char** arguments, char**) {
+    HeapState::heapLock              = 0;
+    HeapState::nextAllocationAddress = HeapState::heapBase;
+    Terminal::initialize();
+    Runtime::clearMemory(HeapState::allocations, sizeof(HeapState::allocations));
     constexpr char prefix[] = "--os-terminal=";
     for (int index = 0; index < argumentCount; ++index) {
         const char* argument = arguments[index];
@@ -707,7 +958,7 @@ int runtimeInit(int argumentCount, char** arguments, char**) {
             argument[position] > '7' || argument[position + 1] != '\0') {
             continue;
         }
-        setTerminalId(static_cast<uint32_t>(argument[position] - '1'));
+        Terminal::setId(static_cast<uint32_t>(argument[position] - '1'));
         for (int move = index + 1; move < argumentCount; ++move) {
             arguments[move - 1] = arguments[move];
         }
@@ -722,14 +973,14 @@ int runtimeInit(int argumentCount, char** arguments, char**) {
     return argumentCount;
 }
 
-void runtimeFini() {
+void Runtime::runtimeFini() {
     for (RuntimeFunction* destructor = __fini_array_end;
          destructor != __fini_array_start;) {
         (*--destructor)();
     }
 }
 
-size_t stringLength(const char* value) {
+size_t Runtime::stringLength(const char* value) {
     size_t length = 0;
     while (value != nullptr && value[length] != '\0') {
         ++length;
@@ -737,7 +988,7 @@ size_t stringLength(const char* value) {
     return length;
 }
 
-bool stringsEqual(const char* left, const char* right) {
+bool Runtime::stringsEqual(const char* left, const char* right) {
     if (left == nullptr || right == nullptr) {
         return left == right;
     }
@@ -748,7 +999,7 @@ bool stringsEqual(const char* left, const char* right) {
     return *left == *right;
 }
 
-void copyString(char* destination, const char* source, size_t capacity) {
+void Runtime::copyString(char* destination, const char* source, size_t capacity) {
     if (destination == nullptr || capacity == 0) {
         return;
     }
@@ -760,14 +1011,14 @@ void copyString(char* destination, const char* source, size_t capacity) {
     destination[index] = '\0';
 }
 
-void clearMemory(void* destination, size_t size) {
+void Runtime::clearMemory(void* destination, size_t size) {
     uint8_t* bytes = static_cast<uint8_t*>(destination);
     for (size_t index = 0; index < size; ++index) {
         bytes[index] = 0;
     }
 }
 
-void copyBytes(void* destination, const void* source, size_t size) {
+void Runtime::copyBytes(void* destination, const void* source, size_t size) {
     uint8_t* output = static_cast<uint8_t*>(destination);
     const uint8_t* input = static_cast<const uint8_t*>(source);
     size_t index = 0;
@@ -782,3 +1033,8 @@ void copyBytes(void* destination, const void* source, size_t size) {
 }
 
 }  // namespace os
+
+extern "C" int osRuntimeInit(int argc, char** argv, char** environment) {
+    return os::Runtime::runtimeInit(argc, argv, environment);
+}
+extern "C" void osRuntimeFini() { os::Runtime::runtimeFini(); }

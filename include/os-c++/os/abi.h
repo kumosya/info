@@ -11,13 +11,6 @@ constexpr uint32_t ipcDataWordCount = 515;
 
 enum class SyscallNumber : uint64_t {
     // Message queue
-    OpenMessageQueue = OS_SYS_OPEN_MESSAGE_QUEUE,
-    UnlinkMessageQueue = OS_SYS_UNLINK_MESSAGE_QUEUE,
-    SendMessageQueue = OS_SYS_SEND_MESSAGE_QUEUE,
-    ReceiveMessageQueue = OS_SYS_RECEIVE_MESSAGE_QUEUE,
-    GetMessageQueueAttributes = OS_SYS_GET_MESSAGE_QUEUE_ATTRIBUTES,
-    SetMessageQueueFlags = OS_SYS_SET_MESSAGE_QUEUE_FLAGS,
-    RegisterMessageQueueNotification = OS_SYS_REGISTER_MESSAGE_QUEUE_NOTIFICATION,
     // Process
     GetStandardHandle = OS_SYS_GET_STANDARD_HANDLE,
     ExitTask = OS_SYS_EXIT_TASK,
@@ -25,68 +18,24 @@ enum class SyscallNumber : uint64_t {
     ExitThread = OS_SYS_EXIT_THREAD,
     Yield = OS_SYS_YIELD,
     Sleep = OS_SYS_SLEEP,
-    SpawnProgram = OS_SYS_SPAWN_PROGRAM,
-    SpawnImage = OS_SYS_SPAWN_IMAGE,
     GetBootstrapHandle = OS_SYS_GET_BOOTSTRAP_HANDLE,
-    GetTaskState = OS_SYS_GET_TASK_STATE,
     CloseHandle = OS_SYS_CLOSE_HANDLE,
-    GetTaskId = OS_SYS_GET_TASK_ID,
     GetThreadId = OS_SYS_GET_THREAD_ID,
-    GetTaskInfo = OS_SYS_GET_TASK_INFO,
-    TerminateTask = OS_SYS_TERMINATE_TASK,
-    SendSignal = OS_SYS_SEND_SIGNAL,
-    SendThreadSignal = OS_SYS_SEND_THREAD_SIGNAL,
-    CreateSession = OS_SYS_CREATE_SESSION,
-    GetTaskIdentifiers = OS_SYS_GET_TASK_IDENTIFIERS,
-    SetTaskGroup = OS_SYS_SET_TASK_GROUP,
-    SetCredentials = OS_SYS_SET_CREDENTIALS,
-    QueryTask = OS_SYS_QUERY_TASK,
-    EnumerateTask = OS_SYS_ENUMERATE_TASK,
     ForkTask = OS_SYS_FORK_TASK,
-    WaitChild = OS_SYS_WAIT_CHILD,
     ReplaceTaskImage = OS_SYS_REPLACE_TASK_IMAGE,
-    WaitThread = OS_SYS_WAIT_THREAD,
     WaitAddress = OS_SYS_WAIT_ADDRESS,
     WakeAddress = OS_SYS_WAKE_ADDRESS,
-    SetSignalAction = OS_SYS_SET_SIGNAL_ACTION,
-    SetSignalMask = OS_SYS_SET_SIGNAL_MASK,
-    GetPendingSignals = OS_SYS_GET_PENDING_SIGNALS,
-    WaitSignal = OS_SYS_WAIT_SIGNAL,
     SignalReturn = OS_SYS_SIGNAL_RETURN,
-    TerminalId = OS_SYS_TERMINAL_ID,
-    CreateEndpoint = OS_SYS_CREATE_ENDPOINT,
     SendMessage = OS_SYS_SEND_MESSAGE,
     ReceiveMessage = OS_SYS_RECEIVE_MESSAGE,
     CallService = OS_SYS_CALL_SERVICE,
     ReplyMessage = OS_SYS_REPLY_MESSAGE,
     // Pipe and channel
-    CreatePipe = OS_SYS_CREATE_PIPE,
-    ReadPipe = OS_SYS_READ_PIPE,
-    WritePipe = OS_SYS_WRITE_PIPE,
-    CreateChannelPair = OS_SYS_CREATE_CHANNEL_PAIR,
-    GetChannelIdentity = OS_SYS_GET_CHANNEL_IDENTITY,
-    SetChannelNonblocking = OS_SYS_SET_CHANNEL_NONBLOCKING,
-    SignalChannelEof = OS_SYS_SIGNAL_CHANNEL_EOF,
     // Device
-    CallPciService = OS_SYS_CALL_PCI_SERVICE,
-    MapDeviceMmio = OS_SYS_MAP_DEVICE_MMIO,
-    AllocateDma = OS_SYS_ALLOCATE_DMA,
-    BindIrq = OS_SYS_BIND_IRQ,
-    AcknowledgeIrq = OS_SYS_ACKNOWLEDGE_IRQ,
-    MapFramebuffer = OS_SYS_MAP_FRAMEBUFFER,
-    GetMonotonicTime = OS_SYS_GET_MONOTONIC_TIME,
-    GetWallClockTime = OS_SYS_GET_WALL_CLOCK_TIME,
-    GetClockResolution = OS_SYS_GET_CLOCK_RESOLUTION,
-    GetSystemInfo = OS_SYS_GET_SYSTEM_INFO,
-    Log = OS_SYS_LOG,
     // Memory
     MapMemory = OS_SYS_MAP_MEMORY,
     UnmapMemory = OS_SYS_UNMAP_MEMORY,
     ProtectMemory = OS_SYS_PROTECT_MEMORY,
-    OpenSharedMemory = OS_SYS_OPEN_SHARED_MEMORY,
-    UnlinkSharedMemory = OS_SYS_UNLINK_SHARED_MEMORY,
-    ResizeSharedMemory = OS_SYS_RESIZE_SHARED_MEMORY,
-    MapSharedMemory = OS_SYS_MAP_SHARED_MEMORY,
     Count = OS_SYS_COUNT
 };
 
@@ -97,8 +46,6 @@ struct SystemInfo {
     uint32_t onlineCpus;
     uint32_t reserved;
 };
-bool getSystemInfo(SystemInfo& info);
-
 
 struct TaskIdentifiers {
     uint64_t parentId;
@@ -128,8 +75,10 @@ struct TaskInfo {
     uint32_t uid, gid, effectiveUid, effectiveGid;
     uint64_t parentId;
     uint32_t trustedDeviceService;
-    uint32_t reserved;
+    uint32_t serviceRole;
 };
+
+enum class ServiceRole : uint32_t { None, Init, Task, Fs, Pci, Device, Storage, Tty, Console, Window, Users };
 
 struct PipeHandles {
     uint64_t readHandle;
@@ -152,7 +101,7 @@ struct SpawnImageInfo {
     uint64_t capabilities;
     uint64_t parentTaskId;
     uint32_t argumentCount;
-    uint32_t reserved;
+    uint32_t serviceRole;
     const char* const* arguments;
     uint32_t sharedImageCount;
     uint32_t sharedReserved;
@@ -189,6 +138,10 @@ enum class ProgramId : uint64_t {
     PciServer,
     DeviceServer,
     StorageServer,
+    TtyServer,
+    ConsoleServer,
+    WindowServer,
+    UsersServer,
     Count
 };
 
@@ -204,7 +157,10 @@ enum class ErrorCode : int64_t {
     Busy             = -8,
     Timeout          = -9,
     Interrupted      = -10,
-    IoError          = -11
+    IoError          = -11,
+    Cancelled        = -12,
+    EndpointClosed   = -13,
+    PeerDied         = -14
 };
 
 constexpr uint64_t taskCapabilityDisplay = 1ULL << 2;
@@ -229,10 +185,40 @@ struct IpcMessage {
     uint64_t type;
     uint64_t senderPid;
     uint64_t senderTid;
+    uint64_t replyToken;
     uint32_t length;
     uint32_t handleCount;
     uint64_t data[ipcDataWordCount];
     uint64_t handles[4];
+    uint32_t handleRights[4];
+    uint32_t handleOptions[4];
+};
+
+constexpr uint32_t ipcHandleRestrictRights = 1U << 0;
+constexpr uint32_t ipcHandleMove = 1U << 1;
+
+constexpr uint32_t handleFlagNoInherit = 1U << 0;
+constexpr uint32_t handleFlagCloseOnExec = 1U << 1;
+constexpr uint32_t handleFlagsMask = handleFlagNoInherit | handleFlagCloseOnExec;
+constexpr uint64_t ipcInfiniteDeadline = UINT64_MAX;
+
+enum class HandleOperation : uint64_t { Close, Duplicate, RestrictRights, SetFlags, GetState };
+
+class Handle {
+   public:
+    explicit Handle(uint64_t value = 0) : value_(value) {}
+    ~Handle();
+    Handle(const Handle&) = delete;
+    Handle& operator=(const Handle&) = delete;
+    uint64_t get() const { return value_; }
+    uint64_t release() { const auto value = value_; value_ = 0; return value; }
+    void reset(uint64_t value = 0);
+    static int64_t duplicate(uint64_t handle, uint32_t rights, uint32_t flags = 0);
+    static int restrictRights(uint64_t handle, uint32_t rights);
+    static int setFlags(uint64_t handle, uint32_t flags);
+    static int state(uint64_t handle);
+   private:
+    uint64_t value_;
 };
 
 struct PciFunctionInfo {
@@ -264,92 +250,126 @@ int64_t invokeSyscall(SyscallNumber number, uint64_t arg1 = 0,
 uint64_t createThread(void (*entry)(), uint64_t stackPointer);
 uint64_t createThread(void (*entry)(void*), uint64_t stackPointer,
                       void* argument);
-int waitThread(uint64_t threadId, int& exitCode, bool noHang = false);
+
 int waitAddress(volatile uint32_t* address, uint32_t expected);
 int wakeAddress(volatile uint32_t* address, uint32_t count);
-int setSignalAction(uint32_t signal, const SignalAction* action,
-                    SignalAction* oldAction);
-int setSignalMask(int how, uint64_t mask, uint64_t& oldMask);
-int getPendingSignals(uint64_t& mask);
-int waitSignal(uint64_t mask);
+
+
+
+
 [[noreturn]] void signalReturn(void* frame);
-uint64_t openMessageQueue(const char* name, int flags,
-                          uint32_t maximumMessages, uint32_t messageSize);
-int unlinkMessageQueue(const char* name);
-int sendMessageQueue(uint64_t handle, const void* data, size_t size,
-                     uint32_t priority);
-int64_t receiveMessageQueue(uint64_t handle, void* data, size_t capacity,
-                            uint32_t& priority);
-int getMessageQueueAttributes(uint64_t handle,
-                              MessageQueueAttributes& attributes);
-int setMessageQueueFlags(uint64_t handle, uint64_t flags,
-                         uint64_t& oldFlags);
-uint64_t openSharedMemory(const char* name, int flags);
-int unlinkSharedMemory(const char* name);
-int resizeSharedMemory(uint64_t handle, uint64_t size);
-uint64_t mapSharedMemory(uint64_t handle, uint64_t address, uint64_t size,
-                         uint64_t offset, uint64_t protection);
-int sendThreadSignal(uint64_t threadId, uint32_t signal);
-int registerMessageQueueNotification(uint64_t handle, int type,
-                                     uint32_t signal);
+
+
+
 int64_t forkTask();
-int64_t waitChild(int64_t taskId, int& status, int options);
+
 int replaceTaskImage(const ExecImageInfo& info);
 void yield();
 void sleep(uint64_t milliseconds);
 uint64_t mapMemory(uint64_t address, uint64_t size, uint64_t protection);
 uint64_t createEndpoint();
-int sendMessage(uint64_t endpoint, IpcMessage& message);
-int receiveMessage(uint64_t endpoint, IpcMessage& message);
-int callService(uint64_t endpoint, IpcMessage& request, IpcMessage& reply);
-int replyMessage(uint64_t endpoint, IpcMessage& reply);
-uint64_t spawnProgram(ProgramId program, uint64_t bootstrapHandle,
-                      uint32_t argumentCount       = 0,
-                      const char* const* arguments = nullptr);
-uint64_t spawnImage(const SpawnImageInfo& info);
-bool createPipe(PipeHandles& handles);
-bool createChannelPair(ChannelHandles& handles);
-uint64_t getChannelIdentity(uint64_t handle);
-bool setChannelNonblocking(uint64_t handle, bool enabled);
-bool signalChannelEof(uint64_t handle);
-int64_t readPipe(uint64_t handle, void* buffer, size_t size);
-int64_t writePipe(uint64_t handle, const void* buffer, size_t size);
+int sendMessage(uint64_t endpoint, IpcMessage& message,
+                uint64_t deadline = ipcInfiniteDeadline);
+int receiveMessage(uint64_t endpoint, IpcMessage& message,
+                   uint64_t deadline = ipcInfiniteDeadline);
+int callService(uint64_t endpoint, IpcMessage& request, IpcMessage& reply,
+                uint64_t deadline = ipcInfiniteDeadline);
+int replyMessage(uint64_t endpoint, uint64_t replyToken, IpcMessage& reply);
+int cancelIpc(uint64_t endpoint, uint64_t threadId);
+
+
+
 uint64_t getStandardHandle(uint32_t index);
 uint64_t getBootstrapHandle();
-void log(const char* message);
-uint64_t mapDeviceMmio(const PciFunctionInfo& function, uint8_t barIndex,
-                       uint64_t address, uint64_t size);
-int allocateDma(uint64_t address, DmaBufferInfo& info);
-uint64_t bindIrq(uint8_t irq, uint64_t endpoint, bool levelTriggered = false);
-int acknowledgeIrq(uint64_t binding);
-int getTaskState(uint64_t taskHandle, int& exitCode);
-int getTaskInfo(uint64_t taskHandle, TaskInfo& info);
-int terminateTask(uint64_t taskHandle, int exitCode);
-int sendSignal(uint64_t taskId, uint32_t signal);
-int setTaskGroup(uint64_t taskGroupId);
-int64_t createSession();
-int getTaskIdentifiers(TaskIdentifiers& identifiers);
-uint64_t getClockResolution();
+
+
+
+
+
+
+
+
+
 bool closeHandle(uint64_t handle);
-uint64_t getTaskId();
+
 uint64_t getThreadId();
-uint64_t getMonotonicTime();
-uint64_t getWallClockTime();
-int mapFramebuffer(uint64_t address, DisplayInfo& info);
+
 bool unmapMemory(uint64_t address, uint64_t size);
 bool protectMemory(uint64_t address, uint64_t size, uint64_t protection);
-void* allocateMemory(size_t size);
-bool freeMemory(void* pointer);
-int printString(const char* string);
 
-int runtimeInit(int argumentCount, char** arguments, char** environment);
-void runtimeFini();
+class Runtime {
+   public:
+    static int printString(const char* string);
+    static void copyBytes(void* destination, const void* source, size_t size);
+    static void clearMemory(void* destination, size_t size);
+    static void copyString(char* destination, const char* source, size_t capacity);
+    static bool stringsEqual(const char* left, const char* right);
+    static size_t stringLength(const char* value);
+    static void runtimeFini();
+    static int runtimeInit(int argumentCount, char** arguments, char** environment);
+};
 
-size_t stringLength(const char* value);
-bool stringsEqual(const char* left, const char* right);
-void copyString(char* destination, const char* source, size_t capacity);
-void clearMemory(void* destination, size_t size);
-void copyBytes(void* destination, const void* source, size_t size);
+class Memory {
+   public:
+    static uint64_t mapSharedMemory(uint64_t handle, uint64_t address, uint64_t size,
+                         uint64_t offset, uint64_t protection);
+    static int resizeSharedMemory(uint64_t handle, uint64_t size);
+    static int unlinkSharedMemory(const char* name);
+    static uint64_t openSharedMemory(const char* name, int flags);
+    static bool freeMemory(void* pointer);
+    static void* allocateMemory(size_t size);
+};
+
+class Pipe {
+   public:
+    static int64_t writePipe(uint64_t handle, const void* buffer, size_t size);
+    static int64_t readPipe(uint64_t handle, void* buffer, size_t size);
+    static bool signalChannelEof(uint64_t handle);
+    static bool setChannelNonblocking(uint64_t handle, bool enabled);
+    static uint64_t getChannelIdentity(uint64_t handle);
+    static bool createChannelPair(ChannelHandles& handles);
+    static bool createPipe(PipeHandles& handles);
+};
+
+class MessageQueue {
+   public:
+    static int registerMessageQueueNotification(uint64_t handle, int type,
+                                     uint32_t signal);
+    static int setMessageQueueFlags(uint64_t handle, uint64_t flags,
+                         uint64_t& oldFlags);
+    static int getMessageQueueAttributes(uint64_t handle,
+                              MessageQueueAttributes& attributes);
+    static int64_t receiveMessageQueue(uint64_t handle, void* data, size_t capacity,
+                            uint32_t& priority);
+    static int sendMessageQueue(uint64_t handle, const void* data, size_t size,
+                     uint32_t priority);
+    static int unlinkMessageQueue(const char* name);
+    static uint64_t openMessageQueue(const char* name, int flags,
+                          uint32_t maximumMessages, uint32_t messageSize);
+};
+
+class Device {
+   public:
+    static int mapFramebuffer(uint64_t address, DisplayInfo& info);
+    static int acknowledgeIrq(uint64_t binding);
+    static uint64_t bindIrq(uint8_t irq, uint64_t endpoint, bool levelTriggered = false);
+    static int allocateDma(uint64_t address, DmaBufferInfo& info);
+    static uint64_t mapDeviceMmio(const PciFunctionInfo& function, uint8_t barIndex,
+                       uint64_t address, uint64_t size);
+};
+
+class Clock {
+   public:
+    static uint64_t getClockResolution();
+    static uint64_t getWallClockTime();
+    static uint64_t getMonotonicTime();
+};
+
+class System {
+   public:
+    static void log(const char* message);
+    static bool getSystemInfo(SystemInfo& info);
+};
 
 }  // namespace os
 

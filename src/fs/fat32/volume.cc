@@ -6,36 +6,47 @@ namespace {
 constexpr uint32_t sectorSize = 512;
 constexpr uint32_t endOfChain = 0x0ffffff8U;
 
-uint16_t read16(const uint8_t* bytes) {
+class FatDirectoryCodec {
+ public:
+    static uint16_t read16(const uint8_t* bytes);
+    static uint32_t read32(const uint8_t* bytes);
+    static void write16(uint8_t* bytes, uint16_t value);
+    static void write32(uint8_t* bytes, uint32_t value);
+    static char upperAscii(char value);
+    static bool nameEquals(const char* requested, const char* shortName);
+    static void copyShortName(const uint8_t* raw, char* name, size_t capacity);
+};
+
+uint16_t FatDirectoryCodec::read16(const uint8_t* bytes) {
     return static_cast<uint16_t>(bytes[0]) |
            (static_cast<uint16_t>(bytes[1]) << 8);
 }
 
-uint32_t read32(const uint8_t* bytes) {
+uint32_t FatDirectoryCodec::read32(const uint8_t* bytes) {
     return static_cast<uint32_t>(bytes[0]) |
            (static_cast<uint32_t>(bytes[1]) << 8) |
            (static_cast<uint32_t>(bytes[2]) << 16) |
            (static_cast<uint32_t>(bytes[3]) << 24);
 }
 
-void write16(uint8_t* bytes, uint16_t value) {
+void FatDirectoryCodec::write16(uint8_t* bytes, uint16_t value) {
     bytes[0] = static_cast<uint8_t>(value);
     bytes[1] = static_cast<uint8_t>(value >> 8);
 }
 
-void write32(uint8_t* bytes, uint32_t value) {
+void FatDirectoryCodec::write32(uint8_t* bytes, uint32_t value) {
     for (uint32_t index = 0; index < 4; ++index) {
         bytes[index] = static_cast<uint8_t>(value >> (index * 8));
     }
 }
 
-char upperAscii(char value) {
+char FatDirectoryCodec::upperAscii(char value) {
     return value >= 'a' && value <= 'z'
                ? static_cast<char>(value - 'a' + 'A')
                : value;
 }
 
-bool nameEquals(const char* requested, const char* shortName) {
+bool FatDirectoryCodec::nameEquals(const char* requested, const char* shortName) {
     uint32_t requestedIndex = 0;
     uint32_t nameIndex = 0;
     while (requested[requestedIndex] != '\0' &&
@@ -48,13 +59,13 @@ bool nameEquals(const char* requested, const char* shortName) {
             }
             continue;
         }
-        if (upperAscii(value) != shortName[nameIndex++]) return false;
+        if (FatDirectoryCodec::upperAscii(value) != shortName[nameIndex++]) return false;
     }
     while (nameIndex < 11 && shortName[nameIndex] == ' ') ++nameIndex;
     return requested[requestedIndex] == '\0' && nameIndex == 11;
 }
 
-void copyShortName(const uint8_t* raw, char* name, size_t capacity) {
+void FatDirectoryCodec::copyShortName(const uint8_t* raw, char* name, size_t capacity) {
     size_t output = 0;
     for (uint32_t index = 0; index < 8 && raw[index] != ' '; ++index) {
         if (output + 1 >= capacity) break;
@@ -74,20 +85,20 @@ bool Fat32FileSystem::mount(vfs::SectorDevice& device) {
     uint8_t boot[sectorSize]{};
     device_ = nullptr;
     if (!device.readSector(0, boot) || boot[510] != 0x55 ||
-        boot[511] != 0xaa || read16(boot + 11) != sectorSize ||
-        boot[13] == 0 || boot[16] == 0 || read16(boot + 14) == 0 ||
-        read32(boot + 36) == 0) {
+        boot[511] != 0xaa || FatDirectoryCodec::read16(boot + 11) != sectorSize ||
+        boot[13] == 0 || boot[16] == 0 || FatDirectoryCodec::read16(boot + 14) == 0 ||
+        FatDirectoryCodec::read32(boot + 36) == 0) {
         return false;
     }
-    reservedSectors_ = read16(boot + 14);
+    reservedSectors_ = FatDirectoryCodec::read16(boot + 14);
     fatCount_ = boot[16];
     sectorsPerCluster_ = boot[13];
-    fatSectors_ = read32(boot + 36);
-    fsInfoSector_ = read16(boot + 48);
-    backupBootSector_ = read16(boot + 50);
-    totalSectors_ = read16(boot + 19);
-    if (totalSectors_ == 0) totalSectors_ = read32(boot + 32);
-    rootCluster_ = read32(boot + 44) & 0x0fffffffU;
+    fatSectors_ = FatDirectoryCodec::read32(boot + 36);
+    fsInfoSector_ = FatDirectoryCodec::read16(boot + 48);
+    backupBootSector_ = FatDirectoryCodec::read16(boot + 50);
+    totalSectors_ = FatDirectoryCodec::read16(boot + 19);
+    if (totalSectors_ == 0) totalSectors_ = FatDirectoryCodec::read32(boot + 32);
+    rootCluster_ = FatDirectoryCodec::read32(boot + 44) & 0x0fffffffU;
     const uint64_t dataStart =
         static_cast<uint64_t>(reservedSectors_) +
         static_cast<uint64_t>(fatCount_) * fatSectors_;
@@ -176,7 +187,7 @@ bool Fat32FileSystem::findEntry(uint32_t directoryCluster, const char* name,
             return false;
         }
         if (entry.end) return false;
-        if (entry.valid && (fat32::detail::equal(name, entry.name) || nameEquals(name, entry.shortName))) {
+        if (entry.valid && (fat32::detail::NameCodec::equal(name, entry.name) || FatDirectoryCodec::nameEquals(name, entry.shortName))) {
             status = candidate;
             return true;
         }
@@ -212,10 +223,10 @@ bool Fat32FileSystem::readEntry(uint32_t directoryCluster, uint32_t index,
     for (uint32_t index = 0; index < sizeof(entry.shortName); ++index) {
         entry.shortName[index] = static_cast<char>(raw[index]);
     }
-    copyShortName(raw, entry.name, sizeof(entry.name));
+    FatDirectoryCodec::copyShortName(raw, entry.name, sizeof(entry.name));
     // Long entries precede the short entry in reverse ordinal order.
     // Reject broken chains/checksums and retain the interoperable 8.3 alias.
-    const uint8_t sum = fat32::detail::checksum(entry.shortName);
+    const uint8_t sum = fat32::detail::NameCodec::checksum(entry.shortName);
     uint16_t units[260]{};
     uint8_t longEntries = 0;
     for (uint32_t ordinal = 1; ordinal <= 20 && ordinal <= index; ++ordinal) {
@@ -226,12 +237,12 @@ bool Fat32FileSystem::readEntry(uint32_t directoryCluster, uint32_t index,
             !readSector(longSector, bytes)) return false;
         const uint8_t* part = bytes + longOffset;
         if (part[0] != ordinal && part[0] != (ordinal | 0x40)) break;
-        if (part[11] != 0x0f || part[12] || part[13] != sum || read16(part + 26)) break;
+        if (part[11] != 0x0f || part[12] || part[13] != sum || FatDirectoryCodec::read16(part + 26)) break;
         for (uint32_t unit = 0; unit < 13; ++unit)
-            units[(ordinal - 1) * 13 + unit] = read16(part + fat32::detail::unitOffsets[unit]);
+            units[(ordinal - 1) * 13 + unit] = FatDirectoryCodec::read16(part + fat32::detail::unitOffsets[unit]);
         if (part[0] & 0x40) {
             char decoded[256]{};
-            if (fat32::detail::toUtf8(units, ordinal * 13, decoded)) {
+            if (fat32::detail::NameCodec::toUtf8(units, ordinal * 13, decoded)) {
                 for (size_t i = 0; i < sizeof(entry.name); ++i) entry.name[i] = decoded[i];
                 longEntries = static_cast<uint8_t>(ordinal);
             }
@@ -242,9 +253,9 @@ bool Fat32FileSystem::readEntry(uint32_t directoryCluster, uint32_t index,
     entry.valid = true;
     if (status != nullptr) {
         status->firstCluster =
-            (static_cast<uint32_t>(read16(raw + 20)) << 16) |
-            read16(raw + 26);
-        status->size = read32(raw + 28);
+            (static_cast<uint32_t>(FatDirectoryCodec::read16(raw + 20)) << 16) |
+            FatDirectoryCodec::read16(raw + 26);
+        status->size = FatDirectoryCodec::read32(raw + 28);
         status->directory = entry.directory;
         status->entrySector = sectorNumber;
         status->entryOffset = static_cast<uint16_t>(entryOffset);
@@ -266,8 +277,8 @@ int Fat32FileSystem::readDirectory(const char* path, uint32_t index,
             return 1;
         }
         if (candidate.end) return 1;
-        if (!candidate.valid || fat32::detail::equal(candidate.name, ".") ||
-            fat32::detail::equal(candidate.name, "..")) {
+        if (!candidate.valid || fat32::detail::NameCodec::equal(candidate.name, ".") ||
+            fat32::detail::NameCodec::equal(candidate.name, "..")) {
             continue;
         }
         if (visibleIndex++ == index) {
@@ -307,8 +318,8 @@ int64_t Fat32FileSystem::read(const vfs::FileStatus& status, uint64_t offset,
             return -1;
         }
         const uint8_t* raw = entrySector + entryOffset;
-        cluster = (static_cast<uint32_t>(read16(raw + 20)) << 16) |
-                  read16(raw + 26);
+        cluster = (static_cast<uint32_t>(FatDirectoryCodec::read16(raw + 20)) << 16) |
+                  FatDirectoryCodec::read16(raw + 26);
     }
     if (cluster < 2) return 0;
     uint64_t clusterIndex = offset / clusterBytes;
@@ -368,8 +379,8 @@ int64_t Fat32FileSystem::write(const vfs::FileStatus& status,
     }
     uint8_t* raw = entrySector + entryOffset;
     uint32_t firstCluster =
-        (static_cast<uint32_t>(read16(raw + 20)) << 16) | read16(raw + 26);
-    const uint32_t previousSize = read32(raw + 28);
+        (static_cast<uint32_t>(FatDirectoryCodec::read16(raw + 20)) << 16) | FatDirectoryCodec::read16(raw + 26);
+    const uint32_t previousSize = FatDirectoryCodec::read32(raw + 28);
     const uint32_t clusterBytes = sectorsPerCluster_ * sectorSize;
     size_t written = 0;
     uint8_t sector[sectorSize]{};
@@ -454,7 +465,7 @@ bool Fat32FileSystem::create(const char* path, bool directory) {
     uint16_t units[255]{};
     size_t unitCount = 0;
     if (!resolveParent(path, parent, name, sizeof(name)) ||
-        !fat32::detail::toUtf16(name, units, unitCount)) {
+        !fat32::detail::NameCodec::toUtf16(name, units, unitCount)) {
         return false;
     }
     Node existing{};
@@ -462,7 +473,7 @@ bool Fat32FileSystem::create(const char* path, bool directory) {
 
     const bool shortEncoded = encodeShortName(name, shortName);
     char shortText[13]{};
-    if (shortEncoded) copyShortName(reinterpret_cast<const uint8_t*>(shortName), shortText, sizeof(shortText));
+    if (shortEncoded) FatDirectoryCodec::copyShortName(reinterpret_cast<const uint8_t*>(shortName), shortText, sizeof(shortText));
     bool exactShort = shortEncoded;
     for (size_t i = 0; exactShort; ++i) {
         if (shortText[i] != name[i]) { exactShort = false; break; }
@@ -479,17 +490,17 @@ bool Fat32FileSystem::create(const char* path, bool directory) {
             size_t extension = 0;
             for (size_t i = 0; name[i]; ++i) if (name[i] == '.') extension = i + 1;
             for (size_t i = 0; name[i] && (extension == 0 || i + 1 < extension) && base < 7 - count; ++i) {
-                const char c = upperAscii(name[i]);
+                const char c = FatDirectoryCodec::upperAscii(name[i]);
                 if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') shortName[base++] = c;
             }
             if (!base) shortName[base++] = '_';
             shortName[base++] = '~';
             while (count) shortName[base++] = digits[--count];
             if (extension) for (unsigned i = 0; i < 3 && name[extension + i]; ++i) {
-                const char c = upperAscii(name[extension + i]);
+                const char c = FatDirectoryCodec::upperAscii(name[extension + i]);
                 shortName[8 + i] = (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ? c : '_';
             }
-            copyShortName(reinterpret_cast<const uint8_t*>(shortName), shortText, sizeof(shortText));
+            FatDirectoryCodec::copyShortName(reinterpret_cast<const uint8_t*>(shortName), shortText, sizeof(shortText));
             if (!findEntry(parent.firstCluster, shortText, existing)) { available = true; break; }
         }
         if (!available) return false;
@@ -516,10 +527,10 @@ bool Fat32FileSystem::create(const char* path, bool directory) {
         const uint32_t ordinal = longCount - slot;
         part[0] = ordinal | (slot == 0 ? 0x40 : 0);
         part[11] = 0x0f;
-        part[13] = fat32::detail::checksum(shortName);
+        part[13] = fat32::detail::NameCodec::checksum(shortName);
         for (uint32_t i = 0; i < 13; ++i) {
             const size_t unit = (ordinal - 1) * 13 + i;
-            write16(part + fat32::detail::unitOffsets[i],
+            FatDirectoryCodec::write16(part + fat32::detail::unitOffsets[i],
                     unit < unitCount ? units[unit] : unit == unitCount ? 0 : 0xffff);
         }
         if (!writeSector(number, bytes)) { releaseChain(firstCluster); return false; }
@@ -532,9 +543,9 @@ bool Fat32FileSystem::create(const char* path, bool directory) {
         raw[index] = static_cast<uint8_t>(shortName[index]);
     }
     raw[11] = directory ? 0x10 : 0x20;
-    write16(raw + 20, static_cast<uint16_t>(firstCluster >> 16));
-    write16(raw + 26, static_cast<uint16_t>(firstCluster));
-    write32(raw + 28, 0);
+    FatDirectoryCodec::write16(raw + 20, static_cast<uint16_t>(firstCluster >> 16));
+    FatDirectoryCodec::write16(raw + 26, static_cast<uint16_t>(firstCluster));
+    FatDirectoryCodec::write32(raw + 28, 0);
     if (!writeSector(entrySectorNumber, sector)) return false;
 
     if (directory) {
@@ -542,9 +553,9 @@ bool Fat32FileSystem::create(const char* path, bool directory) {
         dotSector[0] = '.';
         for (uint32_t index = 1; index < 11; ++index) dotSector[index] = ' ';
         dotSector[11] = 0x10;
-        write16(dotSector + 20,
+        FatDirectoryCodec::write16(dotSector + 20,
                 static_cast<uint16_t>(firstCluster >> 16));
-        write16(dotSector + 26, static_cast<uint16_t>(firstCluster));
+        FatDirectoryCodec::write16(dotSector + 26, static_cast<uint16_t>(firstCluster));
         uint8_t* dotdot = dotSector + 32;
         dotdot[0] = '.';
         dotdot[1] = '.';
@@ -552,9 +563,9 @@ bool Fat32FileSystem::create(const char* path, bool directory) {
         dotdot[11] = 0x10;
         const uint32_t parentCluster =
             parent.firstCluster == rootCluster_ ? 0 : parent.firstCluster;
-        write16(dotdot + 20,
+        FatDirectoryCodec::write16(dotdot + 20,
                 static_cast<uint16_t>(parentCluster >> 16));
-        write16(dotdot + 26, static_cast<uint16_t>(parentCluster));
+        FatDirectoryCodec::write16(dotdot + 26, static_cast<uint16_t>(parentCluster));
         const uint32_t sectorNumber =
             firstDataSector_ + (firstCluster - 2) * sectorsPerCluster_;
         if (!writeSector(sectorNumber, dotSector)) return false;
@@ -584,8 +595,8 @@ bool Fat32FileSystem::remove(const char* path) {
             Entry entry{};
             if (!readEntry(node.firstCluster, index, entry, nullptr)) return false;
             if (entry.end) break;
-            if (entry.valid && !fat32::detail::equal(entry.name, ".") &&
-                !fat32::detail::equal(entry.name, "..")) return false;
+            if (entry.valid && !fat32::detail::NameCodec::equal(entry.name, ".") &&
+                !fat32::detail::NameCodec::equal(entry.name, "..")) return false;
         }
     }
     // Remove the visible short record first; then erase its validated LFN chain.
@@ -637,8 +648,8 @@ bool Fat32FileSystem::rename(const char* existing, const char* newPath) {
         uint8_t dot[sectorSize]{};
         if (!readSector(sector, dot) || dot[32] != '.' || dot[33] != '.') return false;
         const uint32_t parent = to.firstCluster == rootCluster_ ? 0 : to.firstCluster;
-        write16(dot + 32 + 20, static_cast<uint16_t>(parent >> 16));
-        write16(dot + 32 + 26, static_cast<uint16_t>(parent));
+        FatDirectoryCodec::write16(dot + 32 + 20, static_cast<uint16_t>(parent >> 16));
+        FatDirectoryCodec::write16(dot + 32 + 26, static_cast<uint16_t>(parent));
         if (!writeSector(sector, dot)) return false;
     }
     for (uint32_t i = 0; i <= source.longEntries; ++i) {
@@ -685,7 +696,7 @@ bool Fat32FileSystem::nextCluster(uint32_t cluster, uint32_t& next) {
         !readSector(static_cast<uint32_t>(sectorNumber), sector)) {
         return false;
     }
-    next = read32(sector + static_cast<uint32_t>(fatOffset % sectorSize)) &
+    next = FatDirectoryCodec::read32(sector + static_cast<uint32_t>(fatOffset % sectorSize)) &
            0x0fffffffU;
     return next >= endOfChain ||
            (next >= 2 && next < clusterCount_ + 2);
@@ -787,7 +798,7 @@ bool Fat32FileSystem::allocateCluster(uint32_t& cluster) {
             const uint32_t candidate =
                 fatSector * (sectorSize / 4) + slot;
             if (candidate < 2 || candidate >= clusterCount_ + 2 ||
-                read32(sector + slot * 4) != 0) {
+                FatDirectoryCodec::read32(sector + slot * 4) != 0) {
                 continue;
             }
             if (!setFatEntry(candidate, endOfChain)) return false;
@@ -818,9 +829,9 @@ bool Fat32FileSystem::setFatEntry(uint32_t cluster, uint32_t value) {
         const uint32_t sectorNumber =
             reservedSectors_ + copy * fatSectors_ + fatSectorOffset;
         if (!readSector(sectorNumber, sector)) return false;
-        const uint32_t previous = read32(sector + byteOffset);
+        const uint32_t previous = FatDirectoryCodec::read32(sector + byteOffset);
         if (copy == 0) wasFree = (previous & 0x0fffffffU) == 0;
-        write32(sector + byteOffset,
+        FatDirectoryCodec::write32(sector + byteOffset,
                 (previous & 0xf0000000U) | (value & 0x0fffffffU));
         if (!writeSector(sectorNumber, sector)) return false;
     }
@@ -844,20 +855,20 @@ bool Fat32FileSystem::adjustFreeClusterCount(int32_t delta) {
         if (sectors[sectorIndex] == UINT32_MAX) continue;
         uint8_t data[sectorSize]{};
         if (!readSector(sectors[sectorIndex], data)) return false;
-        if (read32(data) != 0x41615252U ||
-            read32(data + 484) != 0x61417272U ||
-            read32(data + 508) != 0xaa550000U) {
+        if (FatDirectoryCodec::read32(data) != 0x41615252U ||
+            FatDirectoryCodec::read32(data + 484) != 0x61417272U ||
+            FatDirectoryCodec::read32(data + 508) != 0xaa550000U) {
             continue;
         }
-        const uint32_t freeCount = read32(data + 488);
+        const uint32_t freeCount = FatDirectoryCodec::read32(data + 488);
         if (freeCount == UINT32_MAX) continue;
         if (delta < 0) {
             if (freeCount < static_cast<uint32_t>(-delta)) return false;
-            write32(data + 488, freeCount - static_cast<uint32_t>(-delta));
+            FatDirectoryCodec::write32(data + 488, freeCount - static_cast<uint32_t>(-delta));
         } else {
             const uint32_t increase = static_cast<uint32_t>(delta);
             if (freeCount > clusterCount_ - increase) return false;
-            write32(data + 488, freeCount + increase);
+            FatDirectoryCodec::write32(data + 488, freeCount + increase);
         }
         if (!writeSector(sectors[sectorIndex], data)) return false;
     }
@@ -888,9 +899,9 @@ bool Fat32FileSystem::updateFileEntry(uint64_t cookie, uint32_t firstCluster,
     }
     uint8_t* raw = sector + offset;
     if (raw[0] == 0 || raw[0] == 0xe5) return false;
-    write16(raw + 20, static_cast<uint16_t>(firstCluster >> 16));
-    write16(raw + 26, static_cast<uint16_t>(firstCluster));
-    write32(raw + 28, size);
+    FatDirectoryCodec::write16(raw + 20, static_cast<uint16_t>(firstCluster >> 16));
+    FatDirectoryCodec::write16(raw + 26, static_cast<uint16_t>(firstCluster));
+    FatDirectoryCodec::write32(raw + 28, size);
     return writeSector(sectorNumber, sector);
 }
 
@@ -910,7 +921,7 @@ bool Fat32FileSystem::resolveParent(const char* path, Node& parent,
         name[index] = path[separator + index];
     }
     name[nameLength] = '\0';
-    if (fat32::detail::equal(name, ".") || fat32::detail::equal(name, "..")) return false;
+    if (fat32::detail::NameCodec::equal(name, ".") || fat32::detail::NameCodec::equal(name, "..")) return false;
     if (separator == 1) return resolve("/", parent);
     char parentPath[256]{};
     if (separator >= sizeof(parentPath)) return false;
@@ -934,7 +945,7 @@ bool Fat32FileSystem::encodeShortName(const char* name, char output[11]) {
             extension = true;
             continue;
         }
-        const char upper = upperAscii(value);
+        const char upper = FatDirectoryCodec::upperAscii(value);
         const bool valid = (upper >= 'A' && upper <= 'Z') ||
                            (upper >= '0' && upper <= '9') || upper == '_' ||
                            upper == '-';

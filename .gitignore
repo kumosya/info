@@ -43,7 +43,7 @@
 .vscode/*
 .trae/*
 .claude/*
-
+docs/prompts/*
 build/*
 packages/*
 obj/*

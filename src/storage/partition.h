@@ -7,19 +7,21 @@ namespace storage {
 namespace detail {
 constexpr uint32_t blockSize               = 512;
 constexpr uint32_t maximumPartitionEntries = 128;
-inline uint32_t readLe32(const uint8_t* bytes) {
+class PartitionEncoding {
+ public:
+static uint32_t readLe32(const uint8_t* bytes) {
     return static_cast<uint32_t>(bytes[0]) |
            (static_cast<uint32_t>(bytes[1]) << 8) |
            (static_cast<uint32_t>(bytes[2]) << 16) |
            (static_cast<uint32_t>(bytes[3]) << 24);
 }
 
-inline uint64_t readLe64(const uint8_t* bytes) {
+static uint64_t readLe64(const uint8_t* bytes) {
     return static_cast<uint64_t>(readLe32(bytes)) |
            (static_cast<uint64_t>(readLe32(bytes + 4)) << 32);
 }
 
-inline uint32_t updateCrc32(uint32_t crc, const uint8_t* bytes, uint32_t size) {
+static uint32_t updateCrc32(uint32_t crc, const uint8_t* bytes, uint32_t size) {
     for (uint32_t index = 0; index < size; ++index) {
         crc ^= bytes[index];
         for (uint32_t bit = 0; bit < 8; ++bit) {
@@ -29,6 +31,7 @@ inline uint32_t updateCrc32(uint32_t crc, const uint8_t* bytes, uint32_t size) {
     }
     return crc;
 }
+};
 
 }  // namespace detail
 using namespace detail;
@@ -46,8 +49,8 @@ class PartitionTable {
         for (uint32_t index = 0; index < 4; ++index) {
             const uint8_t* entry           = mbr + 446 + index * 16;
             const uint8_t type             = entry[4];
-            const uint32_t start           = readLe32(entry + 8);
-            const uint32_t partitionBlocks = readLe32(entry + 12);
+            const uint32_t start           = PartitionEncoding::readLe32(entry + 8);
+            const uint32_t partitionBlocks = PartitionEncoding::readLe32(entry + 12);
             if (type != 0 && type != 0xee && partitionBlocks != 0 &&
                 start < driver.blockCount() &&
                 partitionBlocks <= driver.blockCount() - start) {
@@ -58,7 +61,7 @@ class PartitionTable {
                 output.blockCount         = partitionBlocks;
                 output.type               = type;
                 output.number             = index + 1;
-                formatHex(output.uuid, readLe32(mbr + 440), 8);
+                formatHex(output.uuid, PartitionEncoding::readLe32(mbr + 440), 8);
                 output.uuid[8] = '-';
                 formatHex(output.uuid + 9, index + 1, 2);
             }
@@ -69,14 +72,14 @@ class PartitionTable {
             !validSignature(header)) {
             return false;
         }
-        const uint32_t headerSize         = readLe32(header + 12);
-        const uint32_t expectedHeaderCrc  = readLe32(header + 16);
-        const uint64_t firstUsable        = readLe64(header + 40);
-        const uint64_t lastUsable         = readLe64(header + 48);
-        const uint64_t entriesBlock       = readLe64(header + 72);
-        const uint32_t entryCount         = readLe32(header + 80);
-        const uint32_t entrySize          = readLe32(header + 84);
-        const uint32_t expectedEntriesCrc = readLe32(header + 88);
+        const uint32_t headerSize         = PartitionEncoding::readLe32(header + 12);
+        const uint32_t expectedHeaderCrc  = PartitionEncoding::readLe32(header + 16);
+        const uint64_t firstUsable        = PartitionEncoding::readLe64(header + 40);
+        const uint64_t lastUsable         = PartitionEncoding::readLe64(header + 48);
+        const uint64_t entriesBlock       = PartitionEncoding::readLe64(header + 72);
+        const uint32_t entryCount         = PartitionEncoding::readLe32(header + 80);
+        const uint32_t entrySize          = PartitionEncoding::readLe32(header + 84);
+        const uint32_t expectedEntriesCrc = PartitionEncoding::readLe32(header + 88);
         if (headerSize < 92 || headerSize > blockSize || entryCount == 0 ||
             entryCount > maximumPartitionEntries || entrySize < 128 ||
             entrySize > blockSize || blockSize % entrySize != 0 ||
@@ -86,7 +89,7 @@ class PartitionTable {
         uint8_t savedCrc[4] = {header[16], header[17], header[18], header[19]};
         header[16] = header[17] = header[18] = header[19] = 0;
         const uint32_t headerCrc =
-            updateCrc32(0xffffffffU, header, headerSize) ^ 0xffffffffU;
+            PartitionEncoding::updateCrc32(0xffffffffU, header, headerSize) ^ 0xffffffffU;
         for (uint32_t index = 0; index < 4; ++index) {
             header[16 + index] = savedCrc[index];
         }
@@ -110,10 +113,10 @@ class PartitionTable {
                 }
                 currentBlock = blockNumber;
             }
-            crc = updateCrc32(crc, block + offset, entrySize);
+            crc = PartitionEncoding::updateCrc32(crc, block + offset, entrySize);
             if (!emptyGuid(block + offset)) {
-                const uint64_t start = readLe64(block + offset + 32);
-                const uint64_t end   = readLe64(block + offset + 40);
+                const uint64_t start = PartitionEncoding::readLe64(block + offset + 32);
+                const uint64_t end   = PartitionEncoding::readLe64(block + offset + 40);
                 if (start < firstUsable || end > lastUsable || start > end) {
                     return false;
                 }

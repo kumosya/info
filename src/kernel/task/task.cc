@@ -2,6 +2,7 @@
 
 #include "kernel/atomic.h"
 #include "kernel/file.h"
+#include "kernel/device.h"
 #include "kernel/cpu.h"
 #include "kernel/ipc.h"
 #include "kernel/mm.h"
@@ -16,6 +17,7 @@ namespace {
 constexpr uint32_t initialHandleCapacity = 64;
 kernel::Atomic<uint64_t> nextTaskId{1};
 kernel::Task* kernelTask;
+kernel::Task* initTask;
 kernel::Task* taskList;
 kernel::SpinLock taskListLock;
 
@@ -41,6 +43,46 @@ void copyName(char* destination, const char* source) {
 
 namespace kernel {
 
+TaskReference::TaskReference(Task* task) : task_(task) {
+    const uint64_t flags = interrupt::disable();
+    if (task_) {
+        task_->retain();
+        cleanup_.attach(task_, [](void* value) { static_cast<Task*>(value)->release(); });
+    }
+    interrupt::restore(flags);
+}
+TaskReference::TaskReference(TaskReference&& other) : task_(other.task_) {
+    const uint64_t flags = interrupt::disable();
+    other.cleanup_.detach();
+    if (task_) cleanup_.attach(task_, [](void* value) { static_cast<Task*>(value)->release(); });
+    other.task_ = nullptr;
+    interrupt::restore(flags);
+}
+TaskReference& TaskReference::operator=(TaskReference&& other) {
+    if (this != &other) {
+        const uint64_t flags = interrupt::disable();
+        cleanup_.reset();
+        task_ = other.task_;
+        other.cleanup_.detach();
+        if (task_) cleanup_.attach(task_, [](void* value) { static_cast<Task*>(value)->release(); });
+        other.task_ = nullptr;
+        interrupt::restore(flags);
+    }
+    return *this;
+}
+TaskReference::~TaskReference() = default;
+void Task::retain() { __atomic_add_fetch(&references_, 1U, __ATOMIC_RELAXED); }
+void Task::release() {
+    if (__atomic_sub_fetch(&references_, 1U, __ATOMIC_ACQ_REL) != 0) return;
+    Task* parent = parent_;
+    heap::kernelFree(this);
+    if (parent) parent->release();
+}
+void Task::setInitTask(Task* task) {
+    if (task) task->retain();
+    initTask = task;
+}
+
 void AddressSpace::init(uint64_t rootPhysicalAddress) {
     rootPhysicalAddress_ = rootPhysicalAddress;
     lock_.init();
@@ -58,7 +100,10 @@ uint64_t AddressSpace::rootPhysicalAddress() const {
 
 SpinLock& AddressSpace::lock() { return lock_; }
 
-bool HandleTable::init(uint32_t capacity) {
+bool HandleTable::init(uint32_t capacity, Task* owner) {
+    owner_ = owner;
+    capacity_ = 0;
+    lock_.init();
     entries_ = static_cast<HandleEntry*>(
         heap::kernelAllocate(sizeof(HandleEntry) * capacity));
     if (entries_ == nullptr) {
@@ -96,7 +141,23 @@ uint64_t HandleTable::add(void* object, HandleType type, uint32_t rights) {
     if (object == nullptr || type == HandleType::None) {
         return 0;
     }
+    auto* reference = static_cast<Reference*>(heap::kernelAllocate(sizeof(Reference)));
+    if (!reference) return 0;
+    *reference = {object, type, 1};
+    if (type == HandleType::Task) static_cast<Task*>(object)->retain();
+    if (type == HandleType::Endpoint) static_cast<Endpoint*>(object)->retain();
     InterruptSpinLockGuard guard(lock_);
+    const uint64_t result = installLocked(reference, rights, 0);
+    if (!result) {
+        if (type == HandleType::Task) static_cast<Task*>(object)->release();
+        if (type == HandleType::Endpoint) static_cast<Endpoint*>(object)->release();
+        heap::kernelFree(reference);
+    }
+    return result;
+}
+
+uint64_t HandleTable::installLocked(Reference* reference, uint32_t rights,
+                                   uint32_t flags) {
     for (uint32_t index = 0;; ++index) {
         if (index == capacity_) {
             if (!growLocked(capacity_ + 1)) return 0;
@@ -109,9 +170,11 @@ uint64_t HandleTable::add(void* object, HandleType type, uint32_t rights) {
         if (entry.getGeneration() == 0) {
             entry.setGeneration(entry.getGeneration() + 1);
         }
-        entry.setObject(object);
+        entry.reference = reference;
+        entry.flags = flags;
+        entry.setObject(reference->object);
         entry.setRights(rights);
-        entry.setType(static_cast<uint16_t>(type));
+        entry.setType(static_cast<uint16_t>(reference->type));
         return (static_cast<uint64_t>(entry.getGeneration()) << 32) |
                (index + 1);
     }
@@ -130,6 +193,13 @@ bool HandleTable::addAt(uint64_t handle, void* object, HandleType type,
     if (!growLocked(encodedIndex)) return false;
     HandleEntry& entry = entries_[encodedIndex - 1];
     if (entry.getObject() != nullptr) return false;
+    auto* reference = static_cast<Reference*>(heap::kernelAllocate(sizeof(Reference)));
+    if (!reference) return false;
+    *reference = {object, type, 1};
+    if (type == HandleType::Task) static_cast<Task*>(object)->retain();
+    if (type == HandleType::Endpoint) static_cast<Endpoint*>(object)->retain();
+    entry.reference = reference;
+    entry.flags = 0;
     entry.setObject(object);
     entry.setRights(rights);
     entry.setType(static_cast<uint16_t>(type));
@@ -141,10 +211,10 @@ void* HandleTable::get(uint64_t handle, HandleType type,
                        uint32_t requiredRights) {
     const uint32_t encodedIndex = static_cast<uint32_t>(handle);
     const uint16_t generation   = static_cast<uint16_t>(handle >> 32);
+    InterruptSpinLockGuard guard(lock_);
     if (encodedIndex == 0 || encodedIndex > capacity_ || generation == 0) {
         return nullptr;
     }
-    InterruptSpinLockGuard guard(lock_);
     const HandleEntry& entry = entries_[encodedIndex - 1];
     if (entry.getObject() == nullptr || entry.getGeneration() != generation ||
         entry.getType() != static_cast<uint16_t>(type) ||
@@ -158,11 +228,11 @@ bool HandleTable::inspect(uint64_t handle, void** object, HandleType* type,
                           uint32_t* rights) {
     const uint32_t encodedIndex = static_cast<uint32_t>(handle);
     const uint16_t generation   = static_cast<uint16_t>(handle >> 32);
+    InterruptSpinLockGuard guard(lock_);
     if (object == nullptr || type == nullptr || rights == nullptr ||
         encodedIndex == 0 || encodedIndex > capacity_ || generation == 0) {
         return false;
     }
-    InterruptSpinLockGuard guard(lock_);
     const HandleEntry& entry = entries_[encodedIndex - 1];
     if (entry.getObject() == nullptr || entry.getGeneration() != generation) {
         return false;
@@ -175,11 +245,11 @@ bool HandleTable::inspect(uint64_t handle, void** object, HandleType* type,
 
 bool HandleTable::inspectAt(uint32_t index, uint64_t* handle, void** object,
                             HandleType* type, uint32_t* rights) {
+    InterruptSpinLockGuard guard(lock_);
     if (handle == nullptr || object == nullptr || type == nullptr ||
         rights == nullptr || index >= capacity_) {
         return false;
     }
-    InterruptSpinLockGuard guard(lock_);
     const HandleEntry& entry = entries_[index];
     if (entry.getObject() == nullptr || entry.getGeneration() == 0)
         return false;
@@ -194,24 +264,49 @@ bool HandleTable::inspectAt(uint32_t index, uint64_t* handle, void** object,
 bool HandleTable::close(uint64_t handle) {
     const uint32_t encodedIndex = static_cast<uint32_t>(handle);
     const uint16_t generation   = static_cast<uint16_t>(handle >> 32);
-    if (encodedIndex == 0 || encodedIndex > capacity_ || generation == 0) {
-        return false;
-    }
-    void* object    = nullptr;
-    HandleType type = HandleType::None;
+    Reference* reference;
     {
         InterruptSpinLockGuard guard(lock_);
+        if (encodedIndex == 0 || encodedIndex > capacity_ || generation == 0)
+            return false;
         HandleEntry& entry = entries_[encodedIndex - 1];
         if (entry.getObject() == nullptr ||
             entry.getGeneration() != generation) {
             return false;
         }
-        object = entry.getObject();
-        type   = static_cast<HandleType>(entry.getType());
+        reference = entry.reference;
+        entry.reference = nullptr;
+        entry.flags = 0;
         entry.setObject(nullptr);
         entry.setRights(0);
         entry.setType(static_cast<uint16_t>(HandleType::None));
     }
+    if (reference->type == HandleType::Endpoint && owner_ &&
+        !hasObjectRights(reference->object, HandleType::Endpoint, handleRightRead))
+        static_cast<Endpoint*>(reference->object)->receiverClosed(owner_);
+    Reference::release(reference);
+    return true;
+}
+
+void HandleTable::Reference::retain(Reference* reference) {
+    __atomic_add_fetch(&reference->count, 1U, __ATOMIC_RELAXED);
+}
+
+HandleTable::Pin::Pin(HandleTable& table, uint64_t handle, HandleType type, uint32_t rights) {
+    InterruptSpinLockGuard guard(table.lock_);
+    if (!table.validLocked(handle)) return;
+    const auto& entry = table.entries_[static_cast<uint32_t>(handle) - 1];
+    if (entry.reference->type != type || (entry.getRights() & rights) != rights) return;
+    reference_ = entry.reference;
+    Reference::retain(reference_);
+    cleanup_.attach(reference_, [](void* value) { Reference::release(static_cast<Reference*>(value)); });
+}
+HandleTable::Pin::~Pin() = default;
+
+void HandleTable::Reference::release(Reference* reference) {
+    if (__atomic_sub_fetch(&reference->count, 1U, __ATOMIC_ACQ_REL) != 0) return;
+    void* object = reference->object;
+    const HandleType type = reference->type;
     if (type == HandleType::Pipe) {
         Pipe::closeHandleObject(object);
     } else if (type == HandleType::Channel) {
@@ -220,8 +315,226 @@ bool HandleTable::close(uint64_t handle) {
         MessageQueue::closeHandleObject(object);
     } else if (type == HandleType::SharedMemory) {
         SharedMemory::closeHandleObject(object);
+    } else if (type == HandleType::Task) {
+        static_cast<Task*>(object)->release();
+    } else if (type == HandleType::Endpoint) {
+        static_cast<Endpoint*>(object)->release();
+    } else if (type == HandleType::InterruptBinding) {
+        static_cast<device::InterruptBinding*>(object)->destroy();
+    } else if (type == HandleType::DmaBuffer || type == HandleType::MmioRegion) {
+        heap::kernelFree(object);
+    }
+    heap::kernelFree(reference);
+}
+
+bool HandleTable::validLocked(uint64_t handle) const {
+    const uint32_t slot = static_cast<uint32_t>(handle);
+    return slot && slot <= capacity_ && (handle >> 48) == 0 &&
+           entries_[slot - 1].getObject() &&
+           entries_[slot - 1].getGeneration() == (handle >> 32);
+}
+
+uint64_t HandleTable::duplicate(uint64_t handle, uint32_t rights, uint32_t flags) {
+    InterruptSpinLockGuard guard(lock_);
+    if (!validLocked(handle) || (flags & ~os::handleFlagsMask)) return 0;
+    HandleEntry& entry = entries_[static_cast<uint32_t>(handle) - 1];
+    if ((rights & entry.getRights()) != rights) return 0;
+    Reference* reference = entry.reference;
+    Reference::retain(reference);
+    const uint64_t result = installLocked(reference, rights, flags);
+    if (!result) Reference::release(reference);
+    return result;
+}
+
+bool HandleTable::restrictRights(uint64_t handle, uint32_t rights) {
+    InterruptSpinLockGuard guard(lock_);
+    if (!validLocked(handle)) return false;
+    HandleEntry& entry = entries_[static_cast<uint32_t>(handle) - 1];
+    if ((rights & entry.getRights()) != rights) return false;
+    entry.setRights(rights);
+    return true;
+}
+
+uint64_t HandleTable::copyTo(HandleTable& destination, uint64_t handle,
+                             uint64_t destinationHandle) {
+    if (&destination == this) {
+        void* object;
+        HandleType type;
+        uint32_t rights;
+        return inspect(handle, &object, &type, &rights) ? duplicate(handle, rights) : 0;
+    }
+    HandleTable* first = reinterpret_cast<uintptr_t>(this) < reinterpret_cast<uintptr_t>(&destination)
+        ? this : &destination;
+    HandleTable* second = first == this ? &destination : this;
+    InterruptSpinLockGuard firstGuard(first->lock_);
+    InterruptSpinLockGuard secondGuard(second->lock_);
+    if (!validLocked(handle)) return 0;
+    auto& source = entries_[static_cast<uint32_t>(handle) - 1];
+    if (destinationHandle) {
+        const uint32_t slot = static_cast<uint32_t>(destinationHandle);
+        const uint64_t generation = destinationHandle >> 32;
+        if (!slot || !generation || generation > UINT16_MAX ||
+            !destination.growLocked(slot) || destination.entries_[slot - 1].getObject()) return 0;
+        auto& entry = destination.entries_[slot - 1];
+        entry = source;
+        entry.setGeneration(static_cast<uint16_t>(generation));
+        Reference::retain(entry.reference);
+        return destinationHandle;
+    }
+    Reference::retain(source.reference);
+    const uint64_t result = destination.installLocked(source.reference, source.getRights(), source.flags);
+    if (!result) Reference::release(source.reference);
+    return result;
+}
+
+bool HandleTable::setFlags(uint64_t handle, uint32_t flags) {
+    InterruptSpinLockGuard guard(lock_);
+    if (!validLocked(handle) || (flags & ~os::handleFlagsMask)) return false;
+    entries_[static_cast<uint32_t>(handle) - 1].flags = flags;
+    return true;
+}
+
+bool HandleTable::getFlags(uint64_t handle, uint32_t& flags) {
+    InterruptSpinLockGuard guard(lock_);
+    if (!validLocked(handle)) return false;
+    flags = entries_[static_cast<uint32_t>(handle) - 1].flags;
+    return true;
+}
+
+bool HandleTable::hasObjectRights(void* object, HandleType type, uint32_t rights) {
+    InterruptSpinLockGuard guard(lock_);
+    for (uint32_t i = 0; i < capacity_; ++i) {
+        const auto& entry = entries_[i];
+        if (entry.getObject() == object && entry.getType() == static_cast<uint16_t>(type) &&
+            (entry.getRights() & rights) == rights) return true;
+    }
+    return false;
+}
+
+bool HandleTable::Transfer::capture(HandleTable& source, const os::IpcMessage& message,
+                                    bool commitMove) {
+    if (count_ || message.handleCount > 4) return false;
+    InterruptSpinLockGuard guard(source.lock_);
+    for (uint32_t i = 0; i < message.handleCount; ++i) {
+        if (!source.validLocked(message.handles[i])) return false;
+        const auto& entry = source.entries_[static_cast<uint32_t>(message.handles[i]) - 1];
+        const auto type = entry.reference->type;
+        if (type == HandleType::MmioRegion || type == HandleType::DmaBuffer ||
+            type == HandleType::InterruptBinding) return false;
+        if (message.handleOptions[i] & ~(os::ipcHandleRestrictRights | os::ipcHandleMove)) return false;
+        if ((message.handleOptions[i] & os::ipcHandleRestrictRights) &&
+            (message.handleRights[i] & entry.getRights()) != message.handleRights[i]) return false;
+        for (uint32_t j = 0; j < i; ++j)
+            if (message.handles[i] == message.handles[j] &&
+                ((message.handleOptions[i] | message.handleOptions[j]) & os::ipcHandleMove)) return false;
+    }
+    for (uint32_t i = 0; i < message.handleCount; ++i) {
+        auto& entry = source.entries_[static_cast<uint32_t>(message.handles[i]) - 1];
+        references_[i] = entry.reference;
+        rights_[i] = (message.handleOptions[i] & os::ipcHandleRestrictRights)
+            ? message.handleRights[i] : entry.getRights();
+        Reference::retain(references_[i]);
+    }
+    count_ = message.handleCount;
+    // Capture is the enqueue commit point. No further fallible step may follow
+    // it in send; move leaves the queued reference as the new owner.
+    for (uint32_t i = 0; i < count_; ++i) {
+        if (!(message.handleOptions[i] & os::ipcHandleMove)) continue;
+        if (!commitMove) {
+            moveSource_ = &source;
+            moveHandles_[i] = message.handles[i];
+            continue;
+        }
+        auto& entry = source.entries_[static_cast<uint32_t>(message.handles[i]) - 1];
+        entry.reference = nullptr;
+        entry.setObject(nullptr);
+        entry.setRights(0);
+        entry.setType(static_cast<uint16_t>(HandleType::None));
+        entry.flags = 0;
+        Reference::release(references_[i]);
     }
     return true;
+}
+
+bool HandleTable::Transfer::install(HandleTable& destination, os::IpcMessage& message) {
+    if (!moveSource_ || moveSource_ == &destination) {
+        InterruptSpinLockGuard guard(destination.lock_);
+        return installLocked(destination, message);
+    }
+    HandleTable* first = reinterpret_cast<uintptr_t>(moveSource_) < reinterpret_cast<uintptr_t>(&destination)
+        ? moveSource_ : &destination;
+    HandleTable* second = first == moveSource_ ? &destination : moveSource_;
+    InterruptSpinLockGuard firstGuard(first->lock_);
+    InterruptSpinLockGuard secondGuard(second->lock_);
+    return installLocked(destination, message);
+}
+
+bool HandleTable::Transfer::installLocked(HandleTable& destination, os::IpcMessage& message) {
+    if (moveSource_) {
+        for (uint32_t i = 0; i < count_; ++i)
+            if (moveHandles_[i] && (!moveSource_->validLocked(moveHandles_[i]) ||
+                moveSource_->entries_[static_cast<uint32_t>(moveHandles_[i]) - 1].reference != references_[i]))
+                return false;
+    }
+    uint32_t free = 0;
+    for (uint32_t i = 0; i < destination.capacity_; ++i)
+        if (!destination.entries_[i].getObject()) ++free;
+    if (free < count_ && !destination.growLocked(destination.capacity_ + count_ - free))
+        return false;
+    if (moveSource_) {
+        for (uint32_t i = 0; i < count_; ++i) {
+            if (!moveHandles_[i]) continue;
+            auto& entry = moveSource_->entries_[static_cast<uint32_t>(moveHandles_[i]) - 1];
+            entry.reference = nullptr;
+            entry.setObject(nullptr);
+            entry.setRights(0);
+            entry.setType(static_cast<uint16_t>(HandleType::None));
+            entry.flags = 0;
+            Reference::release(references_[i]);
+            moveHandles_[i] = 0;
+        }
+        moveSource_ = nullptr;
+    }
+    for (uint32_t i = 0; i < count_; ++i) {
+        message.handles[i] = destination.installLocked(references_[i], rights_[i], 0);
+        message.handleRights[i] = rights_[i];
+        message.handleOptions[i] = 0;
+        references_[i] = nullptr;
+    }
+    message.handleCount = count_;
+    count_ = 0;
+    return true;
+}
+
+void HandleTable::Transfer::clear() {
+    for (uint32_t i = 0; i < count_; ++i) {
+        Reference::release(references_[i]);
+        references_[i] = nullptr;
+    }
+    count_ = 0;
+    moveSource_ = nullptr;
+    for (auto& handle : moveHandles_) handle = 0;
+}
+
+void HandleTable::closeOnExec() {
+    for (uint32_t i = 0; i < capacity(); ++i) {
+        uint64_t handle = 0;
+        {
+            InterruptSpinLockGuard guard(lock_);
+            const auto& entry = entries_[i];
+            if (entry.getObject() && (entry.flags & os::handleFlagCloseOnExec))
+                handle = (static_cast<uint64_t>(entry.getGeneration()) << 32) | (i + 1);
+        }
+        if (handle) close(handle);
+    }
+}
+
+void HandleTable::dispose() {
+    closeAll();
+    InterruptSpinLockGuard guard(lock_);
+    heap::kernelFree(entries_);
+    entries_ = nullptr;
+    capacity_ = 0;
 }
 
 void HandleTable::closeAll() {
@@ -246,13 +559,14 @@ bool Task::init(const char* name, uint64_t rootPhysicalAddress, Task* parent) {
     copyName(name_, name);
     state_ = TaskState::Created;
     addressSpace_.init(rootPhysicalAddress);
-    if (!handles_.init(initialHandleCapacity)) {
+    if (!handles_.init(initialHandleCapacity, this)) {
         return false;
     }
     mainThread_      = nullptr;
     threads_         = nullptr;
     threadCount_     = 0;
     parent_          = parent;
+    if (parent_) parent_->retain();
     terminalId_ = parent ? parent->terminalId() : 0;
     uid_ = effectiveUid_ = parent ? parent->effectiveUid() : 0;
     gid_ = effectiveGid_ = parent ? parent->effectiveGid() : 0;
@@ -286,6 +600,7 @@ Task* Task::create(const char* name, Task* parent) {
     Task* task    = storage == nullptr ? nullptr : new (storage) Task;
     if (task == nullptr || !task->init(name, root, parent)) {
         memory::destroyAddressSpaceRoot(root);
+        heap::kernelFree(storage);
         return nullptr;
     }
     if (parent != nullptr) {
@@ -315,7 +630,42 @@ AddressSpace& Task::addressSpace() { return addressSpace_; }
 
 HandleTable& Task::handles() { return handles_; }
 
-Task* Task::parent() const { return parent_; }
+Task* Task::parent() {
+    InterruptSpinLockGuard guard(lock_);
+    return parent_;
+}
+uint64_t Task::parentId() {
+    InterruptSpinLockGuard guard(lock_);
+    return parent_ ? parent_->id() : 0;
+}
+TaskReference Task::parentReference() {
+    InterruptSpinLockGuard guard(lock_);
+    return TaskReference(parent_);
+}
+void Task::adoptChildren() {
+    Task* adopter = initTask && initTask != this && !initTask->isTerminated() ? initTask : kernelTask;
+    Task* children;
+    {
+        InterruptSpinLockGuard guard(lock_);
+        children = firstChild_;
+        firstChild_ = nullptr;
+    }
+    if (!children) return;
+    while (children) {
+        Task* child = children;
+        children = child->nextSibling_;
+        {
+            InterruptSpinLockGuard parentGuard(adopter->lock_);
+            InterruptSpinLockGuard childGuard(child->lock_);
+            adopter->retain();
+            child->parent_ = adopter;
+            child->nextSibling_ = adopter->firstChild_;
+            adopter->firstChild_ = child;
+        }
+        release();
+    }
+    if (adopter) adopter->notifyChildStateChange();
+}
 
 bool Task::isTerminated() { return state() == TaskState::Terminated; }
 
@@ -355,6 +705,9 @@ bool Task::inheritForFork(Task& parent) {
                                        &rights)) {
             continue;
         }
+        uint32_t flags = 0;
+        if (!parent.handles_.getFlags(handle, flags)) return false;
+        if (flags & os::handleFlagNoInherit) continue;
         uint64_t inherited = 0;
         if (type == HandleType::Endpoint) {
             inherited =
@@ -376,6 +729,7 @@ bool Task::inheritForFork(Task& parent) {
             handles_.closeAll();
             return false;
         }
+        handles_.setFlags(inherited, flags);
     }
     return true;
 }
@@ -387,16 +741,21 @@ bool Task::commitExec(uint64_t newRootPhysicalAddress, const char* name,
         return false;
     }
     uint64_t oldRoot = 0;
+    Thread* retiredThreads = nullptr;
     {
         InterruptSpinLockGuard guard(lock_);
         for (Thread* thread = threads_; thread != nullptr;) {
             Thread* next = thread->getTaskNext();
             if (thread != currentThread &&
                 thread->getState() != ThreadState::Terminated) {
-                schedule::dequeueThread(thread);
-                thread->setState(ThreadState::Terminated);
+                schedule::terminateThread(thread);
                 smp::requestRemoteReschedule(
                     static_cast<uint32_t>(thread->getCpuId()));
+            }
+            if (thread != currentThread) {
+                thread->setExitAccounted(true);
+                thread->setTaskNext(retiredThreads);
+                retiredThreads = thread;
             }
             thread = next;
         }
@@ -406,24 +765,45 @@ bool Task::commitExec(uint64_t newRootPhysicalAddress, const char* name,
         threads_          = currentThread;
         mainThread_       = currentThread;
         threadCount_      = 1;
-        acceptsThreads_   = true;
+        acceptsThreads_   = false;
         state_            = TaskState::Running;
         stopped_          = false;
         stopSignal_       = 0;
         stopReported_     = false;
         continuedPending_ = false;
         pendingSignals_   = 0;
+        serviceRole_      = os::ServiceRole::None;
         for (uint32_t signal = 1; signal <= maximumSignal; ++signal) {
             if (signalActions_[signal].getHandler() != signalIgnore) {
                 signalActions_[signal] = {};
             }
         }
         copyName(name_, name);
-        oldRoot = addressSpace_.replaceRoot(newRootPhysicalAddress);
+    }
+    schedule::quiesceTask(this);
+    for (Thread* thread = retiredThreads; thread; thread = thread->getTaskNext()) {
+        Endpoint::cancelThread(thread);
+        thread->cancelWait();
+        ThreadCleanup::releaseAll(*thread);
+    }
+    while (retiredThreads) {
+        Thread* thread = retiredThreads;
+        retiredThreads = thread->getTaskNext();
+        if (thread->getKernelStack()) heap::kernelFree(thread->getKernelStack());
+        heap::kernelFree(thread);
     }
     SharedMemory::releaseTaskMappings(*this);
-    memory::switchAddressSpace(newRootPhysicalAddress);
+    {
+        PreemptionSpinLockGuard guard(addressSpace_.lock());
+        oldRoot = addressSpace_.replaceRoot(newRootPhysicalAddress);
+        memory::switchAddressSpace(newRootPhysicalAddress);
+    }
+    handles_.closeOnExec();
     memory::destroyAddressSpaceRoot(oldRoot);
+    {
+        InterruptSpinLockGuard guard(lock_);
+        acceptsThreads_ = true;
+    }
     return true;
 }
 
@@ -484,19 +864,23 @@ int Task::waitForChild(int64_t taskId, Thread* waiter, int& status,
         }
         if (reaped == nullptr && found && (options & 1U) == 0) {
             Thread::prepareWait();
+            waiter->registerWait(lock_, childWaiters_);
             waiter->setWaitNext(childWaiters_);
             childWaiters_ = waiter;
         }
     }
     if (reaped != nullptr) {
         reaped->destroy();
-        InterruptSpinLockGuard globalGuard(taskListLock);
-        Task** link = &taskList;
-        while (*link != nullptr && *link != reaped) {
-            link = &(*link)->nextGlobal_;
+        {
+            InterruptSpinLockGuard globalGuard(taskListLock);
+            Task** link = &taskList;
+            while (*link != nullptr && *link != reaped) {
+                link = &(*link)->nextGlobal_;
+            }
+            if (*link == reaped) *link = reaped->nextGlobal_;
+            reaped->nextGlobal_ = nullptr;
         }
-        if (*link == reaped) *link = reaped->nextGlobal_;
-        reaped->nextGlobal_ = nullptr;
+        reaped->release();
         return 0;
     }
     if (!found) return -1;
@@ -519,6 +903,7 @@ void Task::notifyChildStateChange() {
         Thread* waiter = waiters;
         waiters        = waiters->getWaitNext();
         waiter->setWaitNext(nullptr);
+        waiter->clearWaitRegistration();
         Thread::wake(waiter);
     }
 }
@@ -564,6 +949,7 @@ int Task::waitForThread(uint64_t threadId, Thread* waiter, int& exitCode,
         return 2;
     }
     Thread::prepareWait();
+    waiter->registerWait(lock_, target->accessJoinWaiters(), &target->accessJoinWaitersTail());
     waiter->setWaitNext(nullptr);
     if (target->getJoinWaitersTail() == nullptr) {
         target->setJoinWaiters(waiter);
@@ -583,10 +969,12 @@ void Task::notifyThreadExit(Thread* thread) {
         waiters = thread->getJoinWaiters();
         thread->setJoinWaiters(nullptr);
         thread->setJoinWaitersTail(nullptr);
-        if (threadCount_ != 0) {
+        if (!thread->isExitAccounted() && threadCount_ != 0) {
             --threadCount_;
         }
-        if (threadCount_ == 0 && this != kernelTask) {
+        const bool newlyExited = !thread->isExitAccounted();
+        thread->setExitAccounted(true);
+        if (newlyExited && threadCount_ == 0 && this != kernelTask) {
             state_          = TaskState::Terminated;
             acceptsThreads_ = false;
             exitCode_       = thread->getExitCode();
@@ -598,12 +986,17 @@ void Task::notifyThreadExit(Thread* thread) {
         Thread* waiter = waiters;
         waiters        = waiters->getWaitNext();
         waiter->setWaitNext(nullptr);
+        waiter->clearWaitRegistration();
         Thread::wake(waiter);
     }
-    if (taskTerminated && parent_ != nullptr) {
-        parent_->notifyChildStateChange();
-        parent_->deliverSignal(static_cast<uint32_t>(Signal::Child));
+    if (taskTerminated) {
+        auto parent = parentReference();
+        if (parent) {
+            parent->notifyChildStateChange();
+            parent->deliverSignal(static_cast<uint32_t>(Signal::Child));
+        }
     }
+    if (taskTerminated) Endpoint::closeOwner(this);
 }
 
 void Task::terminateOtherThreads(int exitCode) {
@@ -614,8 +1007,8 @@ void Task::terminateOtherThreads(int exitCode) {
          thread         = thread->getTaskNext()) {
         if (thread != Thread::getCurrent() &&
             thread->getState() != ThreadState::Terminated) {
-            schedule::dequeueThread(thread);
-            thread->setState(ThreadState::Terminated);
+            schedule::terminateThread(thread);
+            thread->setExitAccounted(true);
             smp::requestRemoteReschedule(
                 static_cast<uint32_t>(thread->getCpuId()));
             if (threadCount_ != 0) {
@@ -632,6 +1025,15 @@ void Task::destroy() {
     if (this == kernelTask || this == task::getCurrent()) {
         return;
     }
+    TaskReference lifetime(this);
+    uint32_t expected = 0;
+    if (!__atomic_compare_exchange_n(&resourceState_, &expected, 1U, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        const uint64_t flags = interrupt::disable();
+        interrupt::enable();
+        while (__atomic_load_n(&resourceState_, __ATOMIC_ACQUIRE) != 2U) asm volatile("pause" ::: "memory");
+        interrupt::restore(flags);
+        return;
+    }
     uint64_t root;
     bool discard;
     {
@@ -641,16 +1043,33 @@ void Task::destroy() {
         for (Thread* thread = threads_; thread != nullptr;
              thread         = thread->getTaskNext()) {
             if (thread->getState() != ThreadState::Terminated) {
-                schedule::dequeueThread(thread);
-                thread->setState(ThreadState::Terminated);
+                schedule::terminateThread(thread);
             }
         }
         threadCount_ = 0;
         state_       = TaskState::Terminated;
-        root         = addressSpace_.rootPhysicalAddress();
-        addressSpace_.init(0);
     }
-    handles_.closeAll();
+    schedule::quiesceTask(this);
+    {
+        PreemptionSpinLockGuard guard(addressSpace_.lock());
+        root = addressSpace_.replaceRoot(0);
+    }
+    Endpoint::closeOwner(this);
+    for (Thread* thread = threads_; thread; thread = thread->getTaskNext()) {
+        Endpoint::cancelThread(thread);
+        thread->cancelWait();
+        ThreadCleanup::releaseAll(*thread);
+    }
+    adoptChildren();
+    for (Thread* thread = threads_; thread;) {
+        Thread* next = thread->getTaskNext();
+        if (thread->getKernelStack()) heap::kernelFree(thread->getKernelStack());
+        heap::kernelFree(thread);
+        thread = next;
+    }
+    threads_ = nullptr;
+    mainThread_ = nullptr;
+    handles_.dispose();
     SharedMemory::releaseTaskMappings(*this);
     if (root != 0) memory::destroyAddressSpaceRoot(root);
     if (discard) {
@@ -671,6 +1090,8 @@ void Task::destroy() {
         if (*link == this) *link = nextGlobal_;
         nextGlobal_ = nullptr;
     }
+    __atomic_store_n(&resourceState_, 2U, __ATOMIC_RELEASE);
+    if (discard) release();
 }
 
 void Task::grantCapabilities(uint64_t capabilities) {
@@ -701,7 +1122,7 @@ uint64_t Task::sessionId() const { return sessionId_; }
 
 bool Task::setTaskGroup(uint64_t taskGroupId) {
     if (taskGroupId == 0) taskGroupId = id_;
-    Task* leader = task::find(taskGroupId);
+    auto leader = task::find(taskGroupId);
     if (leader == nullptr || leader->sessionId() != sessionId_) return false;
     InterruptSpinLockGuard guard(lock_);
     if (leader->sessionId() != sessionId_) return false;
@@ -790,6 +1211,8 @@ bool Task::deliverThreadSignal(uint64_t threadId, uint32_t signal) {
         if (action.getHandler() != signalDefault) {
             target->setPendingSignals(target->getPendingSignals() |
                                       (1ULL << (signal - 1)));
+            if ((target->getSignalMask() & (1ULL << (signal - 1))) == 0)
+                Endpoint::interruptThread(target);
             return true;
         }
     }
@@ -821,6 +1244,11 @@ bool Task::deliverSignal(uint32_t signal) {
                  (action.getHandler() != signalDefault || allBlocked);
         if (queued) {
             pendingSignals_ |= 1ULL << (signal - 1);
+            for (Thread* thread = threads_; thread; thread = thread->getTaskNext()) {
+                if (thread->getState() != ThreadState::Terminated &&
+                    (thread->getSignalMask() & (1ULL << (signal - 1))) == 0)
+                    Endpoint::interruptThread(thread);
+            }
         }
     }
     if (queued) return true;
@@ -844,9 +1272,12 @@ bool Task::deliverSignal(uint32_t signal) {
                 }
             }
         }
-        if (parent_ != nullptr) {
-            parent_->notifyChildStateChange();
-            parent_->deliverSignal(static_cast<uint32_t>(Signal::Child));
+        {
+            auto parent = parentReference();
+            if (parent) {
+                parent->notifyChildStateChange();
+                parent->deliverSignal(static_cast<uint32_t>(Signal::Child));
+            }
         }
         return true;
     }
@@ -872,9 +1303,12 @@ bool Task::deliverSignal(uint32_t signal) {
                     static_cast<uint32_t>(thread->getCpuId()));
             }
         }
-        if (parent_ != nullptr) {
-            parent_->notifyChildStateChange();
-            parent_->deliverSignal(static_cast<uint32_t>(Signal::Child));
+        {
+            auto parent = parentReference();
+            if (parent) {
+                parent->notifyChildStateChange();
+                parent->deliverSignal(static_cast<uint32_t>(Signal::Child));
+            }
         }
         return true;
     }
@@ -883,9 +1317,12 @@ bool Task::deliverSignal(uint32_t signal) {
         Thread::exitCurrent(-static_cast<int>(signal));
     }
     destroy();
-    if (parent_ != nullptr) {
-        parent_->notifyChildStateChange();
-        parent_->deliverSignal(static_cast<uint32_t>(Signal::Child));
+    {
+        auto parent = parentReference();
+        if (parent) {
+            parent->notifyChildStateChange();
+            parent->deliverSignal(static_cast<uint32_t>(Signal::Child));
+        }
     }
     return true;
 }
@@ -928,7 +1365,7 @@ posix::FileTable* Task::files() {
 
 Task* task::getIdle() { return kernelTask; }
 
-Task* task::find(uint64_t taskId) {
+TaskReference task::find(uint64_t taskId) {
     InterruptSpinLockGuard guard(taskListLock);
     for (Task* task = taskList; task != nullptr; task = task->nextGlobal_) {
         if (task->id() == taskId) return task;
@@ -940,7 +1377,7 @@ bool signal::isValidSignal(uint32_t signal) {
     return signal >= 1 && signal <= maximumSignal;
 }
 
-Task* task::at(uint32_t index) {
+TaskReference task::at(uint32_t index) {
     InterruptSpinLockGuard guard(taskListLock);
     for (Task* task = taskList; task; task = task->nextGlobal_) {
         if (task == kernelTask) continue;
@@ -949,26 +1386,26 @@ Task* task::at(uint32_t index) {
     return nullptr;
 }
 
-bool signal::sendSignalToTask(uint64_t taskId, uint32_t signal) {
-    Task* task = task::find(taskId);
-    Task* caller = task::getCurrent();
+bool signal::sendSignalToTask(uint64_t taskId, uint32_t signal, Task* authenticatedCaller) {
+    auto task = task::find(taskId);
+    Task* caller = authenticatedCaller ? authenticatedCaller : task::getCurrent();
     if (task && caller && caller->effectiveUid() != 0 && caller->uid() != task->uid() &&
         caller->effectiveUid() != task->uid()) return false;
     return task != nullptr && (signal == 0 ? !task->isTerminated() : task->deliverSignal(signal));
 }
 
-bool signal::sendSignalToTaskGroup(uint64_t taskGroupId, uint32_t signal) {
+bool signal::sendSignalToTaskGroup(uint64_t taskGroupId, uint32_t signal, Task* authenticatedCaller) {
     if (taskGroupId == 0 || (signal != 0 && !signal::isValidSignal(signal))) return false;
     bool delivered = false;
     uint64_t before = UINT64_MAX;
     while (true) {
-        Task* batch[32];
+        TaskReference batch[32];
         uint32_t count = 0;
         {
             InterruptSpinLockGuard guard(taskListLock);
             for (Task* task = taskList; task && count < 32; task = task->nextGlobal_) {
                 if (task->id() >= before) continue;
-                batch[count++] = task;
+                batch[count++] = TaskReference(task);
             }
         }
         if (!count) break;
@@ -977,7 +1414,7 @@ bool signal::sendSignalToTaskGroup(uint64_t taskGroupId, uint32_t signal) {
         // task-list lock across it; task objects outlive their address spaces.
         for (uint32_t i = 0; i < count; ++i) {
             Task* task = batch[i];
-            Task* caller = task::getCurrent();
+            Task* caller = authenticatedCaller ? authenticatedCaller : task::getCurrent();
             const bool permitted = !caller || caller->effectiveUid() == 0 || caller->uid() == task->uid() ||
                                    caller->effectiveUid() == task->uid();
             if (permitted && task->taskGroupId() == taskGroupId)

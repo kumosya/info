@@ -53,7 +53,7 @@ typedef struct OsTaskInfo {
     uint32_t uid, gid, effectiveUid, effectiveGid;
     uint64_t parentId;
     uint32_t trustedDeviceService;
-    uint32_t reserved;
+    uint32_t serviceRole;
 } OsTaskInfo;
 
 typedef struct OsSignalAction {
@@ -194,15 +194,17 @@ int __libc_os_protect_memory(uint64_t address, uint64_t size, uint64_t protectio
 uint64_t __libc_os_get_monotonic_time(void);
 uint64_t __libc_os_get_wall_clock_time(void);
 uint64_t __libc_os_get_clock_resolution(void);
-int __libc_os_get_task_identifiers(OsTaskIdentifiers* identifiers);
+int __libc_os_get_task_identifiers(OsTaskIdentifiers* identifiers, uint64_t task_id);
 int __libc_os_send_signal(uint64_t taskId, uint32_t signal);
-int __libc_os_set_task_group(uint64_t taskGroupId);
+int __libc_os_set_task_group(uint64_t taskGroupId, uint64_t task_id);
 int64_t __libc_os_create_session(void);
 uint64_t __libc_os_execute_task(const char* path, int argument_count,
                          const char* const* arguments, uint64_t standard_input,
                          uint64_t standard_output, uint64_t standard_error);
 int __libc_os_get_task_state(uint64_t handle, int* exit_code);
 int __libc_os_get_task_info(uint64_t handle, OsTaskInfo* info);
+int __libc_os_query_task(uint64_t task_id, OsTaskInfo* info);
+int __libc_os_set_credentials(uint64_t task_id, uint32_t uid, uint32_t gid, int effective_only);
 void __libc_os_runtime_fini(void);
 
 #ifdef __cplusplus

@@ -3,8 +3,8 @@
 .global _start
 .type _start, @function
 .extern main
-.extern _ZN2os11runtimeInitEiPPcS1_
-.extern _ZN2os11runtimeFiniEv
+.extern osRuntimeInit
+.extern osRuntimeFini
 
 _start:
     xorq %rbp, %rbp
@@ -12,7 +12,7 @@ _start:
     movq (%r12), %rdi
     leaq 8(%r12), %rsi
     leaq 16(%r12,%rdi,8), %rdx
-    call _ZN2os11runtimeInitEiPPcS1_
+    call osRuntimeInit
     movq %rax, %r13
     movq %r12, %rsp
     movq %r13, %rdi
@@ -20,7 +20,7 @@ _start:
     andq $-16, %rsp
     call main
     movq %rax, %r12
-    call _ZN2os11runtimeFiniEv
+    call osRuntimeFini
     movq %r12, %rdi
     call _ZN2os8exitTaskEi
 1:

@@ -1,9 +1,15 @@
+#include "os/task.h"
 #include "server.h"
 #include <fcntl.h>
 
 namespace vfs::server {
 namespace {
-bool bits(uint32_t mode, uint32_t uid, uint32_t gid, const os::TaskInfo& caller, unsigned access) {
+class AccessPolicy {
+ public:
+    static bool bits(uint32_t mode, uint32_t uid, uint32_t gid, const os::TaskInfo& caller, unsigned access);
+};
+
+bool AccessPolicy::bits(uint32_t mode, uint32_t uid, uint32_t gid, const os::TaskInfo& caller, unsigned access) {
     if (!caller.effectiveUid) return true;
     const unsigned shift = caller.effectiveUid == uid ? 6 : caller.effectiveGid == gid ? 3 : 0;
     return ((mode >> shift) & access) == access;
@@ -30,14 +36,14 @@ bool FsServer::pathAccess(const char* path, const os::TaskInfo& caller, unsigned
         current[i] = saved;
         if (status.data[0]) return false;
         const unsigned required = i == length ? access : 1;
-        if (!bits(status.data[3], status.data[6], status.data[7], caller, required)) return false;
+        if (!AccessPolicy::bits(status.data[3], status.data[6], status.data[7], caller, required)) return false;
     }
     return true;
 }
 
 bool FsServer::permitted(const os::IpcMessage& request) {
     os::TaskInfo caller{};
-    if (os::invokeSyscall(os::SyscallNumber::QueryTask, request.senderPid, reinterpret_cast<uint64_t>(&caller))) return false;
+    if (os::Process::queryTask(request.senderPid, caller)) return false;
     if (!caller.effectiveUid) return true;
     const auto operation = static_cast<os::FsRequest>(request.type);
     const char* path = reinterpret_cast<const char*>(request.data);
@@ -47,7 +53,7 @@ bool FsServer::permitted(const os::IpcMessage& request) {
         case os::FsRequest::CloneDescriptors: return request.data[0] == caller.parentId;
         case os::FsRequest::CloneForChild: {
             os::TaskInfo child{};
-            return !os::invokeSyscall(os::SyscallNumber::QueryTask, request.data[0], reinterpret_cast<uint64_t>(&child)) &&
+            return !os::Process::queryTask(request.data[0], child) &&
                    child.parentId == request.senderPid;
         }
         case os::FsRequest::Read: case os::FsRequest::Write: case os::FsRequest::ReadAtAsync:
@@ -56,7 +62,7 @@ bool FsServer::permitted(const os::IpcMessage& request) {
             FileDescriptor* descriptor = getDescriptorRecord(request.senderPid, request.data[0]);
             if (!descriptor) return false;
             const OpenFileDescription& entry = *descriptor->description;
-            return bits(entry.mode ? entry.mode : 0666, entry.uid, entry.gid, caller,
+            return AccessPolicy::bits(entry.mode ? entry.mode : 0666, entry.uid, entry.gid, caller,
                         operation == os::FsRequest::Read || operation == os::FsRequest::ReadAtAsync || operation == os::FsRequest::ReadAt ? 4 : 2);
         }
         case os::FsRequest::Close: case os::FsRequest::Seek: case os::FsRequest::ListMounts: case os::FsRequest::Fstat: return true;
@@ -83,8 +89,8 @@ bool FsServer::permitted(const os::IpcMessage& request) {
         case os::FsRequest::Remove: {
             if (!pathAccess(path, caller, 3, true)) return false;
             // Sticky directories restrict removal to the file or directory owner.
-            char parent[384]; os::copyString(parent, path, sizeof(parent));
-            size_t length = os::stringLength(parent);
+            char parent[384]; os::Runtime::copyString(parent, path, sizeof(parent));
+            size_t length = os::Runtime::stringLength(parent);
             while (length > 1 && parent[length - 1] == '/') --length;
             while (length > 1 && parent[length - 1] != '/') --length;
             parent[length > 1 ? length - 1 : 1] = 0;

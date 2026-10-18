@@ -1,3 +1,4 @@
+#include "os/task.h"
 #include <thread>
 
 #include "os/abi.h"
@@ -37,7 +38,7 @@ void run(void* argument) {
 }
 
 void releaseState(ThreadState& state) {
-    os::freeMemory(state.stack);
+    os::Memory::freeMemory(state.stack);
     state = {};
 }
 
@@ -45,7 +46,7 @@ void reapDetachedThreads() {
     for (ThreadState& state : states) {
         int exitCode = 0;
         if (state.used && state.detached && state.id != 0 &&
-            os::waitThread(state.id, exitCode, true) == 0) {
+            os::Process::waitThread(state.id, exitCode, true) == 0) {
             releaseState(state);
         }
     }
@@ -65,7 +66,7 @@ ThreadState* createStandardThread(ThreadInvoker invoker, void* object) {
             continue;
         }
         state = {};
-        state.stack = os::allocateMemory(threadStackSize);
+        state.stack = os::Memory::allocateMemory(threadStackSize);
         if (state.stack == nullptr) {
             unlockStates();
             return nullptr;
@@ -77,7 +78,7 @@ ThreadState* createStandardThread(ThreadInvoker invoker, void* object) {
             run, reinterpret_cast<uint64_t>(state.stack) + threadStackSize,
             &state);
         if (state.id == 0) {
-            os::freeMemory(state.stack);
+            os::Memory::freeMemory(state.stack);
             state = {};
             unlockStates();
             return nullptr;
@@ -94,7 +95,7 @@ void joinStandardThread(ThreadState* state) {
         return;
     }
     int exitCode = 0;
-    os::waitThread(state->id, exitCode);
+    os::Process::waitThread(state->id, exitCode);
     lockStates();
     releaseState(*state);
     unlockStates();

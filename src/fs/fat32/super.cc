@@ -2,7 +2,7 @@
 
 namespace vfs {
 
-bool probeFat32(const uint8_t* data, size_t size) {
+bool FormatProbe::probeFat32(const uint8_t* data, size_t size) {
     if (data == nullptr || size < 512 || data[510] != 0x55 || data[511] != 0xaa)
         return false;
     constexpr char name[] = "FAT32   ";

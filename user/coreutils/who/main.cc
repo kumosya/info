@@ -6,7 +6,7 @@ int main(int, char**) {
     puts("USER       PID     HOME");
     for (uint32_t index = 0;; ++index) {
         os::TaskInfo task{};
-        if (os::invokeSyscall(os::SyscallNumber::EnumerateTask, index, reinterpret_cast<uint64_t>(&task))) break;
+        if (os::Process::enumerateTask(index, task)) break;
         const char* name = strrchr(task.name, '/'); name = name ? name + 1 : task.name;
         if (task.state == 2 || strcmp(name, "sh")) continue;
         os::UserProfile profile{};

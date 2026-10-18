@@ -269,5 +269,4 @@ inline constexpr uint8_t consoleFont[256][consoleFontHeight] = {
 
 }  // namespace os
 
-
 #endif

@@ -7,7 +7,8 @@ namespace os {
 
 constexpr uint32_t serviceNameCapacity = 24;
 
-enum class RegistryRequest : uint64_t { Register = 1, Lookup = 2 };
+enum class RegistryRequest : uint64_t { Register = 1, Lookup = 2, Unregister = 3 };
+constexpr uint64_t serviceAccessOwnerOnly = 1U;
 enum class TaskRequest : uint64_t { Spawn = 1, Wait, Execute, List, Kill };
 constexpr uint64_t taskExecuteHasStdin  = 1ULL << 40;
 constexpr uint64_t taskExecuteHasStdout = 1ULL << 41;
@@ -48,10 +49,13 @@ constexpr uint64_t storageCompletionNotification = 0x53544f52414745ULL;
 constexpr uint64_t storageDeviceShift = 56;
 constexpr uint64_t storageBlockMask = (1ULL << storageDeviceShift) - 1;
 
-constexpr uint64_t encodeStorageBlock(uint32_t deviceId, uint64_t block) {
+class StorageProtocol {
+ public:
+static constexpr uint64_t encodeStorageBlock(uint32_t deviceId, uint64_t block) {
     return (static_cast<uint64_t>(deviceId) << storageDeviceShift) |
            (block & storageBlockMask);
 }
+};
 enum class FsRequest : uint64_t {
     Open = 1,
     Close,

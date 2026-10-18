@@ -8,7 +8,9 @@
 
 namespace {
 
-ssize_t posixResult(int64_t result) {
+class FileSupport {
+ public:
+static ssize_t posixResult(int64_t result) {
     if (result >= 0) return result;
     switch (static_cast<os::ErrorCode>(result)) {
         case os::ErrorCode::InvalidArgument: return -EINVAL;
@@ -21,22 +23,29 @@ ssize_t posixResult(int64_t result) {
         case os::ErrorCode::Busy: return -EBUSY;
         case os::ErrorCode::Timeout: return -ETIMEDOUT;
         case os::ErrorCode::Interrupted: return -EINTR;
+        case os::ErrorCode::Cancelled: return -ECANCELED;
+        case os::ErrorCode::EndpointClosed: return -EPIPE;
+        case os::ErrorCode::PeerDied: return -ECONNRESET;
         default: return -EIO;
     }
 }
 
-void setPath(os::IpcMessage& message, const char* path) {
-    os::copyString(reinterpret_cast<char*>(message.data), path,
+static void setPath(os::IpcMessage& message, const char* path) {
+    os::Runtime::copyString(reinterpret_cast<char*>(message.data), path,
                    384);
     message.length = 48;
 }
 
+};
+
 }  // namespace
 
 #pragma GCC visibility push(hidden)
-namespace os::detail {
+namespace os {
+class FileProtocol {
+ public:
 
-bool closeFile(uint64_t fs, uint64_t descriptor) {
+static bool closeFile(uint64_t fs, uint64_t descriptor) {
     IpcMessage request{};
     request.type    = static_cast<uint64_t>(FsRequest::Close);
     request.data[0] = descriptor;
@@ -45,7 +54,7 @@ bool closeFile(uint64_t fs, uint64_t descriptor) {
     return callService(fs, request, reply) == 0 && reply.data[0] == 0;
 }
 
-int64_t readFile(uint64_t fs, uint64_t descriptor, void* buffer, size_t size) {
+static int64_t readFile(uint64_t fs, uint64_t descriptor, void* buffer, size_t size) {
     if (buffer == nullptr) {
         return static_cast<int64_t>(ErrorCode::InvalidArgument);
     }
@@ -81,7 +90,7 @@ int64_t readFile(uint64_t fs, uint64_t descriptor, void* buffer, size_t size) {
     return static_cast<int64_t>(total);
 }
 
-int64_t writeFile(uint64_t fs, uint64_t descriptor, const void* buffer,
+static int64_t writeFile(uint64_t fs, uint64_t descriptor, const void* buffer,
                   size_t size) {
     if (buffer == nullptr) {
         return static_cast<int64_t>(ErrorCode::InvalidArgument);
@@ -112,7 +121,7 @@ int64_t writeFile(uint64_t fs, uint64_t descriptor, const void* buffer,
     return static_cast<int64_t>(total);
 }
 
-bool readFileAsync(uint64_t fs, uint64_t descriptor, uint64_t offset,
+static bool readFileAsync(uint64_t fs, uint64_t descriptor, uint64_t offset,
                    size_t size, uint64_t completionEndpoint,
                    uint64_t requestId) {
     if (fs == 0 || completionEndpoint == 0 || size == 0 ||
@@ -131,7 +140,7 @@ bool readFileAsync(uint64_t fs, uint64_t descriptor, uint64_t offset,
     return sendMessage(fs, request) == 0;
 }
 
-bool writeFileAsync(uint64_t fs, uint64_t descriptor, uint64_t offset,
+static bool writeFileAsync(uint64_t fs, uint64_t descriptor, uint64_t offset,
                     const void* buffer, size_t size,
                     uint64_t completionEndpoint, uint64_t requestId) {
     if (fs == 0 || completionEndpoint == 0 || buffer == nullptr || size == 0 ||
@@ -155,7 +164,7 @@ bool writeFileAsync(uint64_t fs, uint64_t descriptor, uint64_t offset,
     return sendMessage(fs, request) == 0;
 }
 
-bool waitFileOperation(uint64_t completionEndpoint, FileOperationResult& result,
+static bool waitFileOperation(uint64_t completionEndpoint, FileOperationResult& result,
                        void* buffer, size_t capacity) {
     if (completionEndpoint == 0) return false;
     while (true) {
@@ -179,7 +188,7 @@ bool waitFileOperation(uint64_t completionEndpoint, FileOperationResult& result,
     }
 }
 
-int64_t seekFilePosition(uint64_t fs, uint64_t descriptor, int64_t offset,
+static int64_t seekFilePosition(uint64_t fs, uint64_t descriptor, int64_t offset,
                          int whence) {
     IpcMessage request{};
     request.type    = static_cast<uint64_t>(FsRequest::Seek);
@@ -193,7 +202,7 @@ int64_t seekFilePosition(uint64_t fs, uint64_t descriptor, int64_t offset,
                : -1;
 }
 
-int cloneFileDescriptors(uint64_t fs, uint64_t parentTaskId,
+static int cloneFileDescriptors(uint64_t fs, uint64_t parentTaskId,
                          uint64_t* oldDescriptors,
                          uint64_t* newDescriptors, size_t capacity) {
     if (fs == 0 || parentTaskId == 0 || oldDescriptors == nullptr ||
@@ -217,63 +226,63 @@ int cloneFileDescriptors(uint64_t fs, uint64_t parentTaskId,
     return static_cast<int>(count);
 }
 
-bool createFile(uint64_t fs, const char* path) {
+static bool createFile(uint64_t fs, const char* path) {
     IpcMessage request{};
     request.type = static_cast<uint64_t>(FsRequest::Create);
-    setPath(request, path);
+    FileSupport::setPath(request, path);
     IpcMessage reply{};
     return callService(fs, request, reply) == 0 && reply.data[0] == 0;
 }
 
-bool makeDirectory(uint64_t fs, const char* path) {
+static bool makeDirectory(uint64_t fs, const char* path) {
     IpcMessage request{};
     request.type = static_cast<uint64_t>(FsRequest::MakeDirectory);
-    setPath(request, path);
+    FileSupport::setPath(request, path);
     IpcMessage reply{};
     return callService(fs, request, reply) == 0 && reply.data[0] == 0;
 }
 
-bool removePath(uint64_t fs, const char* path) {
+static bool removePath(uint64_t fs, const char* path) {
     IpcMessage request{};
     request.type = static_cast<uint64_t>(FsRequest::Remove);
-    setPath(request, path);
+    FileSupport::setPath(request, path);
     IpcMessage reply{};
     return callService(fs, request, reply) == 0 && reply.data[0] == 0;
 }
 
-bool truncateFile(uint64_t fs, const char* path) {
+static bool truncateFile(uint64_t fs, const char* path) {
     IpcMessage request{};
     request.type = static_cast<uint64_t>(FsRequest::Truncate);
-    setPath(request, path);
+    FileSupport::setPath(request, path);
     IpcMessage reply{};
     return callService(fs, request, reply) == 0 && reply.data[0] == 0;
 }
 
-bool linkFile(uint64_t fs, const char* existing, const char* newPath) {
+static bool linkFile(uint64_t fs, const char* existing, const char* newPath) {
     IpcMessage request{};
     request.type = static_cast<uint64_t>(FsRequest::Link);
-    copyString(reinterpret_cast<char*>(request.data), existing, 384);
-    copyString(reinterpret_cast<char*>(request.data) + 384, newPath, 384);
+    Runtime::copyString(reinterpret_cast<char*>(request.data), existing, 384);
+    Runtime::copyString(reinterpret_cast<char*>(request.data) + 384, newPath, 384);
     request.length = 96;
     IpcMessage reply{};
     return callService(fs, request, reply) == 0 && reply.data[0] == 0;
 }
 
-bool changeFileMode(uint64_t fs, const char* path, uint32_t mode) {
+static bool changeFileMode(uint64_t fs, const char* path, uint32_t mode) {
     IpcMessage request{};
     request.type = static_cast<uint64_t>(FsRequest::ChangeMode);
-    copyString(reinterpret_cast<char*>(request.data), path, 384);
+    Runtime::copyString(reinterpret_cast<char*>(request.data), path, 384);
     request.data[48] = mode;
     request.length = 49;
     IpcMessage reply{};
     return callService(fs, request, reply) == 0 && reply.data[0] == 0;
 }
 
-bool changeFileOwner(uint64_t fs, const char* path, uint32_t uid,
+static bool changeFileOwner(uint64_t fs, const char* path, uint32_t uid,
                      uint32_t gid) {
     IpcMessage request{};
     request.type = static_cast<uint64_t>(FsRequest::ChangeOwner);
-    copyString(reinterpret_cast<char*>(request.data), path, 384);
+    Runtime::copyString(reinterpret_cast<char*>(request.data), path, 384);
     request.data[48] = uid;
     request.data[49] = gid;
     request.length = 50;
@@ -281,11 +290,11 @@ bool changeFileOwner(uint64_t fs, const char* path, uint32_t uid,
     return callService(fs, request, reply) == 0 && reply.data[0] == 0;
 }
 
-bool changeFileTimes(uint64_t fs, const char* path, uint64_t accessTime,
+static bool changeFileTimes(uint64_t fs, const char* path, uint64_t accessTime,
                      uint64_t modificationTime) {
     IpcMessage request{};
     request.type = static_cast<uint64_t>(FsRequest::ChangeTimes);
-    copyString(reinterpret_cast<char*>(request.data), path, 384);
+    Runtime::copyString(reinterpret_cast<char*>(request.data), path, 384);
     request.data[48] = accessTime;
     request.data[49] = modificationTime;
     request.length = 50;
@@ -293,11 +302,11 @@ bool changeFileTimes(uint64_t fs, const char* path, uint64_t accessTime,
     return callService(fs, request, reply) == 0 && reply.data[0] == 0;
 }
 
-bool readDirectory(uint64_t fs, const char* path, uint64_t index,
+static bool readDirectory(uint64_t fs, const char* path, uint64_t index,
                    DirectoryEntry& entry) {
     IpcMessage request{};
     request.type = static_cast<uint64_t>(FsRequest::ReadDirectory);
-    setPath(request, path);
+    FileSupport::setPath(request, path);
     request.data[48] = index;
     request.length = 49;
     IpcMessage reply{};
@@ -305,12 +314,12 @@ bool readDirectory(uint64_t fs, const char* path, uint64_t index,
         return false;
     }
     entry.type = static_cast<FileType>(reply.data[1]);
-    copyString(entry.name, reinterpret_cast<const char*>(&reply.data[2]),
+    Runtime::copyString(entry.name, reinterpret_cast<const char*>(&reply.data[2]),
                sizeof(entry.name));
     return true;
 }
 
-int64_t readDirectoryBatch(uint64_t fs, const char* path, uint64_t index,
+static int64_t readDirectoryBatch(uint64_t fs, const char* path, uint64_t index,
                            DirectoryEntry* entries, size_t capacity) {
     constexpr size_t maximumEntries =
         (ipcDataWordCount - 2) * sizeof(uint64_t) / sizeof(DirectoryEntry);
@@ -320,7 +329,7 @@ int64_t readDirectoryBatch(uint64_t fs, const char* path, uint64_t index,
     if (capacity > maximumEntries) capacity = maximumEntries;
     IpcMessage request{};
     request.type = static_cast<uint64_t>(FsRequest::ReadDirectoryBatch);
-    setPath(request, path);
+    FileSupport::setPath(request, path);
     request.data[48] = index;
     request.data[49] = capacity;
     request.length  = 50;
@@ -343,27 +352,27 @@ int64_t readDirectoryBatch(uint64_t fs, const char* path, uint64_t index,
     return static_cast<int64_t>(count);
 }
 
-bool mountFileSystem(uint64_t fs, const char* device, const char* target,
+static bool mountFileSystem(uint64_t fs, const char* device, const char* target,
                      const char* type) {
     IpcMessage request{};
     request.type = static_cast<uint64_t>(FsRequest::Mount);
-    copyString(reinterpret_cast<char*>(request.data), device, 64);
-    copyString(reinterpret_cast<char*>(request.data) + 64, target, 64);
-    copyString(reinterpret_cast<char*>(request.data) + 128, type, 16);
+    Runtime::copyString(reinterpret_cast<char*>(request.data), device, 64);
+    Runtime::copyString(reinterpret_cast<char*>(request.data) + 64, target, 64);
+    Runtime::copyString(reinterpret_cast<char*>(request.data) + 128, type, 16);
     request.length = 18;
     IpcMessage reply{};
     return callService(fs, request, reply) == 0 && reply.data[0] == 0;
 }
 
-bool unmountFileSystem(uint64_t fs, const char* target) {
+static bool unmountFileSystem(uint64_t fs, const char* target) {
     IpcMessage request{};
     request.type = static_cast<uint64_t>(FsRequest::Unmount);
-    setPath(request, target);
+    FileSupport::setPath(request, target);
     IpcMessage reply{};
     return callService(fs, request, reply) == 0 && reply.data[0] == 0;
 }
 
-bool listMount(uint64_t fs, uint32_t index, MountInfo& info) {
+static bool listMount(uint64_t fs, uint32_t index, MountInfo& info) {
     IpcMessage request{};
     request.type    = static_cast<uint64_t>(FsRequest::ListMounts);
     request.data[0] = index;
@@ -372,26 +381,27 @@ bool listMount(uint64_t fs, uint32_t index, MountInfo& info) {
     if (callService(fs, request, reply) != 0 || reply.data[0] != 0) {
         return false;
     }
-    copyString(info.device, reinterpret_cast<const char*>(&reply.data[1]),
+    Runtime::copyString(info.device, reinterpret_cast<const char*>(&reply.data[1]),
                sizeof(info.device));
-    copyString(info.target, reinterpret_cast<const char*>(&reply.data[9]),
+    Runtime::copyString(info.target, reinterpret_cast<const char*>(&reply.data[9]),
                sizeof(info.target));
-    copyString(info.type, reinterpret_cast<const char*>(&reply.data[17]),
+    Runtime::copyString(info.type, reinterpret_cast<const char*>(&reply.data[17]),
                sizeof(info.type));
     info.readOnly = reply.data[19] != 0;
     return true;
 }
 
-bool formatFileSystem(uint64_t fs, const char* device, const char* type) {
+static bool formatFileSystem(uint64_t fs, const char* device, const char* type) {
     IpcMessage request{};
     request.type = static_cast<uint64_t>(FsRequest::Format);
-    copyString(reinterpret_cast<char*>(request.data), device, 64);
-    copyString(reinterpret_cast<char*>(request.data) + 64, type, 16);
+    Runtime::copyString(reinterpret_cast<char*>(request.data), device, 64);
+    Runtime::copyString(reinterpret_cast<char*>(request.data) + 64, type, 16);
     request.length = 10;
     IpcMessage reply{};
     return callService(fs, request, reply) == 0 && reply.data[0] == 0;
 }
 
+};
 }  // namespace os
 
 #pragma GCC visibility pop
@@ -408,34 +418,34 @@ File& File::operator=(File&& other) noexcept {
     if (ownsService_ && service_) closeHandle(service_);
     service_=other.service_; handle_=other.handle_; flags_=other.flags_; error_=other.error_;
     metadata_=other.metadata_; metadataValid_=other.metadataValid_; backend_=other.backend_;
-    copyString(path_,other.path_,sizeof(path_)); ownsHandle_=other.ownsHandle_; ownsService_=other.ownsService_;
+    Runtime::copyString(path_,other.path_,sizeof(path_)); ownsHandle_=other.ownsHandle_; ownsService_=other.ownsService_;
     other.service_=other.handle_=0; other.ownsHandle_=other.ownsService_=false;
     return *this;
 }
 uint64_t File::service() {
-    if (!service_) { service_=lookupService(serviceRegistry(),fsServiceName,1000); ownsService_=service_!=0; }
+    if (!service_) { service_=ServiceRegistry::lookupService(ServiceRegistry::serviceRegistry(),fsServiceName,1000); ownsService_=service_!=0; }
     return service_;
 }
 File File::borrow(uint64_t fs, uint64_t handle, const char* path, int flags) {
     File result(fs); result.handle_=handle; result.flags_=flags;
-    if (path) copyString(result.path_,path,sizeof(result.path_));
+    if (path) Runtime::copyString(result.path_,path,sizeof(result.path_));
     return result;
 }
 int File::open(const char* path, int flags, mode_t mode) {
     if (!path) return error_=-EFAULT;
     if (!*path) return error_=-ENOENT;
-    if (stringLength(path)>=sizeof(path_)) return error_=-ENAMETOOLONG;
+    if (Runtime::stringLength(path)>=sizeof(path_)) return error_=-ENAMETOOLONG;
     if ((flags&O_ACCMODE)>O_RDWR) return error_=-EINVAL;
     if (ownsHandle_ && close()) return error_;
     if (!service()) return error_=-ENODEV;
     if (refresh(path)==0 && (flags&O_DIRECTORY) && getType()!=FileType::Directory) return error_=-ENOTDIR;
     IpcMessage request{},reply{};
-    request.type=static_cast<uint64_t>(FsRequest::Open); setPath(request,path);
+    request.type=static_cast<uint64_t>(FsRequest::Open); FileSupport::setPath(request,path);
     request.data[48]=static_cast<uint64_t>(flags); request.data[49]=mode; request.length=50;
     if (callService(service_,request,reply) || !reply.data[0])
         return error_=reply.length>1 && static_cast<int64_t>(reply.data[1])<0 ? static_cast<int>(reply.data[1]) : -EIO;
     handle_=reply.data[0]; flags_=flags; ownsHandle_=true; metadataValid_=false;
-    copyString(path_,path,sizeof(path_)); return error_=0;
+    Runtime::copyString(path_,path,sizeof(path_)); return error_=0;
 }
 int File::close() {
     if (backend_!=Backend::Filesystem) {
@@ -443,7 +453,7 @@ int File::close() {
         return error_=success?0:-EIO;
     }
     if (!handle_) return error_=-EBADF;
-    if (!detail::closeFile(service(),handle_)) return error_=-EIO;
+    if (!FileProtocol::closeFile(service(),handle_)) return error_=-EIO;
     handle_=0; ownsHandle_=false; metadataValid_=false; return error_=0;
 }
 ssize_t File::read(void* buffer, size_t size) {
@@ -451,23 +461,23 @@ ssize_t File::read(void* buffer, size_t size) {
     if (!buffer) return -EFAULT;
     if (backend_!=Backend::Filesystem) {
         if ((flags_&O_ACCMODE)==O_WRONLY) return -EBADF;
-        if (backend_==Backend::Pipe) return posixResult(readPipe(handle_,buffer,size));
-        if (backend_==Backend::Terminal) return posixResult(readTerminal(buffer,size));
+        if (backend_==Backend::Pipe) return FileSupport::posixResult(Pipe::readPipe(handle_,buffer,size));
+        if (backend_==Backend::Terminal) return FileSupport::posixResult(Terminal::read(buffer,size));
         return -EINVAL;
     }
     if (!handle_ || (flags_&O_ACCMODE)==O_WRONLY) return error_=-EBADF;
     if (!size) return 0;
     if (getType()==FileType::Directory) return error_=-EISDIR;
     if (!buffer) return error_=-EFAULT;
-    return posixResult(detail::readFile(service(),handle_,buffer,size));
+    return FileSupport::posixResult(FileProtocol::readFile(service(),handle_,buffer,size));
 }
 ssize_t File::write(const void* buffer, size_t size) {
     if (!size) return 0;
     if (!buffer) return -EFAULT;
     if (backend_!=Backend::Filesystem) {
         if ((flags_&O_ACCMODE)==O_RDONLY) return -EBADF;
-        if (backend_==Backend::Pipe) return posixResult(writePipe(handle_,buffer,size));
-        if (backend_==Backend::Terminal) return posixResult(writeTerminal(buffer,size));
+        if (backend_==Backend::Pipe) return FileSupport::posixResult(Pipe::writePipe(handle_,buffer,size));
+        if (backend_==Backend::Terminal) return FileSupport::posixResult(Terminal::write(buffer,size));
         return -EINVAL;
     }
     if (!handle_ || (flags_&O_ACCMODE)==O_RDONLY) return error_=-EBADF;
@@ -475,7 +485,7 @@ ssize_t File::write(const void* buffer, size_t size) {
     if (getType()==FileType::Directory) return error_=-EISDIR;
     if (!buffer) return error_=-EFAULT;
     if ((flags_&O_APPEND) && lseek(0,2)<0) return error_;
-    const ssize_t count=posixResult(detail::writeFile(service(),handle_,buffer,size)); metadataValid_=false; return count;
+    const ssize_t count=FileSupport::posixResult(FileProtocol::writeFile(service(),handle_,buffer,size)); metadataValid_=false; return count;
 }
 ssize_t File::transfer(void* buffer, size_t size, off_t offset, bool writing) {
     if (backend_!=Backend::Filesystem) return -ESPIPE;
@@ -487,12 +497,12 @@ ssize_t File::transfer(void* buffer, size_t size, off_t offset, bool writing) {
         const size_t chunk=size-total<maximum?size-total:maximum;
         IpcMessage request{},reply{}; request.type=static_cast<uint64_t>(writing?FsRequest::WriteAt:FsRequest::ReadAt);
         request.data[0]=handle_; request.data[1]=offset+total; request.data[2]=chunk; request.length=3;
-        if (writing) { copyBytes(&request.data[3],static_cast<unsigned char*>(buffer)+total,chunk); request.length+=(chunk+7)/8; }
+        if (writing) { Runtime::copyBytes(&request.data[3],static_cast<unsigned char*>(buffer)+total,chunk); request.length+=(chunk+7)/8; }
         if (callService(service(),request,reply)) return total?static_cast<ssize_t>(total):static_cast<ssize_t>(-EIO);
         const int64_t count=static_cast<int64_t>(reply.data[0]);
         if (count<0 || static_cast<uint64_t>(count)>chunk || (!writing && reply.length<1+(count+7)/8))
             return total?static_cast<ssize_t>(total):static_cast<ssize_t>(-EIO);
-        if (!writing) copyBytes(static_cast<unsigned char*>(buffer)+total,&reply.data[1],count);
+        if (!writing) Runtime::copyBytes(static_cast<unsigned char*>(buffer)+total,&reply.data[1],count);
         total+=count; if (static_cast<size_t>(count)<chunk) break;
     }
     if (writing) metadataValid_=false;
@@ -503,7 +513,7 @@ ssize_t File::pwrite(const void* buffer,size_t size,off_t offset) { return trans
 off_t File::lseek(off_t offset,int whence) {
     if (backend_!=Backend::Filesystem) return -ESPIPE;
     if (!handle_) return error_=-EBADF;
-    return posixResult(detail::seekFilePosition(service(),handle_,offset,whence));
+    return FileSupport::posixResult(FileProtocol::seekFilePosition(service(),handle_,offset,whence));
 }
 int File::refresh(const char* path) {
     if (backend_!=Backend::Filesystem) {
@@ -513,11 +523,11 @@ int File::refresh(const char* path) {
     }
     IpcMessage request{},reply{};
     if (path) {
-        if (!*path || stringLength(path)>=sizeof(path_)) return error_=-ENAMETOOLONG;
-        copyString(path_,path,sizeof(path_));
+        if (!*path || Runtime::stringLength(path)>=sizeof(path_)) return error_=-ENAMETOOLONG;
+        Runtime::copyString(path_,path,sizeof(path_));
     }
     if (handle_ && !path) { request.type=static_cast<uint64_t>(FsRequest::Fstat); request.data[0]=handle_; request.length=1; }
-    else { if (!*path_) return error_=-ENOENT; request.type=static_cast<uint64_t>(FsRequest::Stat); setPath(request,path_); }
+    else { if (!*path_) return error_=-ENOENT; request.type=static_cast<uint64_t>(FsRequest::Stat); FileSupport::setPath(request,path_); }
     if (!service() || callService(service_,request,reply) || reply.data[0]) { metadataValid_=false; return error_=-ENOENT; }
     metadata_.type=static_cast<FileType>(reply.data[1]); metadata_.size=reply.data[2]; metadata_.mode=reply.data[3];
     metadata_.inode=reply.data[4]; metadata_.links=reply.data[5]; metadata_.uid=reply.data[6]; metadata_.gid=reply.data[7];
@@ -525,10 +535,10 @@ int File::refresh(const char* path) {
     metadata_.device=reply.length>=13?reply.data[11]:0; metadata_.specialDevice=reply.length>=13?reply.data[12]:0;
     metadataValid_=true; return error_=0;
 }
-int File::chmod(mode_t mode) { metadataValid_=false; return detail::changeFileMode(service(),path_,mode)?0:-EACCES; }
-int File::chown(uid_t uid,gid_t gid) { metadataValid_=false; return detail::changeFileOwner(service(),path_,uid,gid)?0:-EPERM; }
+int File::chmod(mode_t mode) { metadataValid_=false; return FileProtocol::changeFileMode(service(),path_,mode)?0:-EACCES; }
+int File::chown(uid_t uid,gid_t gid) { metadataValid_=false; return FileProtocol::changeFileOwner(service(),path_,uid,gid)?0:-EPERM; }
 int File::utimens(const timespec times[2]) {
-    const uint64_t now=getWallClockTime()/1000000000ULL;
+    const uint64_t now=Clock::getWallClockTime()/1000000000ULL;
     uint64_t values[2];
     for (unsigned i=0;i<2;++i) {
         if (!times || times[i].tv_nsec==UTIME_NOW) values[i]=now;
@@ -542,35 +552,35 @@ int File::utimens(const timespec times[2]) {
         if(values[i]>UINT32_MAX) return -EOVERFLOW;
     }
     metadataValid_=false;
-    return detail::changeFileTimes(service(),path_,values[0],values[1])?0:-EIO;
+    return FileProtocol::changeFileTimes(service(),path_,values[0],values[1])?0:-EIO;
 }
 int File::mkdir(const char* path,mode_t mode) {
-    if (!detail::makeDirectory(service(),path)) return -EIO;
-    return detail::changeFileMode(service(),path,mode)?0:-EIO;
+    if (!FileProtocol::makeDirectory(service(),path)) return -EIO;
+    return FileProtocol::changeFileMode(service(),path,mode)?0:-EIO;
 }
-int File::unlink(const char* path) { return detail::removePath(service(),path)?0:-EIO; }
+int File::unlink(const char* path) { return FileProtocol::removePath(service(),path)?0:-EIO; }
 int File::rmdir(const char* path) { return unlink(path); }
-int File::truncate(const char* path,off_t length) { if (length<0) return -EINVAL; if (length) return -ENOSYS; return detail::truncateFile(service(),path)?0:-EIO; }
+int File::truncate(const char* path,off_t length) { if (length<0) return -EINVAL; if (length) return -ENOSYS; return FileProtocol::truncateFile(service(),path)?0:-EIO; }
 int File::ftruncate(off_t length) { metadataValid_=false; return handle_?truncate(path_,length):-EBADF; }
 int File::fsync() { return handle_?-ENOSYS:-EBADF; }
-int File::link(const char* existing,const char* target) { return detail::linkFile(service(),existing,target)?0:-EIO; }
+int File::link(const char* existing,const char* target) { return FileProtocol::linkFile(service(),existing,target)?0:-EIO; }
 int File::rename(const char* existing,const char* target) {
-    if (!existing || !target || stringLength(existing)>=384 || stringLength(target)>=384) return -EINVAL;
+    if (!existing || !target || Runtime::stringLength(existing)>=384 || Runtime::stringLength(target)>=384) return -EINVAL;
     IpcMessage request{},reply{}; request.type=static_cast<uint64_t>(FsRequest::Rename);
-    copyString(reinterpret_cast<char*>(request.data),existing,384); copyString(reinterpret_cast<char*>(request.data)+384,target,384); request.length=96;
+    Runtime::copyString(reinterpret_cast<char*>(request.data),existing,384); Runtime::copyString(reinterpret_cast<char*>(request.data)+384,target,384); request.length=96;
     return callService(service(),request,reply)==0 && !reply.data[0]?0:-EIO;
 }
 int File::mount(const char* source,const char* target,const char* type,unsigned long flags,const void* data) {
     if (flags || data) return -ENOTSUP;
-    return detail::mountFileSystem(service(),source,target,type)?0:-EIO;
+    return FileProtocol::mountFileSystem(service(),source,target,type)?0:-EIO;
 }
-int File::umount(const char* target) { return detail::unmountFileSystem(service(),target)?0:-EIO; }
-bool File::listMount(uint32_t index,MountInfo& info) { return detail::listMount(service(),index,info); }
-int File::format(const char* device,const char* type) { return detail::formatFileSystem(service(),device,type)?0:-EIO; }
-bool File::readDirectory(const char* path,uint64_t index,DirectoryEntry& entry) { return detail::readDirectory(service(),path,index,entry); }
-ssize_t File::readDirectoryBatch(const char* path,uint64_t index,DirectoryEntry* entries,size_t count) { return detail::readDirectoryBatch(service(),path,index,entries,count); }
-int File::cloneDescriptors(uint64_t parent,uint64_t* oldHandles,uint64_t* newHandles,size_t capacity) { return detail::cloneFileDescriptors(service(),parent,oldHandles,newHandles,capacity); }
-bool File::readAsync(uint64_t offset,size_t size,uint64_t endpoint,uint64_t requestId) { return detail::readFileAsync(service(),handle_,offset,size,endpoint,requestId); }
-bool File::writeAsync(uint64_t offset,const void* data,size_t size,uint64_t endpoint,uint64_t requestId) { return detail::writeFileAsync(service(),handle_,offset,data,size,endpoint,requestId); }
-bool File::waitOperation(uint64_t endpoint,FileOperationResult& result,void* buffer,size_t capacity) { return detail::waitFileOperation(endpoint,result,buffer,capacity); }
+int File::umount(const char* target) { return FileProtocol::unmountFileSystem(service(),target)?0:-EIO; }
+bool File::listMount(uint32_t index,MountInfo& info) { return FileProtocol::listMount(service(),index,info); }
+int File::format(const char* device,const char* type) { return FileProtocol::formatFileSystem(service(),device,type)?0:-EIO; }
+bool File::readDirectory(const char* path,uint64_t index,DirectoryEntry& entry) { return FileProtocol::readDirectory(service(),path,index,entry); }
+ssize_t File::readDirectoryBatch(const char* path,uint64_t index,DirectoryEntry* entries,size_t count) { return FileProtocol::readDirectoryBatch(service(),path,index,entries,count); }
+int File::cloneDescriptors(uint64_t parent,uint64_t* oldHandles,uint64_t* newHandles,size_t capacity) { return FileProtocol::cloneFileDescriptors(service(),parent,oldHandles,newHandles,capacity); }
+bool File::readAsync(uint64_t offset,size_t size,uint64_t endpoint,uint64_t requestId) { return FileProtocol::readFileAsync(service(),handle_,offset,size,endpoint,requestId); }
+bool File::writeAsync(uint64_t offset,const void* data,size_t size,uint64_t endpoint,uint64_t requestId) { return FileProtocol::writeFileAsync(service(),handle_,offset,data,size,endpoint,requestId); }
+bool File::waitOperation(uint64_t endpoint,FileOperationResult& result,void* buffer,size_t capacity) { return FileProtocol::waitFileOperation(endpoint,result,buffer,capacity); }
 }  // namespace os

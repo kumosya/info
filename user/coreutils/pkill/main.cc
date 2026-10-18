@@ -15,7 +15,7 @@ int main(int argc, char** argv) {
     int result = 0;
     for (uint32_t i = 0;; ++i) {
         os::TaskListEntry task{};
-        if (!os::listTask(i, task)) break;
+        if (!os::Process::listTask(i, task)) break;
         if (task.id == static_cast<uint64_t>(getpid()) || task.state == 2) continue;
         const char* name = strrchr(task.name, '/'); name = name ? name + 1 : task.name;
         bool match = false;

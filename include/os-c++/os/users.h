@@ -16,16 +16,16 @@ struct UserCredentials {
 class UserClient {
    public:
     static int request(UserOperation operation, const UserCredentials& credentials, UserProfile& profile) {
-        const uint64_t service = lookupService(serviceRegistry(), "users", 2000);
+        const uint64_t service = ServiceRegistry::lookupService(ServiceRegistry::serviceRegistry(), "users", 2000);
         if (!service) return -1;
         IpcMessage request{}, reply{};
         request.type = static_cast<uint64_t>(operation);
-        copyBytes(request.data, &credentials, sizeof(credentials));
+        Runtime::copyBytes(request.data, &credentials, sizeof(credentials));
         request.length = (sizeof(credentials) + 7) / 8;
         const int status = callService(service, request, reply);
         closeHandle(service);
         if (status || reply.length < 1 || reply.data[0]) return -1;
-        if (reply.length >= 1 + (sizeof(profile) + 7) / 8) copyBytes(&profile, &reply.data[1], sizeof(profile));
+        if (reply.length >= 1 + (sizeof(profile) + 7) / 8) Runtime::copyBytes(&profile, &reply.data[1], sizeof(profile));
         return 0;
     }
 };

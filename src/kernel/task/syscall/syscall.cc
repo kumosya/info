@@ -12,6 +12,8 @@
 #include "kernel/task.h"
 #include "kernel/thread.h"
 #include "kernel/time.h"
+#include "kernel/services.h"
+#include "kernel/core_service.h"
 #include "os/pci.h"
 
 namespace {
@@ -162,10 +164,9 @@ uint64_t protectUserMemory(uint64_t address, uint64_t size,
     return 0;
 }
 
-kernel::Endpoint* resolveEndpoint(uint64_t handle, uint32_t rights) {
-    return static_cast<kernel::Endpoint*>(
-        kernel::task::getCurrent()->handles().get(
-            handle, kernel::HandleType::Endpoint, rights));
+kernel::HandleTable::Pin resolveEndpoint(uint64_t handle, uint32_t rights) {
+    return kernel::HandleTable::Pin(kernel::task::getCurrent()->handles(), handle,
+                                    kernel::HandleType::Endpoint, rights);
 }
 
 }  // namespace
@@ -298,24 +299,25 @@ uint64_t handleCreateEndpoint(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
 }
 
 uint64_t handleSendMessage(uint64_t endpointHandle, uint64_t userMessage,
-                           uint64_t, uint64_t, uint64_t, uint64_t) {
-    Endpoint* endpoint = resolveEndpoint(endpointHandle, handleRightWrite);
+                           uint64_t deadline, uint64_t cancelThreadId, uint64_t, uint64_t) {
+    auto endpointPin = resolveEndpoint(endpointHandle, !userMessage && cancelThreadId ? 0 : handleRightWrite);
+    Endpoint* endpoint = endpointPin.as<Endpoint>();
     IpcMessage message{};
     if (endpoint == nullptr) {
         return error(SyscallError::InvalidHandle);
     }
+    if (!userMessage && cancelThreadId) return endpoint->cancel(cancelThreadId);
     if (!copyFromUser(&message, reinterpret_cast<const void*>(userMessage),
                       sizeof(message))) {
         return error(SyscallError::InvalidArgument);
     }
-    return endpoint->send(&message) == 0
-               ? 0
-               : error(SyscallError::PermissionDenied);
+    return static_cast<uint64_t>(endpoint->send(&message, deadline));
 }
 
 uint64_t handleReceiveMessage(uint64_t endpointHandle, uint64_t userMessage,
-                              uint64_t, uint64_t, uint64_t, uint64_t) {
-    Endpoint* endpoint = resolveEndpoint(endpointHandle, handleRightRead);
+                              uint64_t deadline, uint64_t, uint64_t, uint64_t) {
+    auto endpointPin = resolveEndpoint(endpointHandle, handleRightRead);
+    Endpoint* endpoint = endpointPin.as<Endpoint>();
     IpcMessage message{};
     Task* task = task::getCurrent();
     if (endpoint == nullptr) {
@@ -326,18 +328,17 @@ uint64_t handleReceiveMessage(uint64_t endpointHandle, uint64_t userMessage,
                                     userMessage, sizeof(message), true)) {
         return error(SyscallError::InvalidArgument);
     }
-    if (endpoint->receive(&message) != 0) {
-        return error(SyscallError::PermissionDenied);
-    }
-    return copyToUser(reinterpret_cast<void*>(userMessage), &message,
-                      sizeof(message))
-               ? 0
-               : error(SyscallError::InvalidArgument);
+    const int result = endpoint->receive(&message, deadline);
+    if (result) return static_cast<uint64_t>(result);
+    if (copyToUser(reinterpret_cast<void*>(userMessage), &message, sizeof(message))) return 0;
+    for (uint32_t i = 0; i < message.handleCount; ++i) task->handles().close(message.handles[i]);
+    return error(SyscallError::InvalidArgument);
 }
 
 uint64_t handleCallService(uint64_t endpointHandle, uint64_t userRequest,
-                           uint64_t userReply, uint64_t, uint64_t, uint64_t) {
-    Endpoint* endpoint = resolveEndpoint(endpointHandle, handleRightWrite);
+                           uint64_t userReply, uint64_t deadline, uint64_t, uint64_t) {
+    auto endpointPin = resolveEndpoint(endpointHandle, handleRightWrite);
+    Endpoint* endpoint = endpointPin.as<Endpoint>();
     IpcMessage request{};
     IpcMessage reply{};
     Task* task = task::getCurrent();
@@ -351,17 +352,17 @@ uint64_t handleCallService(uint64_t endpointHandle, uint64_t userRequest,
                                     userReply, sizeof(reply), true)) {
         return error(SyscallError::InvalidArgument);
     }
-    if (endpoint->call(&request, &reply) != 0) {
-        return error(SyscallError::PermissionDenied);
-    }
-    return copyToUser(reinterpret_cast<void*>(userReply), &reply, sizeof(reply))
-               ? 0
-               : error(SyscallError::InvalidArgument);
+    const int result = endpoint->call(&request, &reply, deadline);
+    if (result) return static_cast<uint64_t>(result);
+    if (copyToUser(reinterpret_cast<void*>(userReply), &reply, sizeof(reply))) return 0;
+    for (uint32_t i = 0; i < reply.handleCount; ++i) task->handles().close(reply.handles[i]);
+    return error(SyscallError::InvalidArgument);
 }
 
 uint64_t handleReplyMessage(uint64_t endpointHandle, uint64_t userReply,
                             uint64_t, uint64_t, uint64_t, uint64_t) {
-    Endpoint* endpoint = resolveEndpoint(endpointHandle, handleRightRead);
+    auto endpointPin = resolveEndpoint(endpointHandle, handleRightRead);
+    Endpoint* endpoint = endpointPin.as<Endpoint>();
     IpcMessage reply{};
     if (endpoint == nullptr) {
         return error(SyscallError::InvalidHandle);
@@ -370,8 +371,7 @@ uint64_t handleReplyMessage(uint64_t endpointHandle, uint64_t userReply,
                       sizeof(reply))) {
         return error(SyscallError::InvalidArgument);
     }
-    return endpoint->reply(&reply) == 0 ? 0
-                                        : error(SyscallError::PermissionDenied);
+    return static_cast<uint64_t>(endpoint->reply(&reply));
 }
 
 uint64_t elfLoadError(ElfLoadError loadError) {
@@ -390,638 +390,52 @@ uint64_t elfLoadError(ElfLoadError loadError) {
     }
 }
 
-uint64_t handleSpawnProgram(uint64_t program, uint64_t bootstrapHandle,
-                            uint64_t argumentCount, uint64_t userArguments,
-                            uint64_t, uint64_t) {
-    constexpr uint32_t maximumArgumentCount  = 64;
-    constexpr uint32_t maximumArgumentLength = 383;
-    Task* parent                             = task::getCurrent();
-    if (parent == nullptr || !parent->hasCapability(taskCapabilitySpawn)) {
-        return error(SyscallError::PermissionDenied);
-    }
-    if (program >= static_cast<uint64_t>(os::ProgramId::Count)) {
-        return error(SyscallError::InvalidArgument);
-    }
-    if (argumentCount > maximumArgumentCount ||
-        (argumentCount != 0 && userArguments == 0)) {
-        return error(SyscallError::InvalidArgument);
-    }
-    uint64_t userPointers[maximumArgumentCount]{};
-    char argumentStorage[maximumArgumentCount][maximumArgumentLength + 1]{};
-    const char* arguments[maximumArgumentCount]{};
-    if (argumentCount != 0 &&
-        !copyFromUser(userPointers,
-                      reinterpret_cast<const void*>(userArguments),
-                      argumentCount * sizeof(uint64_t))) {
-        return error(SyscallError::InvalidArgument);
-    }
-    for (uint32_t index = 0; index < argumentCount; ++index) {
-        bool terminated = false;
-        for (uint32_t byte = 0; byte <= maximumArgumentLength; ++byte) {
-            if (!copyFromUser(
-                    &argumentStorage[index][byte],
-                    reinterpret_cast<const void*>(userPointers[index] + byte),
-                    1)) {
-                return error(SyscallError::InvalidArgument);
-            }
-            if (argumentStorage[index][byte] == '\0') {
-                terminated = true;
-                break;
-            }
-        }
-        if (!terminated) {
-            return error(SyscallError::InvalidArgument);
-        }
-        arguments[index] = argumentStorage[index];
-    }
-    ElfLoadError loadError = ElfLoadError::None;
-    Task* child            = UserProgramLoader::load(
-        static_cast<os::ProgramId>(program), parent, bootstrapHandle,
-        static_cast<uint32_t>(argumentCount), arguments, &loadError);
-    if (child == nullptr) {
-        serial::serialWrite("[ELF] dynamic image load failed: ");
-        serial::serialWrite(ElfLoader::errorName(loadError));
-        serial::serialWrite("\n");
-        return elfLoadError(loadError);
-    }
-    const uint64_t handle = parent->handles().add(
-        child, HandleType::Task, handleRightRead | handleRightManage);
-    return handle == 0 ? error(SyscallError::OutOfMemory) : handle;
-}
-
-uint64_t handleSpawnImage(uint64_t userInfo, uint64_t, uint64_t, uint64_t,
-                          uint64_t, uint64_t) {
-    constexpr uint32_t maximumArgumentCount    = 64;
-    constexpr uint32_t maximumArgumentLength   = 383;
-    constexpr uint32_t maximumNameLength       = 63;
-    constexpr uint32_t maximumSharedImageCount = 4;
-    constexpr uint64_t maximumImageSize        = 8ULL * 1024 * 1024;
-    Task* parent                               = task::getCurrent();
-    os::SpawnImageInfo info{};
-    if (parent == nullptr || !parent->hasCapability(taskCapabilitySpawn) ||
-        !copyFromUser(&info, reinterpret_cast<const void*>(userInfo),
-                      sizeof(info)) ||
-        info.image == nullptr || info.imageSize == 0 ||
-        info.imageSize > maximumImageSize || info.name == nullptr ||
-        info.argumentCount > maximumArgumentCount ||
-        info.sharedImageCount > maximumSharedImageCount ||
-        (info.argumentCount != 0 && info.arguments == nullptr) ||
-        (info.sharedImageCount != 0 && info.sharedImages == nullptr) ||
-        (info.capabilities & ~(taskCapabilityDisplay | taskCapabilityUsers)) != 0 ||
-        !memory::validateUserMemory(
-            parent->addressSpace().rootPhysicalAddress(),
-            reinterpret_cast<uint64_t>(info.image), info.imageSize, false)) {
-        return error(SyscallError::InvalidArgument);
-    }
-
-    os::SharedImageInfo userSharedImages[maximumSharedImageCount]{};
-    ElfSharedImage sharedImages[maximumSharedImageCount]{};
-    if (info.sharedImageCount != 0 &&
-        !copyFromUser(userSharedImages, info.sharedImages,
-                      info.sharedImageCount * sizeof(os::SharedImageInfo))) {
-        return error(SyscallError::InvalidArgument);
-    }
-    for (uint32_t index = 0; index < info.sharedImageCount; ++index) {
-        if (userSharedImages[index].image == nullptr ||
-            userSharedImages[index].imageSize == 0 ||
-            userSharedImages[index].imageSize > maximumImageSize ||
-            !memory::validateUserMemory(
-                parent->addressSpace().rootPhysicalAddress(),
-                reinterpret_cast<uint64_t>(userSharedImages[index].image),
-                userSharedImages[index].imageSize, false)) {
-            return error(SyscallError::InvalidArgument);
-        }
-        sharedImages[index] = {
-            reinterpret_cast<uint64_t>(userSharedImages[index].image),
-            userSharedImages[index].imageSize, nullptr};
-    }
-
-    Task* logicalParent = parent;
-    if (info.parentTaskId != 0) {
-        logicalParent = task::find(info.parentTaskId);
-        if (logicalParent == nullptr || logicalParent == task::getIdle() ||
-            logicalParent->isTerminated()) {
-            return error(SyscallError::InvalidArgument);
-        }
-    }
-
-    char name[maximumNameLength + 1]{};
-    bool nameTerminated = false;
-    for (uint32_t byte = 0; byte <= maximumNameLength; ++byte) {
-        if (!copyFromUser(&name[byte], info.name + byte, 1)) {
-            return error(SyscallError::InvalidArgument);
-        }
-        if (name[byte] == '\0') {
-            nameTerminated = true;
-            break;
-        }
-    }
-    if (!nameTerminated || name[0] == '\0') {
-        return error(SyscallError::InvalidArgument);
-    }
-
-    uint64_t userPointers[maximumArgumentCount]{};
-    char argumentStorage[maximumArgumentCount][maximumArgumentLength + 1]{};
-    const char* arguments[maximumArgumentCount]{};
-    if (info.argumentCount != 0 &&
-        !copyFromUser(userPointers, info.arguments,
-                      info.argumentCount * sizeof(uint64_t))) {
-        return error(SyscallError::InvalidArgument);
-    }
-    for (uint32_t index = 0; index < info.argumentCount; ++index) {
-        bool terminated = false;
-        for (uint32_t byte = 0; byte <= maximumArgumentLength; ++byte) {
-            if (!copyFromUser(
-                    &argumentStorage[index][byte],
-                    reinterpret_cast<const void*>(userPointers[index] + byte),
-                    1)) {
-                return error(SyscallError::InvalidArgument);
-            }
-            if (argumentStorage[index][byte] == '\0') {
-                terminated = true;
-                break;
-            }
-        }
-        if (!terminated) {
-            return error(SyscallError::InvalidArgument);
-        }
-        arguments[index] = argumentStorage[index];
-    }
-
-    ElfLoadError loadError = ElfLoadError::None;
-    Task* child            = UserProgramLoader::loadImage(
-        reinterpret_cast<uint64_t>(info.image), info.imageSize, name, parent,
-        logicalParent, info.bootstrapHandle, info.capabilities,
-        info.standardInputHandle, info.standardOutputHandle,
-        info.standardErrorHandle, info.argumentCount, arguments, sharedImages,
-        info.sharedImageCount, &loadError);
-    if (child == nullptr) {
-        return elfLoadError(loadError);
-    }
-    const uint64_t handle = parent->handles().add(
-        child, HandleType::Task, handleRightRead | handleRightManage);
-    return handle == 0 ? error(SyscallError::OutOfMemory) : handle;
-}
-
-uint64_t handleGetBootstrapHandle(uint64_t, uint64_t, uint64_t, uint64_t,
+uint64_t handleGetBootstrapHandle(uint64_t operation, uint64_t kind, uint64_t, uint64_t,
                                   uint64_t, uint64_t) {
+    switch (static_cast<os::BootstrapOperation>(operation)) {
+        case os::BootstrapOperation::CreateEndpoint:
+            return handleCreateEndpoint(0, 0, 0, 0, 0, 0);
+        case os::BootstrapOperation::GetCoreService:
+            return CoreServices::getHandle(*task::getCurrent(), static_cast<os::CoreServiceKind>(kind));
+        case os::BootstrapOperation::GetHandle: break;
+        default: return error(SyscallError::InvalidArgument);
+    }
     Task* task = task::getCurrent();
     return task == nullptr ? 0 : task->bootstrapHandle();
 }
 
-uint64_t handleLog(uint64_t userMessage, uint64_t length, uint64_t, uint64_t,
-                   uint64_t, uint64_t) {
-    if (length == 0 || length > 240) {
-        return error(SyscallError::InvalidArgument);
-    }
-    char message[241];
-    if (!copyFromUser(message, reinterpret_cast<const void*>(userMessage),
-                      length)) {
-        return error(SyscallError::InvalidArgument);
-    }
-    message[length] = '\0';
-    serial::serialWrite(message);
-    return 0;
-}
-
-bool hasDeviceCapability() {
-    Task* task = task::getCurrent();
-    return task != nullptr && task->isSystemService() &&
-           task->hasCapability(taskCapabilityDevice);
-}
-
-uint64_t handleCallPciService(uint64_t userRequest, uint64_t, uint64_t,
-                              uint64_t, uint64_t, uint64_t) {
-    Task* caller = task::getCurrent();
-    if (caller == nullptr || !caller->isSystemService() ||
-        !caller->hasCapability(taskCapabilityPci)) {
-        return error(SyscallError::PermissionDenied);
-    }
-    os::PciRequest request{};
-    if (!copyFromUser(&request, reinterpret_cast<const void*>(userRequest),
-                      sizeof(request))) {
-        return error(SyscallError::InvalidArgument);
-    }
-    switch (request.operation) {
-    case os::PciOperation::Enumerate: {
-        os::PciFunctionInfo functions[64]{};
-        uint32_t count = 0;
-        if (request.capacity == 0 || request.capacity > 64) {
-            return error(SyscallError::InvalidArgument);
+uint64_t handleCloseHandle(uint64_t handle, uint64_t operation, uint64_t rights,
+                           uint64_t flags, uint64_t, uint64_t) {
+    auto& handles = task::getCurrent()->handles();
+    switch (static_cast<os::HandleOperation>(operation)) {
+        case os::HandleOperation::Duplicate: {
+            if (rights > UINT32_MAX || flags > UINT32_MAX) return error(SyscallError::InvalidArgument);
+            const uint64_t result = handles.duplicate(handle, rights, flags);
+            return result ? result : error(SyscallError::InvalidArgument);
         }
-        count = device::PciAccess::enumerate(functions, request.capacity);
-        if (!copyToUser(request.functions, functions,
-                        sizeof(os::PciFunctionInfo) * count)) {
-            return error(SyscallError::InvalidArgument);
+        case os::HandleOperation::RestrictRights:
+            return rights <= UINT32_MAX && handles.restrictRights(handle, rights)
+                ? 0 : error(SyscallError::PermissionDenied);
+        case os::HandleOperation::SetFlags:
+            return flags <= UINT32_MAX && handles.setFlags(handle, flags)
+                ? 0 : error(SyscallError::InvalidArgument);
+        case os::HandleOperation::GetState: {
+            HandleTable::Pin pin(handles, handle, HandleType::Endpoint, 0);
+            auto* endpoint = pin.as<Endpoint>();
+            return endpoint ? (endpoint->isClosed() ? 1 : 0) : error(SyscallError::InvalidHandle);
         }
-        return count;
+        case os::HandleOperation::Close: break;
+        default: return error(SyscallError::InvalidArgument);
     }
-    case os::PciOperation::ReadConfig:
-        if (!device::PciAccess::read(request.function, request.offset,
-                                      request.value) ||
-            !copyToUser(reinterpret_cast<void*>(userRequest), &request,
-                        sizeof(request))) {
-            return error(SyscallError::InvalidArgument);
-        }
-        return 0;
-    case os::PciOperation::WriteConfig:
-        return device::PciAccess::write(request.function, request.offset,
-                                          request.value)
-                   ? 0 : error(SyscallError::InvalidArgument);
-    default:
-        return error(SyscallError::InvalidArgument);
-    }
-}
-
-uint64_t handleMapDeviceMmio(uint64_t userFunction, uint64_t barIndex,
-                             uint64_t userAddress, uint64_t size, uint64_t,
-                             uint64_t) {
-    Task* task = task::getCurrent();
-    os::PciFunctionInfo function{};
-    if (!hasDeviceCapability() ||
-        !copyFromUser(&function, reinterpret_cast<const void*>(userFunction),
-                      sizeof(function))) {
-        return error(SyscallError::PermissionDenied);
-    }
-    device::MmioRegion* region = device::MmioRegion::map(
-        *task, function, static_cast<uint8_t>(barIndex), userAddress, size);
-    if (region == nullptr) {
-        return error(SyscallError::InvalidArgument);
-    }
-    const uint64_t handle = task->handles().add(
-        region, HandleType::MmioRegion, handleRightRead | handleRightWrite);
-    return handle == 0 ? error(SyscallError::OutOfMemory) : handle;
-}
-
-uint64_t handleAllocateDma(uint64_t userAddress, uint64_t userInfo, uint64_t,
-                           uint64_t, uint64_t, uint64_t) {
-    Task* task = task::getCurrent();
-    if (!hasDeviceCapability()) {
-        return error(SyscallError::PermissionDenied);
-    }
-    os::DmaBufferInfo info{};
-    device::DmaBuffer* buffer =
-        device::DmaBuffer::create(*task, userAddress, info);
-    if (buffer == nullptr) {
-        return error(SyscallError::OutOfMemory);
-    }
-    info.handle = task->handles().add(buffer, HandleType::DmaBuffer,
-                                      handleRightRead | handleRightWrite);
-    if (info.handle == 0 ||
-        !copyToUser(reinterpret_cast<void*>(userInfo), &info, sizeof(info))) {
-        return error(SyscallError::InvalidArgument);
-    }
-    return 0;
-}
-
-uint64_t handleBindIrq(uint64_t irq, uint64_t endpointHandle, uint64_t levelTriggered,
-                       uint64_t, uint64_t, uint64_t) {
-    Task* task         = task::getCurrent();
-    Endpoint* endpoint = resolveEndpoint(endpointHandle, handleRightRead);
-    if (!hasDeviceCapability() || endpoint == nullptr || irq > 15 || levelTriggered > 1) {
-        return error(SyscallError::PermissionDenied);
-    }
-    device::InterruptBinding* binding = device::InterruptBinding::create(
-        *task, static_cast<uint8_t>(irq), endpoint, levelTriggered != 0);
-    if (binding == nullptr) {
-        return error(SyscallError::InvalidArgument);
-    }
-    const uint64_t handle = task->handles().add(
-        binding, HandleType::InterruptBinding, handleRightManage);
-    return handle == 0 ? error(SyscallError::OutOfMemory) : handle;
-}
-
-uint64_t handleAcknowledgeIrq(uint64_t handle, uint64_t, uint64_t,
-                             uint64_t, uint64_t, uint64_t) {
-    Task* task = task::getCurrent();
-    auto* binding = task == nullptr ? nullptr : static_cast<device::InterruptBinding*>(
-        task->handles().get(handle, HandleType::InterruptBinding, handleRightManage));
-    return binding != nullptr && binding->acknowledge(*task)
-        ? 0 : error(SyscallError::InvalidHandle);
-}
-
-uint64_t handleGetTaskState(uint64_t taskHandle, uint64_t userExitCode,
-                            uint64_t, uint64_t, uint64_t, uint64_t) {
-    Task* task = static_cast<Task*>(task::getCurrent()->handles().get(
-        taskHandle, HandleType::Task, handleRightRead));
-    if (task == nullptr) {
-        return error(SyscallError::InvalidHandle);
-    }
-    const int exitCode = task->exitCode();
-    if (!copyToUser(reinterpret_cast<void*>(userExitCode), &exitCode,
-                    sizeof(exitCode))) {
-        return error(SyscallError::InvalidArgument);
-    }
-    const TaskState state = task->state();
-    if (state == TaskState::Stopped) return 2;
-    if (state != TaskState::Terminated) return 0;
-    task->destroy();
-    return 1;
-}
-
-uint64_t handleGetTaskInfo(uint64_t taskHandle, uint64_t userInfo, uint64_t,
-                           uint64_t, uint64_t, uint64_t) {
-    Task* task = static_cast<Task*>(task::getCurrent()->handles().get(
-        taskHandle, HandleType::Task, handleRightRead));
-    if (task == nullptr) {
-        return error(SyscallError::InvalidHandle);
-    }
-    os::TaskInfo info{};
-    info.id          = task->id();
-    info.state       = static_cast<uint32_t>(task->state());
-    info.exitCode    = task->exitCode();
-    info.uid = task->uid(); info.gid = task->gid();
-    info.effectiveUid = task->effectiveUid(); info.effectiveGid = task->effectiveGid();
-    info.parentId = task->parent() ? task->parent()->id() : 0;
-    info.trustedDeviceService = task->isSystemService() &&
-                                task->hasCapability(taskCapabilityDevice);
-    const char* name = task->name();
-    uint32_t index   = 0;
-    while (index + 1 < sizeof(info.name) && name[index] != '\0') {
-        info.name[index] = name[index];
-        ++index;
-    }
-    return copyToUser(reinterpret_cast<void*>(userInfo), &info, sizeof(info))
-               ? 0
-               : error(SyscallError::InvalidArgument);
-}
-
-uint64_t handleTerminateTask(uint64_t taskHandle, uint64_t exitCode, uint64_t,
-                             uint64_t, uint64_t, uint64_t) {
-    Task* task = static_cast<Task*>(task::getCurrent()->handles().get(
-        taskHandle, HandleType::Task, handleRightManage));
-    if (task == nullptr || task == task::getCurrent() ||
-        task == task::getIdle()) {
-        return error(SyscallError::InvalidHandle);
-    }
-    task->terminateOtherThreads(static_cast<int>(exitCode));
-    task->destroy();
-    return 0;
-}
-
-uint64_t handleCloseHandle(uint64_t handle, uint64_t, uint64_t, uint64_t,
-                           uint64_t, uint64_t) {
     return task::getCurrent()->handles().close(handle)
                ? 0
                : error(SyscallError::InvalidHandle);
-}
-
-uint64_t handleGetTaskId(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                         uint64_t) {
-    Task* task = task::getCurrent();
-    return task == nullptr ? 0 : task->id();
 }
 
 uint64_t handleGetThreadId(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
                            uint64_t) {
     Thread* thread = Thread::getCurrent();
     return thread == nullptr ? 0 : thread->getId();
-}
-
-uint64_t handleGetMonotonicTime(uint64_t, uint64_t, uint64_t, uint64_t,
-                                uint64_t, uint64_t) {
-    return time::getMonotonicTime();
-}
-
-uint64_t handleGetWallClockTime(uint64_t, uint64_t, uint64_t, uint64_t,
-                                uint64_t, uint64_t) {
-    return time::getWallClockTime();
-}
-
-uint64_t handleMapFramebuffer(uint64_t userAddress, uint64_t userInfo, uint64_t,
-                              uint64_t, uint64_t, uint64_t) {
-    Task* task = task::getCurrent();
-    if (task == nullptr ||
-        !memory::validateUserMemory(task->addressSpace().rootPhysicalAddress(),
-                                    userInfo, sizeof(os::DisplayInfo), true)) {
-        return error(SyscallError::InvalidArgument);
-    }
-    os::DisplayInfo info{};
-    if (!device::DisplayAccess::mapFramebuffer(*task, userAddress, info)) {
-        return error(SyscallError::PermissionDenied);
-    }
-    return copyToUser(reinterpret_cast<void*>(userInfo), &info, sizeof(info))
-               ? 0
-               : error(SyscallError::InvalidArgument);
-}
-
-uint64_t handleCreatePipe(uint64_t userHandles, uint64_t, uint64_t, uint64_t,
-                          uint64_t, uint64_t) {
-    Task* task = task::getCurrent();
-    os::PipeHandles handles{};
-    if (task == nullptr ||
-        !memory::validateUserMemory(task->addressSpace().rootPhysicalAddress(),
-                                    userHandles, sizeof(handles), true) ||
-        !Pipe::createHandles(*task, handles.readHandle, handles.writeHandle)) {
-        return error(SyscallError::OutOfMemory);
-    }
-    if (!copyToUser(reinterpret_cast<void*>(userHandles), &handles,
-                    sizeof(handles))) {
-        task->handles().close(handles.readHandle);
-        task->handles().close(handles.writeHandle);
-        return error(SyscallError::InvalidArgument);
-    }
-    return 0;
-}
-
-uint64_t handleReadPipe(uint64_t handle, uint64_t userBuffer, uint64_t size,
-                        uint64_t, uint64_t, uint64_t) {
-    constexpr size_t maximumTransfer = 512;
-    Task* task                       = task::getCurrent();
-    if (task == nullptr || size == 0 || size > maximumTransfer ||
-        !memory::validateUserMemory(task->addressSpace().rootPhysicalAddress(),
-                                    userBuffer, size, true)) {
-        return error(SyscallError::InvalidArgument);
-    }
-    uint8_t buffer[maximumTransfer];
-    void* object    = nullptr;
-    HandleType type = HandleType::None;
-    uint32_t rights = 0;
-    if (!task->handles().inspect(handle, &object, &type, &rights)) {
-        return error(SyscallError::InvalidHandle);
-    }
-    const int64_t result =
-        Pipe::read(*task, handle, buffer, static_cast<size_t>(size));
-    if (result <= 0) {
-        return static_cast<uint64_t>(result);
-    }
-    return copyToUser(reinterpret_cast<void*>(userBuffer), buffer,
-                      static_cast<size_t>(result))
-               ? static_cast<uint64_t>(result)
-               : error(SyscallError::InvalidArgument);
-}
-
-uint64_t handleWritePipe(uint64_t handle, uint64_t userBuffer, uint64_t size,
-                         uint64_t, uint64_t, uint64_t) {
-    constexpr size_t maximumTransfer = 512;
-    Task* task                       = task::getCurrent();
-    uint8_t buffer[maximumTransfer];
-    if (task == nullptr || size == 0 || size > maximumTransfer ||
-        !copyFromUser(buffer, reinterpret_cast<const void*>(userBuffer),
-                      static_cast<size_t>(size))) {
-        return error(SyscallError::InvalidArgument);
-    }
-    void* object    = nullptr;
-    HandleType type = HandleType::None;
-    uint32_t rights = 0;
-    if (!task->handles().inspect(handle, &object, &type, &rights)) {
-        return error(SyscallError::InvalidHandle);
-    }
-    return static_cast<uint64_t>(
-        Pipe::write(*task, handle, buffer, static_cast<size_t>(size)));
-}
-
-uint64_t handleCreateChannelPair(uint64_t userHandles, uint64_t, uint64_t,
-                                 uint64_t, uint64_t, uint64_t) {
-    Task* current = task::getCurrent();
-    os::ChannelHandles handles{};
-    if (!current || !Pipe::createChannelPair(*current, handles.firstHandle,
-                                              handles.secondHandle))
-        return error(SyscallError::OutOfMemory);
-    if (!copyToUser(reinterpret_cast<void*>(userHandles), &handles,
-                    sizeof(handles))) {
-        current->handles().close(handles.firstHandle);
-        current->handles().close(handles.secondHandle);
-        return error(SyscallError::InvalidArgument);
-    }
-    return 0;
-}
-
-uint64_t handleGetChannelIdentity(uint64_t handle, uint64_t, uint64_t,
-                                  uint64_t, uint64_t, uint64_t) {
-    Task* current = task::getCurrent();
-    const uint64_t identity = current ? Pipe::channelIdentity(*current, handle) : 0;
-    return identity ? identity : error(SyscallError::InvalidHandle);
-}
-
-uint64_t handleSetChannelNonblocking(uint64_t handle, uint64_t enabled,
-                                     uint64_t, uint64_t, uint64_t, uint64_t) {
-    Task* current = task::getCurrent();
-    return current && Pipe::setChannelNonblocking(*current, handle,
-                                                   enabled != 0)
-               ? 0 : error(SyscallError::InvalidHandle);
-}
-
-uint64_t handleSignalChannelEof(uint64_t handle, uint64_t, uint64_t,
-                                uint64_t, uint64_t, uint64_t) {
-    Task* current = task::getCurrent();
-    return current && Pipe::signalChannelEof(*current, handle)
-               ? 0 : error(SyscallError::InvalidHandle);
-}
-uint64_t handleSendSignal(uint64_t taskId, uint64_t signal, uint64_t, uint64_t,
-                          uint64_t, uint64_t) {
-    const int64_t target = static_cast<int64_t>(taskId);
-    Task* current        = task::getCurrent();
-    const bool delivered =
-        target > 0 ? signal::sendSignalToTask(static_cast<uint64_t>(target),
-                                              static_cast<uint32_t>(signal))
-        : target == 0 && current != nullptr
-            ? signal::sendSignalToTaskGroup(current->taskGroupId(),
-                                            static_cast<uint32_t>(signal))
-        : target < -1
-            ? signal::sendSignalToTaskGroup(static_cast<uint64_t>(-target),
-                                            static_cast<uint32_t>(signal))
-            : false;
-    return delivered ? 0 : error(SyscallError::NotFound);
-}
-
-uint64_t handleSetTaskGroup(uint64_t taskGroupId, uint64_t taskId, uint64_t, uint64_t,
-                            uint64_t, uint64_t) {
-    Task* current = task::getCurrent();
-    Task* target = taskId == 0 ? current : task::find(taskId);
-    if (target == nullptr || current == nullptr ||
-        (target != current && target->parent() != current))
-        return error(SyscallError::NotFound);
-    return target->setTaskGroup(taskGroupId)
-               ? 0
-               : error(SyscallError::PermissionDenied);
-}
-
-uint64_t handleCreateSession(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                             uint64_t) {
-    Task* task = task::getCurrent();
-    return task != nullptr && task->createSession()
-               ? task->sessionId()
-               : error(SyscallError::PermissionDenied);
-}
-
-struct TaskIdentifiers {
-    uint64_t parentId;
-    uint64_t taskGroupId;
-    uint64_t sessionId;
-};
-
-uint64_t handleGetTaskIdentifiers(uint64_t userIdentifiers, uint64_t taskId, uint64_t,
-                                  uint64_t, uint64_t, uint64_t) {
-    Task* task = taskId == 0 ? task::getCurrent() : task::find(taskId);
-    if (task == nullptr) {
-        return error(SyscallError::NotFound);
-    }
-    TaskIdentifiers identifiers{
-        task->parent() == nullptr ? 0 : task->parent()->id(),
-        task->taskGroupId(), task->sessionId()};
-    return copyToUser(reinterpret_cast<void*>(userIdentifiers), &identifiers,
-                      sizeof(identifiers))
-               ? 0
-               : error(SyscallError::InvalidArgument);
-}
-
-uint64_t handleGetClockResolution(uint64_t, uint64_t, uint64_t, uint64_t,
-                                  uint64_t, uint64_t) {
-    return time::getClockResolution();
-}
-
-uint64_t handleWaitThread(uint64_t threadId, uint64_t userExitCode,
-                          uint64_t noHang, uint64_t, uint64_t, uint64_t) {
-    Task* task      = task::getCurrent();
-    Thread* current = Thread::getCurrent();
-    if (task == nullptr || current == nullptr || userExitCode == 0) {
-        return error(SyscallError::InvalidArgument);
-    }
-    while (true) {
-        int exitCode = 0;
-        const int result =
-            task->waitForThread(threadId, current, exitCode, noHang != 0);
-        if (result < 0) {
-            return error(SyscallError::NotFound);
-        }
-        if (result == 2) {
-            return error(SyscallError::WouldBlock);
-        }
-        if (result == 0) {
-            return copyToUser(reinterpret_cast<void*>(userExitCode), &exitCode,
-                              sizeof(exitCode))
-                       ? 0
-                       : error(SyscallError::InvalidArgument);
-        }
-        Thread::blockCurrent();
-    }
-}
-
-uint64_t handleWaitChild(uint64_t taskId, uint64_t userExitCode,
-                         uint64_t options, uint64_t, uint64_t, uint64_t) {
-    Task* task      = task::getCurrent();
-    Thread* current = Thread::getCurrent();
-    if (task == nullptr || current == nullptr || userExitCode == 0 ||
-        (options & ~11ULL) != 0) {
-        return error(SyscallError::InvalidArgument);
-    }
-    while (true) {
-        int status       = 0;
-        uint64_t childId = 0;
-        const int result =
-            task->waitForChild(static_cast<int64_t>(taskId), current, status,
-                               static_cast<uint32_t>(options), childId);
-        if (result < 0) return error(SyscallError::NotFound);
-        if (result == 2) return 0;
-        if (result == 0) {
-            return copyToUser(reinterpret_cast<void*>(userExitCode), &status,
-                              sizeof(status))
-                       ? childId
-                       : error(SyscallError::InvalidArgument);
-        }
-        Thread::blockCurrent();
-    }
 }
 
 uint64_t handleForkTask(SyscallContext* context) {
@@ -1307,281 +721,9 @@ uint64_t handleWakeAddress(uint64_t userAddress, uint64_t count, uint64_t,
         static_cast<uint32_t>(count));
 }
 
-uint64_t handleSetSignalAction(uint64_t signal, uint64_t userAction,
-                               uint64_t userOldAction, uint64_t, uint64_t,
-                               uint64_t) {
-    Task* task = task::getCurrent();
-    if (task == nullptr ||
-        !signal::isValidSignal(static_cast<uint32_t>(signal))) {
-        return error(SyscallError::InvalidArgument);
-    }
-    SignalAction action{};
-    SignalAction oldAction{};
-    if (userAction != 0) {
-        if (!copyFromUser(&action, reinterpret_cast<const void*>(userAction),
-                          sizeof(action)) ||
-            (action.getFlags() & ~(signalFlagNoDefer | signalFlagResetHand |
-                                   0x00000004ULL | 0x10000000ULL)) != 0) {
-            return error(SyscallError::InvalidArgument);
-        }
-        if (action.getHandler() > signalIgnore &&
-            (action.getRestorer() == 0 ||
-             !memory::validateUserMemory(
-                 task->addressSpace().rootPhysicalAddress(),
-                 action.getHandler(), 1, false) ||
-             !memory::validateUserMemory(
-                 task->addressSpace().rootPhysicalAddress(),
-                 action.getRestorer(), 1, false))) {
-            return error(SyscallError::InvalidArgument);
-        }
-        if (!task->setSignalAction(static_cast<uint32_t>(signal), action,
-                                   &oldAction)) {
-            return error(SyscallError::InvalidArgument);
-        }
-    } else if (!task->getSignalAction(static_cast<uint32_t>(signal),
-                                      oldAction)) {
-        return error(SyscallError::InvalidArgument);
-    }
-    if (userOldAction != 0 &&
-        !copyToUser(reinterpret_cast<void*>(userOldAction), &oldAction,
-                    sizeof(oldAction))) {
-        return error(SyscallError::InvalidArgument);
-    }
-    return 0;
-}
-
-uint64_t handleSetSignalMask(uint64_t how, uint64_t mask, uint64_t userOldMask,
-                             uint64_t, uint64_t, uint64_t) {
-    Thread* thread = Thread::getCurrent();
-    if (thread == nullptr || how > 2 || userOldMask == 0) {
-        return error(SyscallError::InvalidArgument);
-    }
-    const uint64_t oldMask = thread->getSignalMask();
-    mask &= ~((1ULL << (static_cast<uint32_t>(Signal::Kill) - 1)) |
-              (1ULL << (static_cast<uint32_t>(Signal::Stop) - 1)));
-    if (how == 0)
-        thread->setSignalMask(thread->getSignalMask() | (mask));
-    else if (how == 1)
-        thread->setSignalMask(thread->getSignalMask() & (~mask));
-    else
-        thread->setSignalMask(mask);
-    return copyToUser(reinterpret_cast<void*>(userOldMask), &oldMask,
-                      sizeof(oldMask))
-               ? 0
-               : error(SyscallError::InvalidArgument);
-}
-
-uint64_t handleGetPendingSignals(uint64_t userMask, uint64_t, uint64_t,
-                                 uint64_t, uint64_t, uint64_t) {
-    Task* task = task::getCurrent();
-    if (task == nullptr) return error(SyscallError::InvalidArgument);
-    const uint64_t mask = task->pendingSignals(Thread::getCurrent());
-    return copyToUser(reinterpret_cast<void*>(userMask), &mask, sizeof(mask))
-               ? 0
-               : error(SyscallError::InvalidArgument);
-}
-
-uint64_t handleWaitSignal(uint64_t mask, uint64_t, uint64_t, uint64_t, uint64_t,
-                          uint64_t) {
-    Task* task     = task::getCurrent();
-    Thread* thread = Thread::getCurrent();
-    SignalAction action{};
-    if (task == nullptr || thread == nullptr || mask == 0) {
-        return error(SyscallError::InvalidArgument);
-    }
-    const uint32_t signal =
-        task->takePendingSignal(thread, mask, action, false);
-    return signal == 0 ? error(SyscallError::WouldBlock) : signal;
-}
-
 uint64_t handleSignalReturn(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
                             uint64_t) {
     return error(SyscallError::InvalidArgument);
-}
-
-uint64_t handleOpenMessageQueue(uint64_t userName, uint64_t flags,
-                                uint64_t maximumMessages, uint64_t messageSize,
-                                uint64_t, uint64_t) {
-    char name[64]{};
-    bool terminated = false;
-    for (uint32_t index = 0; index < sizeof(name); ++index) {
-        if (!copyFromUser(&name[index],
-                          reinterpret_cast<const void*>(userName + index), 1)) {
-            return error(SyscallError::InvalidArgument);
-        }
-        if (name[index] == '\0') {
-            terminated = true;
-            break;
-        }
-    }
-    if (!terminated || maximumMessages > UINT32_MAX ||
-        messageSize > UINT32_MAX) {
-        return error(SyscallError::InvalidArgument);
-    }
-    const uint64_t handle =
-        MessageQueue::open(*task::getCurrent(), name, static_cast<int>(flags),
-                           static_cast<uint32_t>(maximumMessages),
-                           static_cast<uint32_t>(messageSize));
-    return handle == 0 ? error(SyscallError::InvalidArgument) : handle;
-}
-
-uint64_t handleUnlinkMessageQueue(uint64_t userName, uint64_t, uint64_t,
-                                  uint64_t, uint64_t, uint64_t) {
-    char name[64]{};
-    bool terminated = false;
-    for (uint32_t index = 0; index < sizeof(name); ++index) {
-        if (!copyFromUser(&name[index],
-                          reinterpret_cast<const void*>(userName + index), 1)) {
-            return error(SyscallError::InvalidArgument);
-        }
-        if (name[index] == '\0') {
-            terminated = true;
-            break;
-        }
-    }
-    return terminated && MessageQueue::unlink(name)
-               ? 0
-               : error(SyscallError::NotFound);
-}
-
-uint64_t handleSendMessageQueue(uint64_t handle, uint64_t userData,
-                                uint64_t size, uint64_t priority, uint64_t,
-                                uint64_t) {
-    uint8_t data[256];
-    if (size > sizeof(data) || priority > UINT32_MAX ||
-        (size != 0 &&
-         !copyFromUser(data, reinterpret_cast<const void*>(userData), size))) {
-        return error(SyscallError::InvalidArgument);
-    }
-    const int result =
-        MessageQueue::send(*task::getCurrent(), handle, data, size,
-                           static_cast<uint32_t>(priority));
-    return result == 0 ? 0
-                       : error(result == 1 ? SyscallError::WouldBlock
-                                           : SyscallError::InvalidArgument);
-}
-
-uint64_t handleReceiveMessageQueue(uint64_t handle, uint64_t userData,
-                                   uint64_t capacity, uint64_t userPriority,
-                                   uint64_t, uint64_t) {
-    uint8_t data[256];
-    uint32_t priority = 0;
-    if (capacity > sizeof(data)) capacity = sizeof(data);
-    const int64_t result = MessageQueue::receive(*task::getCurrent(), handle,
-                                                 data, capacity, priority);
-    if (result == -2) return error(SyscallError::WouldBlock);
-    if (result < 0 ||
-        (result != 0 && !copyToUser(reinterpret_cast<void*>(userData), data,
-                                    static_cast<size_t>(result))) ||
-        (userPriority != 0 && !copyToUser(reinterpret_cast<void*>(userPriority),
-                                          &priority, sizeof(priority)))) {
-        return error(SyscallError::InvalidArgument);
-    }
-    return static_cast<uint64_t>(result);
-}
-
-uint64_t handleGetMessageQueueAttributes(uint64_t handle,
-                                         uint64_t userAttributes, uint64_t,
-                                         uint64_t, uint64_t, uint64_t) {
-    MessageQueueAttributes attributes{};
-    return MessageQueue::getAttributes(*task::getCurrent(), handle,
-                                       attributes) &&
-                   copyToUser(reinterpret_cast<void*>(userAttributes),
-                              &attributes, sizeof(attributes))
-               ? 0
-               : error(SyscallError::InvalidArgument);
-}
-
-uint64_t handleSetMessageQueueFlags(uint64_t handle, uint64_t flags,
-                                    uint64_t userOldFlags, uint64_t, uint64_t,
-                                    uint64_t) {
-    uint64_t oldFlags = 0;
-    return MessageQueue::setFlags(*task::getCurrent(), handle, flags,
-                                  oldFlags) &&
-                   copyToUser(reinterpret_cast<void*>(userOldFlags), &oldFlags,
-                              sizeof(oldFlags))
-               ? 0
-               : error(SyscallError::InvalidArgument);
-}
-
-uint64_t handleOpenSharedMemory(uint64_t userName, uint64_t flags, uint64_t,
-                                uint64_t, uint64_t, uint64_t) {
-    char name[64]{};
-    bool terminated = false;
-    for (uint32_t index = 0; index < sizeof(name); ++index) {
-        if (!copyFromUser(&name[index],
-                          reinterpret_cast<const void*>(userName + index), 1)) {
-            return error(SyscallError::InvalidArgument);
-        }
-        if (name[index] == '\0') {
-            terminated = true;
-            break;
-        }
-    }
-    if (!terminated || flags > UINT32_MAX) {
-        return error(SyscallError::InvalidArgument);
-    }
-    const uint64_t handle =
-        SharedMemory::open(*task::getCurrent(), name, static_cast<int>(flags));
-    return handle == 0 ? error(SyscallError::InvalidArgument) : handle;
-}
-
-uint64_t handleUnlinkSharedMemory(uint64_t userName, uint64_t, uint64_t,
-                                  uint64_t, uint64_t, uint64_t) {
-    char name[64]{};
-    bool terminated = false;
-    for (uint32_t index = 0; index < sizeof(name); ++index) {
-        if (!copyFromUser(&name[index],
-                          reinterpret_cast<const void*>(userName + index), 1)) {
-            return error(SyscallError::InvalidArgument);
-        }
-        if (name[index] == '\0') {
-            terminated = true;
-            break;
-        }
-    }
-    return terminated && SharedMemory::unlink(name)
-               ? 0
-               : error(SyscallError::NotFound);
-}
-
-uint64_t handleResizeSharedMemory(uint64_t handle, uint64_t size, uint64_t,
-                                  uint64_t, uint64_t, uint64_t) {
-    return SharedMemory::resize(*task::getCurrent(), handle, size)
-               ? 0
-               : error(SyscallError::InvalidArgument);
-}
-
-uint64_t handleMapSharedMemory(uint64_t handle, uint64_t address, uint64_t size,
-                               uint64_t offset, uint64_t protection, uint64_t) {
-    const uint64_t result = SharedMemory::map(
-        *task::getCurrent(), handle, address, size, offset, protection);
-    return result == 0 ? error(SyscallError::InvalidArgument) : result;
-}
-
-uint64_t handleSendThreadSignal(uint64_t threadId, uint64_t signal, uint64_t,
-                                uint64_t, uint64_t, uint64_t) {
-    Task* task = task::getCurrent();
-    if (task == nullptr || signal > maximumSignal) {
-        return error(SyscallError::InvalidArgument);
-    }
-    return task->deliverThreadSignal(threadId, static_cast<uint32_t>(signal))
-               ? 0
-               : error(SyscallError::NotFound);
-}
-
-uint64_t handleRegisterMessageQueueNotification(uint64_t handle, uint64_t type,
-                                                uint64_t signal, uint64_t,
-                                                uint64_t, uint64_t) {
-    if (type > 2 || signal > UINT32_MAX) {
-        return error(SyscallError::InvalidArgument);
-    }
-    const int result = MessageQueue::registerNotification(
-        *task::getCurrent(), handle, static_cast<int>(type),
-        static_cast<uint32_t>(signal));
-    return result == 0 ? 0
-                       : error(result == 1 ? SyscallError::Busy
-                                           : SyscallError::InvalidArgument);
 }
 
 uint64_t handleGetStandardHandle(uint64_t index, uint64_t, uint64_t, uint64_t,
@@ -1592,135 +734,27 @@ uint64_t handleGetStandardHandle(uint64_t index, uint64_t, uint64_t, uint64_t,
 }
 
 constexpr SyscallHandler syscallHandlers[] = {
-    // Message queue
-    handleOpenMessageQueue,
-    handleUnlinkMessageQueue,
-    handleSendMessageQueue,
-    handleReceiveMessageQueue,
-    handleGetMessageQueueAttributes,
-    handleSetMessageQueueFlags,
-    handleRegisterMessageQueueNotification,
-    // Process
+    handleSendMessage,
+    handleReceiveMessage,
+    handleCallService,
+    handleReplyMessage,
     handleGetStandardHandle,
+    handleGetBootstrapHandle,
+    handleCloseHandle,
+    handleMapMemory,
+    handleUnmapMemory,
+    handleProtectMemory,
     handleExitTask,
     handleCreateThread,
     handleExitThread,
     handleYield,
     handleSleep,
-    handleSpawnProgram,
-    handleSpawnImage,
-    handleGetBootstrapHandle,
-    handleGetTaskState,
-    handleCloseHandle,
-    handleGetTaskId,
     handleGetThreadId,
-    handleGetTaskInfo,
-    handleTerminateTask,
-    handleSendSignal,
-    handleSendThreadSignal,
-    handleCreateSession,
-    handleGetTaskIdentifiers,
-    handleSetTaskGroup,
-    [](uint64_t id, uint64_t uid, uint64_t gid, uint64_t effectiveOnly, uint64_t, uint64_t) -> uint64_t {
-        Task* caller = task::getCurrent();
-        Task* target = !id ? caller : task::find(id);
-        if (!caller || !target || uid >= 65535 || gid >= 65535 || effectiveOnly > 1)
-            return error(SyscallError::InvalidArgument);
-        if (!caller->hasCapability(taskCapabilityUsers) &&
-            (caller != target || (caller->effectiveUid() != 0 &&
-             (uid != caller->uid() || gid != caller->gid()))))
-            return error(SyscallError::PermissionDenied);
-        target->setCredentials(uid, gid, effectiveOnly);
-        return 0;
-    },
-    [](uint64_t id, uint64_t address, uint64_t, uint64_t, uint64_t, uint64_t) -> uint64_t {
-        Task* target = task::find(id);
-        if (!target) return error(SyscallError::NotFound);
-        os::TaskInfo info{};
-        info.id = target->id(); info.state = static_cast<uint32_t>(target->state()); info.exitCode = target->exitCode();
-        info.uid = target->uid(); info.gid = target->gid();
-        info.effectiveUid = target->effectiveUid(); info.effectiveGid = target->effectiveGid();
-        info.parentId = target->parent() ? target->parent()->id() : 0;
-        info.trustedDeviceService = target->isSystemService() &&
-                                    target->hasCapability(taskCapabilityDevice);
-        const char* name = target->name();
-        for (size_t i = 0; i + 1 < sizeof(info.name) && name[i]; ++i) info.name[i] = name[i];
-        return copyToUser(reinterpret_cast<void*>(address), &info, sizeof(info)) ? 0 : error(SyscallError::InvalidArgument);
-    },
-    [](uint64_t index, uint64_t address, uint64_t, uint64_t, uint64_t, uint64_t) -> uint64_t {
-        Task* target = index <= UINT32_MAX ? task::at(static_cast<uint32_t>(index)) : nullptr;
-        if (!target) return error(SyscallError::NotFound);
-        os::TaskInfo info{};
-        info.id = target->id(); info.state = static_cast<uint32_t>(target->state()); info.exitCode = target->exitCode();
-        info.uid = target->uid(); info.gid = target->gid();
-        info.effectiveUid = target->effectiveUid(); info.effectiveGid = target->effectiveGid();
-        info.parentId = target->parent() ? target->parent()->id() : 0;
-        info.trustedDeviceService = target->isSystemService() &&
-                                    target->hasCapability(taskCapabilityDevice);
-        const char* name = target->name();
-        for (size_t i = 0; i + 1 < sizeof(info.name) && name[i]; ++i) info.name[i] = name[i];
-        return copyToUser(reinterpret_cast<void*>(address), &info, sizeof(info)) ? 0 : error(SyscallError::InvalidArgument);
-    },
-    [](uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) -> uint64_t {
-        return error(SyscallError::NotSupported);
-    },
-    handleWaitChild,
-    [](uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) -> uint64_t {
-        return error(SyscallError::NotSupported);
-    },
-    handleWaitThread,
+    [](uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) -> uint64_t { return error(SyscallError::NotSupported); },
+    [](uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) -> uint64_t { return error(SyscallError::NotSupported); },
     handleWaitAddress,
     handleWakeAddress,
-    handleSetSignalAction,
-    handleSetSignalMask,
-    handleGetPendingSignals,
-    handleWaitSignal,
-    handleSignalReturn,
-    [](uint64_t value, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) -> uint64_t {
-        Task* current = task::getCurrent();
-        if (!current) return error(SyscallError::NotFound);
-        if (value == UINT64_MAX) return current->terminalId();
-        if (value >= 7) return error(SyscallError::InvalidArgument);
-        current->setTerminalId(value); return 0;
-    },
-    handleCreateEndpoint,
-    handleSendMessage,
-    handleReceiveMessage,
-    handleCallService,
-    handleReplyMessage,
-    // Pipe and channel
-    handleCreatePipe,
-    handleReadPipe,
-    handleWritePipe,
-    handleCreateChannelPair,
-    handleGetChannelIdentity,
-    handleSetChannelNonblocking,
-    handleSignalChannelEof,
-    // Device
-    handleCallPciService,
-    handleMapDeviceMmio,
-    handleAllocateDma,
-    handleBindIrq,
-    handleAcknowledgeIrq,
-    handleMapFramebuffer,
-    handleGetMonotonicTime,
-    handleGetWallClockTime,
-    handleGetClockResolution,
-    [](uint64_t address, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) -> uint64_t {
-        const os::SystemInfo info{time::getMonotonicTime(), memory::getTotalMemoryBytes(),
-                                  memory::getFreeMemoryBytes(), smp::getOnlineCpuCount(), 0};
-        return copyToUser(reinterpret_cast<void*>(address), &info, sizeof(info)) ? 0 :
-               error(SyscallError::InvalidArgument);
-    },
-    handleLog,
-    // Memory
-    handleMapMemory,
-    handleUnmapMemory,
-    handleProtectMemory,
-    handleOpenSharedMemory,
-    handleUnlinkSharedMemory,
-    handleResizeSharedMemory,
-    handleMapSharedMemory};
+    handleSignalReturn};
 
 static_assert(sizeof(syscallHandlers) / sizeof(syscallHandlers[0]) ==
               static_cast<uint64_t>(SyscallNumber::Count) - OS_SYS_BASE);
@@ -1770,3 +804,10 @@ extern "C" void syscallDispatchEntry(SyscallContext* context) {
 }
 
 }  // namespace kernel::syscall
+
+uint64_t kernel::Services::mapMemory(uint64_t address, uint64_t size, uint64_t protection) {
+    return mapUserMemory(address, size, protection);
+}
+
+bool kernel::Services::unmapMemory(uint64_t address, uint64_t size) { return unmapUserMemory(address, size) == 0; }
+bool kernel::Services::protectMemory(uint64_t address, uint64_t size, uint64_t protection) { return protectUserMemory(address, size, protection) == 0; }

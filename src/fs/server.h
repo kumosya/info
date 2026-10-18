@@ -25,13 +25,15 @@ constexpr uint64_t workerStackAddress = 0x0000000050000000ULL;
 constexpr uint64_t workerStackSize    = 64 * 1024;
 constexpr uint32_t workerThreadCount  = 3;
 
-inline bool startsWithPath(const char* path, const char* prefix) {
+class PathText {
+ public:
+static bool startsWithPath(const char* path, const char* prefix) {
     uint32_t index = 0;
     while (prefix[index] != '\0' && path[index] == prefix[index]) ++index;
     return prefix[index] == '\0' && (path[index] == '\0' || path[index] == '/');
 }
 
-inline bool containsText(const char* text, const char* token) {
+static bool containsText(const char* text, const char* token) {
     if (text == nullptr || token == nullptr || token[0] == '\0') return false;
     for (uint32_t start = 0; text[start] != '\0'; ++start) {
         uint32_t index = 0;
@@ -42,6 +44,7 @@ inline bool containsText(const char* text, const char* token) {
     }
     return false;
 }
+};
 
 class BlockDeviceClient final : public vfs::SectorDevice {
    public:
@@ -64,7 +67,7 @@ class BlockDeviceClient final : public vfs::SectorDevice {
                 os::storageIdentityWord + (sizeof(identity_) + 7) / 8) {
             return false;
         }
-        os::copyBytes(&identity_, &reply.data[os::storageIdentityWord],
+        os::Runtime::copyBytes(&identity_, &reply.data[os::storageIdentityWord],
                       sizeof(identity_));
         sectorCount_ = reply.data[1];
         readOnly_    = reply.data[5] != 0;
@@ -132,18 +135,18 @@ class BlockDeviceClient final : public vfs::SectorDevice {
             os::IpcMessage& reply = reply_;
             request.type = static_cast<uint64_t>(write ? os::StorageRequest::WriteRange
                                                        : os::StorageRequest::ReadRange);
-            request.data[0] = os::encodeStorageBlock(deviceId_, firstSector + transferred);
+            request.data[0] = os::StorageProtocol::encodeStorageBlock(deviceId_, firstSector + transferred);
             request.data[1] = batch;
             request.length = 2;
             if (write) {
-                os::copyBytes(&request.data[2],
+                os::Runtime::copyBytes(&request.data[2],
                     static_cast<const uint8_t*>(writeBuffer) + transferred * sectorSize, bytes);
                 request.length += bytes / sizeof(uint64_t);
             }
             if (os::callService(endpoint_, request, reply) != 0 ||
                 reply.length < 2 || reply.data[0] != 0 || reply.data[1] != bytes ||
                 (!write && reply.length < 2 + bytes / sizeof(uint64_t))) return false;
-            if (!write) os::copyBytes(static_cast<uint8_t*>(readBuffer) + transferred * sectorSize,
+            if (!write) os::Runtime::copyBytes(static_cast<uint8_t*>(readBuffer) + transferred * sectorSize,
                                      &reply.data[2], bytes);
             transferred += batch;
         }

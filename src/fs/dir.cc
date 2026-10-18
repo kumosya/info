@@ -4,8 +4,8 @@ namespace vfs::server {
 
 int FsServer::deviceDirectory(const char* path, uint32_t index,
                               vfs::DirectoryEntry& entry) const {
-    if (os::stringsEqual(path, "/dev/pts")) return 1;
-    if (!os::stringsEqual(path, "/dev"))
+    if (os::Runtime::stringsEqual(path, "/dev/pts")) return 1;
+    if (!os::Runtime::stringsEqual(path, "/dev"))
         return catalog_.list(path, index, entry);
     uint32_t count = 0;
     for (;;) {
@@ -21,7 +21,7 @@ int FsServer::deviceDirectory(const char* path, uint32_t index,
         if (count++ == index) {
             entry      = {};
             entry.type = reply.data[1] ? 2 : 1;
-            os::copyString(entry.name,
+            os::Runtime::copyString(entry.name,
                            reinterpret_cast<const char*>(&reply.data[2]),
                            sizeof(entry.name));
             return 0;
@@ -38,9 +38,9 @@ void FsServer::readDirectory(const char* path, uint64_t index,
     }
     vfs::DirectoryEntry entry{};
     int result = -1;
-    if (startsWithPath(path, "/sys"))
+    if (PathText::startsWithPath(path, "/sys"))
         result = vfs::SystemFiles::directory(path, static_cast<uint32_t>(index), entry);
-    else if (startsWithPath(path, "/dev"))
+    else if (PathText::startsWithPath(path, "/dev"))
         result = deviceDirectory(path, static_cast<uint32_t>(index), entry);
     else {
         const PathBackend backend   = pathBackend(path);
@@ -56,7 +56,7 @@ void FsServer::readDirectory(const char* path, uint64_t index,
     if (result == 0) {
         reply.data[1] = static_cast<uint64_t>(
             entry.type == 2 ? os::FileType::Directory : os::FileType::File);
-        os::copyString(reinterpret_cast<char*>(&reply.data[2]), entry.name, 256);
+        os::Runtime::copyString(reinterpret_cast<char*>(&reply.data[2]), entry.name, 256);
         reply.length = 34;
     }
 }
@@ -73,9 +73,9 @@ void FsServer::readDirectoryBatch(const char* path, uint64_t index,
     }
     vfs::DirectoryEntry entries[maximum]{};
     int count = 0;
-    if (startsWithPath(path, "/dev") || startsWithPath(path, "/sys")) {
+    if (PathText::startsWithPath(path, "/dev") || PathText::startsWithPath(path, "/sys")) {
         while (count < static_cast<int>(capacity)) {
-            const int result = startsWithPath(path, "/sys") ? vfs::SystemFiles::directory(
+            const int result = PathText::startsWithPath(path, "/sys") ? vfs::SystemFiles::directory(
                 path, static_cast<uint32_t>(index + count), entries[count]) : deviceDirectory(
                 path, static_cast<uint32_t>(index + count), entries[count]);
             if (result < 0) {
@@ -105,7 +105,7 @@ void FsServer::readDirectoryBatch(const char* path, uint64_t index,
     for (int i = 0; i < count; ++i) {
         output[i].type =
             entries[i].type == 2 ? os::FileType::Directory : os::FileType::File;
-        os::copyString(output[i].name, entries[i].name, sizeof(output[i].name));
+        os::Runtime::copyString(output[i].name, entries[i].name, sizeof(output[i].name));
     }
     reply.data[0] = 0;
     reply.data[1] = static_cast<uint64_t>(count);

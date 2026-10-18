@@ -5,6 +5,7 @@
 namespace kernel {
 
 struct SyscallContext;
+class Task;
 
 enum class Signal : uint32_t {
     Hangup                = 1,
@@ -71,8 +72,8 @@ class SignalAction {
 
 namespace signal {
 bool isValidSignal(uint32_t signal);
-bool sendSignalToTask(uint64_t taskId, uint32_t signal);
-bool sendSignalToTaskGroup(uint64_t taskGroupId, uint32_t signal);
+bool sendSignalToTask(uint64_t taskId, uint32_t signal, Task* caller = nullptr);
+bool sendSignalToTaskGroup(uint64_t taskGroupId, uint32_t signal, Task* caller = nullptr);
 bool deliverPendingSignal(SyscallContext* context);
 bool restoreSignalFrame(SyscallContext* context, uint64_t userFrame);
 

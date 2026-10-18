@@ -62,6 +62,7 @@ class InterruptBinding {
     Endpoint* endpoint() const;
     bool requiresAcknowledgement() const { return levelTriggered_; }
     bool acknowledge(Task& task) const;
+    void destroy();
 
    private:
     uint8_t irq_;

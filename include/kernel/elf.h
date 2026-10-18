@@ -61,7 +61,7 @@ class ElfLoader {
         uint64_t destinationRoot, uint64_t sourceRoot,
         uint64_t executableAddress, size_t executableSize,
         const ElfSharedImage* sharedImages, uint32_t sharedImageCount,
-        ElfLoadResult& result);
+        ElfLoadResult& result, bool trustedImports = false);
 };
 
 }  // namespace kernel

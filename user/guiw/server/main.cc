@@ -28,12 +28,19 @@ struct Rectangle {
     int32_t height;
 };
 
-bool intersects(const Rectangle& left, const Rectangle& right) {
+class Geometry {
+ public:
+    static bool intersects(const Rectangle& left, const Rectangle& right);
+    static Rectangle intersection(const Rectangle& left, const Rectangle& right);
+    static int32_t absolute(int32_t value);
+};
+
+bool Geometry::intersects(const Rectangle& left, const Rectangle& right) {
     return left.x < right.x + right.width && right.x < left.x + left.width &&
            left.y < right.y + right.height && right.y < left.y + left.height;
 }
 
-Rectangle intersection(const Rectangle& left, const Rectangle& right) {
+Rectangle Geometry::intersection(const Rectangle& left, const Rectangle& right) {
     const int32_t x          = left.x > right.x ? left.x : right.x;
     const int32_t y          = left.y > right.y ? left.y : right.y;
     const int32_t rightEdge  = left.x + left.width < right.x + right.width
@@ -46,12 +53,12 @@ Rectangle intersection(const Rectangle& left, const Rectangle& right) {
             bottomEdge > y ? bottomEdge - y : 0};
 }
 
-int32_t absolute(int32_t value) { return value < 0 ? -value : value; }
+int32_t Geometry::absolute(int32_t value) { return value < 0 ? -value : value; }
 
 class DisplayDriver {
    public:
     bool init() {
-        return os::mapFramebuffer(framebufferAddress, info_) == 0 &&
+        return os::Device::mapFramebuffer(framebufferAddress, info_) == 0 &&
                info_.address != 0 && info_.width != 0 && info_.height != 0 &&
                (info_.bitsPerPixel == 24 || info_.bitsPerPixel == 32);
     }
@@ -162,9 +169,9 @@ class Surface : public window::WidgetCanvas {
 
     void drawLine(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                   uint32_t color) {
-        const int32_t deltaX = absolute(x1 - x0);
+        const int32_t deltaX = Geometry::absolute(x1 - x0);
         const int32_t stepX  = x0 < x1 ? 1 : -1;
-        const int32_t deltaY = -absolute(y1 - y0);
+        const int32_t deltaY = -Geometry::absolute(y1 - y0);
         const int32_t stepY  = y0 < y1 ? 1 : -1;
         int32_t error        = deltaX + deltaY;
         while (true) {
@@ -258,7 +265,7 @@ class GraphicsServer {
         const Rectangle screen  = {0, 0,
                                    static_cast<int32_t>(display_.info().width),
                                    static_cast<int32_t>(display_.info().height)};
-        const Rectangle clipped = intersection(dirty, screen);
+        const Rectangle clipped = Geometry::intersection(dirty, screen);
         if (clipped.width == 0 || clipped.height == 0) {
             return;
         }
@@ -324,7 +331,7 @@ class GraphicsServer {
             window.x - 2, window.y - static_cast<int32_t>(titleBarHeight) - 2,
             static_cast<int32_t>(window.surface.width()) + 4,
             static_cast<int32_t>(window.surface.height() + titleBarHeight) + 4};
-        if (!intersects(frame, dirty)) {
+        if (!Geometry::intersects(frame, dirty)) {
             return;
         }
         fillClipped(frame, dirty, focused ? 0x003aa675U : 0x006a7079U);
@@ -339,7 +346,7 @@ class GraphicsServer {
         const Rectangle content = {
             window.x, window.y, static_cast<int32_t>(window.surface.width()),
             static_cast<int32_t>(window.surface.height())};
-        const Rectangle pixels = intersection(content, dirty);
+        const Rectangle pixels = Geometry::intersection(content, dirty);
         for (int32_t y = pixels.y; y < pixels.y + pixels.height; ++y) {
             for (int32_t x = pixels.x; x < pixels.x + pixels.width; ++x) {
                 display_.drawPixel(
@@ -352,7 +359,7 @@ class GraphicsServer {
 
     void fillClipped(const Rectangle& rectangle, const Rectangle& dirty,
                      uint32_t color) {
-        const Rectangle clipped = intersection(rectangle, dirty);
+        const Rectangle clipped = Geometry::intersection(rectangle, dirty);
         if (clipped.width > 0 && clipped.height > 0) {
             display_.fillRectangle(
                 clipped.x, clipped.y, static_cast<uint32_t>(clipped.width),
@@ -477,7 +484,7 @@ class WindowServer {
                     } else {
                         os::WindowEvent event{};
                         event.type      = os::WindowEventType::WindowResize;
-                        event.timestamp = os::getMonotonicTime();
+                        event.timestamp = os::Clock::getMonotonicTime();
                         event.x         = static_cast<int32_t>(request.data[1]);
                         event.y         = static_cast<int32_t>(request.data[2]);
                         window->events.push(event);
@@ -658,7 +665,7 @@ class WindowServer {
         if (!sessionActive_ || !dirtyValid_) {
             return;
         }
-        const uint64_t now = os::getMonotonicTime();
+        const uint64_t now = os::Clock::getMonotonicTime();
         if (now < nextFrameTime_) {
             return;
         }
@@ -703,7 +710,7 @@ class WindowServer {
         window.x             = x;
         window.y             = y;
         window.events.clear();
-        os::copyString(window.title, title, sizeof(window.title));
+        os::Runtime::copyString(window.title, title, sizeof(window.title));
         clampWindowLocked(window);
     }
 
@@ -739,7 +746,7 @@ class WindowServer {
                 window.x             = 40 + static_cast<int32_t>(index * 28);
                 window.y             = 70 + static_cast<int32_t>(index * 24);
                 window.events.clear();
-                os::copyString(window.title,
+                os::Runtime::copyString(window.title,
                                reinterpret_cast<const char*>(&request.data[2]),
                                sizeof(window.title));
                 reply.data[1] = window.handle;
@@ -852,7 +859,7 @@ class WindowServer {
         markWindowDirtyLocked(window);
         os::WindowEvent event{};
         event.type      = os::WindowEventType::WindowFocus;
-        event.timestamp = os::getMonotonicTime();
+        event.timestamp = os::Clock::getMonotonicTime();
         window.events.push(event);
         notifyEventWaiterLocked(window);
     }
@@ -927,7 +934,7 @@ class WindowServer {
         const Rectangle screen = {
             0, 0, static_cast<int32_t>(graphics_.display().info().width),
             static_cast<int32_t>(graphics_.display().info().height)};
-        const Rectangle clipped = intersection(rectangle, screen);
+        const Rectangle clipped = Geometry::intersection(rectangle, screen);
         if (clipped.width <= 0 || clipped.height <= 0) {
             return;
         }
@@ -979,20 +986,24 @@ class WindowServer {
     window::TextBox inputBox_;
 };
 
+class WindowApplication {
+ public:
+    static void inputMain(void* self) { static_cast<WindowApplication*>(self)->inputLoop(); }
+    static void compositorMain(void* self) { static_cast<WindowApplication*>(self)->compositorLoop(); }
 WindowServer windowServer;
 uint64_t registryEndpoint;
 
-void inputMain() {
+void inputLoop() {
     const uint64_t input =
-        os::lookupService(registryEndpoint, os::inputServiceName, 5000);
+        os::ServiceRegistry::lookupService(registryEndpoint, os::inputServiceName, 5000);
     os::InputClient client;
     if (!client.connect(input)) {
-        os::log("[GUIW] input service unavailable\n");
+        os::System::log("[GUIW] input service unavailable\n");
         return;
     }
     while (true) {
         if (!client.wait()) {
-            os::log("[GUIW] input subscription failed\n");
+            os::System::log("[GUIW] input subscription failed\n");
             return;
         }
         os::InputEvent event{};
@@ -1002,23 +1013,22 @@ void inputMain() {
     }
 }
 
-void compositorMain() {
+void compositorLoop() {
     while (true) {
         windowServer.refresh();
         os::sleep(1);
     }
 }
 
-}  // namespace
 
-int main(int, char**) {
-    os::log("[GUIW] Window Server started in Ring 3\n");
+int run() {
+    os::System::log("[GUIW] Window Server started in Ring 0\n");
     registryEndpoint        = os::getBootstrapHandle();
     const uint64_t endpoint = os::createEndpoint();
     if (registryEndpoint == 0 || endpoint == 0 || !windowServer.init() ||
-        !os::registerService(registryEndpoint, os::guiwServiceName,
+        !os::ServiceRegistry::registerService(registryEndpoint, os::guiwServiceName,
                              endpoint)) {
-        os::log("[GUIW] display or service initialization failed\n");
+        os::System::log("[GUIW] display or service initialization failed\n");
         return 1;
     }
     constexpr uint64_t inputStackAddress = 0x0000000061000000ULL;
@@ -1027,14 +1037,14 @@ int main(int, char**) {
         os::mapMemory(compositorStackAddress, serviceThreadStackSize, 1) !=
             compositorStackAddress ||
         os::createThread(inputMain,
-                         inputStackAddress + serviceThreadStackSize) == 0 ||
+                         inputStackAddress + serviceThreadStackSize, this) == 0 ||
         os::createThread(compositorMain, compositorStackAddress +
-                                             serviceThreadStackSize) == 0) {
-        os::log("[GUIW] unable to start input or compositor thread\n");
+                                             serviceThreadStackSize, this) == 0) {
+        os::System::log("[GUIW] unable to start input or compositor thread\n");
         return 2;
     }
-    os::log("[GRAPHICS] linear framebuffer and software compositor online\n");
-    os::log("[GUIW] layered 60 Hz compositor and input dispatch online\n");
+    os::System::log("[GRAPHICS] linear framebuffer and software compositor online\n");
+    os::System::log("[GUIW] layered 60 Hz compositor and input dispatch online\n");
     while (true) {
         os::IpcMessage request{};
         if (os::receiveMessage(endpoint, request) != 0) {
@@ -1042,6 +1052,9 @@ int main(int, char**) {
         }
         os::IpcMessage reply{};
         windowServer.handle(request, reply);
-        os::replyMessage(endpoint, reply);
+        os::replyMessage(endpoint, request.replyToken, reply);
     }
 }
+};
+}  // namespace
+int main(int, char**) { static WindowApplication application; return application.run(); }

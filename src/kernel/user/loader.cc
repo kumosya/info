@@ -29,8 +29,12 @@ ProgramImage PROGRAM_IMAGES[] = {
     {"fs", "fs-server", 0, 0, 0},
     {"pci", "pci-server", 0, 0, kernel::taskCapabilityPci},
     {"device", "device-server", 0, 0, kernel::taskCapabilityDevice},
-    {"storage", "storage-server", 0, 0, kernel::taskCapabilityDevice}};
-kernel::ElfSharedImage bootRuntimeImage{};
+    {"storage", "storage-server", 0, 0, kernel::taskCapabilityDevice},
+    {"tty", "tty-server", 0, 0, 0},
+    {"console", "console-server", 0, 0, kernel::taskCapabilityDisplay},
+    {"guiw", "window-server", 0, 0, kernel::taskCapabilityDisplay},
+    {"users", "users-server", 0, 0, kernel::taskCapabilityUsers}};
+kernel::ElfSharedImage bootRuntimeImages[4]{};
 bool bootProgramsReady;
 
 bool moduleNameEquals(const char* commandLine, const char* expected) {
@@ -63,10 +67,12 @@ bool initializeBootPrograms(const kernel::BootInfo& bootInfo) {
         image.sourceAddress = DIRECT_MAP_BASE + module->start;
         image.size          = module->end - module->start;
     }
-    const kernel::BootModule* runtime = findModule(bootInfo, "libos-c++.so");
-    if (runtime == nullptr) return false;
-    bootRuntimeImage  = {DIRECT_MAP_BASE + runtime->start,
-                         runtime->end - runtime->start, "libos-c++.so"};
+    const char* libraries[] = {"libos-c++.so", "libc.so", "libc++.so", "libosgui-c++.so"};
+    for (uint32_t i = 0; i < 4; ++i) {
+        const auto* module = findModule(bootInfo, libraries[i]);
+        if (!module) return false;
+        bootRuntimeImages[i] = {DIRECT_MAP_BASE + module->start, module->end - module->start, libraries[i]};
+    }
     bootProgramsReady = true;
     return true;
 }
@@ -172,7 +178,7 @@ ElfLoadError UserProgramLoader::buildStack(
     return ElfLoadError::None;
 }
 
-Task* UserProgramLoader::load(os::ProgramId program, Task* parent,
+TaskReference UserProgramLoader::load(os::ProgramId program, Task* parent,
                               uint64_t bootstrapHandle, uint32_t argumentCount,
                               const char* const* arguments,
                               ElfLoadError* loadError) {
@@ -196,12 +202,12 @@ Task* UserProgramLoader::load(os::ProgramId program, Task* parent,
         }
         return nullptr;
     }
+    TaskReference lifetime(task);
     task->grantCapabilities(image.capabilities);
+    task->setServiceRole(static_cast<os::ServiceRole>(index + 1));
     // Only immutable boot-module identities can start in supervisor mode.
     // Disk executables and user-requested capability bits cannot opt into it.
-    task->setSystemService(program == os::ProgramId::PciServer ||
-                           program == os::ProgramId::DeviceServer ||
-                           program == os::ProgramId::StorageServer);
+    task->setSystemService(program != os::ProgramId::Init);
 
     if (bootstrapHandle != 0) {
         const uint64_t childHandle =
@@ -214,13 +220,14 @@ Task* UserProgramLoader::load(os::ProgramId program, Task* parent,
             return nullptr;
         }
         task->setBootstrapHandle(childHandle);
+        task->handles().restrictRights(childHandle, handleRightWrite);
     }
 
     ElfLoadResult result{};
     ElfLoadError error = ElfLoader::loadDynamicSetFromAddressSpace(
         task->addressSpace().rootPhysicalAddress(),
         memory::getKernelAddressSpaceRoot(), image.sourceAddress, image.size,
-        &bootRuntimeImage, 1, result);
+        bootRuntimeImages, 4, result, task->isSystemService());
     uint64_t stackPointer = 0;
     if (error == ElfLoadError::None) {
         error = UserProgramLoader::buildStack(
@@ -239,16 +246,16 @@ Task* UserProgramLoader::load(os::ProgramId program, Task* parent,
         }
         return nullptr;
     }
-    return task;
+    return lifetime;
 }
 
-Task* UserProgramLoader::loadImage(
+TaskReference UserProgramLoader::loadImage(
     uint64_t sourceAddress, size_t imageSize, const char* name, Task* source,
     Task* parent, uint64_t bootstrapHandle, uint64_t capabilities,
     uint64_t standardInputHandle, uint64_t standardOutputHandle,
     uint64_t standardErrorHandle, uint32_t argumentCount,
     const char* const* arguments, const ElfSharedImage* sharedImages,
-    uint32_t sharedImageCount, ElfLoadError* loadError) {
+    uint32_t sharedImageCount, ElfLoadError* loadError, os::ServiceRole serviceRole) {
     if (loadError != nullptr) {
         *loadError = ElfLoadError::None;
     }
@@ -267,6 +274,8 @@ Task* UserProgramLoader::loadImage(
         return nullptr;
     }
     task->grantCapabilities(capabilities);
+    TaskReference lifetime(task);
+    task->setServiceRole(serviceRole);
     if (bootstrapHandle != 0) {
         const uint64_t childHandle =
             Endpoint::duplicateHandle(source, task, bootstrapHandle);
@@ -278,6 +287,7 @@ Task* UserProgramLoader::loadImage(
             return nullptr;
         }
         task->setBootstrapHandle(childHandle);
+        task->handles().restrictRights(childHandle, handleRightWrite);
     }
     const uint64_t standardHandles[] = {
         standardInputHandle, standardOutputHandle, standardErrorHandle};
@@ -339,7 +349,7 @@ Task* UserProgramLoader::loadImage(
         }
         return nullptr;
     }
-    return task;
+    return lifetime;
 }
 
 Task* UserProgramLoader::startInitial(const BootInfo* bootInfo) {
@@ -348,7 +358,7 @@ Task* UserProgramLoader::startInitial(const BootInfo* bootInfo) {
         return nullptr;
     }
     ElfLoadError error;
-    Task* init = UserProgramLoader::load(os::ProgramId::Init, task::getIdle(),
+    auto init = UserProgramLoader::load(os::ProgramId::Init, task::getIdle(),
                                          0, 0, nullptr, &error);
     if (init == nullptr) {
         serial::serialWrite("[ELF] unable to load init: ");
@@ -357,6 +367,7 @@ Task* UserProgramLoader::startInitial(const BootInfo* bootInfo) {
         return nullptr;
     }
     serial::serialWrite("[ELF] ELF64 init image validated and mapped\n");
+    Task::setInitTask(init);
     serial::serialWrite(
         "[USERLAND] init loaded into an isolated address space\n");
     return init;

@@ -5,6 +5,23 @@
 namespace kernel {
 
 class Task;
+class SpinLock;
+class Endpoint;
+class Thread;
+class ThreadCleanup {
+   public:
+    ~ThreadCleanup();
+    void attach(void* object, void (*release)(void*));
+    void detach();
+    void reset();
+    static void releaseAll(Thread& thread);
+   private:
+    Thread* owner_ = nullptr;
+    ThreadCleanup* previous_ = nullptr;
+    ThreadCleanup* next_ = nullptr;
+    void* object_ = nullptr;
+    void (*release_)(void*) = nullptr;
+};
 struct SyscallContext;
 
 enum class ThreadState : uint8_t {
@@ -78,6 +95,20 @@ class Thread {
     [[noreturn]] static void exitCurrent(int exitCode);
     static void blockCurrent();
     static void prepareWait();
+    void registerWait(SpinLock& lock, Thread*& head, Thread** tail = nullptr);
+    void clearWaitRegistration();
+    void cancelWait();
+    Endpoint* getActiveEndpoint() const { return activeEndpoint; }
+    void setActiveEndpoint(Endpoint* endpoint) { activeEndpoint = endpoint; }
+    bool isExitAccounted() const { return exitAccounted; }
+    void setExitAccounted(bool value) { exitAccounted = value; }
+    bool hasCleanup() const { return cleanupHead != nullptr; }
+    ThreadCleanup*& cleanupList() { return cleanupHead; }
+    void setIpcWaitResult(int* result, bool immediate = false) { ipcWaitResult = result; ipcImmediate = immediate; }
+    int waitError() const {
+        const int result = ipcWaitResult ? __atomic_load_n(ipcWaitResult, __ATOMIC_ACQUIRE) : 0;
+        return result < 0 ? result : (ipcImmediate ? -6 : 0);
+    }
     bool hasActiveIpcCall() const { return __atomic_load_n(&activeIpcCall, __ATOMIC_ACQUIRE); }
     void setActiveIpcCall(bool active) { __atomic_store_n(&activeIpcCall, active, __ATOMIC_RELEASE); }
     static void wake(Thread* thread);
@@ -95,10 +126,10 @@ class Thread {
         id = value;
         return id;
     }
-    ThreadState getState() const { return state; }
+    ThreadState getState() const { return __atomic_load_n(&state, __ATOMIC_ACQUIRE); }
     ThreadState setState(ThreadState value) {
-        state = value;
-        return state;
+        __atomic_store_n(&state, value, __ATOMIC_RELEASE);
+        return value;
     }
     ThreadType getType() const { return type; }
     ThreadType setType(ThreadType value) {
@@ -222,6 +253,8 @@ class Thread {
     }
     Thread*& accessWaitNext() { return waitNext; }
     Thread* getJoinWaiters() const { return joinWaiters; }
+    Thread*& accessJoinWaiters() { return joinWaiters; }
+    Thread*& accessJoinWaitersTail() { return joinWaitersTail; }
     Thread* setJoinWaiters(Thread* value) {
         joinWaiters = value;
         return joinWaiters;
@@ -296,6 +329,14 @@ class Thread {
     bool inRunQueue;
     bool wakePending;
     bool activeIpcCall;
+    bool exitAccounted;
+    ThreadCleanup* cleanupHead;
+    int* ipcWaitResult;
+    bool ipcImmediate;
+    Endpoint* activeEndpoint;
+    SpinLock* waitOwnerLock;
+    Thread** waitOwnerHead;
+    Thread** waitOwnerTail;
     ThreadState stateBeforeStop;
     Thread* waitNext;
     Thread* joinWaiters;

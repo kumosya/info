@@ -106,8 +106,11 @@ chown -R 1000:1000 "$mountPath/home/user"
 cp "$buildPath/kernel.elf" "$mountPath/boot/kernel.elf"
 cp "$buildPath/services/init.elf" "$buildPath/services/task.elf" \
     "$buildPath/services/fs.elf" "$buildPath/services/pci.elf" "$buildPath/services/device.elf" \
-    "$buildPath/services/storage.elf" "$mountPath/boot/"
-cp "$packagePath/libos-c++/libos-c++.so" "$mountPath/boot/libos-c++.so"
+    "$buildPath/services/storage.elf" "$buildPath/services/tty.elf" \
+    "$buildPath/services/console.elf" "$buildPath/services/guiw.elf" \
+    "$buildPath/services/users.elf" "$mountPath/boot/"
+cp "$packagePath/libos-c++/libos-c++.so" "$packagePath/libc++/libc.so" \
+    "$packagePath/libc++/libc++.so" "$packagePath/libosgui-c++/libosgui-c++.so" "$mountPath/boot/"
 cp script/grub.cfg "$mountPath/boot/grub/grub.cfg"
 cp -R script/etc/. "$mountPath/etc/"
 chmod 0600 "$mountPath/etc/shadow"

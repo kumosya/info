@@ -6,13 +6,15 @@
 
 namespace fat32::detail {
 
-inline uint8_t checksum(const char* name) {
+class NameCodec {
+ public:
+static uint8_t checksum(const char* name) {
     uint8_t sum = 0;
     for (unsigned i = 0; i < 11; ++i)
         sum = static_cast<uint8_t>(((sum & 1) << 7) + (sum >> 1) + static_cast<uint8_t>(name[i]));
     return sum;
 }
-inline bool equal(const char* left, const char* right) {
+static bool equal(const char* left, const char* right) {
     for (size_t i = 0;; ++i) {
         const char a = left[i] >= 'a' && left[i] <= 'z' ? left[i] - 32 : left[i];
         const char b = right[i] >= 'a' && right[i] <= 'z' ? right[i] - 32 : right[i];
@@ -20,7 +22,7 @@ inline bool equal(const char* left, const char* right) {
         if (!a) return true;
     }
 }
-inline bool toUtf16(const char* name, uint16_t* units, size_t& length) {
+static bool toUtf16(const char* name, uint16_t* units, size_t& length) {
     length = 0;
     size_t bytes = 0;
     while (name[bytes]) {
@@ -52,7 +54,7 @@ inline bool toUtf16(const char* name, uint16_t* units, size_t& length) {
     }
     return length && name[bytes - 1] != ' ' && name[bytes - 1] != '.';
 }
-inline bool toUtf8(const uint16_t* units, size_t capacity, char* name) {
+static bool toUtf8(const uint16_t* units, size_t capacity, char* name) {
     size_t output = 0;
     for (size_t i = 0; i < capacity && units[i] && units[i] != 0xffff; ++i) {
         uint32_t code = units[i];
@@ -73,6 +75,7 @@ inline bool toUtf8(const uint16_t* units, size_t capacity, char* name) {
     name[output] = 0;
     return output != 0;
 }
+};
 inline constexpr uint8_t unitOffsets[13] = {1,3,5,7,9,14,16,18,20,22,24,28,30};
 
 }  // namespace fat32::detail

@@ -12,7 +12,6 @@
 
 namespace os {
 
-
 struct DirectoryEntry {
     FileType type;
     char name[256];
@@ -37,7 +36,7 @@ constexpr size_t maximumAsyncFileTransfer =
 class File {
    public:
     enum class Backend { Filesystem, Pipe, Terminal, SharedMemory };
-    explicit File(uint64_t service = 0, const char* path = nullptr) : service_(service) { if (path) copyString(path_, path, sizeof(path_)); }
+    explicit File(uint64_t service = 0, const char* path = nullptr) : service_(service) { if (path) Runtime::copyString(path_, path, sizeof(path_)); }
     static File adopt(uint64_t service, uint64_t handle, const char* path, int flags) {
         File value = borrow(service, handle, path, flags); value.ownsHandle_ = true; return value;
     }

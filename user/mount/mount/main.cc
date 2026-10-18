@@ -7,7 +7,7 @@
 namespace {
 
 uint64_t fsService() {
-    return os::lookupService(os::serviceRegistry(), os::fsServiceName, 1000);
+    return os::ServiceRegistry::lookupService(os::ServiceRegistry::serviceRegistry(), os::fsServiceName, 1000);
 }
 
 }  // namespace

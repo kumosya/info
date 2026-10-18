@@ -22,7 +22,7 @@ bool Filesystem::lookupInDirectory(const Inode& directory, const char* name,
                 return false;
             const char* entryName = reinterpret_cast<const char*>(entry + 1);
             if (entry->inode != 0 && entry->nameLength == nameLength &&
-                namesEqual(entryName, name, nameLength)) {
+                DirectoryEncoding::namesEqual(entryName, name, nameLength)) {
                 inode = entry->inode;
                 return true;
             }
@@ -82,7 +82,7 @@ bool Filesystem::addDirectoryEntry(uint32_t directoryNumber, Inode& directory,
     size_t nameLength = 0;
     while (name[nameLength] != '\0') ++nameLength;
     if (nameLength == 0 || nameLength > 255) return false;
-    const uint16_t needed = alignedEntrySize(nameLength);
+    const uint16_t needed = DirectoryEncoding::alignedEntrySize(nameLength);
     uint8_t data[maximumBlockSize]{};
     uint32_t blocks = (directory.size + blockSize_ - 1) / blockSize_;
     for (uint32_t logical = 0; logical < blocks; ++logical) {
@@ -94,7 +94,7 @@ bool Filesystem::addDirectoryEntry(uint32_t directoryNumber, Inode& directory,
             if (entry->recordLength < sizeof(RawDirectoryEntry) ||
                 offset + entry->recordLength > blockSize_)
                 return false;
-            const uint16_t used = alignedEntrySize(entry->nameLength);
+            const uint16_t used = DirectoryEncoding::alignedEntrySize(entry->nameLength);
             if (entry->inode == 0 && entry->recordLength >= needed) {
                 entry->inode      = child;
                 entry->nameLength = static_cast<uint8_t>(nameLength);
@@ -123,7 +123,7 @@ bool Filesystem::addDirectoryEntry(uint32_t directoryNumber, Inode& directory,
     }
     const uint32_t block = ensureDataBlock(directory, blocks);
     if (block == 0) return false;
-    os::clearMemory(data, blockSize_);
+    os::Runtime::clearMemory(data, blockSize_);
     auto* entry         = reinterpret_cast<RawDirectoryEntry*>(data);
     entry->inode        = child;
     entry->recordLength = static_cast<uint16_t>(blockSize_);
@@ -152,7 +152,7 @@ bool Filesystem::removeDirectoryEntry(uint32_t directoryNumber, Inode& directory
                 offset + entry->recordLength > blockSize_)
                 return false;
             if (entry->inode != 0 && entry->nameLength == nameLength &&
-                namesEqual(reinterpret_cast<char*>(entry + 1), name,
+                DirectoryEncoding::namesEqual(reinterpret_cast<char*>(entry + 1), name,
                            nameLength)) {
                 if (previous != nullptr)
                     previous->recordLength += entry->recordLength;

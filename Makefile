@@ -51,13 +51,17 @@ PACKAGE_CONFIGS := $(wildcard user/*/package.conf lib/*.conf)
 include $(BUILD_DIR)/packages.mk
 SERVICE_PROGRAMS := $(addprefix $(BUILD_DIR)/services/,$(addsuffix .elf,$(SERVICE_NAMES)))
 USER_PROGRAMS := $(SERVICE_PROGRAMS) $(APPLICATION_PROGRAMS)
-SERVICE_SOURCES := $(foreach service,$(SERVICE_NAMES),$(wildcard \
+SERVICE_SOURCES := $(foreach service,$(filter-out guiw,$(SERVICE_NAMES)),$(wildcard \
 	$(SOURCE_DIR)/$(service)/*.cc $(SOURCE_DIR)/$(service)/*/*.cc))
 SERVICE_ASM_SOURCES := $(foreach service,$(SERVICE_NAMES),$(wildcard $(SOURCE_DIR)/$(service)/*.S))
 SERVICE_CXX_OBJECTS := $(patsubst $(SOURCE_DIR)/%.cc,$(OBJECT_DIR)/%.o,$(SERVICE_SOURCES))
+GUIW_SOURCES := $(wildcard user/guiw/server/*.cc)
+GUIW_OBJECTS := $(patsubst user/guiw/server/%.cc,$(OBJECT_DIR)/user/guiw/server/%.o,$(GUIW_SOURCES))
+SERVICE_CXX_OBJECTS += $(GUIW_OBJECTS)
 SERVICE_ASM_OBJECTS := $(patsubst $(SOURCE_DIR)/%.S,$(OBJECT_DIR)/%.o,$(SERVICE_ASM_SOURCES))
 SERVICE_OBJECTS := $(SERVICE_CXX_OBJECTS) $(SERVICE_ASM_OBJECTS)
-APPLICATION_MAIN_OBJECTS := $(addprefix $(OBJECT_DIR)/user/,$(addsuffix /main.o,$(APPLICATION_NAMES)))
+application_object = $(OBJECT_DIR)/user/$(if $(filter terminal,$(1)),guiw,$(1))/main.o
+APPLICATION_MAIN_OBJECTS := $(foreach app,$(APPLICATION_NAMES),$(call application_object,$(app)))
 AR ?= ar
 DISK_IMAGE := $(BUILD_DIR)/$(PROJECT).img
 LIBC := $(BUILD_DIR)/lib/libc.a
@@ -115,9 +119,13 @@ build: kernel services applications libraries
 
 kernel: $(KERNEL)
 
+ifeq ($(USER_SUBBUILD),1)
 services: $(SERVICE_PROGRAMS)
-
 applications: $(APPLICATION_PROGRAMS)
+else
+services applications: libraries
+	+$(MAKE) -C user $@
+endif
 
 libraries: $(USER_SHARED_LIBRARIES) $(PACKAGE_DIR)/libc++/COPYRIGHT
 
@@ -150,9 +158,14 @@ $(OBJECT_DIR)/user/runtime/%.o: lib/os/%.S
 	@echo "[USER AS] $<"
 	@$(CC) $(CPPFLAGS) -m64 -ffreestanding -fno-pic $(DEPENDENCY_FLAGS) -c $< -o $@
 
-$(SERVICE_CXX_OBJECTS): $(OBJECT_DIR)/%.o: $(SOURCE_DIR)/%.cc
+$(filter-out $(GUIW_OBJECTS),$(SERVICE_CXX_OBJECTS)): $(OBJECT_DIR)/%.o: $(SOURCE_DIR)/%.cc
 	@mkdir -p $(@D)
 	@echo "[SERVICE CXX] $<"
+	@$(CXX) $(CPPFLAGS) $(USER_CXXFLAGS) $(DEPENDENCY_FLAGS) -c $< -o $@
+
+$(GUIW_OBJECTS): $(OBJECT_DIR)/user/guiw/server/%.o: user/guiw/server/%.cc
+	@mkdir -p $(@D)
+	@echo "[GUIW CXX] $<"
 	@$(CXX) $(CPPFLAGS) $(USER_CXXFLAGS) $(DEPENDENCY_FLAGS) -c $< -o $@
 
 $(SERVICE_ASM_OBJECTS): $(OBJECT_DIR)/%.o: $(SOURCE_DIR)/%.S
@@ -234,7 +247,7 @@ $(LIBCXX_SO): $(LIBCXX_OBJECTS) $(LIBCXXABI_OBJECTS) $(LIBC_SO) $(LIBOS_CXX_SO) 
 		$(LIBCXXABI_OBJECTS) -Wl,--no-as-needed $(LIBC_SO) $(LIBOS_CXX_SO) -lgcc
 
 define SERVICE_template
-$(BUILD_DIR)/services/$(1).elf: $$(filter $(OBJECT_DIR)/$(1)/%,$$(SERVICE_OBJECTS)) \
+$(BUILD_DIR)/services/$(1).elf: $$(if $$(filter guiw,$(1)),$$(GUIW_OBJECTS),$$(filter $(OBJECT_DIR)/$(1)/%,$$(SERVICE_OBJECTS))) \
 		$(OBJECT_DIR)/user/runtime/service_start.o $$(LIBOS_CXX_SO) \
 		$$(if $$(filter $(1),$$(DISK_SERVICE_NAMES)),$$(LIBOSGUI_CXX_SO)) \
 		$$(if $$(filter $(1),users),$$(LIBC_SO)) \
@@ -242,7 +255,7 @@ $(BUILD_DIR)/services/$(1).elf: $$(filter $(OBJECT_DIR)/$(1)/%,$$(SERVICE_OBJECT
 	@mkdir -p $$(@D)
 	@echo "[SERVICE LD] $$@"
 	@$$(CXX) $$(USER_CXXFLAGS) $$(USER_LDFLAGS) -o $$@ \
-		$$(filter $(OBJECT_DIR)/$(1)/%,$$(SERVICE_OBJECTS)) \
+		$$(if $$(filter guiw,$(1)),$$(GUIW_OBJECTS),$$(filter $(OBJECT_DIR)/$(1)/%,$$(SERVICE_OBJECTS))) \
 		$(OBJECT_DIR)/user/runtime/service_start.o \
 		-Wl,-E,--no-dynamic-linker -Wl,--no-as-needed $$(LIBOS_CXX_SO) \
 		$$(if $$(filter $(1),$$(DISK_SERVICE_NAMES)),$$(LIBOSGUI_CXX_SO)) \
@@ -252,12 +265,12 @@ endef
 $(foreach service,$(SERVICE_NAMES),$(eval $(call SERVICE_template,$(service))))
 
 define APPLICATION_template
-$(OBJECT_DIR)/user/$(1)/main.o: $$(firstword $$(wildcard user/coreutils/$(1)/main.cc user/$(1)/main.cc user/mount/$(1)/main.cc))
+$(call application_object,$(1)): $$(firstword $$(wildcard user/coreutils/$(1)/main.cc user/$(1)/main.cc user/mount/$(1)/main.cc $$(if $$(filter terminal,$(1)),user/guiw/main.cc)))
 	@mkdir -p $$(@D)
 	@echo "[USER CXX] $$<"
 	@$$(CXX) $$(CPPFLAGS) $$(USER_CXXFLAGS) $$(DEPENDENCY_FLAGS) -c $$< -o $$@
 
-$$(APP_OUTPUT_$(1)): $(OBJECT_DIR)/user/$(1)/main.o \
+$$(APP_OUTPUT_$(1)): $(call application_object,$(1)) \
 		$(OBJECT_DIR)/user/runtime/start.o $(USER_SHARED_LIBRARIES) script/user.lds \
 		Makefile
 	@mkdir -p $$(@D)
@@ -289,6 +302,7 @@ cpfiles: all
 	@sudo sh script/cpfiles.sh "$(DISK_IMAGE)" "$(BUILD_DIR)" "$(PACKAGE_DIR)"
 
 check: $(KERNEL) $(USER_PROGRAMS) $(USER_SHARED_LIBRARIES)
+	@python3 script/check-service-imports.py
 	@grub-file --is-x86-multiboot2 $(KERNEL)
 	@readelf -h $(KERNEL) | grep -q 'EXEC (Executable file)'
 	@test -z "$$(readelf -d $(KERNEL) 2>/dev/null | grep NEEDED)"

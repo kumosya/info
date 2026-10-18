@@ -10,7 +10,7 @@ int main(int argumentCount, char** arguments) {
         return 1;
     }
     const uint64_t service =
-        os::lookupService(os::serviceRegistry(), os::fsServiceName, 1000);
+        os::ServiceRegistry::lookupService(os::ServiceRegistry::serviceRegistry(), os::fsServiceName, 1000);
     if (service == 0 || !(os::File(service).umount(arguments[1]) == 0)) {
         fputs("umount: target is busy or not mounted\n", stderr);
         return 1;

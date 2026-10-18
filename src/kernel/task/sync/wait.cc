@@ -28,11 +28,13 @@ uint64_t waitKey(kernel::Task& task, const volatile uint32_t* address) {
     uint64_t flags          = 0;
     const uint64_t physical = kernel::memory::getPhysicalAddressInAddressSpace(
         task.addressSpace().rootPhysicalAddress(), virtualAddress, &flags);
-    return physical != 0 && (flags & kernel::pageUser) != 0 ? physical : 0;
+    return physical != 0 && ((flags & kernel::pageUser) != 0 ||
+        (task.isSystemService() && virtualAddress >= 0xffff800000000000ULL)) ? physical : 0;
 }
 
 void append(WaitBucket& bucket, kernel::Thread* thread) {
     kernel::Thread::prepareWait();
+    thread->registerWait(bucket.lock, bucket.head, &bucket.tail);
     thread->setWaitNext(nullptr);
     if (bucket.tail == nullptr) {
         bucket.head = thread;
@@ -109,6 +111,7 @@ uint32_t sync::wakeUserAddress(volatile uint32_t* address, uint32_t count) {
                 bucket.tail = previous;
             }
             current->setWaitNext(nullptr);
+            current->clearWaitRegistration();
             if (wakeTail == nullptr) {
                 wakeHead = current;
             } else {

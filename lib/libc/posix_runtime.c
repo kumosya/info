@@ -15,16 +15,15 @@
 #include <sys/wait.h>
 #include <sys/time.h>
 
-static long syscall_result(long value) { if(value<0) { errno=-value; return -1; } return value; }
-int sched_yield(void) { return syscall_result(os_syscall(OS_SYS_YIELD,0,0,0,0,0,0)); }
+int sched_yield(void) { __libc_os_yield(); return 0; }
 pid_t getpgid(pid_t pid) {
     OsTaskIdentifiers ids;
-    long result = os_syscall(OS_SYS_GET_TASK_IDENTIFIERS,(long)&ids,pid,0,0,0,0);
+    long result = __libc_os_get_task_identifiers(&ids, pid);
     if(result<0) { errno=result==-4?ESRCH:EINVAL; return -1; }
     return (pid_t)ids.taskGroupId;
 }
 int setpgid(pid_t pid,pid_t group) {
-    long result = os_syscall(OS_SYS_SET_TASK_GROUP,group,pid,0,0,0,0);
+    long result = __libc_os_set_task_group(group, pid);
     if(result<0) { errno=result==-4?ESRCH:EPERM; return -1; }
     return 0;
 }

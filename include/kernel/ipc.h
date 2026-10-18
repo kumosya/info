@@ -9,6 +9,8 @@
 namespace kernel {
 
 class Task;
+class Thread;
+class EndpointService;
 struct EndpointImplementation;
 
 constexpr uint32_t endpointRightSend    = 1U << 0;
@@ -23,12 +25,22 @@ class Endpoint {
     static uint64_t duplicateHandle(Task* source, Task* destination,
                                     uint64_t handle,
                                     uint64_t destinationHandle = 0);
-    static Endpoint* create();
+    static Endpoint* create(EndpointService* service = nullptr);
+    static void expireWaits(uint64_t now);
+    static void cancelThread(Thread* thread);
+    static void interruptThread(Thread* thread);
+    static void closeOwner(Task* owner);
+    void retain();
+    void release();
+    bool isClosed();
+    void receiverClosed(Task* owner);
     bool notifyFromInterrupt(uint64_t type, uint64_t value);
-    int call(IpcMessage* request, IpcMessage* reply);
+    int call(IpcMessage* request, IpcMessage* reply,
+             uint64_t deadline = os::ipcInfiniteDeadline);
     int reply(IpcMessage* message);
-    int receive(IpcMessage* message);
-    int send(IpcMessage* message);
+    int receive(IpcMessage* message, uint64_t deadline = os::ipcInfiniteDeadline);
+    int send(IpcMessage* message, uint64_t deadline = os::ipcInfiniteDeadline);
+    int cancel(uint64_t threadId);
     bool grantAccess(Task* task, uint32_t rights);
     void destroy();
 
@@ -52,6 +64,7 @@ class Endpoint {
     uint64_t id;
     Task* owner;
     EndpointImplementation* implementation;
+    uint32_t references = 1;
 };
 
 class MessageQueueAttributes {

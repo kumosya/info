@@ -4,11 +4,18 @@
 
 namespace vfs::server {
 namespace {
-bool space(char c) { return c == ' ' || c == '\t' || c == '\r'; }
-bool field(const char*& cursor, char* output, size_t capacity) {
-    while (space(*cursor)) ++cursor;
+class FstabFields {
+ public:
+    static bool space(char c);
+    static bool field(const char*& cursor, char* output, size_t capacity);
+    static bool number(const char* text, uint32_t& value);
+};
+
+bool FstabFields::space(char c) { return c == ' ' || c == '\t' || c == '\r'; }
+bool FstabFields::field(const char*& cursor, char* output, size_t capacity) {
+    while (FstabFields::space(*cursor)) ++cursor;
     size_t length = 0;
-    while (*cursor && *cursor != '\n' && *cursor != '#' && !space(*cursor)) {
+    while (*cursor && *cursor != '\n' && *cursor != '#' && !FstabFields::space(*cursor)) {
         char value = *cursor++;
         if (value == '\\') {
             uint32_t decoded = 0;
@@ -25,7 +32,7 @@ bool field(const char*& cursor, char* output, size_t capacity) {
     output[length] = '\0';
     return length != 0;
 }
-bool number(const char* text, uint32_t& value) {
+bool FstabFields::number(const char* text, uint32_t& value) {
     value = 0;
     if (!*text) return false;
     for (; *text; ++text) {
@@ -62,20 +69,20 @@ bool Fstab::next(const char*& text, MountSpec& spec, bool& present) {
     spec               = {};
     present            = false;
     const char* cursor = text;
-    while (space(*cursor)) ++cursor;
+    while (FstabFields::space(*cursor)) ++cursor;
     if (*cursor && *cursor != '\n' && *cursor != '#') {
-        if (!field(cursor, spec.source, sizeof(spec.source)) ||
-            !field(cursor, spec.target, sizeof(spec.target)) ||
-            !field(cursor, spec.type, sizeof(spec.type)) ||
-            !field(cursor, spec.options, sizeof(spec.options)) ||
+        if (!FstabFields::field(cursor, spec.source, sizeof(spec.source)) ||
+            !FstabFields::field(cursor, spec.target, sizeof(spec.target)) ||
+            !FstabFields::field(cursor, spec.type, sizeof(spec.type)) ||
+            !FstabFields::field(cursor, spec.options, sizeof(spec.options)) ||
             !canonicalTarget(spec.target))
             return false;
         char value[16]{};
         for (uint32_t index = 0; index < 2; ++index) {
-            while (space(*cursor)) ++cursor;
+            while (FstabFields::space(*cursor)) ++cursor;
             if (!*cursor || *cursor == '\n' || *cursor == '#') break;
             uint32_t count = 0;
-            if (!field(cursor, value, sizeof(value)) || !number(value, count) ||
+            if (!FstabFields::field(cursor, value, sizeof(value)) || !FstabFields::number(value, count) ||
                 count > (index == 0 ? 1U : 2U))
                 return false;
             if (index == 0)
@@ -83,7 +90,7 @@ bool Fstab::next(const char*& text, MountSpec& spec, bool& present) {
             else
                 spec.pass = count;
         }
-        while (space(*cursor)) ++cursor;
+        while (FstabFields::space(*cursor)) ++cursor;
         if (*cursor && *cursor != '\n' && *cursor != '#') return false;
         for (size_t pos = 0; spec.options[pos];) {
             size_t end = pos;
@@ -93,19 +100,19 @@ bool Fstab::next(const char*& text, MountSpec& spec, bool& present) {
             if (end - pos >= sizeof(option)) return false;
             for (size_t i = pos; i < end; ++i)
                 option[i - pos] = spec.options[i];
-            if (os::stringsEqual(option, "ro"))
+            if (os::Runtime::stringsEqual(option, "ro"))
                 spec.readOnly = true;
-            else if (os::stringsEqual(option, "rw"))
+            else if (os::Runtime::stringsEqual(option, "rw"))
                 spec.readOnly = false;
-            else if (os::stringsEqual(option, "auto"))
+            else if (os::Runtime::stringsEqual(option, "auto"))
                 spec.automatic = true;
-            else if (os::stringsEqual(option, "noauto"))
+            else if (os::Runtime::stringsEqual(option, "noauto"))
                 spec.automatic = false;
-            else if (os::stringsEqual(option, "nofail"))
+            else if (os::Runtime::stringsEqual(option, "nofail"))
                 spec.required = false;
-            else if (os::stringsEqual(option, "fail"))
+            else if (os::Runtime::stringsEqual(option, "fail"))
                 spec.required = true;
-            else if (!os::stringsEqual(option, "defaults"))
+            else if (!os::Runtime::stringsEqual(option, "defaults"))
                 return false;
             if (spec.options[end] == ',' && !spec.options[end + 1])
                 return false;
