@@ -15,9 +15,6 @@
 #include "kernel/thread.h"
 #include "kernel/time.h"
 
-#ifdef OS_TASK_LIFECYCLE_TEST
-#include "../../tests/kernel-lifecycle.h"
-#endif
 
 namespace {
 

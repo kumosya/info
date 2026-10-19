@@ -54,5 +54,3 @@ GPT PARTUUID 来自分区唯一 GUID，MBR 为磁盘签名-分区号。重复 UU
 ls 支持 -l、-a、-la 和 --color=auto/always/never；普通列表以两个空格分隔并按行宽换行，-l 显示类型、rwx/特殊权限位、链接数、数字 UID/GID、大小或主次设备号、UTC 修改时间。没有时间元数据的条目显示 -。默认只给终端输出 ANSI 颜色，图形 PTY 也由 isatty 识别；管道或重定向默认不带颜色。LS_COLORS 可覆盖 di、fi、ex、ln、pi、so、bd、cd 类型颜色，例如 export LS_COLORS='di=01;35:fi=0:ex=01;32'。
 
 目录读取区分记录、正常结束和介质错误。末尾零填充属于正常结束，块间填充跳到下一块，批量枚举能返回已有条目；真实 I/O 错误和越界记录仍报错。查找与枚举一致处理 ;1 和末尾点。
-
-在 WSL Debian 中可用 `make clean`、`make all`、`make check`、`make mkimg`、`make cpfiles run` 完成构建与启动检查。

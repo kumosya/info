@@ -1,0 +1,69 @@
+#pragma once
+
+#include <new>
+#include <utility>
+
+namespace std {
+
+struct nullopt_t {
+    explicit constexpr nullopt_t(int) {}
+};
+
+inline constexpr nullopt_t nullopt{0};
+
+template <class Type>
+class optional {
+   public:
+    constexpr optional() noexcept = default;
+    constexpr optional(nullopt_t) noexcept {}
+    optional(const Type& value) { emplace(value); }
+    optional(Type&& value) { emplace(move(value)); }
+    optional(const optional& other) {
+        if (other.hasValue_) {
+            emplace(*other);
+        }
+    }
+    optional(optional&& other) {
+        if (other.hasValue_) {
+            emplace(move(*other));
+        }
+    }
+    ~optional() { reset(); }
+
+    optional& operator=(nullopt_t) {
+        reset();
+        return *this;
+    }
+
+    template <class... Arguments>
+    Type& emplace(Arguments&&... arguments) {
+        reset();
+        new (storage_) Type(forward<Arguments>(arguments)...);
+        hasValue_ = true;
+        return **this;
+    }
+
+    void reset() noexcept {
+        if (hasValue_) {
+            (**this).~Type();
+            hasValue_ = false;
+        }
+    }
+
+    constexpr bool has_value() const noexcept { return hasValue_; }
+    explicit constexpr operator bool() const noexcept { return hasValue_; }
+    Type& operator*() { return *reinterpret_cast<Type*>(storage_); }
+    const Type& operator*() const {
+        return *reinterpret_cast<const Type*>(storage_);
+    }
+    Type* operator->() { return &**this; }
+    const Type* operator->() const { return &**this; }
+    Type& value() { return **this; }
+    const Type& value() const { return **this; }
+
+   private:
+    alignas(Type) unsigned char storage_[sizeof(Type)]{};
+    bool hasValue_ = false;
+};
+
+}  // namespace std

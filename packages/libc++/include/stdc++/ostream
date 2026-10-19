@@ -1,0 +1,32 @@
+#pragma once
+
+#include <ios>
+
+namespace std {
+
+class ostream {
+   public:
+    explicit constexpr ostream(int fileDescriptor) noexcept
+        : fileDescriptor_(fileDescriptor) {}
+
+    ostream& put(char character);
+    ostream& write(const char* data, streamsize size);
+    ostream& flush();
+
+    ostream& operator<<(const char* value);
+    ostream& operator<<(char value);
+    ostream& operator<<(int value);
+    ostream& operator<<(unsigned int value);
+    ostream& operator<<(long value);
+    ostream& operator<<(unsigned long value);
+    ostream& operator<<(const void* value);
+    ostream& operator<<(ostream& (*manipulator)(ostream&));
+
+   private:
+    int fileDescriptor_;
+};
+
+ostream& endl(ostream& stream);
+ostream& flush(ostream& stream);
+
+}  // namespace std

@@ -1,0 +1,124 @@
+#pragma once
+
+#include <new>
+#include <stddef.h>
+#include <stdlib.h>
+#include <utility>
+
+namespace std {
+
+template <class Type>
+class unique_ptr {
+   public:
+    constexpr unique_ptr() noexcept = default;
+    explicit unique_ptr(Type* pointer) noexcept : pointer_(pointer) {}
+    unique_ptr(const unique_ptr&) = delete;
+    unique_ptr& operator=(const unique_ptr&) = delete;
+    unique_ptr(unique_ptr&& other) noexcept : pointer_(other.release()) {}
+    unique_ptr& operator=(unique_ptr&& other) noexcept {
+        reset(other.release());
+        return *this;
+    }
+    ~unique_ptr() { delete pointer_; }
+
+    Type* get() const noexcept { return pointer_; }
+    Type* release() noexcept {
+        Type* result = pointer_;
+        pointer_ = nullptr;
+        return result;
+    }
+    void reset(Type* pointer = nullptr) noexcept {
+        Type* previous = pointer_;
+        pointer_ = pointer;
+        delete previous;
+    }
+    Type& operator*() const { return *pointer_; }
+    Type* operator->() const noexcept { return pointer_; }
+    explicit operator bool() const noexcept { return pointer_ != nullptr; }
+
+   private:
+    Type* pointer_ = nullptr;
+};
+
+template <class Type, class... Arguments>
+unique_ptr<Type> make_unique(Arguments&&... arguments) {
+    return unique_ptr<Type>(new Type(forward<Arguments>(arguments)...));
+}
+
+template <class Type>
+class shared_ptr {
+   private:
+    struct ControlBlock {
+        Type* pointer;
+        size_t references;
+    };
+
+   public:
+    constexpr shared_ptr() noexcept = default;
+    explicit shared_ptr(Type* pointer) {
+        if (pointer != nullptr) {
+            control_ = static_cast<ControlBlock*>(malloc(sizeof(ControlBlock)));
+            if (control_ == nullptr) {
+                delete pointer;
+                return;
+            }
+            control_->pointer = pointer;
+            control_->references = 1;
+        }
+    }
+    shared_ptr(const shared_ptr& other) noexcept : control_(other.control_) {
+        retain();
+    }
+    shared_ptr(shared_ptr&& other) noexcept : control_(other.control_) {
+        other.control_ = nullptr;
+    }
+    ~shared_ptr() { release(); }
+    shared_ptr& operator=(const shared_ptr& other) noexcept {
+        if (this != &other) {
+            release();
+            control_ = other.control_;
+            retain();
+        }
+        return *this;
+    }
+    shared_ptr& operator=(shared_ptr&& other) noexcept {
+        if (this != &other) {
+            release();
+            control_ = other.control_;
+            other.control_ = nullptr;
+        }
+        return *this;
+    }
+    Type* get() const noexcept {
+        return control_ == nullptr ? nullptr : control_->pointer;
+    }
+    Type& operator*() const { return *get(); }
+    Type* operator->() const noexcept { return get(); }
+    explicit operator bool() const noexcept { return get() != nullptr; }
+    size_t use_count() const noexcept {
+        return control_ == nullptr ? 0 : control_->references;
+    }
+
+   private:
+    void retain() {
+        if (control_ != nullptr) {
+            ++control_->references;
+        }
+    }
+    void release() {
+        if (control_ != nullptr && --control_->references == 0) {
+            delete control_->pointer;
+            free(control_);
+        }
+        control_ = nullptr;
+    }
+
+    ControlBlock* control_ = nullptr;
+};
+
+template <class Type, class... Arguments>
+shared_ptr<Type> make_shared(Arguments&&... arguments) {
+    return shared_ptr<Type>(new Type(forward<Arguments>(arguments)...));
+}
+
+}  // namespace std

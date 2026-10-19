@@ -24,18 +24,14 @@ flowchart TB
             direction TB
             
             Init["init"]
-            Pci["pci"]
             TaskS["task"]
+            MemoryS["mm"]
             FsS["fs"]
             DeviceS["device"]
-            StorageS["storage"]
             TtyS["tty"]
-            MemoryS["mm"]
-            PipeS["pipe"]
-            MsgqS["msgq"]
             ConsoleS["console"]
-            GuiwS["guiw"]
             UsersS["users"]
+            GuiwS["guiw"]
         end
     end
 
@@ -55,7 +51,6 @@ flowchart TB
                 TaskK["task.kernel"]
                 MemoryK["memory.kernel"]
                 DeviceK["device.kernel"]
-                PciK["pci.kernel"]
                 SystemK["system.kernel"]
             end
         end

@@ -1,0 +1,14 @@
+#pragma once
+
+#include <stddef.h>
+
+namespace std {
+
+using streamsize = ptrdiff_t;
+
+class ios_base {
+   public:
+    using fmtflags = unsigned int;
+};
+
+}  // namespace std

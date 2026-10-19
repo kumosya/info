@@ -1,0 +1,90 @@
+#pragma once
+
+namespace std {
+
+template <class Type, Type valueValue>
+struct integral_constant {
+    static constexpr Type value = valueValue;
+    using value_type = Type;
+    using type = integral_constant;
+    constexpr operator value_type() const noexcept { return value; }
+};
+
+using true_type = integral_constant<bool, true>;
+using false_type = integral_constant<bool, false>;
+
+template <bool condition, class Type = void>
+struct enable_if {};
+template <class Type>
+struct enable_if<true, Type> {
+    using type = Type;
+};
+template <bool condition, class Type = void>
+using enable_if_t = typename enable_if<condition, Type>::type;
+
+template <class Left, class Right>
+struct is_same : false_type {};
+template <class Type>
+struct is_same<Type, Type> : true_type {};
+
+template <class Type>
+struct remove_reference {
+    using type = Type;
+};
+template <class Type>
+struct remove_reference<Type&> {
+    using type = Type;
+};
+template <class Type>
+struct remove_reference<Type&&> {
+    using type = Type;
+};
+template <class Type>
+using remove_reference_t = typename remove_reference<Type>::type;
+
+template <class Type>
+struct remove_const {
+    using type = Type;
+};
+template <class Type>
+struct remove_const<const Type> {
+    using type = Type;
+};
+
+template <class Type>
+struct remove_volatile {
+    using type = Type;
+};
+template <class Type>
+struct remove_volatile<volatile Type> {
+    using type = Type;
+};
+
+template <class Type>
+struct remove_cv {
+    using type = typename remove_volatile<
+        typename remove_const<Type>::type>::type;
+};
+
+template <class Type>
+using remove_cv_t = typename remove_cv<Type>::type;
+
+template <class Type>
+struct decay_helper {
+    using type = remove_cv_t<Type>;
+};
+
+template <class Result, class... Arguments>
+struct decay_helper<Result(Arguments...)> {
+    using type = Result (*)(Arguments...);
+};
+
+template <class Type>
+struct decay {
+    using type = typename decay_helper<remove_reference_t<Type>>::type;
+};
+
+template <class Type>
+using decay_t = typename decay<Type>::type;
+
+}  // namespace std

@@ -1,0 +1,24 @@
+#pragma once
+
+#include <ios>
+#include <stddef.h>
+
+namespace std {
+
+class istream {
+   public:
+    explicit constexpr istream(int fileDescriptor) noexcept
+        : fileDescriptor_(fileDescriptor) {}
+
+    istream& get(char& value);
+    istream& getline(char* buffer, streamsize size);
+    istream& read(char* buffer, streamsize size);
+    istream& operator>>(int& value);
+    explicit operator bool() const noexcept { return good_; }
+
+   private:
+    int fileDescriptor_;
+    bool good_ = true;
+};
+
+}  // namespace std

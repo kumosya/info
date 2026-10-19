@@ -1,0 +1,29 @@
+#pragma once
+
+#include <stddef.h>
+
+namespace std {
+
+template <class Type, size_t sizeValue>
+struct array {
+    using value_type = Type;
+    using iterator = Type*;
+    using const_iterator = const Type*;
+
+    Type values[sizeValue == 0 ? 1 : sizeValue];
+
+    constexpr Type& operator[](size_t index) { return values[index]; }
+    constexpr const Type& operator[](size_t index) const {
+        return values[index];
+    }
+    constexpr Type* data() noexcept { return values; }
+    constexpr const Type* data() const noexcept { return values; }
+    constexpr iterator begin() noexcept { return values; }
+    constexpr const_iterator begin() const noexcept { return values; }
+    constexpr iterator end() noexcept { return values + sizeValue; }
+    constexpr const_iterator end() const noexcept { return values + sizeValue; }
+    static constexpr size_t size() noexcept { return sizeValue; }
+    static constexpr bool empty() noexcept { return sizeValue == 0; }
+};
+
+}  // namespace std

@@ -1,0 +1,40 @@
+#pragma once
+
+#include <stddef.h>
+
+namespace std {
+
+template <class Type>
+class initializer_list {
+   public:
+    using value_type = Type;
+    using reference = const Type&;
+    using const_reference = const Type&;
+    using size_type = size_t;
+    using iterator = const Type*;
+    using const_iterator = const Type*;
+
+    constexpr initializer_list() noexcept : data_(nullptr), size_(0) {}
+    constexpr size_t size() const noexcept { return size_; }
+    constexpr const Type* begin() const noexcept { return data_; }
+    constexpr const Type* end() const noexcept { return data_ + size_; }
+
+   private:
+    constexpr initializer_list(const Type* data, size_t size) noexcept
+        : data_(data), size_(size) {}
+
+    const Type* data_;
+    size_t size_;
+};
+
+template <class Type>
+constexpr const Type* begin(initializer_list<Type> values) noexcept {
+    return values.begin();
+}
+
+template <class Type>
+constexpr const Type* end(initializer_list<Type> values) noexcept {
+    return values.end();
+}
+
+}  // namespace std

@@ -1,0 +1,30 @@
+#pragma once
+
+#include <stddef.h>
+
+namespace std {
+
+struct nothrow_t {
+    explicit constexpr nothrow_t() = default;
+};
+
+extern const nothrow_t nothrow;
+
+}  // namespace std
+
+void* operator new(size_t size) noexcept;
+void* operator new[](size_t size) noexcept;
+void* operator new(size_t size, const std::nothrow_t&) noexcept;
+void* operator new[](size_t size, const std::nothrow_t&) noexcept;
+
+void operator delete(void* pointer) noexcept;
+void operator delete[](void* pointer) noexcept;
+void operator delete(void* pointer, size_t size) noexcept;
+void operator delete[](void* pointer, size_t size) noexcept;
+void operator delete(void* pointer, const std::nothrow_t&) noexcept;
+void operator delete[](void* pointer, const std::nothrow_t&) noexcept;
+
+inline void* operator new(size_t, void* pointer) noexcept { return pointer; }
+inline void* operator new[](size_t, void* pointer) noexcept { return pointer; }
+inline void operator delete(void*, void*) noexcept {}
+inline void operator delete[](void*, void*) noexcept {}

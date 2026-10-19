@@ -1,0 +1,42 @@
+#pragma once
+
+#include <type_traits>
+
+namespace std {
+
+template <class Type>
+constexpr remove_reference_t<Type>&& move(Type&& value) noexcept {
+    return static_cast<remove_reference_t<Type>&&>(value);
+}
+
+template <class Type>
+constexpr Type&& forward(remove_reference_t<Type>& value) noexcept {
+    return static_cast<Type&&>(value);
+}
+
+template <class Type>
+constexpr Type&& forward(remove_reference_t<Type>&& value) noexcept {
+    return static_cast<Type&&>(value);
+}
+
+template <class First, class Second>
+struct pair {
+    using first_type = First;
+    using second_type = Second;
+
+    First first;
+    Second second;
+
+    constexpr pair() : first(), second() {}
+    constexpr pair(const First& firstValue, const Second& secondValue)
+        : first(firstValue), second(secondValue) {}
+};
+
+template <class Type>
+constexpr void swap(Type& left, Type& right) {
+    Type temporary = move(left);
+    left = move(right);
+    right = move(temporary);
+}
+
+}  // namespace std

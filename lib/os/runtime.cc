@@ -84,6 +84,7 @@ uint64_t CoreServiceClient::openHandle(CoreServiceKind kind) {
     return invokeSyscall(SyscallNumber::GetBootstrapHandle, static_cast<uint64_t>(BootstrapOperation::GetCoreService), static_cast<uint64_t>(kind));
 }
 uint64_t CoreServiceClient::handles_[static_cast<uint64_t>(CoreServiceKind::Count)];
+
 int CoreServiceClient::call(CoreServiceKind kind, IpcMessage& request, IpcMessage& reply, uint64_t deadline) {
     if (SystemService::isPrivileged()) return SystemService::coreCall(kind, request, reply, deadline);
     const auto index = static_cast<uint64_t>(kind);

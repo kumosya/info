@@ -1,0 +1,171 @@
+#pragma once
+
+#include <initializer_list>
+#include <new>
+#include <stddef.h>
+#include <stdlib.h>
+#include <utility>
+
+namespace std {
+
+template <class Type>
+class vector {
+   public:
+    using value_type = Type;
+    using size_type = size_t;
+    using iterator = Type*;
+    using const_iterator = const Type*;
+
+    vector() noexcept = default;
+
+    explicit vector(size_t count) { resize(count); }
+
+    vector(initializer_list<Type> values) {
+        reserve(values.size());
+        for (const Type& value : values) {
+            push_back(value);
+        }
+    }
+
+    vector(const vector& other) {
+        reserve(other.size_);
+        for (const Type& value : other) {
+            push_back(value);
+        }
+    }
+
+    vector(vector&& other) noexcept
+        : data_(other.data_), size_(other.size_), capacity_(other.capacity_) {
+        other.data_ = nullptr;
+        other.size_ = 0;
+        other.capacity_ = 0;
+    }
+
+    ~vector() {
+        clear();
+        free(data_);
+    }
+
+    vector& operator=(const vector& other) {
+        if (this != &other) {
+            clear();
+            reserve(other.size_);
+            for (const Type& value : other) {
+                push_back(value);
+            }
+        }
+        return *this;
+    }
+
+    vector& operator=(vector&& other) noexcept {
+        if (this != &other) {
+            clear();
+            free(data_);
+            data_ = other.data_;
+            size_ = other.size_;
+            capacity_ = other.capacity_;
+            other.data_ = nullptr;
+            other.size_ = 0;
+            other.capacity_ = 0;
+        }
+        return *this;
+    }
+
+    void reserve(size_t requestedCapacity) {
+        if (requestedCapacity <= capacity_) {
+            return;
+        }
+        Type* replacement = static_cast<Type*>(
+            malloc(requestedCapacity * sizeof(Type)));
+        if (replacement == nullptr) {
+            return;
+        }
+        for (size_t index = 0; index < size_; ++index) {
+            new (replacement + index) Type(move(data_[index]));
+            data_[index].~Type();
+        }
+        free(data_);
+        data_ = replacement;
+        capacity_ = requestedCapacity;
+    }
+
+    void resize(size_t requestedSize) {
+        if (requestedSize > capacity_) {
+            reserve(requestedSize);
+        }
+        if (requestedSize > capacity_) {
+            return;
+        }
+        while (size_ < requestedSize) {
+            new (data_ + size_++) Type();
+        }
+        while (size_ > requestedSize) {
+            data_[--size_].~Type();
+        }
+    }
+
+    void push_back(const Type& value) {
+        ensureCapacity();
+        if (size_ < capacity_) {
+            new (data_ + size_++) Type(value);
+        }
+    }
+
+    void push_back(Type&& value) {
+        ensureCapacity();
+        if (size_ < capacity_) {
+            new (data_ + size_++) Type(move(value));
+        }
+    }
+
+    template <class... Arguments>
+    Type& emplace_back(Arguments&&... arguments) {
+        ensureCapacity();
+        if (size_ == capacity_) {
+            abort();
+        }
+        new (data_ + size_) Type(forward<Arguments>(arguments)...);
+        return data_[size_++];
+    }
+
+    void pop_back() {
+        if (size_ != 0) {
+            data_[--size_].~Type();
+        }
+    }
+
+    void clear() noexcept {
+        while (size_ != 0) {
+            data_[--size_].~Type();
+        }
+    }
+
+    Type& operator[](size_t index) { return data_[index]; }
+    const Type& operator[](size_t index) const { return data_[index]; }
+    Type& front() { return data_[0]; }
+    const Type& front() const { return data_[0]; }
+    Type& back() { return data_[size_ - 1]; }
+    const Type& back() const { return data_[size_ - 1]; }
+    Type* data() noexcept { return data_; }
+    const Type* data() const noexcept { return data_; }
+    iterator begin() noexcept { return data_; }
+    const_iterator begin() const noexcept { return data_; }
+    iterator end() noexcept { return data_ + size_; }
+    const_iterator end() const noexcept { return data_ + size_; }
+    size_t size() const noexcept { return size_; }
+    size_t capacity() const noexcept { return capacity_; }
+    bool empty() const noexcept { return size_ == 0; }
+
+   private:
+    void ensureCapacity() {
+        if (size_ == capacity_) {
+            reserve(capacity_ == 0 ? 4 : capacity_ * 2);
+        }
+    }
+
+    Type* data_ = nullptr;
+    size_t size_ = 0;
+    size_t capacity_ = 0;
+};
+
+}  // namespace std
