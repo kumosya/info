@@ -97,7 +97,8 @@ mkdir -p "$mountPath/bin" "$mountPath/boot/grub" "$mountPath/dev/pts" \
     "$mountPath/mnt/cdrom" "$mountPath/mnt/ext4" \
     "$mountPath/mnt/fat32" "$mountPath/sbin/sys" "$mountPath/sys" \
     "$mountPath/tmp" "$mountPath/usr/bin" "$mountPath/usr/sbin" \
-    "$mountPath/usr/lib" "$mountPath/usr/include"
+    "$mountPath/usr/lib" "$mountPath/usr/include" \
+    "$mountPath/root" "$mountPath/home/user"
 chmod 0700 "$mountPath/root"
 chown -R 1000:1000 "$mountPath/home/user"
 
