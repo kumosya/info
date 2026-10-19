@@ -20,7 +20,6 @@ int rename(const char* existing, const char* newPath) {
     return 0;
 }
 
-#include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <string.h>
@@ -78,9 +77,14 @@ int fstat(int fileDescriptor, struct stat* result) {
 
 int mkdir(const char* path, mode_t mode) {
     char absolute[LIBC_PATH_CAPACITY];
+    OsFileStat existing;
     libcCopyPath(absolute, path);
+    if (__libc_os_stat_file(libcFsService(), absolute, &existing)) {
+        errno = EEXIST;
+        return -1;
+    }
     if (!__libc_os_make_directory(libcFsService(), absolute)) {
-        errno = EIO;
+        errno = __libc_os_stat_file(libcFsService(), absolute, &existing) ? EEXIST : EIO;
         return -1;
     }
     if (!__libc_os_change_file_mode(libcFsService(), absolute, libcCreationMode(mode))) {

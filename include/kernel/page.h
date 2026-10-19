@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "kernel/spinlock.h"
 
 namespace kernel {
 
@@ -55,3 +56,106 @@ namespace memory {
 
 }  // namespace memory
 }  // namespace kernel
+
+namespace kernel::memory {
+constexpr uint64_t physicalPageSize = 4096;
+constexpr uint32_t maximumBuddyOrder = 24;
+constexpr uint16_t maximumMemoryNodes = 16;
+constexpr uint16_t anyMemoryNode = UINT16_MAX;
+constexpr uint32_t noFrame = UINT32_MAX;
+
+enum class FrameState : uint8_t { Reserved, Interior, Free, Allocated };
+struct PageFrame {
+    uint64_t owner = 0;
+    uint32_t references = 0;
+    uint32_t head = noFrame;
+    uint32_t next = noFrame;
+    uint32_t previous = noFrame;
+    uint16_t node = 0;
+    uint8_t order = 0;
+    FrameState state = FrameState::Reserved;
+};
+struct PhysicalPageInfo {
+    uint64_t owner;
+    uint32_t references;
+    uint16_t node;
+    uint8_t order;
+    FrameState state;
+};
+
+// The caller supplies metadata; allocation never allocates metadata recursively.
+class BuddyAllocator {
+   public:
+    void initialize(PageFrame* frames, uint32_t count);
+    bool addRange(uint32_t first, uint32_t count, uint16_t node);
+    uint64_t allocate(uint32_t order, uint64_t owner = 0, uint16_t preferred = anyMemoryNode,
+                      bool strict = false, uint64_t limit = UINT64_MAX);
+    bool retain(uint64_t address, uint64_t owner = UINT64_MAX);
+    bool release(uint64_t address, uint32_t order, uint64_t owner = UINT64_MAX);
+    bool assignOwner(uint64_t address, uint64_t owner);
+    bool query(uint64_t address, PhysicalPageInfo& info);
+    uint64_t pagesOwned(uint64_t owner);
+    uint64_t freePages();
+   private:
+    PageFrame* frames_ = nullptr;
+    uint32_t count_ = 0;
+    uint32_t heads_[maximumMemoryNodes][maximumBuddyOrder + 1]{};
+    uint64_t free_ = 0;
+    SpinLock lock_;
+    void mark(uint32_t head, uint32_t order, uint16_t node, FrameState state);
+    void insert(uint32_t head);
+    void remove(uint32_t head);
+};
+
+uint64_t allocatePhysicalBlock(uint32_t order, uint64_t owner = 0,
+    uint16_t preferred = anyMemoryNode, bool strict = false, uint64_t limit = UINT64_MAX);
+bool retainPhysicalBlock(uint64_t address, uint64_t owner = UINT64_MAX);
+bool releasePhysicalBlock(uint64_t address, uint32_t order, uint64_t owner = UINT64_MAX);
+bool assignPhysicalPageOwner(uint64_t address, uint64_t owner);
+bool queryPhysicalPage(uint64_t address, PhysicalPageInfo& info);
+uint64_t getOwnedMemoryBytes(uint64_t owner);
+}  // namespace kernel::memory
+
+namespace kernel { class Task; }
+namespace kernel::memory {
+class PageObject {
+   public:
+    PageObject(uint32_t order, uint64_t owner, uint16_t node);
+    PageObject(const PageObject&) = delete;
+    PageObject& operator=(const PageObject&) = delete;
+    bool valid() const { return physical_ != 0; }
+    void retain();
+    void release();
+    uint64_t size() const { return valid() ? 4096ULL << order_ : 0; }
+    uint64_t physical() const { return physical_; }
+    uint64_t owner() const { return owner_; }
+    uint32_t order() const { return order_; }
+   private:
+    ~PageObject();
+    uint64_t physical_ = 0, owner_ = 0;
+    uint32_t references_ = 1, order_ = 0;
+};
+class PageMappings {
+   public:
+    static bool initialize();
+    static bool map(Task& target, PageObject& object, uint64_t address, uint64_t size,
+                    uint64_t offset, uint64_t protection, uint64_t maximumProtection = 3);
+    // Caller holds the target address-space lock across this transaction.
+    static bool prepareUnmap(Task& target, uint64_t address, uint64_t size, void*& reservation);
+    static void completeUnmap(Task& target, uint64_t address, uint64_t size, void* reservation);
+    static void releaseTask(Task& target);
+    static bool cloneTask(Task& source, Task& target);
+    static bool protectionAllowed(Task& target, uint64_t address, uint64_t size, uint64_t protection);
+    static bool markCopyOnWrite(Task& target, uint64_t address, uint64_t size);
+};
+}  // namespace kernel::memory
+
+namespace kernel { class Task; }
+namespace kernel::memory {
+class MappingOperations {
+   public:
+    static uint64_t map(Task& target, uint64_t address, uint64_t size, uint64_t protection);
+    static uint64_t unmap(Task& target, uint64_t address, uint64_t size);
+    static uint64_t protect(Task& target, uint64_t address, uint64_t size, uint64_t protection);
+};
+}  // namespace kernel::memory

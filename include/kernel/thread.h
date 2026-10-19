@@ -117,6 +117,11 @@ class Thread {
     void resetFloatingPointState();
     void restoreFloatingPointState();
     static Thread* getCurrent();
+    void bindSyscallContext(SyscallContext* context) { syscallContext_ = context; contextRestored_ = false; }
+    SyscallContext* syscallContext() const { return syscallContext_; }
+    void markContextRestored() { contextRestored_ = true; }
+    bool contextRestored() const { return contextRestored_; }
+    void clearSyscallContext() { syscallContext_ = nullptr; contextRestored_ = false; }
     static void terminateCurrentFromException(int exitCode);
 
     static void bootstrap();
@@ -331,6 +336,8 @@ class Thread {
     bool activeIpcCall;
     bool exitAccounted;
     ThreadCleanup* cleanupHead;
+    SyscallContext* syscallContext_;
+    bool contextRestored_;
     int* ipcWaitResult;
     bool ipcImmediate;
     Endpoint* activeEndpoint;

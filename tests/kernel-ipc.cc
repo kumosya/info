@@ -13,6 +13,7 @@
 #include "kernel/device.h"
 #include "kernel/ipc.h"
 #include "kernel/core_service.h"
+#include "kernel/page.h"
 #include "kernel/mm.h"
 #include "kernel/task.h"
 #include "kernel/thread.h"
@@ -56,6 +57,7 @@ void restore(uint64_t) {}
 namespace kernel::memory {
 uint64_t createAddressSpaceRoot() { return nextId.fetch_add(1) << 12; }
 void destroyAddressSpaceRoot(uint64_t) {}
+bool assignPhysicalPageOwner(uint64_t, uint64_t) { return true; }
 }
 namespace kernel::serial { void serialWrite(const char*) {} }
 namespace kernel {
@@ -79,9 +81,10 @@ void Thread::wake(Thread* thread) {
     event.pending = true;
     event.condition.notify_one();
 }
-void MessageQueue::closeHandleObject(void*) {}
 void SharedMemory::closeHandleObject(void*) {}
 void device::InterruptBinding::destroy() {}
+void memory::PageObject::release() {}
+void memory::PageMappings::releaseTask(Task&) {}
 }
 namespace kernel::time {
 uint64_t getMonotonicTime() {
@@ -97,25 +100,6 @@ int main() {
     Task* receiver = Task::create("receiver");
     assert(server && client && receiver);
     enter(server);
-    const int beforePipe = liveAllocations;
-    uint64_t read = 0, write = 0;
-    assert(Pipe::createHandles(*server, read, write));
-    const auto copiedWrite = Pipe::duplicateHandle(*server, *client, write);
-    assert(copiedWrite);
-    assert(server->handles().close(write));
-    const char payload = 'x';
-    assert(Pipe::write(*client, copiedWrite, &payload, 1) == 1);
-    char output = 0;
-    assert(Pipe::read(*server, read, &output, 1) == 1 && output == payload);
-    assert(client->handles().close(copiedWrite));
-    assert(Pipe::read(*server, read, &output, 1) == 0);
-    assert(server->handles().close(read));
-    assert(liveAllocations == beforePipe);
-    uint64_t firstChannel = 0, secondChannel = 0;
-    assert(Pipe::createChannelPair(*server, firstChannel, secondChannel));
-    assert(server->handles().close(firstChannel));
-    assert(server->handles().close(secondChannel));
-    assert(liveAllocations == beforePipe);
     Endpoint::init();
     auto* endpoint = Endpoint::create();
     const auto service = server->handles().add(endpoint, HandleType::Endpoint, 7);
@@ -126,6 +110,8 @@ int main() {
     assert(!client->handles().duplicate(clientEndpoint, 7));
     auto receiverEndpoint = server->handles().copyTo(receiver->handles(), service);
     assert(receiver->handles().restrictRights(receiverEndpoint, handleRightRead));
+    assert(server->handles().references(service) == 3);
+    assert(server->handles().references(UINT64_MAX) == -2);
 
     // A later invalid handle cannot partially install or consume an earlier move.
     const auto original = client->handles().add(server, HandleType::Task, 3);
@@ -189,22 +175,23 @@ int main() {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     });
-    // Exercise resident-service cancellation through a real pipe wait queue.
+    // Exercise timeout and cancellation in an inline mechanism service.
     class ResidentReader final : public EndpointService {
        public:
-        uint64_t handle = 0;
+        bool ready = false;
         std::atomic<unsigned> entered{0};
-        int call(Task& caller, const IpcMessage&, IpcMessage& reply) override {
+        int call(Task&, const IpcMessage&, IpcMessage& reply) override {
             ++entered;
-            char byte = 0;
-            const int64_t result = Pipe::read(caller, handle, &byte, 1);
+            while (!ready && !Thread::getCurrent()->waitError()) {
+                Thread::prepareWait();
+                Thread::blockCurrent();
+            }
+            const int64_t result = ready ? 1 : Thread::getCurrent()->waitError();
             reply.data[0] = result;
             return result < 0 ? static_cast<int>(result) : 0;
         }
     } reader;
     enter(client);
-    uint64_t residentWrite = 0;
-    assert(Pipe::createHandles(*client, reader.handle, residentWrite));
     auto* resident = Endpoint::create(&reader);
     const auto residentHandle = client->handles().add(resident, HandleType::Endpoint, handleRightWrite);
     assert(residentHandle);
@@ -221,10 +208,8 @@ int main() {
     while (reader.entered == beforeCancel) std::this_thread::yield();
     assert(resident->cancel(residentThread) == 0);
     nativeCancelled.join();
-    assert(Pipe::write(*client, residentWrite, &payload, 1) == 1);
+    reader.ready = true;
     assert(resident->call(&empty, &received, 0) == 0 && received.data[0] == 1);
-    assert(client->handles().close(reader.handle));
-    assert(client->handles().close(residentWrite));
     resident->destroy();
     assert(client->handles().close(residentHandle));
     enter(server);
@@ -242,11 +227,13 @@ int main() {
     assert(endpoint->receive(&one) == 0);
     assert(endpoint->receive(&two) == 0);
     assert(one.replyToken && one.replyToken != two.replyToken);
+    assert(endpoint->requestActive(one.replyToken));
     response.replyToken = UINT64_MAX;
     assert(endpoint->reply(&response) < 0);
     response.data[0] = 42;
     response.replyToken = two.replyToken;
     assert(endpoint->reply(&response) == 0);
+    assert(!endpoint->requestActive(two.replyToken));
     assert(endpoint->reply(&response) < 0);
     response.replyToken = one.replyToken;
     assert(endpoint->reply(&response) == 0);
@@ -282,5 +269,5 @@ int main() {
     closed.join();
     stopTimer = true;
     timer.join();
-    std::puts("kernel IPC: transaction, rights, receiver identity, queue, token, timeout, cancellation, resident pipe waits and close passed");
+    std::puts("kernel IPC: transaction, rights, receiver identity, queue, token, timeout, cancellation, resident waits and close passed");
 }

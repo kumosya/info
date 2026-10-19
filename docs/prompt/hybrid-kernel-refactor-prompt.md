@@ -1,5 +1,7 @@
 # osinfo 混合内核与服务体系重构执行 Prompt
 
+> 最新用户补充（优先于本文旧的默认执行级别）：所有服务进程均运行在 Ring3，包括 fs、终端、storage、pci、device、pipe 和 msgq。Ring0 仅保留 task.kernel、pci.kernel、device.kernel、memory.kernel 等基础机制对象。pipe/msgq 的服务状态也必须迁到 Ring3，不能以不新增 syscall 为由保留旧内核服务后端。内存管理头文件只使用 mm.h/page.h；PageObject 使用构造函数。
+
 你正在维护 osinfo 操作系统。请先阅读本仓库 `docs/` 和实际源码，再实施下述重构、缺陷修复及功能扩展。最终交付可构建、可验证的实现和同步更新的文档，不要只给设计建议或仅修改文档。
 
 ## 1. 工作规则与资料入口

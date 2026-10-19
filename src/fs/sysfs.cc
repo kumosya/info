@@ -36,8 +36,8 @@ bool SystemSnapshot::contents(uint32_t index, Text& text) {
     if (!os::System::getSystemInfo(info)) return false;
     switch (index) {
         case 4: text.append("osinfo"); break;
-        case 5: text.append("0.2"); break;
-        case 6: text.append("osinfo"); break;
+        case 5: text.append("0.1"); break;
+        case 6: text.append("localhost"); break;
         case 7: text.number(info.uptimeNanoseconds / 1000000000ULL); break;
         case 8: text.number(info.onlineCpus); break;
         case 9: text.number(info.totalMemoryBytes); break;

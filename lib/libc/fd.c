@@ -51,13 +51,7 @@ ssize_t read(int fileDescriptor, void* buffer, size_t count) {
         errno = value == NULL ? EBADF : EFAULT;
         return -1;
     }
-    if (value->kind == DESCRIPTOR_PIPE_WRITE ||
-        value->kind == DESCRIPTOR_TERMINAL_WRITE) {
-        errno = EBADF;
-        return -1;
-    }
-    if (value->kind == DESCRIPTOR_FILE &&
-        (value->flags & O_ACCMODE) == O_WRONLY) {
+    if ((value->flags & O_ACCMODE) == O_WRONLY) {
         errno = EBADF;
         return -1;
     }
@@ -76,13 +70,7 @@ ssize_t write(int fileDescriptor, const void* buffer, size_t count) {
         errno = value == NULL ? EBADF : EFAULT;
         return -1;
     }
-    if (value->kind == DESCRIPTOR_PIPE_READ ||
-        value->kind == DESCRIPTOR_TERMINAL_READ) {
-        errno = EBADF;
-        return -1;
-    }
-    if (value->kind == DESCRIPTOR_FILE &&
-        (value->flags & O_ACCMODE) == O_RDONLY) {
+    if ((value->flags & O_ACCMODE) == O_RDONLY) {
         errno = EBADF;
         return -1;
     }

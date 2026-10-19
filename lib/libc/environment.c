@@ -1,14 +1,22 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include "os_adapter.h"
 
-#define ENVIRONMENT_CAPACITY 64
+#define ENVIRONMENT_CAPACITY 128
 
 char** environ;
 static char* ownedEnvironment[ENVIRONMENT_CAPACITY];
+static int environmentInitialized;
 
 void __libc_set_environ(char** environment) {
+    environmentInitialized = 1;
     environ = environment;
+    __libc_os_bind_environment(&environ);
+}
+
+void __libc_initialize_environ(char** environment) {
+    if (!environmentInitialized) __libc_set_environ(environment);
 }
 
 static int validName(const char* name) {
@@ -54,7 +62,7 @@ int setenv(const char* name, const char* value, int overwrite) {
             ++index;
         }
         ownedEnvironment[index] = NULL;
-        environ = ownedEnvironment;
+        __libc_set_environ(ownedEnvironment);
     }
     for (index = 0; environ[index] != NULL; ++index) {
         if (strncmp(environ[index], name, nameLength) == 0 &&
@@ -97,6 +105,6 @@ int unsetenv(const char* name) {
 
 int clearenv(void) {
     ownedEnvironment[0] = NULL;
-    environ = ownedEnvironment;
+    __libc_set_environ(ownedEnvironment);
     return 0;
 }

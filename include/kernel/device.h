@@ -30,6 +30,11 @@ class PciAccess {
     static bool getMemoryBar(const os::PciFunctionInfo& function,
                              uint8_t barIndex, uint64_t& base, uint64_t& size);
 };
+class Ps2Access {
+   public:
+    static int initialize();
+    static bool read(uint8_t& value, bool& mouse);
+};
 
 class MmioRegion {
    public:

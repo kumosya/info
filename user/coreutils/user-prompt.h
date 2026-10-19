@@ -5,11 +5,13 @@
 #include <string.h>
 #include <unistd.h>
 #include "os/abi.h"
+#include "os/file.h"
 #include "os/protocol.h"
 #include "os/pty.h"
 #include "os/service.h"
 #include "os/terminal.h"
 #include "os/users.h"
+#include "session-environment.h"
 
 namespace coreutils {
 inline void erase(void* data, size_t size) {
@@ -17,7 +19,8 @@ inline void erase(void* data, size_t size) {
 }
 inline bool password(const char* prompt, char* output, size_t capacity) {
     if (!isatty(0)) { fputs("password input requires a terminal\n", stderr); return false; }
-    const uint64_t handle = os::getStandardHandle(0);
+    os::File* input = os::File::fromDescriptor(0);
+    const uint64_t handle = input ? input->getNativeHandle() : 0;
     os::TerminalAttributes attributes{};
     uint64_t terminal = 0;
     bool previousEcho = true;
@@ -53,11 +56,6 @@ inline bool password(const char* prompt, char* output, size_t capacity) {
 inline bool account(uint32_t uid, os::UserProfile& profile) {
     os::UserCredentials request{}; request.id = uid;
     return os::UserClient::request(os::UserOperation::Lookup, request, profile) == 0;
-}
-inline void environment(const os::UserProfile& profile) {
-    setenv("USER", profile.name, 1); setenv("LOGNAME", profile.name, 1);
-    setenv("HOME", profile.home, 1); setenv("SHELL", profile.shell, 1);
-    chdir(profile.home);
 }
 }
 #endif

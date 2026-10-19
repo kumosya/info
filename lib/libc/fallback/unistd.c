@@ -2,7 +2,6 @@
 #define _GNU_SOURCE 1
 #include <unistd.h>
 #include <errno.h>
-#include <unistd.h>
 
 __attribute__((weak)) unsigned alarm(unsigned int arg0) { (void)arg0; errno = ENOSYS; return (unsigned)-1; }
 __attribute__((weak)) char * crypt(const char * arg0, const char * arg1) { (void)arg0; (void)arg1; errno = ENOSYS; return (char *)0; }

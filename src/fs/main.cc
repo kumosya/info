@@ -53,7 +53,7 @@ bool FsServer::handle(const os::IpcMessage& request, os::IpcMessage& reply) {
             if ((flags&O_TRUNC) && (flags&O_ACCMODE)!=O_RDONLY && truncate(path)) {
                 reply.data[0]=0; reply.data[1]=static_cast<uint64_t>(-EIO); break;
             }
-            reply.data[0] = open(request.senderPid, path);
+            reply.data[0] = open(request.senderPid, path, flags);
             reply.data[1] = reply.data[0] ? 0 : static_cast<uint64_t>(-EIO);
             break;
         }
@@ -131,6 +131,12 @@ bool FsServer::handle(const os::IpcMessage& request, os::IpcMessage& reply) {
         case os::FsRequest::CloneDescriptors:
             cloneDescriptors(request.data[0], request.senderPid, reply);
             break;
+        case os::FsRequest::DelegateMapping:
+            delegateMapping(request, reply);
+            break;
+        case os::FsRequest::ClaimMapping:
+            claimMapping(request, reply);
+            break;
         case os::FsRequest::CloneForChild:
             cloneDescriptors(request.senderPid, request.data[0], reply);
             break;
@@ -194,9 +200,9 @@ uint64_t fsEndpoint;
 
 
 int run() {
-    os::System::log("[FS] FS Server started in Ring 0\n");
+    os::System::log("[FS] FS Server started in Ring 3\n");
     const uint64_t registry = os::getBootstrapHandle();
-    fsEndpoint              = os::createEndpoint();
+    fsEndpoint              = os::Endpoint::create();
     if (registry == 0 || fsEndpoint == 0 ||
         !os::ServiceRegistry::registerService(registry, os::fsServiceName, fsEndpoint)) {
         os::System::log("[FS] registration failed\n");

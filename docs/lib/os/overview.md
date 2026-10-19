@@ -13,7 +13,7 @@ libc 内部适配（lib/libc/os_adapter.cc，不安装头文件）
     ↓
 os:: C++ 运行时（runtime.cc 等）
     ↓
-系统调用（syscall 指令，80 个）+ 端点 IPC（各服务）
+系统调用（syscall 指令，19 个）+ 端点 IPC（各服务）
 ```
 
 ## 2. 源码文件
@@ -55,4 +55,8 @@ os:: C++ 运行时（runtime.cc 等）
 - **终端参数**：`--os-terminal=N`（N=1..7）由 `runtimeInit` 解析并从 argv 移除。
 - **同步根基**：futex 式 `waitAddress`/`wakeAddress` + `__atomic_*`；`os::SpinLock` 为 test-and-set + pause。
 
-可信硬件服务的 Ring 0 机制见 [device.md](../../service/device.md)。File 方法使用负 errno；底层原生 ABI 的其他接口仍使用 os::ErrorCode。
+Ring3 硬件服务使用的 Ring0 机制见 [device.md](../../service/device.md)。File 方法使用负 errno；底层原生 ABI 的其他接口仍使用 os::ErrorCode。
+
+OS 非 syscall 接口采用 Process、Terminal、File、Handle、Clock、Memory、VirtualMemory、ServiceRegistry 等类。VirtualMemory 的用户内存策略由 Ring 3 MM 提供；memory 机制对象驻留 Ring 0。
+
+应用数据、状态、配置与缓存路径通过 [Directories 类](directories.md) 查询；完整支持 XDG 环境覆盖和搜索目录。应用的 ELF 加载与构建分别见 [用户态动态链接](../../x86-64/dynamic-linker.md) 和 [Info IDE / SDK](../../app/infoide.md)。

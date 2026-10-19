@@ -4,18 +4,18 @@
 
 namespace os {
 enum class BootstrapOperation : uint64_t { GetHandle, CreateEndpoint, GetCoreService };
-enum class CoreServiceKind : uint64_t { Pipe, MessageQueue, Memory, Device, System, Task, Count };
+enum class CoreServiceKind : uint64_t { Pipe, MessageQueue, Memory, Device, System, Task, Pci, Count };
 enum class PipeOperation : uint64_t { Create, Read, Write, CreateChannel, Identity, Nonblocking, Eof };
 enum class MessageQueueOperation : uint64_t { Open, Unlink, Send, Receive, Attributes, Flags, Notify };
-enum class MemoryOperation : uint64_t { Open, Unlink, Resize, Map };
-enum class DeviceOperation : uint64_t { MapMmio, AllocateDma, BindIrq, AcknowledgeIrq, Framebuffer };
+enum class MemoryOperation : uint64_t { Open, Unlink, Resize, Map, AllocatePages, MapPages, PageInfo, Usage, ReclaimCaches, UnmapTarget, ProtectTarget, BindPager, PageState, MapSharedTarget, RangeAvailable };
+enum class DeviceOperation : uint64_t { MapMmio, AllocateDma, BindIrq, AcknowledgeIrq, Framebuffer, InitializeInput, ReadInput };
 enum class SystemOperation : uint64_t { MonotonicTime, WallClockTime, ClockResolution, Info, Log };
 
 enum class TaskOperation : uint64_t {
     State, Info, Terminate, Identity, Query, Enumerate, SetCredentials,
     SendSignal, SendThreadSignal, CreateSession, Identifiers, SetGroup,
     SignalAction, SignalMask, PendingSignals, TakeSignal,
-    SpawnProgram, SpawnImage, WaitChild, WaitThread
+    SpawnProgram, SpawnImage, WaitChild, WaitThread, ThreadIdentity, SignalReturn
 };
 
 class CoreServiceClient {

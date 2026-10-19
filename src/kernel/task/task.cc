@@ -1,13 +1,12 @@
 #include "kernel/task.h"
 
 #include "kernel/atomic.h"
-#include "kernel/file.h"
 #include "kernel/device.h"
 #include "kernel/cpu.h"
 #include "kernel/ipc.h"
 #include "kernel/mm.h"
-#include "kernel/new.h"
 #include "kernel/page.h"
+#include "kernel/new.h"
 #include "kernel/serial.h"
 #include "kernel/signal.h"
 #include "kernel/smp.h"
@@ -42,6 +41,64 @@ void copyName(char* destination, const char* source) {
 }  // namespace
 
 namespace kernel {
+
+// Resource reclamation must survive the death of the requesting user thread.
+// The queue owns a reference until the dedicated kernel worker has finished.
+class TaskReclaimer {
+   public:
+    static void init() {
+        worker_ = Thread::create(nullptr, run, nullptr);
+        if (!worker_) {
+            serial::serialWrite("[TASK] unable to initialize task reclaimer\n");
+            cpu::halt();
+        }
+    }
+    static void submit(Task& task) {
+        InterruptSpinLockGuard guard(lock_);
+        if (__atomic_load_n(&task.resourceState_, __ATOMIC_ACQUIRE) != 0) return;
+        task.retain();
+        __atomic_store_n(&task.resourceState_, 1U, __ATOMIC_RELEASE);
+        task.reclaimNext_ = nullptr;
+        if (tail_) tail_->reclaimNext_ = &task;
+        else head_ = &task;
+        tail_ = &task;
+        Thread::wake(worker_);
+    }
+   private:
+    static void run(void*) {
+        for (;;) {
+            Task* task;
+            {
+                InterruptSpinLockGuard guard(lock_);
+                task = head_;
+                if (task) {
+                    head_ = task->reclaimNext_;
+                    if (!head_) tail_ = nullptr;
+                    task->reclaimNext_ = nullptr;
+                } else Thread::prepareWait();
+            }
+            if (!task) {
+                Thread::blockCurrent();
+                continue;
+            }
+            const bool exited = task->destroyResources();
+            __atomic_store_n(&task->resourceState_, 2U, __ATOMIC_RELEASE);
+            // The requester may have died before notifying the parent.
+            if (exited) {
+                auto parent = task->parentReference();
+                if (parent) {
+                    parent->notifyChildStateChange();
+                    parent->deliverSignal(static_cast<uint32_t>(Signal::Child));
+                }
+            }
+            task->release();
+        }
+    }
+    inline static SpinLock lock_;
+    inline static Thread* worker_ = nullptr;
+    inline static Task* head_ = nullptr;
+    inline static Task* tail_ = nullptr;
+};
 
 TaskReference::TaskReference(Task* task) : task_(task) {
     const uint64_t flags = interrupt::disable();
@@ -85,12 +142,14 @@ void Task::setInitTask(Task* task) {
 
 void AddressSpace::init(uint64_t rootPhysicalAddress) {
     rootPhysicalAddress_ = rootPhysicalAddress;
+    generation_ = 1;
     lock_.init();
 }
 
 uint64_t AddressSpace::replaceRoot(uint64_t rootPhysicalAddress) {
     const uint64_t previous = rootPhysicalAddress_;
     rootPhysicalAddress_    = rootPhysicalAddress;
+    if (previous != rootPhysicalAddress && ++generation_ == 0) ++generation_;
     return previous;
 }
 
@@ -102,6 +161,7 @@ SpinLock& AddressSpace::lock() { return lock_; }
 
 bool HandleTable::init(uint32_t capacity, Task* owner) {
     owner_ = owner;
+    disposed_ = false;
     capacity_ = 0;
     lock_.init();
     entries_ = static_cast<HandleEntry*>(
@@ -121,6 +181,7 @@ uint32_t HandleTable::capacity() {
 }
 
 bool HandleTable::growLocked(uint32_t required) {
+    if (disposed_) return false;
     uint32_t capacity = capacity_;
     while (capacity < required) {
         if (capacity == 0 || capacity > UINT32_MAX / 2) return false;
@@ -158,6 +219,7 @@ uint64_t HandleTable::add(void* object, HandleType type, uint32_t rights) {
 
 uint64_t HandleTable::installLocked(Reference* reference, uint32_t rights,
                                    uint32_t flags) {
+    if (disposed_) return 0;
     for (uint32_t index = 0;; ++index) {
         if (index == capacity_) {
             if (!growLocked(capacity_ + 1)) return 0;
@@ -190,7 +252,7 @@ bool HandleTable::addAt(uint64_t handle, void* object, HandleType type,
         return false;
     }
     InterruptSpinLockGuard guard(lock_);
-    if (!growLocked(encodedIndex)) return false;
+    if (disposed_ || !growLocked(encodedIndex)) return false;
     HandleEntry& entry = entries_[encodedIndex - 1];
     if (entry.getObject() != nullptr) return false;
     auto* reference = static_cast<Reference*>(heap::kernelAllocate(sizeof(Reference)));
@@ -307,14 +369,10 @@ void HandleTable::Reference::release(Reference* reference) {
     if (__atomic_sub_fetch(&reference->count, 1U, __ATOMIC_ACQ_REL) != 0) return;
     void* object = reference->object;
     const HandleType type = reference->type;
-    if (type == HandleType::Pipe) {
-        Pipe::closeHandleObject(object);
-    } else if (type == HandleType::Channel) {
-        Pipe::closeChannelHandleObject(object);
-    } else if (type == HandleType::MessageQueue) {
-        MessageQueue::closeHandleObject(object);
-    } else if (type == HandleType::SharedMemory) {
+    if (type == HandleType::SharedMemory) {
         SharedMemory::closeHandleObject(object);
+    } else if (type == HandleType::PageObject) {
+        static_cast<memory::PageObject*>(object)->release();
     } else if (type == HandleType::Task) {
         static_cast<Task*>(object)->release();
     } else if (type == HandleType::Endpoint) {
@@ -368,7 +426,7 @@ uint64_t HandleTable::copyTo(HandleTable& destination, uint64_t handle,
     HandleTable* second = first == this ? &destination : this;
     InterruptSpinLockGuard firstGuard(first->lock_);
     InterruptSpinLockGuard secondGuard(second->lock_);
-    if (!validLocked(handle)) return 0;
+    if (destination.disposed_ || !validLocked(handle)) return 0;
     auto& source = entries_[static_cast<uint32_t>(handle) - 1];
     if (destinationHandle) {
         const uint32_t slot = static_cast<uint32_t>(destinationHandle);
@@ -409,6 +467,10 @@ bool HandleTable::hasObjectRights(void* object, HandleType type, uint32_t rights
             (entry.getRights() & rights) == rights) return true;
     }
     return false;
+}
+int64_t HandleTable::references(uint64_t handle) {
+    InterruptSpinLockGuard guard(lock_);
+    return validLocked(handle) ? static_cast<int64_t>(__atomic_load_n(&entries_[static_cast<uint32_t>(handle) - 1].reference->count, __ATOMIC_ACQUIRE)) : -2;
 }
 
 bool HandleTable::Transfer::capture(HandleTable& source, const os::IpcMessage& message,
@@ -470,6 +532,7 @@ bool HandleTable::Transfer::install(HandleTable& destination, os::IpcMessage& me
 }
 
 bool HandleTable::Transfer::installLocked(HandleTable& destination, os::IpcMessage& message) {
+    if (destination.disposed_) return false;
     if (moveSource_) {
         for (uint32_t i = 0; i < count_; ++i)
             if (moveHandles_[i] && (!moveSource_->validLocked(moveHandles_[i]) ||
@@ -530,6 +593,7 @@ void HandleTable::closeOnExec() {
 }
 
 void HandleTable::dispose() {
+    { InterruptSpinLockGuard guard(lock_); disposed_ = true; }
     closeAll();
     InterruptSpinLockGuard guard(lock_);
     heap::kernelFree(entries_);
@@ -603,6 +667,7 @@ Task* Task::create(const char* name, Task* parent) {
         heap::kernelFree(storage);
         return nullptr;
     }
+    memory::assignPhysicalPageOwner(root, task->id());
     if (parent != nullptr) {
         InterruptSpinLockGuard guard(parent->lock_);
         task->nextSibling_  = parent->firstChild_;
@@ -712,19 +777,10 @@ bool Task::inheritForFork(Task& parent) {
         if (type == HandleType::Endpoint) {
             inherited =
                 Endpoint::duplicateHandle(&parent, this, handle, handle);
-        } else if (type == HandleType::Pipe) {
-            inherited = Pipe::duplicateHandle(parent, *this, handle, handle);
-        } else if (type == HandleType::Channel) {
-            inherited = Pipe::duplicateHandle(parent, *this, handle, handle);
-        } else if (type == HandleType::MessageQueue) {
-            inherited =
-                MessageQueue::duplicateHandle(parent, *this, handle, handle);
         } else if (type == HandleType::SharedMemory) {
             inherited =
                 SharedMemory::duplicateHandle(parent, *this, handle, handle);
-        } else if (handles_.addAt(handle, object, type, rights)) {
-            inherited = handle;
-        }
+        } else inherited = parent.handles_.copyTo(handles_, handle, handle);
         if (inherited != handle) {
             handles_.closeAll();
             return false;
@@ -740,10 +796,20 @@ bool Task::commitExec(uint64_t newRootPhysicalAddress, const char* name,
         currentThread->getTask() != this || this == kernelTask) {
         return false;
     }
+    // Once sibling threads are detached, their ownership and the new root must
+    // reach a committed state even if another CPU kills this task. Interrupts
+    // remain enabled for shootdowns, but no blocking/scheduling is allowed here.
+    class CommitGuard {
+       public:
+        CommitGuard() { cpu::disablePreemption(); }
+        ~CommitGuard() { cpu::enablePreemption(); }
+    } commitGuard;
     uint64_t oldRoot = 0;
     Thread* retiredThreads = nullptr;
     {
         InterruptSpinLockGuard guard(lock_);
+        if (!acceptsThreads_ || state_ == TaskState::Terminated ||
+            currentThread->getState() == ThreadState::Terminated) return false;
         for (Thread* thread = threads_; thread != nullptr;) {
             Thread* next = thread->getTaskNext();
             if (thread != currentThread &&
@@ -792,6 +858,7 @@ bool Task::commitExec(uint64_t newRootPhysicalAddress, const char* name,
         if (thread->getKernelStack()) heap::kernelFree(thread->getKernelStack());
         heap::kernelFree(thread);
     }
+    memory::PageMappings::releaseTask(*this);
     SharedMemory::releaseTaskMappings(*this);
     {
         PreemptionSpinLockGuard guard(addressSpace_.lock());
@@ -802,7 +869,7 @@ bool Task::commitExec(uint64_t newRootPhysicalAddress, const char* name,
     memory::destroyAddressSpaceRoot(oldRoot);
     {
         InterruptSpinLockGuard guard(lock_);
-        acceptsThreads_ = true;
+        acceptsThreads_ = state_ != TaskState::Terminated;
     }
     return true;
 }
@@ -810,7 +877,7 @@ bool Task::commitExec(uint64_t newRootPhysicalAddress, const char* name,
 int Task::waitForChild(int64_t taskId, Thread* waiter, int& status,
                        uint32_t options, uint64_t& childId) {
     if (waiter == nullptr) return -1;
-    Task* reaped = nullptr;
+    TaskReference reaped;
     bool found   = false;
     {
         InterruptSpinLockGuard guard(lock_);
@@ -852,8 +919,20 @@ int Task::waitForChild(int64_t taskId, Thread* waiter, int& status,
             if (terminated) {
                 *link               = child->nextSibling_;
                 child->nextSibling_ = nullptr;
-                reaped              = child;
+                reaped              = TaskReference(child);
                 childId             = child->id_;
+                // Hand cleanup to the worker before the waiter can be killed.
+                // The local reference and queue reference replace list ownership.
+                TaskReclaimer::submit(*child);
+                {
+                    InterruptSpinLockGuard globalGuard(taskListLock);
+                    Task** globalLink = &taskList;
+                    while (*globalLink && *globalLink != child)
+                        globalLink = &(*globalLink)->nextGlobal_;
+                    if (*globalLink == child) *globalLink = child->nextGlobal_;
+                    child->nextGlobal_ = nullptr;
+                }
+                child->release();
                 break;
             }
             if (stateEvent) {
@@ -871,16 +950,6 @@ int Task::waitForChild(int64_t taskId, Thread* waiter, int& status,
     }
     if (reaped != nullptr) {
         reaped->destroy();
-        {
-            InterruptSpinLockGuard globalGuard(taskListLock);
-            Task** link = &taskList;
-            while (*link != nullptr && *link != reaped) {
-                link = &(*link)->nextGlobal_;
-            }
-            if (*link == reaped) *link = reaped->nextGlobal_;
-            reaped->nextGlobal_ = nullptr;
-        }
-        reaped->release();
         return 0;
     }
     if (!found) return -1;
@@ -990,11 +1059,7 @@ void Task::notifyThreadExit(Thread* thread) {
         Thread::wake(waiter);
     }
     if (taskTerminated) {
-        auto parent = parentReference();
-        if (parent) {
-            parent->notifyChildStateChange();
-            parent->deliverSignal(static_cast<uint32_t>(Signal::Child));
-        }
+        TaskReclaimer::submit(*this);
     }
     if (taskTerminated) Endpoint::closeOwner(this);
 }
@@ -1018,6 +1083,7 @@ void Task::terminateOtherThreads(int exitCode) {
     }
     if (threadCount_ == 0) {
         state_ = TaskState::Terminated;
+        TaskReclaimer::submit(*this);
     }
 }
 
@@ -1026,14 +1092,17 @@ void Task::destroy() {
         return;
     }
     TaskReference lifetime(this);
-    uint32_t expected = 0;
-    if (!__atomic_compare_exchange_n(&resourceState_, &expected, 1U, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-        const uint64_t flags = interrupt::disable();
-        interrupt::enable();
-        while (__atomic_load_n(&resourceState_, __ATOMIC_ACQUIRE) != 2U) asm volatile("pause" ::: "memory");
-        interrupt::restore(flags);
-        return;
-    }
+    TaskReclaimer::submit(*this);
+    const uint64_t flags = interrupt::disable();
+    interrupt::enable();
+    // No stack pointer from this waiter is stored in the reclaimer. Killing or
+    // cancelling it cannot strand the queue or its owned task reference.
+    while (__atomic_load_n(&resourceState_, __ATOMIC_ACQUIRE) != 2U)
+        schedule::yieldThread();
+    interrupt::restore(flags);
+}
+
+bool Task::destroyResources() {
     uint64_t root;
     bool discard;
     {
@@ -1070,6 +1139,7 @@ void Task::destroy() {
     threads_ = nullptr;
     mainThread_ = nullptr;
     handles_.dispose();
+    memory::PageMappings::releaseTask(*this);
     SharedMemory::releaseTaskMappings(*this);
     if (root != 0) memory::destroyAddressSpaceRoot(root);
     if (discard) {
@@ -1090,8 +1160,8 @@ void Task::destroy() {
         if (*link == this) *link = nextGlobal_;
         nextGlobal_ = nullptr;
     }
-    __atomic_store_n(&resourceState_, 2U, __ATOMIC_RELEASE);
     if (discard) release();
+    return !discard;
 }
 
 void Task::grantCapabilities(uint64_t capabilities) {
@@ -1211,7 +1281,8 @@ bool Task::deliverThreadSignal(uint64_t threadId, uint32_t signal) {
         if (action.getHandler() != signalDefault) {
             target->setPendingSignals(target->getPendingSignals() |
                                       (1ULL << (signal - 1)));
-            if ((target->getSignalMask() & (1ULL << (signal - 1))) == 0)
+            if (target != Thread::getCurrent() &&
+                (target->getSignalMask() & (1ULL << (signal - 1))) == 0)
                 Endpoint::interruptThread(target);
             return true;
         }
@@ -1245,7 +1316,7 @@ bool Task::deliverSignal(uint32_t signal) {
         if (queued) {
             pendingSignals_ |= 1ULL << (signal - 1);
             for (Thread* thread = threads_; thread; thread = thread->getTaskNext()) {
-                if (thread->getState() != ThreadState::Terminated &&
+                if (thread != Thread::getCurrent() && thread->getState() != ThreadState::Terminated &&
                     (thread->getSignalMask() & (1ULL << (signal - 1))) == 0)
                     Endpoint::interruptThread(thread);
             }
@@ -1317,13 +1388,6 @@ bool Task::deliverSignal(uint32_t signal) {
         Thread::exitCurrent(-static_cast<int>(signal));
     }
     destroy();
-    {
-        auto parent = parentReference();
-        if (parent) {
-            parent->notifyChildStateChange();
-            parent->deliverSignal(static_cast<uint32_t>(Signal::Child));
-        }
-    }
     return true;
 }
 
@@ -1341,6 +1405,7 @@ void task::init() {
     taskList   = task;
     kernelTask->attachThread(Thread::getCurrent());
     cpu::getCurrent()->setCurrentTask(kernelTask);
+    TaskReclaimer::init();
     serial::serialWrite("[TASK] kernel task initialized\n");
 }
 
@@ -1351,16 +1416,6 @@ void Task::setCredentials(uint32_t uid, uint32_t gid, bool effectiveOnly) {
     effectiveUid_ = uid;
     effectiveGid_ = gid;
     if (!effectiveOnly) { uid_ = uid; gid_ = gid; }
-}
-
-posix::FileTable* Task::files() {
-    posix::FileTable* result = __atomic_load_n(&fileTable_, __ATOMIC_ACQUIRE);
-    if (result) return result;
-    posix::FileTable* created = posix::FileTable::create(*this);
-    if (!created) return nullptr;
-    if (__atomic_compare_exchange_n(&fileTable_, &result, created, false, __ATOMIC_RELEASE, __ATOMIC_ACQUIRE)) return created;
-    heap::kernelFree(created);
-    return result;
 }
 
 Task* task::getIdle() { return kernelTask; }

@@ -65,6 +65,7 @@ bool FsServer::permitted(const os::IpcMessage& request) {
             return AccessPolicy::bits(entry.mode ? entry.mode : 0666, entry.uid, entry.gid, caller,
                         operation == os::FsRequest::Read || operation == os::FsRequest::ReadAtAsync || operation == os::FsRequest::ReadAt ? 4 : 2);
         }
+        case os::FsRequest::DelegateMapping: case os::FsRequest::ClaimMapping:
         case os::FsRequest::Close: case os::FsRequest::Seek: case os::FsRequest::ListMounts: case os::FsRequest::Fstat: return true;
         case os::FsRequest::Stat: return pathAccess(path, caller, 0);
         case os::FsRequest::Open: {

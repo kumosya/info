@@ -116,6 +116,7 @@ static void masterInput(void* argument) {
                 -static_cast<int64_t>(signalGroup)), signalNumber);
         }
     }
+    os::exitThread(0);
 }
 
 static void slaveOutput(void* argument) {
@@ -127,6 +128,7 @@ static void slaveOutput(void* argument) {
         if (count <= 0) break;
         writeAll(state.masterServer, bytes, static_cast<size_t>(count));
     }
+    os::exitThread(0);
 }
 
 PtyState* findState(uint64_t identity) {
@@ -240,7 +242,7 @@ void handleControl(const os::IpcMessage& request, os::IpcMessage& reply) {
 
 int run() {
     const uint64_t registry = os::getBootstrapHandle();
-    const uint64_t endpoint = os::createEndpoint();
+    const uint64_t endpoint = os::Endpoint::create();
     if (!registry || !endpoint ||
         !os::ServiceRegistry::registerService(registry, os::ttyServiceName, endpoint)) return 1;
     os::System::log("[TTY] PTY service started\n");

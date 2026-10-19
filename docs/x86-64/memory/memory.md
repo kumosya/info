@@ -1,172 +1,67 @@
-# 内存管理（src/kernel/memory/）
+# 内存管理
 
-本文档描述 `src/kernel/memory/` 的实现：物理页分配器（`physical.cc`）、4 级页表虚拟内存（`virtual.cc`）、内核堆（`heap.cc`）、缺页处理（`fault.cc`）与 POSIX 风格命名共享内存（`shared_memory.cc`）。对应头文件 `include/kernel/mm.h`、`page.h`、`heap.h`。这个内存管理采取了最简化的实现，只是为了能够正常进行操作系统其他模块的编写，有空再来正式实现。
+内存管理只公开 mm.h 和 page.h 两种头文件名：内核位于 include/kernel/，MM 内部位于 user/mm/，OS 客户端位于 include/os-c++/os/mm.h。实现继续按 physical、object、virtual、service 子目录拆分。
 
-## 1. 虚拟内存布局
+## Ring 0 机制
 
-```text
-0x0000000000000000 - 0x00007fffffffffff   用户空间（每进程独立，47 位）
-0xffff800000000000 - 0xffff803fffffffff   物理内存直接映射（前 64 GB）
-0xffff804000000000 - 0xffff804000ffffff   内核堆（16 MB）
-```
+| 路径 | 职责 |
+|---|---|
+| physical/buddy.cc | 按阶连续物理页块，分裂/合并、引用、owner、node 与地址上限 |
+| physical/topology.cc | ACPI SRAT 内存域及 CPU 域，首选 NUMA 节点和回退 |
+| physical.cc | 引导可用内存、PageFrame 元数据保留及物理分配入口 |
+| object/slab.cc | 固定大小 ObjectCache，空 Slab 回收 |
+| object/per_cpu.cc | 每 CPU magazine，减少共享缓存争用 |
+| object/pool.cc | 外部存储 FixedPool，容量与重复释放检查 |
+| object/mapping.cc | 高地址 NX 内核堆别名与清零 |
+| object/page_object.cc | PageObject 构造、有效性、引用及最终物理块释放 |
+| virtual.cc | 四级页表、保护、地址翻译、地址空间复制与销毁 |
+| virtual/page_mappings.cc | 页面对象映射引用、拆分、fork 登记和 COW 写权限限制 |
+| virtual/operations.cc | 显式 Task 参数的 map/unmap/protect 机制 |
+| shared.cc | 命名共享对象、映射引用及最后释放 |
+| service/service.cc | memory 驻留服务与跨任务授权 |
+| service/pager.cc | Ring 3 pager 绑定、缺页 RPC、fork 元数据交接及缓冲区 fault-in |
 
-- 用户地址有效区间：`[0x10000, 0x0000800000000000)`。
-- 引导期建立的低端恒等映射在 `memory::initVir` 中被移除（清零 `PML4[0]`），此后仅 SMP trampoline 临时重建 0x8000 单页恒等映射。
+Buddy 使用实际 RAM 对应的 PageFrame 元数据，不再线性扫描位图。小块堆走 Slab/Per-CPU Cache，大块堆走 Buddy；FixedPool 用于有明确容量的映射记录。NUMA 最多 16 节点，当前按 SRAT 首选与回退分配，未实现 SLIT 距离排序。
 
-## 2. 物理页分配器（physical.cc）
+PageObject(order, owner, node) 直接构造并清零物理块。调用者先分配对象存储，再 placement-new；必须检查 valid()。order 超限或分配失败得到无效对象，release() 仍能安全释放元数据。最后一个对象引用消失才析构并释放物理块；没有静态 create 工厂。
 
-位图式分配器，管理最多 64 GB（16,777,216 页），所有函数位于 `namespace kernel::memory`：
+memory 服务提供页对象、连续页块、共享对象、usage 和 cache reclaim 接口。跨任务操作要求固定 boot MM 身份拥有的 Memory 能力；客户端传入 PID 不能自行获得权限。基本映射保留 syscall 8–10。内核内部直接使用具名方法。
 
-- `pageBitmap[2 MB]`：占用位图（1 = 已占用）。
-- `reservedBitmap[2 MB]`：保留位图（1 = 不可释放，如内核映像、Multiboot 结构）。
+用户地址范围为 [0x10000, 2^47)，页大小 4096。内核直接映射从 0xffff800000000000 开始，NX 堆别名从 0xffff804000000000 开始。所有用户写入与执行权限遵守 W^X。
 
-```cpp
-namespace kernel::memory {
-void initPhy(const BootInfo* bootInfo);
-uint64_t allocatePhysicalPage();   // 返回物理地址，失败 0
-void freePhysicalPage(uint64_t physicalAddress);
-uint64_t getTotalMemoryBytes();    // 最高可用地址
-uint64_t getFreeMemoryBytes();     // 空闲页数 × 4096
-}
-```
+解除映射先预留共享对象和 PageObject 的拆分记录，再撤销 PTE、完成 TLB shootdown，最后释放映射引用；元数据耗尽不会留下半拆分记录。修改页权限保留硬件 Accessed/Dirty 位。
 
-初始化流程：
+## Ring 3 MM 策略
 
-1. 两个位图全部置 1（默认全部占用/保留）。
-2. 遍历内存映射，`type == 1`（可用）的区域释放，并统计最高地址。
-3. 依次保留：内核引导映像（`bootstrapStart..bootstrapEnd`）、Multiboot 信息结构、所有引导模块、framebuffer（`pitch × height`）。
+MM 是固定 boot 模块，注册名 mm；驻留机制服务名称为 memory.kernel，二者职责不同。
 
-分配策略：从**第 256 页（跳过前 1 MB）**开始线性扫描第一个空闲位。释放仅对"已占用且非保留"的页生效。全程由 `InterruptSpinLockGuard` 保护。
+| 对象 | 职责 |
+|---|---|
+| RegionTable | gap 查找，重叠/溢出检查，插入、移除、分裂、合并、权限上限 |
+| MemoryState | 进程代际、VMA、resident 页与 backing 引用；退出和 exec 清理 |
+| PageAllocator | 按进程配额请求零页，失败时请求 reclaim 后重试 |
+| Pager | 匿名零填充、共享映射、文件偏移读取、重复缺页检查及 COW |
+| ReclaimManager | cache 回收、Accessed/Dirty 分类、跳过 pinned/I/O/COW/私有脏页 |
+| SharedMemoryManager | 句柄权限校验、共享 backing 引用和映射最大权限 |
+| MemoryManager | IPC 协议及 VMA/PTE 事务协调 |
 
-## 3. 页表标志（page.h）
+RegionTable 容量 512，resident 记录 8192，backing 记录 256，domain 记录 128。容量耗尽明确返回错误。MM 单线程串行处理请求，重复缺页检查已有 PTE；不会重复分配同一已就绪页面。
 
-| 常量                 | 位  | 含义                                     |
-| ------------------ | -- | -------------------------------------- |
-| `pagePresent`      | 0  | 存在                                     |
-| `pageWritable`     | 1  | 可写                                     |
-| `pageUser`         | 2  | 用户态可访问                                 |
-| `pageWriteThrough` | 3  | 写穿透                                    |
-| `pageCacheDisable` | 4  | 禁缓存                                    |
-| `pageGlobal`       | 8  | 全局页                                    |
-| `pageExternal`     | 9  | **软件位**：页帧由外部管理（共享内存/显存），克隆/释放地址空间时不回收 |
-| `pageNoExecute`    | 63 | NX                                     |
+内核把用户缺页转为认证 senderPid 的 RPC，截止时间为 5 秒；MM 回复成功后再次校验实际 PTE。MM 自身缺页禁止递归。syscall 的用户缓冲区先 fault-in，再持地址空间锁校验并复制。
 
-## 4. 虚拟内存管理（virtual.cc）
+匿名页延迟申请清零 PageObject。文件映射使用已打开描述符的 FS 委托：FS 保留原 OpenFileDescription，记录 issuer 和一次性 Token；只有可信 MM 能按原 senderPid 兑换。MM 不以自身权限重新按路径打开文件。关闭原 fd 后 backing 仍持引用。
 
-4 级页表（PML4 → PDPT → PD → PT → 4 KB 页）。内核页表根保存于 `kernelAddressSpaceRoot`，全部操作由全局 `virtualMemoryLock` 保护。所有函数位于 `namespace kernel::memory`。
+fork 在子线程可运行前复制 MM VMA 与 resident 引用；私有页面在父子两侧清 Write，写缺页复制到新对象后替换映射。普通非 external 页仍深拷贝，共享对象保持共享。内核映射记录阻止直接 ProtectMemory 绕过 COW。
 
-### 核心接口
+PROT_NONE 撤销 PTE 并保留 backing；恢复权限后缺页重建。munmap/mprotect 在暂存 RegionTable 上完成预检，失败不提交元数据；PTE 修改失败时尝试恢复先前状态。
 
-```cpp
-namespace kernel::memory {
-void initVir(const BootInfo*);
-bool mapPage(uint64_t va, uint64_t pa, uint64_t flags);          // 内核空间
-bool unmapPage(uint64_t va);
-uint64_t getPhysicalAddress(uint64_t va);
+libc 的 mmap/munmap/mprotect/msync 调用 os::VirtualMemory，区域状态由 MM 统一管理。支持私有匿名、私有文件和共享内存对象映射，以及部分区域保护/解除。MAP_FIXED、文件 MAP_SHARED、匿名 MAP_SHARED 当前明确返回 ENOTSUP；私有 msync 和共享内存同步不写回源文件。没有 Swap Manager，不会丢弃不可重建的私有脏页；内存不足明确失败。
 
-bool mapPageInAddressSpace(uint64_t root, uint64_t va, uint64_t pa, uint64_t flags);
-bool unmapPageInAddressSpace(uint64_t root, uint64_t va);
-bool protectPageInAddressSpace(uint64_t root, uint64_t va, uint64_t flags);
-uint64_t getPhysicalAddressInAddressSpace(uint64_t root, uint64_t va, uint64_t* flags = nullptr);
-bool validateUserMemory(uint64_t root, uint64_t address, uint64_t size, bool writable);
-UserPageMapResult allocateUserPageInAddressSpace(uint64_t root, uint64_t va, uint64_t flags);
-bool copyToAddressSpace(uint64_t root, uint64_t destination, const void* source, uint64_t size);
-bool copyFromAddressSpace(void* destination, uint64_t root, uint64_t source, uint64_t size);
+服务重启不自动恢复旧 VMA。客户端收到端点失败后清缓存，下次重连；缺失 VMA 的旧请求明确失败，非法缺页终止用户线程。进程退出或 exec 后，MM 按 Task 状态及地址空间 generation 回收旧记录。
 
-uint64_t getKernelAddressSpaceRoot();
-uint64_t createAddressSpaceRoot();
-bool cloneAddressSpaceRoot(uint64_t srcRoot, uint64_t dstRoot);
-void destroyAddressSpaceRoot(uint64_t root);
-void switchAddressSpace(uint64_t root);
-}
-```
+## 验证
 
-### 关键行为
-
-- **大页处理**：映射 4 KB 页时若 PD 级已存在 2 MB 大页，自动拆分为 512 个 4 KB 页（`splitLargePage`，保留原标志并清除 PS 位）。不支持创建 1 GB/2 MB 新映射，也不支持解除大页映射。地址翻译（`translateLocked`）支持 1 GB 与 2 MB 大页。
-- **`initVir`**：要求 `bootInfo->pageTableRoot != 0`；清零 `PML4[0]` 移除低端恒等映射并重写 CR3。
-- **`mapPageInAddressSpace`**：va/pa 必须页对齐；成功后本地 `invlpg`。
-- **`unmapPageInAddressSpace`**：成功后本地 `invlpg` + `smp::requestTlbShootdown(va)` 通知其他核。
-- **`protectPageInAddressSpace`**：要求 `flags` 含 `pageUser`；修改已存在表项标志（保留物理地址位与 `pageExternal` 位）；成功后 `invlpg` + TLB shootdown。
-- **`validateUserMemory`**：区间末端必须 < 用户上限且不回绕；逐页校验 `pageUser`（需要时还要 `pageWritable`）。
-- **`allocateUserPageInAddressSpace`**：参数校验（页对齐、`va >= 4096`、用户半区、必须 `pageUser`、**可写页必须同时带** **`pageNoExecute`**，即 W^X）；分配物理页并经直接映射清零；返回 `Success / InvalidArgument / OutOfMemory / MappingFailed`。
-- **`copyToAddressSpace`** **/** **`copyFromAddressSpace`**：范围校验后持锁逐页翻译，要求 `pageUser`，经直接映射分块复制。
-- **`createAddressSpaceRoot`**：分配 PML4；低 256 项清零（用户半区），高 256 项从内核 PML4 复制（内核半区共享）。
-- **`cloneAddressSpaceRoot`**（fork 用）：深拷贝用户半区；遇到大页直接失败；非 `pageExternal` 的叶页分配新物理页并逐字节复制 4096 字节；保留 `Writable|User|WriteThrough|CacheDisable|Global|External|NoExecute` 标志；失败时回收已分配副本。
-- **`destroyAddressSpaceRoot`**：拒绝释放内核根；递归释放低 256 项指向的用户页表树；非 `pageExternal` 叶页释放物理页。
-- **`switchAddressSpace`**：root 为 0 回退内核根；与当前 CR3 不同才写。
-
-## 5. 内核堆（heap.cc）
-
-内核堆使用按需映射的空闲块分配器，所有函数位于 `namespace kernel::heap`：
-
-```cpp
-namespace kernel::heap {
-void init();
-void* kernelAllocate(size_t size);
-void kernelFree(void* address);   // 释放并合并相邻空闲块
-}
-```
-
-- 基址 `0xffff804000000000`，上限 16 MB。
-- 分配 16 字节对齐；`heapMappedEnd` 不足时循环 `memory::allocatePhysicalPage` + `memory::mapPage(pageWritable | pageNoExecute)` 扩页。
-- 分配优先复用空闲块并按需拆分；释放合并相邻空闲块。映射的物理页留在堆内供复用。
-- 退出线程的内核栈在切换到其他栈后释放；仍有同步 IPC 回复可能写入的栈暂时保留，避免回复访问已复用的内存。任务/线程对象仍保留供现有句柄与授权记录引用。
-
-## 6. 缺页处理（fault.cc）
-
-```cpp
-namespace kernel::interrupt {
-void handlePageFault(interrupt::Context* context);
-}
-```
-
-1. 读 CR2 得到故障地址；串口打印故障地址、错误码、RIP。
-2. 来自用户态（`cs & 3 != 0`）：打印后调用 `Thread::terminateCurrentFromException(-14)`。
-3. 内核态：打印 `[MEMORY] kernel page fault`。
-4. 最后 `cpu::halt()`。
-
-**当前实现限制**：无论用户/内核故障，处理路径最终都会停机。
-
-## 7. 命名共享内存（shared\_memory.cc）
-
-POSIX `shm_open` 风格，三级注册表（对象/句柄/映射），全部静态分配。接口通过 `kernel::SharedMemory` 类的静态方法提供：
-
-| 容量      | 值          |
-| ------- | ---------- |
-| 对象数     | 16         |
-| 全局句柄数   | 64         |
-| 全局映射数   | 64         |
-| 单对象最大页数 | 64（256 KB） |
-| 名称最大长度  | 64         |
-
-### 接口
-
-```cpp
-class SharedMemory {
-   public:
-    static uint64_t open(Task& task, const char* name, int flags);
-    static uint64_t duplicateHandle(Task& source, Task& destination,
-                                    uint64_t handle, uint64_t destinationHandle = 0);
-    static bool unlink(const char* name);
-    static bool resize(Task& task, uint64_t handle, uint64_t size);
-    static uint64_t map(Task& task, uint64_t handle, uint64_t address,
-                        uint64_t size, uint64_t offset, uint64_t protection);
-    static bool releaseMapping(Task& task, uint64_t address, uint64_t size);
-    static bool protectionAllowed(Task& task, uint64_t address, uint64_t size,
-                                  uint64_t protection);
-    static void releaseTaskMappings(Task& task);
-    static bool cloneTaskMappings(Task& source, Task& destination);   // fork 用
-    static void closeHandleObject(void* object);                      // 句柄关闭回调
-};
-```
-
-### 关键规则
-
-- 名字必须以 `'/'` 开头；访问模式只读（0）或读写（2）；支持 `O_CREAT`（0x40）与 `O_EXCL`（0x80）。
-- 权限：只读给 `handleRightRead`；读写追加 `Write | Manage`。
-- `resize`：需 Manage 权限；上限 256 KB；**有映射存在时不允许缩小**；增长分配并清零物理页，缩小释放尾部页。
-- `map`：读权限必需，请求可写需写权限；address/size/offset 页对齐；`protection` 只能是 0/1/2（3 非法）；页标志 `pageUser | pageExternal`（+按需 `pageWritable`/`pageNoExecute`）。`pageExternal` 使这些页帧在地址空间克隆/销毁时不被复制/回收。
-- 锁顺序：先进程地址空间锁（`PreemptionSpinLockGuard`），再注册表锁（`InterruptSpinLockGuard`）。
-- 对象回收条件：已 unlink 且 `references == 0 && mappings == 0`。
-- `releaseMapping` 由 `UnmapMemory` 系统调用在解除映射后调用，按 (进程, 地址, 大小) 精确匹配。
+- script/check-kernel-memory.sh：Buddy、所有权与引用、NUMA、Slab、Pool、Per-CPU、PageObject 构造/失败与 VMA 原子性。
+- tests/mm-runtime.cc：用户态延迟分页、保护、部分解除、COW、共享对象、文件委托和信号返回。
+- script/smoke-hybrid.py --memory-test：用隔离磁盘运行上述测试，再进入真实 GUI 终端。
+- SMP exec/kill 压力和设备 DMA 停止协议另见[架构文档](../architecture.md)，不能用启动成功代替压力验证。

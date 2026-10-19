@@ -1,24 +1,18 @@
 # task 服务（src/task/）
 
-task 服务（注册名 `"task"`）是进程服务器：负责从文件系统读取 ELF、判定动态链接、组装 `SpawnImageInfo` 并经 `spawnImage` 创建进程，同时维护进程表。授予能力：`taskCapabilitySpawn`。
+task 服务（注册名 `"task"`）是进程服务器：负责从文件系统读取 ELF、判定动态链接、组装 `SpawnImageInfo` 并经 Process::spawnImage 对驻留 task.kernel 对象发起请求创建进程，同时维护进程表。授予能力：`taskCapabilitySpawn`。
 
 ## 1. 常量
 
 | 常量 | 值 | 说明 |
 |---|---|---|
-| `maximumArgumentCount` | 8 | 最大参数个数 |
+| `maximumArgumentCount` | 64 | 最大参数个数 |
 | `executePayloadSize` | 56 字节 | Execute 请求参数区（7 个 uint64） |
 | `maximumExecutableSize` | 8 MiB | 可执行文件上限 |
 | `taskRecordCapacity` | 64 | 进程表容量 |
 | `executableReadWindow` | 8 | 异步读流水线深度 |
 
-动态可执行文件一并加载的共享库（`sharedImageCount = 3`）：
-
-```text
-/usr/lib/libos-c++.so
-/usr/lib/libc.so
-/usr/lib/libc++.so
-```
+普通动态程序读取 PT_INTERP 指定的解释器（通常 `/lib/ld-osinfo-x86-64.so`），`sharedImageCount = 1`。DT_NEEDED 依赖由 Ring3 解释器加载，task 不再固定读取四个库；静态程序不附带共享镜像。
 
 ## 2. IPC 请求（`os::TaskRequest`）
 
@@ -46,13 +40,13 @@ task 服务（注册名 `"task"`）是进程服务器：负责从文件系统读
 
 1. `statFile` 校验：必须是普通文件、非空、≤ 8 MiB；
 2. `allocateMemory` 分配缓冲；`openFile` + `readExecutable()`：用独立完成端点做窗口为 8 的 `readFileAsync` 流水线（每块 ≤ 4088 字节）；
-3. `usesDynamicLinking()`：扫描程序头判断是否含非空 `PT_DYNAMIC`；
-4. 动态程序则同样读入 3 个共享库；
+3. `Executable::interpreter()` 校验 ELF 头及 PT_INTERP 的单一、绝对、NUL 结尾路径；
+4. 有解释器时读入该文件；缺少解释器明确失败；依赖库搜索交给独立 Ring3 链接器；
 5. 组装 `SpawnImageInfo`（bootstrap 句柄、三个标准流句柄、能力、`parentTaskId = request.senderPid`、参数、共享镜像数组）；
-6. `os::spawnImage()` 创建进程；
+6. `os::Process::spawnImage()` 创建进程；内核映射主程序与解释器，并构建 ELF 辅助向量；
 7. 关闭请求携带的全部句柄。
 
-**能力授予**：路径为 `/sbin/sys/console.elf` 或 `/sbin/sys/guiw.elf` 时 `capabilities = taskCapabilityDisplay`，否则 0。
+**能力边界**：磁盘 SpawnImage 的 capabilities 和 serviceRole 必须为 0；特权服务仅按固定 boot ProgramId 启动。
 
 ## 5. 进程表维护
 
@@ -75,3 +69,5 @@ int waitTask(TaskHandle task, int* exitCode);
 bool listTask(uint32_t index, TaskListEntry& entry);
 bool killTask(uint64_t taskId);
 ```
+
+当前 task 服务运行于 Ring3，固定 boot 身份提供 Spawn 权限。磁盘 SpawnImage 的 capabilities 和 serviceRole 必须为 0；Display、Users、Memory 等权限不再根据路径授予。普通进程管理由驻留 TaskService 内联执行，磁盘加载由 TaskServer 执行。

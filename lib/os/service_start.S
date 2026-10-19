@@ -7,6 +7,11 @@
 .extern osRuntimeFini
 
 _start:
+    # Service images must never execute with kernel privilege.
+    movw %cs, %ax
+    andw $3, %ax
+    cmpw $3, %ax
+    jne 1f
     xorq %rbp, %rbp
     movq %rsp, %r12
     movq (%r12), %rdi

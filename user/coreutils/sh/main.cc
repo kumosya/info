@@ -15,6 +15,7 @@
 #include "os/pty.h"
 #include "os/terminal.h"
 #include "os/users.h"
+#include "../session-environment.h"
 
 extern "C" char** environ;
 
@@ -26,7 +27,6 @@ constexpr uint32_t tokenTextCapacity = 384;
 constexpr uint32_t argumentCapacity = 64;
 constexpr uint32_t commandCapacity = 4;
 constexpr uint32_t pipelineCapacity = 8;
-constexpr uint32_t environmentCapacity = 16;
 constexpr uint32_t jobCapacity = 8;
 constexpr uint32_t historyCapacity = 16;
 constexpr uint32_t outputCapacity = 4096;
@@ -48,21 +48,15 @@ struct Token {
     bool quoted[tokenTextCapacity];
 };
 
-struct EnvironmentEntry {
-    char name[24];
-    char value[96];
-    bool active;
-};
-
 class Environment {
    public:
-    void init(bool login = true) {
-        os::Runtime::clearMemory(entries_, sizeof(entries_));
+    bool init(bool login = true) {
         os::UserProfile profile{};
         os::UserCredentials request{}; request.id = geteuid();
         const bool identified = os::UserClient::request(os::UserOperation::Lookup, request, profile) == 0;
+        if (login && (!identified || !coreutils::SessionEnvironment::apply(profile, false, false))) return false;
         set("USER", identified ? profile.name : geteuid() == 0 ? "root" : "user");
-        if (login || !getenv("HOME")) set("HOME", identified ? profile.home : geteuid() == 0 ? "/root" : "/home/user");
+        if (!getenv("HOME")) set("HOME", identified ? profile.home : geteuid() == 0 ? "/root" : "/home/user");
         char hostname[64] = "osinfo";
         const int host = open("/etc/hostname", O_RDONLY);
         if (host >= 0) {
@@ -73,16 +67,12 @@ class Environment {
         set("HOSTNAME", hostname);
         set("PWD", "/");
         set("OLDPWD", "/");
-        set("SHELL", "/bin/sh");
-        set("TERM", "osinfo");
+        set("SHELL", identified ? profile.shell : "/bin/sh");
+        if (!getenv("TERM")) set("TERM", "osinfo");
+        return true;
     }
 
     const char* get(const char* name) const {
-        for (const EnvironmentEntry& entry : entries_) {
-            if (entry.active && os::Runtime::stringsEqual(entry.name, name)) {
-                return entry.value;
-            }
-        }
         const char* inherited=getenv(name);
         return inherited ? inherited : "";
     }
@@ -91,39 +81,12 @@ class Environment {
         if (name == nullptr || *name == '\0' || value == nullptr) {
             return false;
         }
-        EnvironmentEntry* freeEntry = nullptr;
-        for (EnvironmentEntry& entry : entries_) {
-            if (entry.active && os::Runtime::stringsEqual(entry.name, name)) {
-                os::Runtime::copyString(entry.value, value, sizeof(entry.value));
-                return setenv(name, value, 1) == 0;
-            }
-            if (!entry.active && freeEntry == nullptr) {
-                freeEntry = &entry;
-            }
-        }
-        if (freeEntry == nullptr) {
-            return false;
-        }
-        os::Runtime::copyString(freeEntry->name, name, sizeof(freeEntry->name));
-        os::Runtime::copyString(freeEntry->value, value, sizeof(freeEntry->value));
-        freeEntry->active = true;
         return setenv(name, value, 1) == 0;
     }
 
     bool unset(const char* name) {
-        for (EnvironmentEntry& entry : entries_) {
-            if (entry.active && os::Runtime::stringsEqual(entry.name, name)) {
-                entry.active = false;
-                return unsetenv(name) == 0;
-            }
-        }
-        return false;
+        return unsetenv(name) == 0;
     }
-
-    const EnvironmentEntry* entries() const { return entries_; }
-
-   private:
-    EnvironmentEntry entries_[environmentCapacity];
 };
 
 class TextBuffer {
@@ -511,7 +474,7 @@ class Shell {
         lastStatus_ = 0;
         builtinStatus_ = 0;
         running_ = true;
-        environment_.init(login);
+        if (!environment_.init(login)) return false;
         os::Runtime::copyString(currentDirectory_, "/", sizeof(currentDirectory_));
         if (!login) {
             if (!getcwd(currentDirectory_,sizeof(currentDirectory_))) return false;
@@ -569,9 +532,21 @@ class Shell {
    private:
     bool readLine(char* line) {
         const bool root = geteuid() == 0;
+        const char* directory = currentDirectory_;
+        const char* home = environment_.get("HOME");
+        size_t homeLength = strlen(home);
+        while (homeLength > 1 && home[homeLength - 1] == '/') --homeLength;
+        char displayedDirectory[tokenTextCapacity + 1];
+        if (home[0] == '/' && homeLength > 1 &&
+            strncmp(directory, home, homeLength) == 0 &&
+            (directory[homeLength] == '\0' || directory[homeLength] == '/')) {
+            snprintf(displayedDirectory, sizeof(displayedDirectory), "~%s",
+                     directory + homeLength);
+            directory = displayedDirectory;
+        }
         printf("\033[%sm%s@%s\033[0m:\033[01;34m%s\033[0m%c ",
                root ? "01;31" : "01;32", environment_.get("USER"),
-               environment_.get("HOSTNAME"), currentDirectory_, root ? '#' : '$');
+               environment_.get("HOSTNAME"), directory, root ? '#' : '$');
         fflush(stdout);
         if (fgets(line, lineCapacity, stdin) == nullptr) {
             return false;
@@ -954,14 +929,9 @@ class Shell {
     }
 
     void printEnvironment(TextBuffer& output) const {
-        for (uint32_t index = 0; index < environmentCapacity; ++index) {
-            const EnvironmentEntry& entry = environment_.entries()[index];
-            if (entry.active) {
-                output.append(entry.name);
-                output.append("=");
-                output.append(entry.value);
-                output.append("\n");
-            }
+        for (char** entry = environ; entry && *entry; ++entry) {
+            output.append(*entry);
+            output.append("\n");
         }
     }
 
@@ -1453,7 +1423,7 @@ Shell shell;
 
 int main(int argumentCount, char** arguments) {
     if (argumentCount < 1 || arguments == nullptr ||
-        !os::Runtime::stringsEqual(arguments[0], "sh")) {
+        arguments[0] == nullptr || arguments[0][0] == '\0') {
         os::System::log("[SHELL] invalid main(argc, argv) state\n");
         return 1;
     }

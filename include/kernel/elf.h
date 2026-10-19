@@ -33,6 +33,11 @@ struct ElfLoadResult {
     uint64_t entryPoint;
     uint64_t imageBase;
     uint64_t imageEnd;
+    uint64_t programHeaders = 0;
+    uint64_t programHeaderCount = 0;
+    uint64_t applicationEntry = 0;
+    uint64_t applicationBias = 0;
+    uint64_t interpreterBase = 0;
 };
 
 struct ElfSharedImage {

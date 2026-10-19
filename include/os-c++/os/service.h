@@ -19,16 +19,6 @@ class SystemService {
         asm volatile("mov %%cs, %0" : "=r"(selector));
         return (selector & 3) == 0;
     }
-    static int readPort8(uint16_t port, uint8_t& value) {
-        if (!isPrivileged()) return -1;
-        asm volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
-        return 0;
-    }
-    static int writePort8(uint16_t port, uint8_t value) {
-        if (!isPrivileged()) return -1;
-        asm volatile("outb %0, %1" : : "a"(value), "Nd"(port));
-        return 0;
-    }
 };
 
 class ServiceRegistry {

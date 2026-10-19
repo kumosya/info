@@ -30,9 +30,6 @@ constexpr uint64_t directMapBase      = 0xffff800000000000ULL;
 
 static_assert(sizeof(kernel::SignalAction) == sizeof(os::SignalAction));
 static_assert(__is_standard_layout(kernel::SignalAction));
-static_assert(sizeof(kernel::MessageQueueAttributes) ==
-              sizeof(os::MessageQueueAttributes));
-static_assert(__is_standard_layout(kernel::MessageQueueAttributes));
 static_assert(sizeof(kernel::SyscallContext) == 18 * sizeof(uint64_t));
 static_assert(__builtin_offsetof(kernel::SyscallContext, rax) == 14 * 8);
 static_assert(__builtin_offsetof(kernel::SyscallContext, userRip) == 15 * 8);
@@ -50,118 +47,19 @@ bool validUserRange(uint64_t address, uint64_t size) {
 }
 
 uint64_t mapUserMemory(uint64_t address, uint64_t size, uint64_t protection) {
-    kernel::Task* task = kernel::task::getCurrent();
-    if (task == nullptr || task == kernel::task::getIdle() ||
-        (address & (pageSize - 1)) != 0 || (size & (pageSize - 1)) != 0 ||
-        size > maximumMapSize || !validUserRange(address, size) ||
-        (protection & ~3ULL) != 0) {
-        return error(kernel::SyscallError::InvalidArgument);
-    }
-    if ((protection & 3) == 3) {
-        return error(kernel::SyscallError::PermissionDenied);
-    }
-
-    kernel::PreemptionSpinLockGuard addressGuard(task->addressSpace().lock());
-    uint64_t flags = kernel::pageUser;
-    if ((protection & 1) != 0) {
-        flags |= kernel::pageWritable;
-    }
-    if ((protection & 2) == 0) {
-        flags |= kernel::pageNoExecute;
-    }
-
-    uint64_t mappedSize = 0;
-    while (mappedSize < size) {
-        const uint64_t physicalAddress = kernel::memory::allocatePhysicalPage();
-        if (physicalAddress == 0 ||
-            !kernel::memory::mapPageInAddressSpace(
-                task->addressSpace().rootPhysicalAddress(),
-                address + mappedSize, physicalAddress, flags)) {
-            if (physicalAddress != 0) {
-                kernel::memory::freePhysicalPage(physicalAddress);
-            }
-            while (mappedSize != 0) {
-                mappedSize -= pageSize;
-                const uint64_t physical =
-                    kernel::memory::getPhysicalAddressInAddressSpace(
-                        task->addressSpace().rootPhysicalAddress(),
-                        address + mappedSize);
-                kernel::memory::unmapPageInAddressSpace(
-                    task->addressSpace().rootPhysicalAddress(),
-                    address + mappedSize);
-                kernel::memory::freePhysicalPage(physical & ~(pageSize - 1));
-            }
-            return error(kernel::SyscallError::OutOfMemory);
-        }
-        uint8_t* page =
-            reinterpret_cast<uint8_t*>(directMapBase + physicalAddress);
-        for (uint64_t index = 0; index < pageSize; ++index) {
-            page[index] = 0;
-        }
-        mappedSize += pageSize;
-    }
-    return address;
+    auto* target = kernel::task::getCurrent();
+    return target ? kernel::memory::MappingOperations::map(*target, address, size, protection) : error(kernel::SyscallError::InvalidArgument);
 }
 
 uint64_t unmapUserMemory(uint64_t address, uint64_t size) {
-    kernel::Task* task = kernel::task::getCurrent();
-    if (task == nullptr || task == kernel::task::getIdle() ||
-        (address & (pageSize - 1)) != 0 || (size & (pageSize - 1)) != 0 ||
-        size > maximumMapSize || !validUserRange(address, size)) {
-        return error(kernel::SyscallError::InvalidArgument);
-    }
-    kernel::PreemptionSpinLockGuard addressGuard(task->addressSpace().lock());
-    for (uint64_t offset = 0; offset < size; offset += pageSize) {
-        uint64_t flags = 0;
-        const uint64_t physical =
-            kernel::memory::getPhysicalAddressInAddressSpace(
-                task->addressSpace().rootPhysicalAddress(), address + offset,
-                &flags);
-        if (physical == 0 || (flags & kernel::pageUser) == 0) {
-            return error(kernel::SyscallError::NotFound);
-        }
-    }
-    for (uint64_t offset = 0; offset < size; offset += pageSize) {
-        uint64_t flags = 0;
-        const uint64_t physical =
-            kernel::memory::getPhysicalAddressInAddressSpace(
-                task->addressSpace().rootPhysicalAddress(), address + offset,
-                &flags);
-        kernel::memory::unmapPageInAddressSpace(
-            task->addressSpace().rootPhysicalAddress(), address + offset);
-        if ((flags & kernel::pageExternal) == 0) {
-            kernel::memory::freePhysicalPage(physical & ~(pageSize - 1));
-        }
-    }
-    kernel::SharedMemory::releaseMapping(*task, address, size);
-    return 0;
+    auto* target = kernel::task::getCurrent();
+    return target ? kernel::memory::MappingOperations::unmap(*target, address, size) : error(kernel::SyscallError::InvalidArgument);
 }
 
 uint64_t protectUserMemory(uint64_t address, uint64_t size,
                            uint64_t protection) {
-    kernel::Task* task = kernel::task::getCurrent();
-    if (task == nullptr || task == kernel::task::getIdle() ||
-        (address & (pageSize - 1)) != 0 || (size & (pageSize - 1)) != 0 ||
-        size > maximumMapSize || !validUserRange(address, size) ||
-        (protection & ~3ULL) != 0 || (protection & 3) == 3) {
-        return error(kernel::SyscallError::InvalidArgument);
-    }
-    kernel::PreemptionSpinLockGuard addressGuard(task->addressSpace().lock());
-    if (!kernel::SharedMemory::protectionAllowed(*task, address, size,
-                                                 protection)) {
-        return error(kernel::SyscallError::PermissionDenied);
-    }
-    uint64_t flags = kernel::pageUser;
-    if ((protection & 1) != 0) flags |= kernel::pageWritable;
-    if ((protection & 2) == 0) flags |= kernel::pageNoExecute;
-    for (uint64_t offset = 0; offset < size; offset += pageSize) {
-        if (!kernel::memory::protectPageInAddressSpace(
-                task->addressSpace().rootPhysicalAddress(), address + offset,
-                flags)) {
-            return error(kernel::SyscallError::InvalidArgument);
-        }
-    }
-    return 0;
+    auto* target = kernel::task::getCurrent();
+    return target ? kernel::memory::MappingOperations::protect(*target, address, size, protection) : error(kernel::SyscallError::InvalidArgument);
 }
 
 kernel::HandleTable::Pin resolveEndpoint(uint64_t handle, uint32_t rights) {
@@ -192,6 +90,7 @@ bool copyFromUser(void* kernelBuffer, const void* userBuffer, size_t size) {
         !(validUserRange(address, size) || (task->isSystemService() && address >= directMapBase && address + size > address))) {
         return false;
     }
+    if (address < maximumUserAddress && !memory::PagerBridge::ensureUserMemory(address, size, false)) return false;
     PreemptionSpinLockGuard guard(task->addressSpace().lock());
     if (!memory::validateUserMemory(task->addressSpace().rootPhysicalAddress(),
                                     address, size, false)) {
@@ -212,6 +111,7 @@ bool copyToUser(void* userBuffer, const void* kernelBuffer, size_t size) {
         !(validUserRange(address, size) || (task->isSystemService() && address >= directMapBase && address + size > address))) {
         return false;
     }
+    if (address < maximumUserAddress && !memory::PagerBridge::ensureUserMemory(address, size, true)) return false;
     PreemptionSpinLockGuard guard(task->addressSpace().lock());
     if (!memory::validateUserMemory(task->addressSpace().rootPhysicalAddress(),
                                     address, size, true)) {
@@ -324,8 +224,7 @@ uint64_t handleReceiveMessage(uint64_t endpointHandle, uint64_t userMessage,
         return error(SyscallError::InvalidHandle);
     }
     if (task == nullptr ||
-        !memory::validateUserMemory(task->addressSpace().rootPhysicalAddress(),
-                                    userMessage, sizeof(message), true)) {
+        !memory::PagerBridge::ensureUserMemory(userMessage, sizeof(message), true)) {
         return error(SyscallError::InvalidArgument);
     }
     const int result = endpoint->receive(&message, deadline);
@@ -348,8 +247,7 @@ uint64_t handleCallService(uint64_t endpointHandle, uint64_t userRequest,
     if (task == nullptr ||
         !copyFromUser(&request, reinterpret_cast<const void*>(userRequest),
                       sizeof(request)) ||
-        !memory::validateUserMemory(task->addressSpace().rootPhysicalAddress(),
-                                    userReply, sizeof(reply), true)) {
+        !memory::PagerBridge::ensureUserMemory(userReply, sizeof(reply), true)) {
         return error(SyscallError::InvalidArgument);
     }
     const int result = endpoint->call(&request, &reply, deadline);
@@ -424,6 +322,17 @@ uint64_t handleCloseHandle(uint64_t handle, uint64_t operation, uint64_t rights,
             auto* endpoint = pin.as<Endpoint>();
             return endpoint ? (endpoint->isClosed() ? 1 : 0) : error(SyscallError::InvalidHandle);
         }
+        case os::HandleOperation::References: return handles.references(handle);
+        case os::HandleOperation::ObjectIdentity:
+        case os::HandleOperation::DestroyEndpoint:
+        case os::HandleOperation::RequestActive: {
+            const auto op = static_cast<os::HandleOperation>(operation);
+            HandleTable::Pin pin(handles, handle, HandleType::Endpoint, op == os::HandleOperation::DestroyEndpoint ? handleRightManage : op == os::HandleOperation::RequestActive ? handleRightRead : 0);
+            auto* endpoint = pin.as<Endpoint>(); if (!endpoint) return error(SyscallError::InvalidHandle);
+            if (op == os::HandleOperation::ObjectIdentity) return endpoint->getId();
+            if (op == os::HandleOperation::RequestActive) return endpoint->requestActive(rights) ? 1 : 0;
+            endpoint->destroy(); return 0;
+        }
         case os::HandleOperation::Close: break;
         default: return error(SyscallError::InvalidArgument);
     }
@@ -432,11 +341,7 @@ uint64_t handleCloseHandle(uint64_t handle, uint64_t operation, uint64_t rights,
                : error(SyscallError::InvalidHandle);
 }
 
-uint64_t handleGetThreadId(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                           uint64_t) {
-    Thread* thread = Thread::getCurrent();
-    return thread == nullptr ? 0 : thread->getId();
-}
+
 
 uint64_t handleForkTask(SyscallContext* context) {
     Task* parent    = task::getCurrent();
@@ -452,10 +357,10 @@ uint64_t handleForkTask(SyscallContext* context) {
         PreemptionSpinLockGuard addressGuard(parent->addressSpace().lock());
         cloned = memory::cloneAddressSpaceRoot(
             parent->addressSpace().rootPhysicalAddress(),
-            child->addressSpace().rootPhysicalAddress());
+            child->addressSpace().rootPhysicalAddress()) &&
+            SharedMemory::cloneTaskMappings(*parent, *child) && memory::PageMappings::cloneTask(*parent, *child);
     }
-    if (!cloned || !SharedMemory::cloneTaskMappings(*parent, *child) ||
-        !child->inheritForFork(*parent)) {
+    if (!cloned || !child->inheritForFork(*parent) || !memory::PagerBridge::clone(*parent, *child)) {
         child->destroy();
         return error(SyscallError::OutOfMemory);
     }
@@ -472,7 +377,7 @@ uint64_t handleForkTask(SyscallContext* context) {
 
 bool handleReplaceTaskImage(SyscallContext* context, uint64_t& failureResult) {
     constexpr uint32_t maximumArgumentCount    = 64;
-    constexpr uint32_t maximumEnvironmentCount = 16;
+    constexpr uint32_t maximumEnvironmentCount = 64;
     constexpr uint32_t maximumSharedImageCount = 4;
     constexpr uint32_t maximumStringLength     = 383;
     constexpr uint32_t maximumNameLength       = 95;
@@ -552,8 +457,27 @@ bool handleReplaceTaskImage(SyscallContext* context, uint64_t& failureResult) {
 
     uint64_t argumentPointers[maximumArgumentCount]{};
     uint64_t environmentPointers[maximumEnvironmentCount]{};
-    char argumentStorage[maximumArgumentCount][maximumStringLength + 1]{};
-    char environmentStorage[maximumEnvironmentCount][maximumStringLength + 1]{};
+    class StringStorage {
+       public:
+        explicit StringStorage(size_t size) {
+            // Keep cleanup registration atomic with respect to thread removal,
+            // while allowing interrupts during the potentially large allocation.
+            cpu::disablePreemption();
+            data_ = heap::kernelAllocate(size);
+            if (data_) cleanup_.attach(data_, [](void* data) { heap::kernelFree(data); });
+            cpu::enablePreemption();
+        }
+        void* data() const { return data_; }
+       private:
+        ThreadCleanup cleanup_;
+        void* data_ = nullptr;
+    } strings((maximumArgumentCount + maximumEnvironmentCount) * (maximumStringLength + 1));
+    if (!strings.data()) {
+        failureResult = error(SyscallError::OutOfMemory);
+        return false;
+    }
+    auto* argumentStorage = static_cast<char (*)[maximumStringLength + 1]>(strings.data());
+    auto* environmentStorage = argumentStorage + maximumArgumentCount;
     const char* arguments[maximumArgumentCount]{};
     const char* environment[maximumEnvironmentCount]{};
     if ((info.argumentCount != 0 &&
@@ -609,6 +533,7 @@ bool handleReplaceTaskImage(SyscallContext* context, uint64_t& failureResult) {
     }
 
     const uint64_t newRoot = memory::createAddressSpaceRoot();
+    if (newRoot) memory::assignPhysicalPageOwner(newRoot, task->id());
     if (newRoot == 0) {
         failureResult = error(SyscallError::OutOfMemory);
         return false;
@@ -674,7 +599,7 @@ bool handleReplaceTaskImage(SyscallContext* context, uint64_t& failureResult) {
     if (loadError == ElfLoadError::None) {
         loadError = UserProgramLoader::buildStack(
             newRoot, name, info.argumentCount, arguments, info.environmentCount,
-            environment, runtimeStateAddress, stackPointer);
+            environment, runtimeStateAddress, stackPointer, &loadResult);
     }
     if (loadError != ElfLoadError::None) {
         memory::destroyAddressSpaceRoot(newRoot);
@@ -721,10 +646,7 @@ uint64_t handleWakeAddress(uint64_t userAddress, uint64_t count, uint64_t,
         static_cast<uint32_t>(count));
 }
 
-uint64_t handleSignalReturn(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                            uint64_t) {
-    return error(SyscallError::InvalidArgument);
-}
+
 
 uint64_t handleGetStandardHandle(uint64_t index, uint64_t, uint64_t, uint64_t,
                                  uint64_t, uint64_t) {
@@ -749,12 +671,11 @@ constexpr SyscallHandler syscallHandlers[] = {
     handleExitThread,
     handleYield,
     handleSleep,
-    handleGetThreadId,
     [](uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) -> uint64_t { return error(SyscallError::NotSupported); },
     [](uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) -> uint64_t { return error(SyscallError::NotSupported); },
     handleWaitAddress,
     handleWakeAddress,
-    handleSignalReturn};
+};
 
 static_assert(sizeof(syscallHandlers) / sizeof(syscallHandlers[0]) ==
               static_cast<uint64_t>(SyscallNumber::Count) - OS_SYS_BASE);
@@ -780,12 +701,12 @@ extern "C" void syscallDispatchEntry(SyscallContext* context) {
         context->userRsp >= maximumUserAddress) {
         Thread::terminateCurrentFromException(-1);
     }
-    if (context->rax == static_cast<uint64_t>(SyscallNumber::SignalReturn)) {
-        if (!signal::restoreSignalFrame(context, context->rdi)) {
-            Thread::terminateCurrentFromException(-1);
-        }
-        return;
-    }
+    class ContextScope {
+        Thread& owner_;
+       public:
+        ContextScope(Thread& owner, SyscallContext* context) : owner_(owner) { owner_.bindSyscallContext(context); }
+        ~ContextScope() { owner_.clearSyscallContext(); }
+    } scope(*thread, context);
     if (context->rax == static_cast<uint64_t>(SyscallNumber::ForkTask)) {
         context->rax = handleForkTask(context);
     } else if (context->rax ==
@@ -794,9 +715,10 @@ extern "C" void syscallDispatchEntry(SyscallContext* context) {
         if (handleReplaceTaskImage(context, failureResult)) return;
         context->rax = failureResult;
     } else {
-        context->rax = dispatchSyscall(context->rax, context->rdi, context->rsi,
-                                       context->rdx, context->r10, context->r8,
-                                       context->r9);
+        const uint64_t result = dispatchSyscall(context->rax, context->rdi, context->rsi,
+                                       context->rdx, context->r10, context->r8, context->r9);
+        if (thread->contextRestored()) return;
+        context->rax = result;
     }
     constexpr uint64_t allowedFlags = 0x0000000000240dd5ULL;
     context->userRflags = (context->userRflags & allowedFlags) | 0x202;

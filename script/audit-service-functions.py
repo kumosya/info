@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Report free C++ functions in service and OS-library sources."""
 from pathlib import Path
+import argparse
 import re
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,25 +40,25 @@ def functions(path):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--service-root', action='append', type=Path, default=[])
+    args = parser.parse_args()
     roots = ['src/init', 'src/task', 'src/fs', 'src/pci', 'src/device', 'src/storage',
-             'src/tty', 'src/console', 'src/users', 'user/guiw/server', 'lib/os', 'lib/osgui',
+             'src/tty', 'src/console', 'src/users', 'user/ld', 'user/mm', 'user/pipe', 'user/msgq', 'lib/os', 'lib/osgui',
              'include/os-c++', 'include/osgui-c++']
-    allowed_syscalls = {'invokeSyscall', 'exitTask', 'exitThread', 'createThread', 'waitThread',
-        'waitAddress', 'wakeAddress', 'setSignalAction', 'setSignalMask', 'getPendingSignals',
-        'waitSignal', 'signalReturn', 'sendThreadSignal', 'forkTask', 'waitChild', 'replaceTaskImage',
-        'yield', 'sleep', 'mapMemory', 'createEndpoint', 'sendMessage', 'receiveMessage', 'callService',
-        'replyMessage', 'cancelIpc', 'spawnProgram', 'spawnImage', 'getStandardHandle',
-        'getBootstrapHandle', 'getTaskState', 'getTaskInfo', 'terminateTask', 'sendSignal',
-        'setTaskGroup', 'createSession', 'getTaskIdentifiers', 'closeHandle', 'getTaskId',
-        'getThreadId', 'unmapMemory', 'protectMemory'}
+    allowed_syscalls = {'invokeSyscall', 'exitTask', 'exitThread', 'createThread',
+        'waitAddress', 'wakeAddress', 'forkTask', 'replaceTaskImage', 'yield', 'sleep',
+        'mapMemory', 'sendMessage', 'receiveMessage', 'callService', 'replyMessage',
+        'getStandardHandle', 'getBootstrapHandle', 'closeHandle', 'unmapMemory', 'protectMemory'}
     violations = []
-    for directory in roots:
-        for path in sorted((ROOT / directory).rglob('*')):
+    for directory in [*(ROOT / name for name in roots), *args.service_root]:
+        for path in sorted(directory.rglob('*')):
             if path.suffix not in ('.cc', '.h'):
                 continue
             for name, line, _, _ in functions(path):
-                if path.relative_to(ROOT).as_posix() == 'lib/os/runtime.cc' and name in allowed_syscalls:
+                label = path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else path.as_posix()
+                if label == 'lib/os/runtime.cc' and name in allowed_syscalls:
                     continue
-                violations.append(f'{path.relative_to(ROOT)}:{line}: {name}')
+                violations.append(f'{label}:{line}: {name}')
     print('\n'.join(violations) if violations else 'Service/OS API object audit passed')
     raise SystemExit(bool(violations))

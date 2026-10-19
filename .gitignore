@@ -47,3 +47,5 @@ docs/prompts/*
 build/*
 packages/*
 obj/*
+__pycache__/
+*.pyc

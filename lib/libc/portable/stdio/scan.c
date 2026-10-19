@@ -8,7 +8,6 @@
 #include <stdint.h>
 
 #include "shgetc.h"
-#include "shgetc.h"
 #include "intscan.h"
 #include "floatscan.h"
 

@@ -617,8 +617,8 @@ class StorageService {
     }
 
     bool init(uint64_t registry) {
-        endpoint_    = os::createEndpoint();
-        irqEndpoint_ = os::createEndpoint();
+        endpoint_    = os::Endpoint::create();
+        irqEndpoint_ = os::Endpoint::create();
         if (endpoint_ == 0 || irqEndpoint_ == 0) {
             return false;
         }
@@ -934,7 +934,7 @@ class StorageService {
 };
 
 int StorageService::startup() {
-    os::System::log("[STORAGE] Storage Service started in Ring 0\n");
+    os::System::log("[STORAGE] Storage Service started in Ring 3\n");
     const uint64_t registry = os::getBootstrapHandle();
     if (registry == 0 || !init(registry) ||
         os::mapMemory(workerStackAddress, workerStackSize * workerThreadCount,

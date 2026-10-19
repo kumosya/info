@@ -37,30 +37,36 @@ USER_CXXFLAGS := -std=c++20 -ffreestanding -fno-builtin -fno-stack-protector \
 	-fno-exceptions -fno-rtti -fno-use-cxa-atexit -fno-threadsafe-statics \
 	-fPIC -m64 -mcmodel=small -mno-red-zone -nostdinc -nostdinc++ \
 	-Os -Wall -Wextra
-USER_LDFLAGS := -no-pie -nostdlib -nostartfiles -nodefaultlibs \
-	-Wl,--build-id=none -Wl,--hash-style=sysv -Wl,-T,script/user.lds
+BASE_USER_LDFLAGS := -no-pie -nostdlib -nostartfiles -nodefaultlibs \
+	-Wl,--build-id=none -Wl,--hash-style=sysv
+USER_LDFLAGS := $(BASE_USER_LDFLAGS) -Wl,-T,script/user.lds
+BOOT_SERVICE_LDFLAGS := $(BASE_USER_LDFLAGS) -Wl,-T,script/boot-service.lds
 USER_RUNTIME_OBJECTS := $(OBJECT_DIR)/user/runtime/runtime.o \
 	$(OBJECT_DIR)/user/runtime/service.o \
 	$(OBJECT_DIR)/user/runtime/task.o \
 	$(OBJECT_DIR)/user/runtime/file.o $(OBJECT_DIR)/user/runtime/input.o \
 	$(OBJECT_DIR)/user/runtime/pty.o
-CORE_SERVICE_NAMES := init task fs pci device storage
-DISK_SERVICE_NAMES := tty console guiw users
+USER_RUNTIME_OBJECTS += $(OBJECT_DIR)/user/runtime/directories.o
+USER_RUNTIME_OBJECTS += $(OBJECT_DIR)/user/runtime/elf.o
+CORE_SERVICE_NAMES := init task fs pci device storage mm pipe msgq
+DISK_SERVICE_NAMES := tty console users
 SERVICE_NAMES := $(CORE_SERVICE_NAMES) $(DISK_SERVICE_NAMES)
 PACKAGE_CONFIGS := $(wildcard user/*/package.conf lib/*.conf)
 include $(BUILD_DIR)/packages.mk
 SERVICE_PROGRAMS := $(addprefix $(BUILD_DIR)/services/,$(addsuffix .elf,$(SERVICE_NAMES)))
 USER_PROGRAMS := $(SERVICE_PROGRAMS) $(APPLICATION_PROGRAMS)
-SERVICE_SOURCES := $(foreach service,$(filter-out guiw,$(SERVICE_NAMES)),$(wildcard \
+SERVICE_SOURCES := $(foreach service,$(SERVICE_NAMES),$(wildcard \
 	$(SOURCE_DIR)/$(service)/*.cc $(SOURCE_DIR)/$(service)/*/*.cc))
 SERVICE_ASM_SOURCES := $(foreach service,$(SERVICE_NAMES),$(wildcard $(SOURCE_DIR)/$(service)/*.S))
 SERVICE_CXX_OBJECTS := $(patsubst $(SOURCE_DIR)/%.cc,$(OBJECT_DIR)/%.o,$(SERVICE_SOURCES))
-GUIW_SOURCES := $(wildcard user/guiw/server/*.cc)
-GUIW_OBJECTS := $(patsubst user/guiw/server/%.cc,$(OBJECT_DIR)/user/guiw/server/%.o,$(GUIW_SOURCES))
-SERVICE_CXX_OBJECTS += $(GUIW_OBJECTS)
+MM_SOURCES := $(wildcard user/mm/*.cc)
+PIPE_OBJECTS := $(OBJECT_DIR)/user/pipe/main.o
+MSGQ_OBJECTS := $(OBJECT_DIR)/user/msgq/main.o
+MM_OBJECTS := $(patsubst user/mm/%.cc,$(OBJECT_DIR)/user/mm/%.o,$(MM_SOURCES))
+SERVICE_CXX_OBJECTS += $(MM_OBJECTS) $(PIPE_OBJECTS) $(MSGQ_OBJECTS)
 SERVICE_ASM_OBJECTS := $(patsubst $(SOURCE_DIR)/%.S,$(OBJECT_DIR)/%.o,$(SERVICE_ASM_SOURCES))
 SERVICE_OBJECTS := $(SERVICE_CXX_OBJECTS) $(SERVICE_ASM_OBJECTS)
-application_object = $(OBJECT_DIR)/user/$(if $(filter terminal,$(1)),guiw,$(1))/main.o
+application_object = $(OBJECT_DIR)/user/$(1)/main.o
 APPLICATION_MAIN_OBJECTS := $(foreach app,$(APPLICATION_NAMES),$(call application_object,$(app)))
 AR ?= ar
 DISK_IMAGE := $(BUILD_DIR)/$(PROJECT).img
@@ -72,6 +78,7 @@ LIBOSGUI_CXX_SO := $(PACKAGE_DIR)/libosgui-c++/libosgui-c++.so
 LIBC_SO := $(PACKAGE_DIR)/libc++/libc.so
 LIBCXX_SO := $(PACKAGE_DIR)/libc++/libc++.so
 USER_SHARED_LIBRARIES := $(LIBOS_CXX_SO) $(LIBC_SO) $(LIBCXX_SO) $(LIBOSGUI_CXX_SO)
+INTERPRETER := $(BUILD_DIR)/lib/ld-osinfo-x86-64.so
 IMAGE_INPUTS := $(KERNEL) $(APPLICATION_PROGRAMS) $(SERVICE_PROGRAMS) \
 	$(USER_SHARED_LIBRARIES)
 USER_SHARED_LDFLAGS := -shared -nostdlib -nostartfiles -nodefaultlibs \
@@ -105,29 +112,41 @@ DEPENDENCY_FILES := $(sort $(GENERATED_OBJECTS:.o=.d))
 .DEFAULT_GOAL := all
 all: build package-archives
 
+.PHONY: sdk
+sdk: libraries $(OBJECT_DIR)/user/runtime/start.o $(OBJECT_DIR)/user/runtime/service_start.o
+	@python3 script/export-sdk.py --output "$(BUILD_DIR)/sdk"
+
 $(BUILD_DIR)/packages.mk: script/packages.py $(PACKAGE_CONFIGS) Makefile user lib $(wildcard user/*/)
 	@python3 script/packages.py --package-dir "$(PACKAGE_DIR)" --makefile "$@"
 
-package-archives: applications libraries $(PACKAGE_DIR)/guiw/guiw.elf
+package-archives: applications libraries
 	@python3 script/packages.py --package-dir "$(PACKAGE_DIR)"
-
-$(PACKAGE_DIR)/guiw/guiw.elf: $(BUILD_DIR)/services/guiw.elf
-	@mkdir -p $(@D)
-	@cp $< $@
 
 build: kernel services applications libraries
 
 kernel: $(KERNEL)
 
-ifeq ($(USER_SUBBUILD),1)
 services: $(SERVICE_PROGRAMS)
 applications: $(APPLICATION_PROGRAMS)
-else
-services applications: libraries
-	+$(MAKE) -C user $@
-endif
 
-libraries: $(USER_SHARED_LIBRARIES) $(PACKAGE_DIR)/libc++/COPYRIGHT
+libraries: $(USER_SHARED_LIBRARIES) $(PACKAGE_DIR)/libc++/COPYRIGHT $(PACKAGE_DIR)/ld-osinfo/ld-osinfo-x86-64.so
+
+$(OBJECT_DIR)/user/ld/main.o: user/ld/main.cc
+	@mkdir -p $(@D)
+	@$(CXX) $(CPPFLAGS) $(USER_CXXFLAGS) -mcmodel=large $(DEPENDENCY_FLAGS) -c $< -o $@
+
+$(OBJECT_DIR)/user/ld/start.o: user/ld/start.S
+	@mkdir -p $(@D)
+	@$(CC) -m64 -c $< -o $@
+
+$(INTERPRETER): $(OBJECT_DIR)/user/ld/main.o $(OBJECT_DIR)/user/ld/start.o $(USER_RUNTIME_OBJECTS) script/interpreter.lds
+	@mkdir -p $(@D)
+	@$(CXX) -no-pie -nostdlib -nostartfiles -nodefaultlibs -Wl,--build-id=none,--no-relax -Wl,-T,script/interpreter.lds \
+		-o $@ $(OBJECT_DIR)/user/ld/main.o $(OBJECT_DIR)/user/ld/start.o $(USER_RUNTIME_OBJECTS) -lgcc
+
+$(PACKAGE_DIR)/ld-osinfo/ld-osinfo-x86-64.so: $(INTERPRETER)
+	@mkdir -p $(@D)
+	@cp $< $@
 
 $(PACKAGE_DIR)/libc++/COPYRIGHT: lib/libc/portable/COPYRIGHT
 	@mkdir -p $(@D)
@@ -137,6 +156,14 @@ $(KERNEL): $(KERNEL_OBJECTS) $(KERNEL_LINKER_SCRIPT) Makefile
 	@mkdir -p $(@D)
 	@echo "[KERNEL LD] $@"
 	@$(CXX) $(CXXFLAGS) $(KERNEL_LDFLAGS) -o $@ $(KERNEL_OBJECTS) -lgcc
+
+$(OBJECT_DIR)/tests/lifecycle-main.o: $(SOURCE_DIR)/kernel/main.cc tests/kernel-lifecycle.h
+	@mkdir -p $(@D)
+	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) -DOS_TASK_LIFECYCLE_TEST -c $< -o $@
+
+$(BUILD_DIR)/tests/kernel-lifecycle.elf: $(filter-out $(OBJECT_DIR)/kernel/main.o,$(KERNEL_OBJECTS)) $(OBJECT_DIR)/tests/lifecycle-main.o $(KERNEL_LINKER_SCRIPT) Makefile
+	@mkdir -p $(@D)
+	@$(CXX) $(CXXFLAGS) $(KERNEL_LDFLAGS) -o $@ $(filter %.o,$^) -lgcc
 
 $(OBJECT_DIR)/kernel/%.o: $(SOURCE_DIR)/kernel/%.cc
 	@mkdir -p $(@D)
@@ -158,14 +185,24 @@ $(OBJECT_DIR)/user/runtime/%.o: lib/os/%.S
 	@echo "[USER AS] $<"
 	@$(CC) $(CPPFLAGS) -m64 -ffreestanding -fno-pic $(DEPENDENCY_FLAGS) -c $< -o $@
 
-$(filter-out $(GUIW_OBJECTS),$(SERVICE_CXX_OBJECTS)): $(OBJECT_DIR)/%.o: $(SOURCE_DIR)/%.cc
+$(filter-out $(MM_OBJECTS) $(PIPE_OBJECTS) $(MSGQ_OBJECTS),$(SERVICE_CXX_OBJECTS)): $(OBJECT_DIR)/%.o: $(SOURCE_DIR)/%.cc
 	@mkdir -p $(@D)
 	@echo "[SERVICE CXX] $<"
 	@$(CXX) $(CPPFLAGS) $(USER_CXXFLAGS) $(DEPENDENCY_FLAGS) -c $< -o $@
 
-$(GUIW_OBJECTS): $(OBJECT_DIR)/user/guiw/server/%.o: user/guiw/server/%.cc
+$(MM_OBJECTS): $(OBJECT_DIR)/user/mm/%.o: user/mm/%.cc
 	@mkdir -p $(@D)
-	@echo "[GUIW CXX] $<"
+	@echo "[MM CXX] $<"
+	@$(CXX) $(CPPFLAGS) $(USER_CXXFLAGS) $(DEPENDENCY_FLAGS) -c $< -o $@
+
+$(OBJECT_DIR)/user/pipe/%.o: user/pipe/%.cc
+	@mkdir -p $(@D)
+	@echo "[MM CXX] $<"
+	@$(CXX) $(CPPFLAGS) $(USER_CXXFLAGS) $(DEPENDENCY_FLAGS) -c $< -o $@
+
+$(OBJECT_DIR)/user/msgq/%.o: user/msgq/%.cc
+	@mkdir -p $(@D)
+	@echo "[MM CXX] $<"
 	@$(CXX) $(CPPFLAGS) $(USER_CXXFLAGS) $(DEPENDENCY_FLAGS) -c $< -o $@
 
 $(SERVICE_ASM_OBJECTS): $(OBJECT_DIR)/%.o: $(SOURCE_DIR)/%.S
@@ -247,25 +284,26 @@ $(LIBCXX_SO): $(LIBCXX_OBJECTS) $(LIBCXXABI_OBJECTS) $(LIBC_SO) $(LIBOS_CXX_SO) 
 		$(LIBCXXABI_OBJECTS) -Wl,--no-as-needed $(LIBC_SO) $(LIBOS_CXX_SO) -lgcc
 
 define SERVICE_template
-$(BUILD_DIR)/services/$(1).elf: $$(if $$(filter guiw,$(1)),$$(GUIW_OBJECTS),$$(filter $(OBJECT_DIR)/$(1)/%,$$(SERVICE_OBJECTS))) \
+$(BUILD_DIR)/services/$(1).elf: $$(call service_objects,$(1)) \
 		$(OBJECT_DIR)/user/runtime/service_start.o $$(LIBOS_CXX_SO) \
 		$$(if $$(filter $(1),$$(DISK_SERVICE_NAMES)),$$(LIBOSGUI_CXX_SO)) \
 		$$(if $$(filter $(1),users),$$(LIBC_SO)) \
-		script/user.lds Makefile
+		script/boot-service.lds Makefile
 	@mkdir -p $$(@D)
 	@echo "[SERVICE LD] $$@"
-	@$$(CXX) $$(USER_CXXFLAGS) $$(USER_LDFLAGS) -o $$@ \
-		$$(if $$(filter guiw,$(1)),$$(GUIW_OBJECTS),$$(filter $(OBJECT_DIR)/$(1)/%,$$(SERVICE_OBJECTS))) \
+	@$$(CXX) $$(USER_CXXFLAGS) $$(BOOT_SERVICE_LDFLAGS) -o $$@ \
+		$$(call service_objects,$(1)) \
 		$(OBJECT_DIR)/user/runtime/service_start.o \
 		-Wl,-E,--no-dynamic-linker -Wl,--no-as-needed $$(LIBOS_CXX_SO) \
 		$$(if $$(filter $(1),$$(DISK_SERVICE_NAMES)),$$(LIBOSGUI_CXX_SO)) \
 		$$(if $$(filter $(1),users),$$(LIBC_SO)) -lgcc
 endef
 
+service_objects = $(if $(filter mm,$(1)),$(MM_OBJECTS),$(if $(filter pipe,$(1)),$(PIPE_OBJECTS),$(if $(filter msgq,$(1)),$(MSGQ_OBJECTS),$(filter $(OBJECT_DIR)/$(1)/%,$(SERVICE_OBJECTS)))))
 $(foreach service,$(SERVICE_NAMES),$(eval $(call SERVICE_template,$(service))))
 
 define APPLICATION_template
-$(call application_object,$(1)): $$(firstword $$(wildcard user/coreutils/$(1)/main.cc user/$(1)/main.cc user/mount/$(1)/main.cc $$(if $$(filter terminal,$(1)),user/guiw/main.cc)))
+$(call application_object,$(1)): $$(firstword $$(wildcard user/coreutils/$(1)/main.cc user/$(1)/main.cc user/mount/$(1)/main.cc))
 	@mkdir -p $$(@D)
 	@echo "[USER CXX] $$<"
 	@$$(CXX) $$(CPPFLAGS) $$(USER_CXXFLAGS) $$(DEPENDENCY_FLAGS) -c $$< -o $$@
@@ -276,10 +314,43 @@ $$(APP_OUTPUT_$(1)): $(call application_object,$(1)) \
 	@mkdir -p $$(@D)
 	@echo "[APP LD] $$@"
 	@$$(CXX) $$(USER_CXXFLAGS) $$(USER_LDFLAGS) -o $$@ $$< \
-		$(OBJECT_DIR)/user/runtime/start.o -Wl,-E,--no-dynamic-linker \
+		$(OBJECT_DIR)/user/runtime/start.o -Wl,-E,--dynamic-linker=/lib/ld-osinfo-x86-64.so \
 		-Wl,--no-as-needed $$(LIBCXX_SO) $$(LIBC_SO) $$(LIBOS_CXX_SO) $$(LIBOSGUI_CXX_SO) -lgcc
 endef
 $(foreach application,$(APPLICATION_NAMES),$(eval $(call APPLICATION_template,$(application))))
+
+$(OBJECT_DIR)/tests/%.o: tests/%.cc
+	@mkdir -p $(@D)
+	@$(CXX) $(CPPFLAGS) $(USER_CXXFLAGS) $(DEPENDENCY_FLAGS) -c $< -o $@
+
+$(BUILD_DIR)/tests/%: $(OBJECT_DIR)/tests/%.o $(OBJECT_DIR)/user/runtime/start.o $(USER_SHARED_LIBRARIES) script/user.lds Makefile
+	@mkdir -p $(@D)
+	@$(CXX) $(USER_CXXFLAGS) $(USER_LDFLAGS) -o $@ $< $(OBJECT_DIR)/user/runtime/start.o -Wl,-E,--dynamic-linker=/lib/ld-osinfo-x86-64.so \
+		-Wl,--no-as-needed $(LIBCXX_SO) $(LIBC_SO) $(LIBOS_CXX_SO) $(LIBOSGUI_CXX_SO) -lgcc
+
+$(BUILD_DIR)/tests/linker/libprobe-base.so: tests/linker/base.cc $(LIBC_SO) $(LIBOS_CXX_SO)
+	@mkdir -p $(@D)
+	@$(CXX) $(CPPFLAGS) $(USER_CXXFLAGS) $(USER_SHARED_LDFLAGS) -Wl,-soname,libprobe-base.so -o $@ $^
+
+$(BUILD_DIR)/tests/linker/libprobe.so: tests/linker/dependency.cc $(BUILD_DIR)/tests/linker/libprobe-base.so
+	@$(CXX) $(CPPFLAGS) $(USER_CXXFLAGS) $(USER_SHARED_LDFLAGS) -Wl,-soname,libprobe.so -Wl,-rpath,'$$ORIGIN' -o $@ $^
+
+$(BUILD_DIR)/tests/linker/libprobe-undefined.so: tests/linker/undefined.cc
+	@mkdir -p $(@D)
+	@$(CXX) $(CPPFLAGS) $(USER_CXXFLAGS) $(USER_SHARED_LDFLAGS) -Wl,-soname,libprobe-undefined.so -o $@ $<
+
+$(OBJECT_DIR)/tests/linker/main.o: tests/linker/main.cc
+	@mkdir -p $(@D)
+	@$(CXX) $(CPPFLAGS) $(USER_CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/tests/linker/probe: $(OBJECT_DIR)/tests/linker/main.o $(BUILD_DIR)/tests/linker/libprobe.so $(OBJECT_DIR)/user/runtime/start.o $(LIBC_SO) $(LIBOS_CXX_SO)
+	@$(CXX) $(USER_LDFLAGS) -Wl,-E,--dynamic-linker=/lib/ld-osinfo-x86-64.so -Wl,-rpath,/usr/lib/osinfo-test -Wl,-rpath-link,$(BUILD_DIR)/tests/linker -o $@ $^ -lgcc
+
+$(BUILD_DIR)/tests/linker/undefined: $(OBJECT_DIR)/tests/linker/main.o $(BUILD_DIR)/tests/linker/libprobe-undefined.so $(OBJECT_DIR)/user/runtime/start.o $(LIBC_SO) $(LIBOS_CXX_SO)
+	@$(CXX) $(USER_LDFLAGS) -Wl,-E,--dynamic-linker=/lib/ld-osinfo-x86-64.so -Wl,-rpath,/usr/lib/osinfo-test,--allow-shlib-undefined -o $@ $^ -lgcc
+
+.PHONY: linker-tests
+linker-tests: $(BUILD_DIR)/tests/linker/probe $(BUILD_DIR)/tests/linker/undefined
 
 disk: mkimg cpfiles
 
@@ -301,8 +372,10 @@ cpfiles: all
 	@echo "[CPFILES] $(DISK_IMAGE)"
 	@sudo sh script/cpfiles.sh "$(DISK_IMAGE)" "$(BUILD_DIR)" "$(PACKAGE_DIR)"
 
-check: $(KERNEL) $(USER_PROGRAMS) $(USER_SHARED_LIBRARIES)
+check: $(KERNEL) $(USER_PROGRAMS) $(USER_SHARED_LIBRARIES) $(INTERPRETER)
 	@python3 script/check-service-imports.py
+	@python3 script/check-memory-headers.py
+	@python3 script/audit-service-functions.py
 	@grub-file --is-x86-multiboot2 $(KERNEL)
 	@readelf -h $(KERNEL) | grep -q 'EXEC (Executable file)'
 	@test -z "$$(readelf -d $(KERNEL) 2>/dev/null | grep NEEDED)"

@@ -1,3 +1,4 @@
+#include "os/core_service.h"
 #include "os/abi.h"
 #include "os/input.h"
 #include "os/pci.h"
@@ -182,100 +183,23 @@ class InputQueue {
 };
 
 class Ps2Controller {
-   public:
+ public:
     bool init() {
-        uint8_t ignored;
-        for (uint32_t index = 0; index < 32 && outputReady(); ++index) {
-            os::SystemService::readPort8(0x60, ignored);
-        }
-        if (!writeCommand(0xad) || !writeCommand(0xa7) || !writeCommand(0x20) ||
-            !readData(configuration_)) {
-            return false;
-        }
-        configuration_ =
-            static_cast<uint8_t>((configuration_ | 0x03U) & ~0x30U);
-        if (!writeCommand(0x60) || !writeData(configuration_) ||
-            !writeCommand(0xae) || !writeCommand(0xa8)) {
-            return false;
-        }
-        mousePacketSize_ = enableMouseWheel() ? 4 : 3;
-        return sendKeyboard(0xf4) && sendMouse(0xf4);
+        os::IpcMessage request{}, reply{};
+        request.type = static_cast<uint64_t>(os::DeviceOperation::InitializeInput); request.length = 5;
+        const int64_t result = os::CoreServiceClient::result(os::CoreServiceKind::Device, request, reply);
+        if (result < 3 || result > 4) return false;
+        packetSize_ = result; return true;
     }
-
     bool readInterruptByte(uint8_t& value, bool& mouse) {
-        uint8_t status;
-        if (os::SystemService::readPort8(0x64, status) != 0 || (status & 1U) == 0 ||
-            os::SystemService::readPort8(0x60, value) != 0) {
-            return false;
-        }
-        mouse = (status & 0x20U) != 0;
-        return true;
+        os::IpcMessage request{}, reply{};
+        request.type = static_cast<uint64_t>(os::DeviceOperation::ReadInput); request.length = 5;
+        if (os::CoreServiceClient::result(os::CoreServiceKind::Device, request, reply)) return false;
+        value = reply.data[1]; mouse = reply.data[2] != 0; return true;
     }
-
-    uint8_t mousePacketSize() const { return mousePacketSize_; }
-
-   private:
-    bool inputReady() {
-        for (uint32_t attempt = 0; attempt < 100000; ++attempt) {
-            uint8_t status;
-            if (os::SystemService::readPort8(0x64, status) == 0 && (status & 2U) == 0) {
-                return true;
-            }
-            asm volatile("pause");
-        }
-        return false;
-    }
-
-    bool outputReady() {
-        uint8_t status;
-        return os::SystemService::readPort8(0x64, status) == 0 && (status & 1U) != 0;
-    }
-
-    bool readData(uint8_t& value) {
-        for (uint32_t attempt = 0; attempt < 100000; ++attempt) {
-            if (outputReady()) {
-                return os::SystemService::readPort8(0x60, value) == 0;
-            }
-            asm volatile("pause");
-        }
-        return false;
-    }
-
-    bool writeCommand(uint8_t value) {
-        return inputReady() && os::SystemService::writePort8(0x64, value) == 0;
-    }
-
-    bool writeData(uint8_t value) {
-        return inputReady() && os::SystemService::writePort8(0x60, value) == 0;
-    }
-
-    bool sendKeyboard(uint8_t value) {
-        uint8_t acknowledgement;
-        return writeData(value) && readData(acknowledgement) &&
-               acknowledgement == 0xfa;
-    }
-
-    bool sendMouse(uint8_t value) {
-        uint8_t acknowledgement;
-        return writeCommand(0xd4) && writeData(value) &&
-               readData(acknowledgement) && acknowledgement == 0xfa;
-    }
-
-    bool setMouseSampleRate(uint8_t rate) {
-        return sendMouse(0xf3) && sendMouse(rate);
-    }
-
-    bool enableMouseWheel() {
-        if (!setMouseSampleRate(200) || !setMouseSampleRate(100) ||
-            !setMouseSampleRate(80) || !sendMouse(0xf2)) {
-            return false;
-        }
-        uint8_t deviceId;
-        return readData(deviceId) && deviceId == 3 && setMouseSampleRate(200);
-    }
-
-    uint8_t configuration_   = 0;
-    uint8_t mousePacketSize_ = 3;
+    uint8_t mousePacketSize() const { return packetSize_; }
+ private:
+    uint8_t packetSize_ = 3;
 };
 
 class KeyboardDriver {
@@ -577,8 +501,8 @@ class MouseDriver {
 class InputService {
    public:
     bool init(uint64_t registry) {
-        requestEndpoint_ = os::createEndpoint();
-        irqEndpoint_     = os::createEndpoint();
+        requestEndpoint_ = os::Endpoint::create();
+        irqEndpoint_     = os::Endpoint::create();
         if (requestEndpoint_ == 0 || irqEndpoint_ == 0 ||
             !controller_.init() || os::Device::bindIrq(1, irqEndpoint_) == 0 ||
             os::Device::bindIrq(12, irqEndpoint_) == 0 ||
@@ -840,9 +764,9 @@ class DeviceApplication {
     static void inputServiceMain(void* input) { static_cast<InputService*>(input)->run(); }
     static void inputIrqMain(void* input) { static_cast<InputService*>(input)->runIrq(); }
     int run() {
-    os::System::log("[DEVICE] Device Server started in Ring 0\n");
+    os::System::log("[DEVICE] Device Server started in Ring 3\n");
     const uint64_t registry = os::getBootstrapHandle();
-    const uint64_t endpoint = os::createEndpoint();
+    const uint64_t endpoint = os::Endpoint::create();
     if (registry == 0 || endpoint == 0 ||
         !os::ServiceRegistry::registerService(registry, os::deviceServiceName, endpoint)) {
         os::System::log("[DEVICE] registration failed\n");

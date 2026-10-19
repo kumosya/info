@@ -1,4 +1,5 @@
 #include "kernel/core_service.h"
+#include "os/pci.h"
 
 #include "kernel/device.h"
 #include "kernel/mm.h"
@@ -33,116 +34,29 @@ class MessageData {
     }
 };
 
-class PipeService final : public EndpointService {
-   public:
+class PciService final : public EndpointService {
+ public:
     int call(Task& caller, const IpcMessage& request, IpcMessage& reply) override {
-        if (request.length < 3) return -1;
-        const auto* args = request.data;
-        switch (static_cast<os::PipeOperation>(request.type)) {
-            case os::PipeOperation::Create:
-            case os::PipeOperation::CreateChannel: {
-                uint64_t first = 0, second = 0;
-                const bool created = request.type == static_cast<uint64_t>(os::PipeOperation::Create)
-                    ? Pipe::createHandles(caller, first, second) : Pipe::createChannelPair(caller, first, second);
-                if (!created) return static_cast<int>(os::ErrorCode::OutOfMemory);
-                MessageData::created(reply, first); MessageData::created(reply, second);
-                break;
-            }
-            case os::PipeOperation::Read:
-                if (!args[1] || args[1] > (os::ipcDataWordCount - 1) * 8) return -1;
-                reply.data[0] = Pipe::read(caller, args[0], &reply.data[1], args[1]);
-                break;
-            case os::PipeOperation::Write:
-                if (args[1] > (request.length - 3) * 8) return -1;
-                reply.data[0] = Pipe::write(caller, args[0], &args[3], args[1]);
-                break;
-            case os::PipeOperation::Identity: reply.data[0] = Pipe::channelIdentity(caller, args[0]); break;
-            case os::PipeOperation::Nonblocking:
-                reply.data[0] = args[1] <= 1 && Pipe::setChannelNonblocking(caller, args[0], args[1]) ? 0 : -1;
-                break;
-            case os::PipeOperation::Eof: reply.data[0] = Pipe::signalChannelEof(caller, args[0]) ? 0 : -1; break;
-            default: return -1;
-        }
-        reply.length = os::ipcDataWordCount;
-        return 0;
+        if (!caller.hasCapability(taskCapabilityPci) || caller.serviceRole() != os::ServiceRole::Pci || request.length < 4) return -3;
+        const auto operation = static_cast<os::PciOperation>(request.type);
+        os::PciFunctionInfo function{};
+        MessageData::copy(&function, &request.data[1], sizeof(function));
+        if (operation == os::PciOperation::Enumerate) {
+            if (!request.data[0] || request.data[0] > 64) return -1;
+            const uint32_t count = device::PciAccess::enumerate(reinterpret_cast<os::PciFunctionInfo*>(&reply.data[1]), request.data[0]);
+            reply.data[0] = count;
+        } else if (operation == os::PciOperation::ReadConfig) {
+            uint32_t value = 0;
+            if (request.data[0] > UINT16_MAX || !device::PciAccess::read(function, request.data[0], value)) return -1;
+            reply.data[1] = value;
+        } else if (operation == os::PciOperation::WriteConfig) {
+            if (request.data[0] > UINT16_MAX || request.data[3] > UINT32_MAX ||
+                !device::PciAccess::write(function, request.data[0], request.data[3])) return -1;
+        } else return -1;
+        reply.length = os::ipcDataWordCount; return 0;
     }
 };
-
-class MessageQueueService final : public EndpointService {
-   public:
-    int call(Task& caller, const IpcMessage& request, IpcMessage& reply) override {
-        if (request.length < 3) return -1;
-        const auto* args = request.data;
-        const char* name;
-        switch (static_cast<os::MessageQueueOperation>(request.type)) {
-            case os::MessageQueueOperation::Open:
-                if (!MessageData::name(request, 3, name) || args[0] > UINT32_MAX || args[1] > 16 || args[2] > 256) return -1;
-                reply.data[0] = MessageQueue::open(caller, name, args[0], args[1], args[2]);
-                MessageData::created(reply, reply.data[0]);
-                break;
-            case os::MessageQueueOperation::Unlink:
-                if (!MessageData::name(request, 3, name)) return -1;
-                reply.data[0] = MessageQueue::unlink(name) ? 0 : -1;
-                break;
-            case os::MessageQueueOperation::Send:
-                if (args[1] > 256 || args[1] > (request.length - 3) * 8 || args[2] > UINT32_MAX) return -1;
-                reply.data[0] = MessageQueue::send(caller, args[0], &args[3], args[1], args[2]);
-                if (reply.data[0] == 1) reply.data[0] = static_cast<int64_t>(os::ErrorCode::WouldBlock);
-                break;
-            case os::MessageQueueOperation::Receive: {
-                if (args[1] > 256) return -1;
-                uint32_t priority = 0;
-                reply.data[0] = MessageQueue::receive(caller, args[0], &reply.data[2], args[1], priority);
-                reply.data[1] = priority;
-                if (static_cast<int64_t>(reply.data[0]) == -2) reply.data[0] = static_cast<int64_t>(os::ErrorCode::WouldBlock);
-                break;
-            }
-            case os::MessageQueueOperation::Attributes: {
-                MessageQueueAttributes attributes{};
-                if (!MessageQueue::getAttributes(caller, args[0], attributes)) return -1;
-                MessageData::copy(&reply.data[1], &attributes, sizeof(attributes));
-                break;
-            }
-            case os::MessageQueueOperation::Flags:
-                reply.data[0] = MessageQueue::setFlags(caller, args[0], args[1], reply.data[1]) ? 0 : -1;
-                break;
-            case os::MessageQueueOperation::Notify:
-                if (args[1] > 2 || args[2] > UINT32_MAX) return -1;
-                reply.data[0] = MessageQueue::registerNotification(caller, args[0], args[1], args[2]);
-                break;
-            default: return -1;
-        }
-        reply.length = os::ipcDataWordCount;
-        return 0;
-    }
-};
-
-class MemoryService final : public EndpointService {
-   public:
-    int call(Task& caller, const IpcMessage& request, IpcMessage& reply) override {
-        if (request.length < 5) return -1;
-        const auto* args = request.data;
-        const char* name;
-        switch (static_cast<os::MemoryOperation>(request.type)) {
-            case os::MemoryOperation::Open:
-                if (!MessageData::name(request, 5, name) || args[0] > UINT32_MAX) return -1;
-                reply.data[0] = SharedMemory::open(caller, name, args[0]);
-                MessageData::created(reply, reply.data[0]);
-                break;
-            case os::MemoryOperation::Unlink:
-                if (!MessageData::name(request, 5, name)) return -1;
-                reply.data[0] = SharedMemory::unlink(name) ? 0 : -1; break;
-            case os::MemoryOperation::Resize:
-                reply.data[0] = SharedMemory::resize(caller, args[0], args[1]) ? 0 : -1; break;
-            case os::MemoryOperation::Map:
-                reply.data[0] = SharedMemory::map(caller, args[0], args[1], args[2], args[3], args[4]); break;
-            default: return -1;
-        }
-        reply.length = 1;
-        return 0;
-    }
-};
-
+PciService pciService;
 class DeviceService final : public EndpointService {
    public:
     int call(Task& caller, const IpcMessage& request, IpcMessage& reply) override {
@@ -154,9 +68,19 @@ class DeviceService final : public EndpointService {
             if (!caller.hasCapability(taskCapabilityDisplay) || !device::DisplayAccess::mapFramebuffer(caller, args[0], info)) return -3;
             MessageData::copy(&reply.data[1], &info, sizeof(info));
         } else {
-            // These capabilities cannot turn a Ring 3 image into a driver.
-            if (!caller.isSystemService() || !caller.hasCapability(taskCapabilityDevice)) return -3;
+            // Only fixed boot identities receive device authority.
+            if (!caller.hasCapability(taskCapabilityDevice) ||
+                (caller.serviceRole() != os::ServiceRole::Device && caller.serviceRole() != os::ServiceRole::Storage)) return -3;
             switch (operation) {
+                case os::DeviceOperation::InitializeInput:
+                    if (caller.serviceRole() != os::ServiceRole::Device) return -3;
+                    reply.data[0] = device::Ps2Access::initialize(); break;
+                case os::DeviceOperation::ReadInput: {
+                    if (caller.serviceRole() != os::ServiceRole::Device) return -3;
+                    uint8_t value = 0; bool mouse = false;
+                    if (!device::Ps2Access::read(value, mouse)) return -6;
+                    reply.data[1] = value; reply.data[2] = mouse; break;
+                }
                 case os::DeviceOperation::MapMmio: {
                     os::PciFunctionInfo function{};
                     MessageData::copy(&function, &args[3], sizeof(function));
@@ -333,7 +257,7 @@ class TaskImages {
         info.sharedImageCount > maximumSharedImageCount ||
         (info.argumentCount != 0 && info.arguments == nullptr) ||
         (info.sharedImageCount != 0 && info.sharedImages == nullptr) ||
-        (info.capabilities & ~(taskCapabilityDisplay | taskCapabilityUsers)) != 0 ||
+        info.capabilities != 0 || (info.flags & ~os::spawnFlagNewSession) ||
         !memory::validateUserMemory(
             parent->addressSpace().rootPhysicalAddress(),
             reinterpret_cast<uint64_t>(info.image), info.imageSize, false)) {
@@ -422,8 +346,11 @@ class TaskImages {
         logicalParent, info.bootstrapHandle, info.capabilities,
         info.standardInputHandle, info.standardOutputHandle,
         info.standardErrorHandle, info.argumentCount, arguments, sharedImages,
-        info.sharedImageCount, &loadError, static_cast<os::ServiceRole>(info.serviceRole));
+        info.sharedImageCount, &loadError, static_cast<os::ServiceRole>(info.serviceRole), (info.flags & os::spawnFlagNewSession) != 0);
     if (child == nullptr) {
+        serial::serialWrite("[ELF] spawn image failed: ");
+        serial::serialWrite(ElfLoader::errorName(loadError));
+        serial::serialWrite("\n");
         return elfLoadError(loadError);
     }
     const uint64_t handle = parent->handles().add(
@@ -441,7 +368,7 @@ class TaskService final : public EndpointService {
         info.exitCode = target.exitCode(); info.uid = target.uid(); info.gid = target.gid();
         info.effectiveUid = target.effectiveUid(); info.effectiveGid = target.effectiveGid();
         info.parentId = target.parentId(); info.serviceRole = static_cast<uint32_t>(target.serviceRole());
-        info.trustedDeviceService = target.isSystemService() && target.hasCapability(taskCapabilityDevice);
+        info.trustedDeviceService = target.hasCapability(taskCapabilityDevice) && (target.serviceRole() == os::ServiceRole::Device || target.serviceRole() == os::ServiceRole::Storage);
         for (size_t i = 0; i + 1 < sizeof(info.name) && target.name()[i]; ++i) info.name[i] = target.name()[i];
         MessageData::copy(&reply.data[1], &info, sizeof(info));
     }
@@ -505,6 +432,11 @@ class TaskService final : public EndpointService {
                 break;
             }
             case os::TaskOperation::Identity: reply.data[0] = caller.id(); break;
+            case os::TaskOperation::ThreadIdentity: reply.data[0] = thread->getId(); break;
+            case os::TaskOperation::SignalReturn:
+                if (thread->getType() != ThreadType::User || !thread->syscallContext() ||
+                    !signal::restoreSignalFrame(thread->syscallContext(), args[0])) return failure(os::ErrorCode::InvalidArgument);
+                thread->markContextRestored(); break;
             case os::TaskOperation::Query:
             case os::TaskOperation::Enumerate: {
                 auto target = request.type == static_cast<uint64_t>(os::TaskOperation::Query)
@@ -587,9 +519,14 @@ class TaskService final : public EndpointService {
 };
 
 TaskService taskService;
-PipeService pipeService;
-MessageQueueService messageQueueService;
-MemoryService memoryService;
+class ResidentMemoryService final : public EndpointService {
+    memory::MemoryService implementation_;
+   public:
+    int call(Task& caller, const IpcMessage& request, IpcMessage& reply) override {
+        return implementation_.call(caller, request, reply);
+    }
+};
+ResidentMemoryService memoryService;
 DeviceService deviceService;
 SystemService systemService;
 Endpoint* coreEndpoints[static_cast<uint64_t>(os::CoreServiceKind::Count)];
@@ -597,13 +534,14 @@ Endpoint* coreEndpoints[static_cast<uint64_t>(os::CoreServiceKind::Count)];
 
 bool CoreServices::initialize() {
     new (&taskService) TaskService;
-    new (&pipeService) PipeService;
-    new (&messageQueueService) MessageQueueService;
-    new (&memoryService) MemoryService;
+    new (&pciService) PciService;
+    if (!memory::PageMappings::initialize()) return false;
+    new (&memoryService) ResidentMemoryService;
     new (&deviceService) DeviceService;
     new (&systemService) SystemService;
-    EndpointService* services[] = {&pipeService, &messageQueueService, &memoryService, &deviceService, &systemService, &taskService};
+    EndpointService* services[] = {nullptr, nullptr, &memoryService, &deviceService, &systemService, &taskService, &pciService};
     for (uint32_t i = 0; i < sizeof(services) / sizeof(services[0]); ++i) {
+        if (!services[i]) continue;
         coreEndpoints[i] = Endpoint::create(services[i]);
         if (!coreEndpoints[i]) return false;
     }

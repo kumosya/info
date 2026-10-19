@@ -210,7 +210,6 @@ wctype_t  wctype(const char *);
 #endif
 
 /* POSIX.1-2024 declarations. */
-#include <features.h>
 #include <locale.h>
 #ifdef __cplusplus
 extern "C" {

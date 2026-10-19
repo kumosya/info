@@ -20,12 +20,10 @@ enum class SyscallNumber : uint64_t {
     Sleep = OS_SYS_SLEEP,
     GetBootstrapHandle = OS_SYS_GET_BOOTSTRAP_HANDLE,
     CloseHandle = OS_SYS_CLOSE_HANDLE,
-    GetThreadId = OS_SYS_GET_THREAD_ID,
     ForkTask = OS_SYS_FORK_TASK,
     ReplaceTaskImage = OS_SYS_REPLACE_TASK_IMAGE,
     WaitAddress = OS_SYS_WAIT_ADDRESS,
     WakeAddress = OS_SYS_WAKE_ADDRESS,
-    SignalReturn = OS_SYS_SIGNAL_RETURN,
     SendMessage = OS_SYS_SEND_MESSAGE,
     ReceiveMessage = OS_SYS_RECEIVE_MESSAGE,
     CallService = OS_SYS_CALL_SERVICE,
@@ -78,7 +76,7 @@ struct TaskInfo {
     uint32_t serviceRole;
 };
 
-enum class ServiceRole : uint32_t { None, Init, Task, Fs, Pci, Device, Storage, Tty, Console, Window, Users };
+enum class ServiceRole : uint32_t { None, Init, Task, Fs, Pci, Device, Storage, Tty, Console, Window, Users, Memory, Pipe, MessageQueue };
 
 struct PipeHandles {
     uint64_t readHandle;
@@ -104,9 +102,10 @@ struct SpawnImageInfo {
     uint32_t serviceRole;
     const char* const* arguments;
     uint32_t sharedImageCount;
-    uint32_t sharedReserved;
+    uint32_t flags;
     const struct SharedImageInfo* sharedImages;
 };
+constexpr uint32_t spawnFlagNewSession = 1U;
 
 struct SharedImageInfo {
     const void* image;
@@ -142,6 +141,9 @@ enum class ProgramId : uint64_t {
     ConsoleServer,
     WindowServer,
     UsersServer,
+    MemoryManager,
+    PipeServer,
+    MessageQueueServer,
     Count
 };
 
@@ -202,7 +204,7 @@ constexpr uint32_t handleFlagCloseOnExec = 1U << 1;
 constexpr uint32_t handleFlagsMask = handleFlagNoInherit | handleFlagCloseOnExec;
 constexpr uint64_t ipcInfiniteDeadline = UINT64_MAX;
 
-enum class HandleOperation : uint64_t { Close, Duplicate, RestrictRights, SetFlags, GetState };
+enum class HandleOperation : uint64_t { Close, Duplicate, RestrictRights, SetFlags, GetState, ObjectIdentity, References, DestroyEndpoint, RequestActive };
 
 class Handle {
    public:
@@ -217,6 +219,10 @@ class Handle {
     static int restrictRights(uint64_t handle, uint32_t rights);
     static int setFlags(uint64_t handle, uint32_t flags);
     static int state(uint64_t handle);
+    static uint64_t identity(uint64_t handle);
+    static int64_t references(uint64_t handle);
+    static int destroyEndpoint(uint64_t handle);
+    static int requestActive(uint64_t endpoint, uint64_t token);
    private:
     uint64_t value_;
 };
@@ -257,7 +263,7 @@ int wakeAddress(volatile uint32_t* address, uint32_t count);
 
 
 
-[[noreturn]] void signalReturn(void* frame);
+
 
 
 
@@ -267,7 +273,11 @@ int replaceTaskImage(const ExecImageInfo& info);
 void yield();
 void sleep(uint64_t milliseconds);
 uint64_t mapMemory(uint64_t address, uint64_t size, uint64_t protection);
-uint64_t createEndpoint();
+class Endpoint {
+   public:
+    static uint64_t create();
+    static int cancel(uint64_t endpoint, uint64_t threadId);
+};
 int sendMessage(uint64_t endpoint, IpcMessage& message,
                 uint64_t deadline = ipcInfiniteDeadline);
 int receiveMessage(uint64_t endpoint, IpcMessage& message,
@@ -275,7 +285,6 @@ int receiveMessage(uint64_t endpoint, IpcMessage& message,
 int callService(uint64_t endpoint, IpcMessage& request, IpcMessage& reply,
                 uint64_t deadline = ipcInfiniteDeadline);
 int replyMessage(uint64_t endpoint, uint64_t replyToken, IpcMessage& reply);
-int cancelIpc(uint64_t endpoint, uint64_t threadId);
 
 
 
@@ -292,13 +301,15 @@ uint64_t getBootstrapHandle();
 
 bool closeHandle(uint64_t handle);
 
-uint64_t getThreadId();
+
 
 bool unmapMemory(uint64_t address, uint64_t size);
 bool protectMemory(uint64_t address, uint64_t size, uint64_t protection);
 
 class Runtime {
    public:
+    static const char* environmentValue(const char* name);
+    static void bindEnvironment(char*** environment);
     static int printString(const char* string);
     static void copyBytes(void* destination, const void* source, size_t size);
     static void clearMemory(void* destination, size_t size);
@@ -306,11 +317,26 @@ class Runtime {
     static bool stringsEqual(const char* left, const char* right);
     static size_t stringLength(const char* value);
     static void runtimeFini();
+    static void prepare(char** environment);
     static int runtimeInit(int argumentCount, char** arguments, char** environment);
+   private:
+    static char** initialEnvironment_;
+    static char*** environmentSlot_;
+    static void (*sharedFinalizer_)();
+    static bool prepared_;
 };
 
+struct PageObjectInfo;
+struct MemoryUsage;
 class Memory {
    public:
+    static uint64_t allocatePages(uint32_t order, uint16_t node = UINT16_MAX, uint64_t owner = 0);
+    static uint64_t mapPages(uint64_t handle, uint64_t address, uint64_t size, uint64_t offset, uint64_t protection, uint64_t target = 0);
+    static int pageInfo(uint64_t handle, PageObjectInfo& info);
+    static int usage(MemoryUsage& info, uint64_t target = 0);
+    static int64_t reclaimCaches();
+    static int unmapTarget(uint64_t address, uint64_t size, uint64_t target = 0);
+    static int protectTarget(uint64_t address, uint64_t size, uint64_t protection, uint64_t target = 0);
     static uint64_t mapSharedMemory(uint64_t handle, uint64_t address, uint64_t size,
                          uint64_t offset, uint64_t protection);
     static int resizeSharedMemory(uint64_t handle, uint64_t size);

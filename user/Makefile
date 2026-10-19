@@ -3,7 +3,7 @@
 .PHONY: all applications services libraries check
 
 all:
-	+$(MAKE) -C .. USER_SUBBUILD=1 applications services $(if $(CROSS),CROSS=$(CROSS))
+	+$(MAKE) -C .. applications services $(if $(CROSS),CROSS=$(CROSS))
 
 applications services libraries check:
-	+$(MAKE) -C .. USER_SUBBUILD=1 $@ $(if $(CROSS),CROSS=$(CROSS))
+	+$(MAKE) -C .. $@ $(if $(CROSS),CROSS=$(CROSS))

@@ -52,7 +52,7 @@ Thread* Thread::create(Task* task, ThreadEntry entryPoint, void* argument,
         return nullptr;
     }
     Thread* thread = static_cast<Thread*>(heap::kernelAllocate(sizeof(Thread)));
-    const uint64_t stackSize = type == ThreadType::SystemService ? 256 * 1024 : kernelStackSize;
+    const uint64_t stackSize = type == ThreadType::SystemService || (task && task->serviceRole() != os::ServiceRole::None) ? 256 * 1024 : kernelStackSize;
     uint8_t* stack = static_cast<uint8_t*>(heap::kernelAllocate(stackSize));
     if (thread == nullptr || stack == nullptr) {
         if (thread) heap::kernelFree(thread);

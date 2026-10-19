@@ -18,7 +18,10 @@ int main(int argc, char** argv) {
     const int result = os::UserClient::request(os::UserOperation::Login, credentials, profile);
     coreutils::erase(&credentials, sizeof(credentials));
     if (result) { fputs("login: authentication failed\n", stderr); return 1; }
-    setsid(); coreutils::environment(profile);
+    setsid();
+    if (!coreutils::SessionEnvironment::apply(profile, true)) {
+        fputs("login: cannot initialize user environment\n", stderr); return 1;
+    }
     char* arguments[] = {profile.shell, nullptr};
     execve(profile.shell, arguments, environ);
     perror(profile.shell); return 1;

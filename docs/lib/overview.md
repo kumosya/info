@@ -20,7 +20,7 @@ os 运行时（lib/os，文档见 lib/os/）
 | libc | `lib/libc/` | [libc/libc.md](libc/libc.md) |
 | libc++ | `lib/libc++/` | [libc++/libcxx.md](libc++/libcxx.md) |
 
-动态链接时四个共享库一并加载（固定基址，见 [../x86-64/user.md](../x86-64/user.md)）：
+可选择的系统共享库包括下列四个。普通应用由独立解释器按 DT_NEEDED 加载实际依赖，参见 [动态链接](../x86-64/dynamic-linker.md)；固定引导库集合只用于 boot 模块：
 
 ```text
 /usr/lib/libos-c++.so   （os 运行时）

@@ -1,7 +1,6 @@
 #include <stdlib.h>
 #include "shgetc.h"
 #include "floatscan.h"
-#include "shgetc.h"
 
 static long double strtox(const char *s, char **p, int prec)
 {

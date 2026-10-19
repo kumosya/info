@@ -91,7 +91,6 @@ locale_t uselocale(locale_t);
 #endif
 
 /* POSIX.1-2024 declarations. */
-#include <features.h>
 #ifdef __cplusplus
 extern "C" {
 #endif

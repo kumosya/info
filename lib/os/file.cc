@@ -462,7 +462,8 @@ ssize_t File::read(void* buffer, size_t size) {
     if (backend_!=Backend::Filesystem) {
         if ((flags_&O_ACCMODE)==O_WRONLY) return -EBADF;
         if (backend_==Backend::Pipe) return FileSupport::posixResult(Pipe::readPipe(handle_,buffer,size));
-        if (backend_==Backend::Terminal) return FileSupport::posixResult(Terminal::read(buffer,size));
+        if (backend_==Backend::Terminal) return FileSupport::posixResult(
+            handle_ ? Pipe::readPipe(handle_,buffer,size) : Terminal::read(buffer,size));
         return -EINVAL;
     }
     if (!handle_ || (flags_&O_ACCMODE)==O_WRONLY) return error_=-EBADF;
@@ -477,7 +478,8 @@ ssize_t File::write(const void* buffer, size_t size) {
     if (backend_!=Backend::Filesystem) {
         if ((flags_&O_ACCMODE)==O_RDONLY) return -EBADF;
         if (backend_==Backend::Pipe) return FileSupport::posixResult(Pipe::writePipe(handle_,buffer,size));
-        if (backend_==Backend::Terminal) return FileSupport::posixResult(Terminal::write(buffer,size));
+        if (backend_==Backend::Terminal) return FileSupport::posixResult(
+            handle_ ? Pipe::writePipe(handle_,buffer,size) : Terminal::write(buffer,size));
         return -EINVAL;
     }
     if (!handle_ || (flags_&O_ACCMODE)==O_RDONLY) return error_=-EBADF;

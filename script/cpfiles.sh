@@ -58,7 +58,7 @@ for requiredPath in "$buildPath/kernel.elf" \
     "$buildPath/services/fs.elf" "$buildPath/services/pci.elf" "$buildPath/services/device.elf" \
     "$buildPath/services/storage.elf" "$buildPath/services/tty.elf" \
     "$buildPath/services/console.elf" \
-    "$buildPath/services/guiw.elf" "$buildPath/services/users.elf" \
+    "$buildPath/services/users.elf" "$buildPath/services/mm.elf" "$buildPath/services/pipe.elf" "$buildPath/services/msgq.elf" \
     "$packagePath/libos-c++/libos-c++.so" \
     "$packagePath/libc++/libc.so" "$packagePath/libc++/libc++.so" \
     "$packagePath/libosgui-c++/libosgui-c++.so" \
@@ -93,13 +93,11 @@ blockdev --getsize64 "$partitionPath" >/dev/null 2>&1 || {
 
 mount "$partitionPath" "$mountPath"
 mkdir -p "$mountPath/bin" "$mountPath/boot/grub" "$mountPath/dev/pts" \
-    "$mountPath/etc/inpkg" "$mountPath/home" "$mountPath/root/app/bin" \
-    "$mountPath/root/app/lib" "$mountPath/root/app/include" \
+    "$mountPath/etc/inpkg" "$mountPath/home" \
     "$mountPath/mnt/cdrom" "$mountPath/mnt/ext4" \
     "$mountPath/mnt/fat32" "$mountPath/sbin/sys" "$mountPath/sys" \
     "$mountPath/tmp" "$mountPath/usr/bin" "$mountPath/usr/sbin" \
     "$mountPath/usr/lib" "$mountPath/usr/include"
-mkdir -p "$mountPath/home/user/app/bin" "$mountPath/home/user/app/lib" "$mountPath/home/user/app/include"
 chmod 0700 "$mountPath/root"
 chown -R 1000:1000 "$mountPath/home/user"
 
@@ -107,18 +105,20 @@ cp "$buildPath/kernel.elf" "$mountPath/boot/kernel.elf"
 cp "$buildPath/services/init.elf" "$buildPath/services/task.elf" \
     "$buildPath/services/fs.elf" "$buildPath/services/pci.elf" "$buildPath/services/device.elf" \
     "$buildPath/services/storage.elf" "$buildPath/services/tty.elf" \
-    "$buildPath/services/console.elf" "$buildPath/services/guiw.elf" \
-    "$buildPath/services/users.elf" "$mountPath/boot/"
+    "$buildPath/services/console.elf" \
+    "$buildPath/services/users.elf" "$buildPath/services/mm.elf" "$buildPath/services/pipe.elf" "$buildPath/services/msgq.elf" "$mountPath/boot/"
 cp "$packagePath/libos-c++/libos-c++.so" "$packagePath/libc++/libc.so" \
     "$packagePath/libc++/libc++.so" "$packagePath/libosgui-c++/libosgui-c++.so" "$mountPath/boot/"
 cp script/grub.cfg "$mountPath/boot/grub/grub.cfg"
 cp -R script/etc/. "$mountPath/etc/"
+python3 "$scriptPath/layout.py" --root "$mountPath"
 chmod 0600 "$mountPath/etc/shadow"
 chmod 0440 "$mountPath/etc/sudoers"
-for service in init task fs pci device storage tty console users; do
+for service in init task fs pci device storage tty console users mm pipe msgq; do
     cp "$buildPath/services/$service.elf" "$mountPath/sbin/sys/"
 done
 python3 "$scriptPath/packages.py" --package-dir "$packagePath" --install-root "$mountPath"
+cp "$mountPath/sbin/sys/guiw.elf" "$mountPath/boot/guiw.elf"
 mountpoint -q "$mountPath" || exit 1
 # Remove the obsolete embedded package repository from earlier image layouts.
 if [ -d "$mountPath/usr/share/inpkg" ] && [ ! -L "$mountPath/usr/share" ] && [ ! -L "$mountPath/usr/share/inpkg" ]; then

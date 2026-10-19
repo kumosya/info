@@ -6,7 +6,7 @@
 
 ```ini
 name=sysinfo
-version=0.2
+version=0.1.0
 bin=/usr/bin/sysinfo
 install=sysinfo -> /usr/bin/sysinfo
 ```
@@ -19,9 +19,11 @@ Linux 开发环境下安装到已经挂载的分区：
 python3 script/packages.py --install packages/sysinfo.inpk --install-root /mnt/osinfo
 ```
 
-`make cpfiles` 使用同一个安装器，从 `.inpk` 解包安装程序和库，并将包配置原样保存到 `/etc/inpkg/system/包名.conf`。压缩包留在开发机，不复制到系统的 `/usr/share`。
+`make cpfiles` 使用同一个安装器，从 `.inpk` 解包安装程序和库，并将包配置原样保存到 `/var/lib/inpkg/包名.conf`。压缩包留在开发机，不复制到系统的 `/usr/share`。
 
-系统内也可以运行 `inpkg install /path/sysinfo.inpk --system -y`，按照配置的绝对路径安装；普通用户使用 `--local` 时，安装到自身 `app/` 中，并保留原始包配置。`inpkg remove sysinfo --system -y` 和 `--local` 分别卸载对应范围的文件。sudo 安装时仍提供系统与 root 私有目录的选择。
+系统内也可以运行 `inpkg install /path/sysinfo.inpk --system -y`，按照配置的绝对路径安装；普通用户使用 `--local` 时，安装到自身 `.local/` 中，数据库位于 `.local/state/inpkg`，并保留原始包配置。`inpkg remove sysinfo --system -y` 和 `--local` 分别卸载对应范围的文件。sudo 安装时仍提供系统与 root 私有目录的选择。
+
+guiw 与 inpkg 已迁到 `D:/osinfo/guiw`、`D:/osinfo/inpkg`，使用 `make sdk` 导出的 SDK 独立构建。OS 仓库通过 `script/import-package.py 路径.inpk` 验证并导入到 `packages/external/`，再由镜像安装器统一安装。构建缺少所需外部包时明确报错，不回退编译旧源码。包缓存比较实际负载内容，使用独立临时文件写入归档。
 
 `tar` 支持普通文件、目录与 ustar 格式，以及 gzip 的存储、固定和动态 Huffman 数据块：
 

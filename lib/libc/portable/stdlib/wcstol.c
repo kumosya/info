@@ -1,6 +1,5 @@
 #include "shgetc.h"
 #include "intscan.h"
-#include "shgetc.h"
 #include <inttypes.h>
 #include <limits.h>
 #include <wctype.h>

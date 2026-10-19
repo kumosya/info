@@ -15,6 +15,10 @@
 #include "kernel/thread.h"
 #include "kernel/time.h"
 
+#ifdef OS_TASK_LIFECYCLE_TEST
+#include "../../tests/kernel-lifecycle.h"
+#endif
+
 namespace {
 
 constexpr uint64_t directMapBase      = 0xffff800000000000ULL;
@@ -157,6 +161,8 @@ void kernelMain(const BootInfo* bootInfo) {
     }
     *heapProbe = 0x6f73696e666fULL;
     cpu::init();
+    memory::MemoryTopology::enableCpuLocal();
+    memory::PerCpuObjectCache::enableCpuLocal();
     time::init();
     interrupt::initIdt();
     interrupt::initControllers(bootInfo);
@@ -215,6 +221,9 @@ void kernelMain(const BootInfo* bootInfo) {
     }
     interrupt::enable();
 
+#ifdef OS_TASK_LIFECYCLE_TEST
+    TaskLifecycleTest::run();
+#endif
     if (UserProgramLoader::startInitial(bootInfo) == nullptr) {
         cpu::halt();
     }

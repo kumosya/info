@@ -3,6 +3,45 @@
 
 namespace vfs::server {
 
+void FsServer::delegateMapping(const os::IpcMessage& request, os::IpcMessage& reply) {
+    reply.data[0] = static_cast<int64_t>(os::ErrorCode::PermissionDenied);
+    reply.length = 3;
+    if (request.length != 1) return;
+    std::lock_guard<std::mutex> guard(descriptorLock_);
+    auto* source = getDescriptorRecord(request.senderPid, request.data[0]);
+    if (!source || (source->flags & O_ACCMODE) == O_WRONLY ||
+        source->description->backend != DescriptorBackend::Filesystem) return;
+    for (uint32_t i = 0; i < descriptorCapacity; ++i) if (!descriptors_[i].description) {
+        if (!nextMappingToken_) return;
+        auto& target = descriptors_[i];
+        target = *source;
+        target.mappingIssuer = request.senderPid;
+        target.mappingToken = nextMappingToken_++;
+        ++target.description->referenceCount;
+        reply.data[0] = 0; reply.data[1] = target.mappingToken; reply.data[2] = i + 1;
+        return;
+    }
+    reply.data[0] = static_cast<int64_t>(os::ErrorCode::OutOfMemory);
+}
+
+void FsServer::claimMapping(const os::IpcMessage& request, os::IpcMessage& reply) {
+    reply.data[0] = static_cast<int64_t>(os::ErrorCode::PermissionDenied);
+    reply.length = 3;
+    os::TaskInfo caller{};
+    if (request.length != 2 || os::Process::queryTask(request.senderPid, caller) ||
+        caller.serviceRole != static_cast<uint32_t>(os::ServiceRole::Memory)) return;
+    std::lock_guard<std::mutex> guard(descriptorLock_);
+    for (uint32_t i = 0; i < descriptorCapacity; ++i) {
+        auto& entry = descriptors_[i];
+        if (!entry.description || !entry.mappingToken || entry.mappingToken != request.data[0] ||
+            entry.mappingIssuer != request.data[1] || entry.ownerPid != entry.mappingIssuer) continue;
+        entry.ownerPid = request.senderPid;
+        entry.mappingToken = 0;
+        reply.data[0] = 0; reply.data[1] = i + 1; reply.data[2] = entry.flags;
+        return;
+    }
+}
+
 void FsServer::handleAsync(const os::IpcMessage& request, bool writeOperation) {
     if (request.handleCount != 1) {
         for (uint32_t index = 0; index < request.handleCount; ++index) {
@@ -67,7 +106,7 @@ void FsServer::handleAsync(const os::IpcMessage& request, bool writeOperation) {
     os::closeHandle(completionEndpoint);
 }
 
-uint64_t FsServer::open(uint64_t ownerPid, const char* path) {
+uint64_t FsServer::open(uint64_t ownerPid, const char* path, int flags) {
     reapDescriptors();
     DescriptorBackend backend = DescriptorBackend::Filesystem;
     uint32_t inode            = 0;
@@ -135,7 +174,7 @@ uint64_t FsServer::open(uint64_t ownerPid, const char* path) {
         description.filesystem           = filesystem;
         description.backend              = backend;
         description.mountIndex           = pathType;
-        descriptors_[descriptorIndex]    = {ownerPid, &description};
+        descriptors_[descriptorIndex]    = {ownerPid, &description, flags};
         return descriptorIndex + 1;
     }
     std::lock_guard<std::mutex> guard(descriptorLock_);
@@ -167,7 +206,7 @@ uint64_t FsServer::open(uint64_t ownerPid, const char* path) {
     description.privateData =
         deviceIndex >= 0 ? static_cast<uint64_t>(deviceIndex) : 0;
     description.mountIndex        = PathBackend::Invalid;
-    descriptors_[descriptorIndex] = {ownerPid, &description};
+    descriptors_[descriptorIndex] = {ownerPid, &description, flags};
     return descriptorIndex + 1;
 }
 

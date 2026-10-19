@@ -68,6 +68,6 @@ bool deadlineReached(uint64_t now, uint64_t deadline);
 
 ## 5. 使用者
 
-- 调度器：运行队列时钟、vruntime 计算、睡眠截止时间（见 [task.md](task/task.md)）。
-- 系统调用：GetMonotonicTime（61）、GetWallClockTime（62）、GetClockResolution（63）（见 [syscall.md](task/syscall.md)）。
+- 调度器：运行队列时钟、vruntime 计算、睡眠截止时间（见 [task.md](../task/task.md)）。
+- 系统调用：GetMonotonicTime（61）、GetWallClockTime（62）、GetClockResolution（63）（见 [syscall.md](../task/syscall.md)）。
 - POSIX 时间函数由 libc 使用相同的 OS 系统调用接口实现。

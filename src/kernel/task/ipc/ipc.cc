@@ -1,4 +1,4 @@
-﻿#include "kernel/ipc.h"
+#include "kernel/ipc.h"
 
 #include "kernel/atomic.h"
 #include "kernel/cpu.h"
@@ -59,19 +59,21 @@ Atomic<uint64_t> nextReplyToken{1};
 
 class Operation {
    public:
-    explicit Operation(Endpoint* endpoint) : endpoint_(endpoint), thread_(Thread::getCurrent()) {
+    explicit Operation(Endpoint* endpoint) : endpoint_(endpoint), thread_(Thread::getCurrent()), previous_(thread_->getActiveEndpoint()) {
         endpoint_->retain();
+        cleanup_.attach(endpoint_, [](void* object) { static_cast<Endpoint*>(object)->release(); });
         thread_->setActiveIpcCall(true);
         thread_->setActiveEndpoint(endpoint_);
     }
     ~Operation() {
-        thread_->setActiveEndpoint(nullptr);
-        thread_->setActiveIpcCall(false);
-        endpoint_->release();
+        thread_->setActiveEndpoint(previous_);
+        thread_->setActiveIpcCall(previous_ != nullptr);
     }
    private:
     Endpoint* endpoint_;
     Thread* thread_;
+    Endpoint* previous_;
+    ThreadCleanup cleanup_;
 };
 
 void complete(Waiter& waiter, int result) {
@@ -214,7 +216,7 @@ void discardCallMessage(EndpointImplementation& state, PendingCall& call) {
     }
 }
 
-int enqueue(Endpoint* endpoint, IpcMessage& message, PendingCall* call, uint64_t deadline) {
+int enqueue(Endpoint* endpoint, IpcMessage& message, PendingCall* call, uint64_t deadline, bool kernelOrigin = false) {
     auto& state = *endpoint->getImplementation();
     Task* sender = task::getCurrent();
     while (true) {
@@ -222,7 +224,7 @@ int enqueue(Endpoint* endpoint, IpcMessage& message, PendingCall* call, uint64_t
         {
             InterruptSpinLockGuard guard(state.lock);
             if (state.destroyed) return failure(os::ErrorCode::EndpointClosed);
-            if (!hasRightLocked(endpoint, sender, endpointRightSend))
+            if (!kernelOrigin && !hasRightLocked(endpoint, sender, endpointRightSend))
                 return failure(os::ErrorCode::PermissionDenied);
             if (state.count < queueCapacity) {
                 auto& queued = state.queue[(state.head + state.count) % queueCapacity];
@@ -297,6 +299,14 @@ void Endpoint::destroy() {
     InterruptSpinLockGuard guard(state.lock);
     if (state.destroyed || !hasRightLocked(this, task::getCurrent(), endpointRightManage)) return;
     closeLocked(state, os::ErrorCode::EndpointClosed);
+    if (getOwner()) { setOwner(nullptr); release(); }
+}
+bool Endpoint::requestActive(uint64_t token) {
+    auto& state = *getImplementation();
+    InterruptSpinLockGuard guard(state.lock);
+    for (auto* call = state.calls; call; call = call->next)
+        if (call->token == token && call->serverTask == task::getCurrent()) return call->result == waiting && !deadlineError(call->deadline);
+    return false;
 }
 
 void Endpoint::closeOwner(Task* owner) {
@@ -428,6 +438,12 @@ int Endpoint::reply(IpcMessage* message) {
 }
 
 int Endpoint::call(IpcMessage* request, IpcMessage* reply, uint64_t deadline) {
+    return callImpl(request, reply, deadline, false);
+}
+int Endpoint::callFromKernel(IpcMessage* request, IpcMessage* reply, uint64_t deadline) {
+    return callImpl(request, reply, deadline, true);
+}
+int Endpoint::callImpl(IpcMessage* request, IpcMessage* reply, uint64_t deadline, bool kernelOrigin) {
     Operation operation(this);
     if (!validateMessage(request) || !reply || !getImplementation())
         return failure(os::ErrorCode::InvalidArgument);
@@ -441,7 +457,7 @@ int Endpoint::call(IpcMessage* request, IpcMessage* reply, uint64_t deadline) {
         {
             InterruptSpinLockGuard guard(state.lock);
             if (state.destroyed) return failure(os::ErrorCode::EndpointClosed);
-            if (!hasRightLocked(this, task::getCurrent(), endpointRightSend))
+            if (!kernelOrigin && !hasRightLocked(this, task::getCurrent(), endpointRightSend))
                 return failure(os::ErrorCode::PermissionDenied);
             if (deadline && deadlineError(deadline)) return deadlineError(deadline);
             prepareWaiter(state.callers, waiter);
@@ -471,7 +487,7 @@ int Endpoint::call(IpcMessage* request, IpcMessage* reply, uint64_t deadline) {
     IpcMessage copy = *request;
     copy.replyToken = call.token;
     stampSender(copy);
-    int result = enqueue(this, copy, &call, deadline);
+    int result = enqueue(this, copy, &call, deadline, kernelOrigin);
     if (result) return result;
     auto& state = *getImplementation();
     while (true) {
@@ -585,10 +601,8 @@ void Endpoint::cancelThread(Thread* thread) {
         }
     }
     }
-    if (auto* active = thread->getActiveEndpoint()) {
-        thread->setActiveEndpoint(nullptr);
-        active->release();
-    }
+    // Operation references, including nested pager calls, belong to ThreadCleanup.
+    thread->setActiveEndpoint(nullptr);
     thread->setActiveIpcCall(false);
     thread->setIpcWaitResult(nullptr);
 }

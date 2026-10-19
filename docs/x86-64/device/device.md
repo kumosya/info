@@ -2,7 +2,7 @@
 
 本文档描述 `src/kernel/device/device.cc` 的实现：内核侧的设备访问控制层，为可信 pci/device/storage 服务及显示服务提供受能力门控的硬件资源。对应头文件 `include/kernel/device.h`。
 
-内核负责硬件访问控制；可信 device/storage 服务在 Ring 0 运行。PCI 配置、MMIO、DMA、中断通过内核接口管理，端口指令由可信服务直接执行。所有类和函数位于 `namespace kernel::device`。
+内核负责硬件访问控制；device/storage 服务在 Ring3 运行。PCI 配置、MMIO、DMA、中断通过内核接口管理，端口指令仅在内核 PS/2 与 PCI 机制中执行。所有类和函数位于 `namespace kernel::device`。
 
 ## 1. 初始化
 
@@ -16,7 +16,7 @@ void init(const BootInfo* bootInfo);
 
 ## 2. I/O 端口访问
 
-可信 device 服务通过 `os::SystemService` 在 Ring 0 执行端口指令。用户态不再拥有端口访问系统调用。
+Ring3 device 服务通过 device.kernel 的 InitializeInput/ReadInput 请求初始化 PS/2 并读取输入字节，不暴露任意端口读写；PCI 配置由 pci.kernel 处理。
 
 ## 3. 帧缓冲映射（DisplayAccess）
 
@@ -131,11 +131,11 @@ class InterruptBinding {
 
 - 校验 `irq <= 15` 且 endpoint 非空；每个 IRQ 只能绑定一次（`bindings[16]` 表）；
 - `interrupt::registerHandler(64 + irq, irqHandler)`；
-- `interrupt::setIrq(irq, 64 + irq, cpu::getCurrent()->getApicId(), levelTriggered)` 配置 I/O APIC 路由（见 [cpu.md](cpu/cpu.md)）。
+- `interrupt::setIrq(irq, 64 + irq, cpu::getCurrent()->getApicId(), levelTriggered)` 配置 I/O APIC 路由（见 [cpu.md](../cpu/cpu.md)）。
 
 中断触发时 `irqHandler` 校验向量在 `[64, 79]`：
 - 电平触发中断先屏蔽 IRQ（`interrupt::maskIrq`），用户态通过 AcknowledgeIrq（4167）系统调用重新启用；
-- 调用 `endpoint->notifyFromInterrupt(0x495251, irq)`——以消息类型 `0x495251`（ASCII "IRQ"）向绑定的 IPC 端点投递通知（见 [ipc.md](task/ipc.md)）。
+- 调用 `endpoint->notifyFromInterrupt(0x495251, irq)`——以消息类型 `0x495251`（ASCII "IRQ"）向绑定的 IPC 端点投递通知（见 [ipc.md](../task/ipc.md)）。
 
 对应系统调用 BindIrq（20）、AcknowledgeIrq（4167）。device 服务绑定键盘（IRQ 1）与鼠标（IRQ 12），storage 服务绑定 virtio-blk 中断。
 

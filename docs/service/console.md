@@ -1,6 +1,6 @@
 # console 服务（src/console/）
 
-console 服务（注册名同时为 `"console"` 与 `"terminal"`，同一端点）实现 6 个文本终端（tty1-tty6）与图形会话（tty7）切换、VGA 字体软件渲染、ANSI 转义序列与行编辑。由磁盘 `/sbin/sys/console.elf` 加载，授予 `taskCapabilityDisplay`。
+console 服务（注册名同时为 `"console"` 与 `"terminal"`，同一端点）实现 6 个文本终端（tty1-tty6）与图形会话（tty7）切换、VGA 字体软件渲染、ANSI 转义序列与行编辑。由固定 boot ConsoleServer 模块在 Ring3 加载并授予 Display 能力，磁盘副本不获得特权。
 
 ## 1. 常量与结构
 

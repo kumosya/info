@@ -3,7 +3,7 @@
 
 package.conf is copied unchanged. Example:
     name=sysinfo
-    version=0.2
+    version=0.1.0
     bin=/usr/bin/sysinfo
     install=sysinfo -> /usr/bin/sysinfo
 """
@@ -12,11 +12,13 @@ import argparse
 from dataclasses import dataclass
 import gzip
 import io
+import json
 from pathlib import Path, PurePosixPath
 import re
 import shutil
 import sys
 import tarfile
+import tempfile
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 IDENTIFIER = re.compile(r'[A-Za-z0-9_+.-]{1,63}\Z')
@@ -133,10 +135,20 @@ def pack(package, conf, directory):
         staged.chmod(0o755 if target in package.binaries else 0o644)
         payloads.append((staged, str(relative)))
     archive = directory / (package.name + '.inpk')
-    latest = max(path.stat().st_mtime_ns for path, _ in payloads + [(conf, '')])
-    if archive.is_file() and archive.stat().st_mtime_ns >= latest:
-        return archive
-    temporary = archive.with_suffix('.inpk.tmp')
+    # A newer timestamp cannot prove that a cached archive contains the current
+    # bytes (for example after interrupted linking). Validate its exact payload.
+    if archive.is_file():
+        try:
+            cached = inspect_archive(archive)
+            if cached.config == package.config:
+                with tarfile.open(archive, 'r:gz') as existing:
+                    if all(existing.extractfile(relative).read() == path.read_bytes()
+                           for path, relative in payloads):
+                        return archive
+        except (OSError, ValueError, tarfile.TarError, EOFError):
+            pass
+    with tempfile.NamedTemporaryFile(prefix=package.name + '.', suffix='.inpk.tmp', dir=directory, delete=False) as output:
+        temporary = Path(output.name)
     try:
         with tarfile.open(temporary, 'w:gz', format=tarfile.USTAR_FORMAT) as output:
             info = tarfile.TarInfo('package.conf')
@@ -199,7 +211,7 @@ def install_archives(paths, root):
                 raise ValueError(f'duplicate installation destination: {target}')
             targets.add(target)
             image_path(root, target)
-        image_path(root, f'/etc/inpkg/system/{package.name}.conf')
+        image_path(root, f'/var/lib/inpkg/{package.name}.conf')
     for package, path in packages:
         with tarfile.open(path, 'r:gz') as archive:
             for source, target in package.files:
@@ -215,7 +227,7 @@ def install_archives(paths, root):
                     temporary.replace(destination)
                 finally:
                     temporary.unlink(missing_ok=True)
-        record = image_path(root, f'/etc/inpkg/system/{package.name}.conf')
+        record = image_path(root, f'/var/lib/inpkg/{package.name}.conf')
         record.parent.mkdir(parents=True, exist_ok=True)
         record.write_bytes(package.config)
         record.chmod(0o644)
@@ -241,6 +253,23 @@ def makefile(packages, directory, output):
     output.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
 
+def external_archives(repository):
+    manifest = repository / 'script/external-packages.json'
+    if not manifest.is_file():
+        return []
+    paths = []
+    for name in json.loads(manifest.read_text(encoding='utf-8'))['required']:
+        if not valid_name(name):
+            raise ValueError(f'invalid external package name: {name}')
+        path = repository / 'packages/external' / (name + '.inpk')
+        if not path.is_file():
+            raise ValueError(f'missing external package: {path}; build it in its independent project, then import it with script/import-package.py')
+        if inspect_archive(path).name != name:
+            raise ValueError(f'external package identity mismatch: {path}')
+        paths.append(path)
+    return paths
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--build', default='build')
@@ -263,10 +292,19 @@ def main():
         return
     directory = (REPOSITORY / args.package_dir).resolve()
     validate_sources(packages, directory)
+    external = external_archives(REPOSITORY)
+    names = {package.name for package, _ in packages}
+    targets = {target for package, _ in packages for _, target in package.files}
+    for archive in external:
+        package = inspect_archive(archive)
+        if package.name in names or any(target in targets for _, target in package.files):
+            raise ValueError(f'external package conflicts with another package: {package.name}')
+        names.add(package.name)
+        targets.update(target for _, target in package.files)
     if args.check:
         print('inpkg: validated ' + ', '.join(package.name for package, _ in packages))
         return
-    archives = [pack(package, conf, directory) for package, conf in packages]
+    archives = [pack(package, conf, directory) for package, conf in packages] + external
     print('inpkg: packed ' + ', '.join(path.name for path in archives))
     if args.install_root:
         install_archives(archives, Path(args.install_root))

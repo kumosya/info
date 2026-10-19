@@ -208,7 +208,7 @@ void permissionsForPage(const ProgramHeader* headers, uint16_t count,
 
 kernel::ElfLoadError loadImage(uint64_t destinationRoot, uint64_t sourceRoot,
                                uint64_t preferredBase, bool executable,
-                               Image& image) {
+                               Image& image, bool allowInterpreter = false) {
     ElfHeader header{};
     if (!readSource(&header, sourceRoot, image.sourceAddress, image.sourceSize,
                     0, sizeof(header))) {
@@ -230,7 +230,7 @@ kernel::ElfLoadError loadImage(uint64_t destinationRoot, uint64_t sourceRoot,
     bool hasLoad     = false;
     for (uint16_t index = 0; index < header.programHeaderCount; ++index) {
         const ProgramHeader& segment = headers[index];
-        if (segment.type == programInterpreter) {
+        if (segment.type == programInterpreter && !allowInterpreter) {
             return kernel::ElfLoadError::UnsupportedProgramHeader;
         }
         if (segment.type == programDynamic) {
@@ -345,6 +345,45 @@ kernel::ElfLoadError loadImage(uint64_t destinationRoot, uint64_t sourceRoot,
         return kernel::ElfLoadError::InvalidEntryPoint;
     }
     return kernel::ElfLoadError::None;
+}
+
+kernel::ElfLoadError loadInterpreter(uint64_t root, uint64_t sourceRoot,
+                                    Image& application, const ElfHeader& header,
+                                    const kernel::ElfSharedImage& interpreter,
+                                    kernel::ElfLoadResult& result) {
+    using namespace kernel;
+    ElfLoadError error = loadImage(root, sourceRoot, 0x400000, true, application, true);
+    if (error != ElfLoadError::None) return error;
+    Image loader{};
+    loader.sourceAddress = interpreter.sourceAddress;
+    loader.sourceSize = interpreter.size;
+    error = loadImage(root, sourceRoot, 0x0000070000000000ULL, true, loader);
+    if (error != ElfLoadError::None) return error;
+    // The interpreter is self-contained, so it can start before any libraries.
+    if (loader.dynamicSize) return ElfLoadError::UnsupportedProgramHeader;
+    constexpr uint64_t metadata = 0x20000;
+    const uint64_t bytes = sizeof(ElfHeader) + header.programHeaderCount * sizeof(ProgramHeader);
+    for (uint64_t offset = 0; offset < bytes; offset += pageSize) {
+        if (memory::allocateUserPageInAddressSpace(root, metadata + offset,
+                pageUser | pageNoExecute) != UserPageMapResult::Success)
+            return ElfLoadError::MappingFailed;
+    }
+    if (!memory::copyToAddressSpace(root, metadata, &header, sizeof(header)))
+        return ElfLoadError::MappingFailed;
+    ProgramHeader headers[maximumProgramHeaders]{};
+    if (!readSource(headers, sourceRoot, application.sourceAddress, application.sourceSize,
+            header.programHeaderOffset, bytes - sizeof(header)) ||
+        !memory::copyToAddressSpace(root, metadata + sizeof(header), headers, bytes - sizeof(header)))
+        return ElfLoadError::MappingFailed;
+    result.entryPoint = loader.entryPoint;
+    result.imageBase = application.imageBase;
+    result.imageEnd = application.imageEnd;
+    result.applicationEntry = application.entryPoint;
+    result.applicationBias = application.bias;
+    result.interpreterBase = loader.imageBase;
+    result.programHeaders = metadata + sizeof(header);
+    result.programHeaderCount = header.programHeaderCount;
+    return ElfLoadError::None;
 }
 
 bool dynamicPointer(uint64_t root, const Image& image, uint64_t value,
@@ -636,6 +675,32 @@ ElfLoadError ElfLoader::loadDynamicSetFromAddressSpace(
     Image images[maximumImages]{};
     images[0].sourceAddress = executableAddress;
     images[0].sourceSize    = executableSize;
+    ElfHeader header{};
+    if (!readSource(&header, sourceRoot, executableAddress, executableSize, 0, sizeof(header)))
+        return ElfLoadError::InvalidHeader;
+    ElfLoadError validation = validateHeader(header, executableSize, true);
+    if (validation != ElfLoadError::None) return validation;
+    bool interpreted = false;
+    for (uint16_t i = 0; i < header.programHeaderCount; ++i) {
+        ProgramHeader segment{};
+        if (!readSource(&segment, sourceRoot, executableAddress, executableSize,
+                header.programHeaderOffset + i * sizeof(segment), sizeof(segment)))
+            return ElfLoadError::InvalidProgramHeader;
+        if (segment.type != programInterpreter) continue;
+        if (interpreted || segment.fileSize < 2 || segment.fileSize > 256)
+            return ElfLoadError::InvalidProgramHeader;
+        char path[256]{};
+        if (!readSource(path, sourceRoot, executableAddress, executableSize,
+                segment.offset, segment.fileSize) || path[0] != '/' ||
+                path[segment.fileSize - 1] || !path[1]) return ElfLoadError::InvalidProgramHeader;
+        for (uint64_t byte = 0; byte + 1 < segment.fileSize; ++byte)
+            if (!path[byte]) return ElfLoadError::InvalidProgramHeader;
+        interpreted = true;
+    }
+    if (interpreted) {
+        if (sharedImageCount != 1) return ElfLoadError::InvalidArgument;
+        return loadInterpreter(destinationRoot, sourceRoot, images[0], header, sharedImages[0], result);
+    }
     ElfLoadError error =
         loadImage(destinationRoot, sourceRoot, 0x400000, true, images[0]);
     if (error != ElfLoadError::None) return error;

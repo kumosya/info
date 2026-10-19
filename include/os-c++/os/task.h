@@ -16,6 +16,8 @@ struct TaskListEntry {
 
 class Process {
    public:
+    [[noreturn]] static void signalReturn(void* frame);
+    static uint64_t getThreadId();
     static uint64_t spawnProgram(ProgramId program, uint64_t bootstrapHandle,
                       uint32_t argumentCount       = 0,
                       const char* const* arguments = nullptr);

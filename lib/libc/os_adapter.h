@@ -182,6 +182,7 @@ int __libc_os_register_message_queue_notification(uint64_t handle, int type,
 int64_t __libc_os_fork_task(void);
 int64_t __libc_os_wait_child(int64_t task_id, int* status, int options);
 int __libc_os_replace_task_image(const OsExecImageInfo* info);
+int __libc_os_image_interpreter(const void* image, size_t size, char* path, size_t capacity);
 int __libc_os_is_terminal_handle(uint64_t handle);
 uint64_t __libc_os_get_task_id(void);
 uint64_t __libc_os_get_thread_id(void);
@@ -191,6 +192,12 @@ int __libc_os_free_memory(void* pointer);
 uint64_t __libc_os_map_memory(uint64_t address, uint64_t size, uint64_t protection);
 int __libc_os_unmap_memory(uint64_t address, uint64_t size);
 int __libc_os_protect_memory(uint64_t address, uint64_t size, uint64_t protection);
+uint64_t __libc_os_mm_anonymous(uint64_t size, uint32_t protection, uint64_t hint);
+uint64_t __libc_os_mm_shared(uint64_t handle, uint64_t size, uint32_t protection, uint64_t offset, uint64_t hint);
+uint64_t __libc_os_mm_file(uint64_t descriptor, uint64_t size, uint32_t protection, uint64_t offset, uint64_t hint);
+int __libc_os_mm_unmap(uint64_t address, uint64_t size);
+int __libc_os_mm_protect(uint64_t address, uint64_t size, uint32_t protection);
+int __libc_os_mm_sync(uint64_t address, uint64_t size);
 uint64_t __libc_os_get_monotonic_time(void);
 uint64_t __libc_os_get_wall_clock_time(void);
 uint64_t __libc_os_get_clock_resolution(void);
@@ -206,6 +213,7 @@ int __libc_os_get_task_info(uint64_t handle, OsTaskInfo* info);
 int __libc_os_query_task(uint64_t task_id, OsTaskInfo* info);
 int __libc_os_set_credentials(uint64_t task_id, uint32_t uid, uint32_t gid, int effective_only);
 void __libc_os_runtime_fini(void);
+void __libc_os_bind_environment(char*** environment);
 
 #ifdef __cplusplus
 }

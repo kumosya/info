@@ -1,4 +1,5 @@
 #include "os/task.h"
+#include "os/elf.h"
 #include "os/abi.h"
 #include "os/file.h"
 #include "os/protocol.h"
@@ -13,42 +14,9 @@ class TaskServer {
 static constexpr uint32_t maximumArgumentCount  = 64;
 static constexpr uint32_t executePayloadSize    = 7 * sizeof(uint64_t);
 static constexpr uint64_t maximumExecutableSize = 8ULL * 1024 * 1024;
-static constexpr uint32_t sharedImageCount = 4;
-static constexpr const char* sharedImagePaths[sharedImageCount] = {
-    "/usr/lib/libos-c++.so",
-    "/usr/lib/libc.so",
-    "/usr/lib/libc++.so", "/usr/lib/libosgui-c++.so"};
+static constexpr uint32_t sharedImageCount = 1;
 static constexpr uint32_t taskRecordCapacity = 64;
 static constexpr uint32_t executableReadWindow  = 8;
-static constexpr uint32_t elfProgramDynamic     = 2;
-
-struct [[gnu::packed]] ElfHeader {
-    uint8_t identifier[16];
-    uint16_t type;
-    uint16_t machine;
-    uint32_t version;
-    uint64_t entry;
-    uint64_t programHeaderOffset;
-    uint64_t sectionHeaderOffset;
-    uint32_t flags;
-    uint16_t headerSize;
-    uint16_t programHeaderSize;
-    uint16_t programHeaderCount;
-    uint16_t sectionHeaderSize;
-    uint16_t sectionHeaderCount;
-    uint16_t sectionNameIndex;
-};
-
-struct [[gnu::packed]] ProgramHeader {
-    uint32_t type;
-    uint32_t flags;
-    uint64_t offset;
-    uint64_t virtualAddress;
-    uint64_t physicalAddress;
-    uint64_t fileSize;
-    uint64_t memorySize;
-    uint64_t alignment;
-};
 
 struct TaskRecord {
     uint64_t handle;
@@ -166,35 +134,7 @@ const char* programName(const char* path) {
     return name;
 }
 
-uint64_t capabilitiesForPath(const char* path) {
-    if (os::Runtime::stringsEqual(path, "/sbin/sys/users.elf")) return os::taskCapabilityUsers;
-    return os::Runtime::stringsEqual(path, "/sbin/sys/console.elf") ||
-                   os::Runtime::stringsEqual(path, "/sbin/sys/guiw.elf")
-               ? os::taskCapabilityDisplay
-               : 0;
-}
 
-bool usesDynamicLinking(const void* image, uint64_t size) {
-    if (image == nullptr || size < sizeof(ElfHeader)) return false;
-    const auto* header = static_cast<const ElfHeader*>(image);
-    if (header->identifier[0] != 0x7f || header->identifier[1] != 'E' ||
-        header->identifier[2] != 'L' || header->identifier[3] != 'F' ||
-        header->programHeaderSize != sizeof(ProgramHeader) ||
-        header->programHeaderOffset > size ||
-        header->programHeaderCount >
-            (size - header->programHeaderOffset) / sizeof(ProgramHeader)) {
-        return false;
-    }
-    const auto* headers = reinterpret_cast<const ProgramHeader*>(
-        static_cast<const uint8_t*>(image) + header->programHeaderOffset);
-    for (uint16_t index = 0; index < header->programHeaderCount; ++index) {
-        if (headers[index].type == elfProgramDynamic &&
-            headers[index].memorySize != 0) {
-            return true;
-        }
-    }
-    return false;
-}
 
 bool readExecutable(uint64_t fs, uint64_t descriptor, void* image,
                     uint64_t size) {
@@ -267,12 +207,13 @@ uint64_t loadAndSpawn(uint64_t fs, const char* path, uint64_t bootstrap,
     os::SharedImageInfo sharedImages[sharedImageCount]{};
     void* sharedBuffers[sharedImageCount]{};
     bool sharedRead = read;
-    const bool dynamicExecutable = read && usesDynamicLinking(image, stat.getSize());
-    const uint32_t imagesToRead =
-        dynamicExecutable ? sharedImageCount : 0;
+    char interpreter[256]{};
+    const int interpreted = read ? os::Executable::interpreter(image, stat.getSize(), interpreter, sizeof(interpreter)) : -1;
+    const uint32_t imagesToRead = interpreted == 1 ? 1 : 0;
+    sharedRead = sharedRead && interpreted >= 0;
     for (uint32_t index = 0; index < imagesToRead && sharedRead; ++index) {
         os::File sharedStat(fs);
-        if (!(sharedStat.refresh(sharedImagePaths[index]) == 0) ||
+        if (!(sharedStat.refresh(interpreter) == 0) ||
             sharedStat.getType() != os::FileType::File || sharedStat.getSize() == 0 ||
             sharedStat.getSize() > maximumExecutableSize) {
             sharedRead = false;
@@ -281,7 +222,7 @@ uint64_t loadAndSpawn(uint64_t fs, const char* path, uint64_t bootstrap,
         sharedBuffers[index] =
             os::Memory::allocateMemory(static_cast<size_t>(sharedStat.getSize()));
         const uint64_t sharedDescriptor =
-            ([&]() -> uint64_t { os::File opened(fs); return opened.open(sharedImagePaths[index], O_RDONLY) == 0 ? opened.releaseNativeHandle() : 0; }());
+            ([&]() -> uint64_t { os::File opened(fs); return opened.open(interpreter, O_RDONLY) == 0 ? opened.releaseNativeHandle() : 0; }());
         sharedRead = sharedBuffers[index] != nullptr &&
                      sharedDescriptor != 0 &&
                      readExecutable(fs, sharedDescriptor,
@@ -289,19 +230,20 @@ uint64_t loadAndSpawn(uint64_t fs, const char* path, uint64_t bootstrap,
         if (sharedDescriptor != 0) os::File::borrow(fs, sharedDescriptor).close();
         if (sharedRead) {
             sharedImages[index] = {sharedBuffers[index], sharedStat.getSize(),
-                                   sharedImagePaths[index]};
+                                   interpreter};
         }
     }
     if (sharedRead) {
         os::SpawnImageInfo info{};
         info.image = image;
         info.imageSize = stat.getSize();
-        info.name = programName(path);
+        info.name = path;
         info.bootstrapHandle = bootstrap;
         info.standardInputHandle = standardInput;
         info.standardOutputHandle = standardOutput;
         info.standardErrorHandle = standardError;
-        info.capabilities = capabilitiesForPath(path);
+        info.capabilities = 0;
+        if (standardInput && os::Pipe::getChannelIdentity(standardInput)) info.flags = os::spawnFlagNewSession;
         info.parentTaskId = parentTaskId;
         info.argumentCount = argumentCount;
         info.arguments = arguments;
@@ -312,6 +254,11 @@ uint64_t loadAndSpawn(uint64_t fs, const char* path, uint64_t bootstrap,
             task = static_cast<uint64_t>(result);
         } else {
             os::System::log("[TASK] SpawnImage failed\n");
+            char status[] = "[TASK] SpawnImage status=-00\n";
+            const uint64_t code = -result;
+            status[26] = '0' + (code / 10) % 10;
+            status[27] = '0' + code % 10;
+            os::System::log(status);
         }
     } else if (!read) {
         os::System::log("[TASK] executable read failed\n");
@@ -327,10 +274,10 @@ uint64_t loadAndSpawn(uint64_t fs, const char* path, uint64_t bootstrap,
 
 
 int run() {
-    os::System::log("[TASK] Task Server started in Ring 0\n");
+    os::System::log("[TASK] Task Server started in Ring 3\n");
     const uint64_t registry = os::getBootstrapHandle();
-    const uint64_t endpoint = os::createEndpoint();
-    executableCompletionEndpoint = os::createEndpoint();
+    const uint64_t endpoint = os::Endpoint::create();
+    executableCompletionEndpoint = os::Endpoint::create();
     if (registry == 0 || endpoint == 0 ||
         executableCompletionEndpoint == 0 ||
         !os::ServiceRegistry::registerService(registry, os::taskServiceName, endpoint)) {

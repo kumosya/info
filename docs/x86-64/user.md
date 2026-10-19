@@ -1,6 +1,6 @@
 # 用户程序加载（src/kernel/user/）
 
-本文档描述 `src/kernel/user/` 的实现：静态 ELF 加载器（`elf.cc`）、内核内动态链接器（`dynamic_linker.cc`）、用户程序加载与用户栈构建（`loader.cc`）、POSIX 系统调用代理层（`posix.cc`）。对应头文件 `include/kernel/elf.h`、`task.h`（`UserProgramLoader` 类）、`posix.h`。
+本文档描述 `src/kernel/user/` 的映射与引导实现。普通磁盘应用使用独立 [Ring3 ELF 解释器](dynamic-linker.md)；以下内核动态链接节仅用于文件系统可用前的 boot 模块。对应头文件为 `include/kernel/elf.h`、`task.h`。
 
 ## 1. 静态 ELF 加载器（elf.cc）
 
@@ -67,9 +67,9 @@ class ElfLoader {
 
 自检（内核启动时运行）：用合成镜像验证 InvalidMagic、InvalidPermissions（W+X）、OverlappingSegments、InvalidEntryPoint、跨页 W^X 等用例，最后验证一个合法镜像加载成功且页表标志正确。
 
-## 2. 动态链接器（dynamic_linker.cc）
+## 2. 引导模块链接器（dynamic_linker.cc）
 
-内核内一次性完成**加载时链接**（无惰性绑定、无 dlopen）。实现 `ElfLoader::loadDynamicSetFromAddressSpace`。
+固定 boot ProgramId 在内核内完成加载时链接。对于有 PT_INTERP 的普通应用，同一入口只映射主程序和独立解释器，随后由 Ring3 处理 DT_NEEDED、符号和重定位，不使用下面的固定引导库集合。
 
 ### 加载布局
 
@@ -110,17 +110,23 @@ class ElfLoader {
 
 与 `os::ProgramId` 一一对应，镜像来自 Multiboot2 引导模块：
 
-| ProgramId | 引导模块名 | 进程名 | 授予能力 | SystemService |
-|---|---|---|---|---|
-| Init (0) | `init` | `init` | Spawn | 否 |
-| TaskServer (1) | `task` | `task-server` | Spawn | 否 |
-| FsServer (2) | `fs` | `fs-server` | 无 | 否 |
-| DeviceServer (3) | `device` | `device-server` | Device | 是 |
-| StorageServer (4) | `storage` | `storage-server` | Device | 是 |
+| ProgramId | 模块 | 权限 | 运行级别 |
+|---|---|---|---|
+| Init | init | Spawn | Ring3 |
+| TaskServer | task | Spawn | Ring3 |
+| FsServer | fs | 无 | Ring3 |
+| PciServer | pci | Pci | Ring3 |
+| DeviceServer | device | Device | Ring3 |
+| StorageServer | storage | Device | Ring3 |
+| TtyServer | tty | 无 | Ring3 |
+| ConsoleServer | console | Display | Ring3 |
+| WindowServer | guiw | Display | Ring3 |
+| UsersServer | users | Users | Ring3 |
+| MemoryManager | mm | Memory | Ring3 |
+| PipeServer | pipe | 无 | Ring3 |
+| MessageQueueServer | msgq | 无 | Ring3 |
 
-另有引导模块 `libos-c++.so` 作为 C++ 运行时共享库（`bootRuntimeImage`）。**内置程序总是与 `libos-c++.so` 一起动态链接加载**。
-
-DeviceServer 和 StorageServer 被标记为 `systemService`，其线程使用 `ThreadType::SystemService`，通过 0x80 中断门进行快速系统调用（避免 SYSCALL/SYSRET 开销）。
+四个共享库以 boot 模块提供：libos-c++.so、libc.so、libc++.so、libosgui-c++.so。所有服务入口检查 CS，启动加载器不启用 SystemService/Ring0 映像模式。普通磁盘镜像不能请求固定 boot 角色或能力。
 
 ### 用户栈构建 `UserProgramLoader::buildStack`
 
@@ -137,38 +143,40 @@ class UserProgramLoader {
 ```
 
 - 栈顶 `0x00007ffffff00000`，64 页（256 KiB），页标志 `pageUser | pageWritable | pageNoExecute`。
-- 参数 ≤64、环境变量 ≤16，每个字符串 ≤383 字节。
+- 参数 ≤64、环境变量 ≤64，每个字符串 ≤383 字节。
 - 从栈顶向下：先逆序压入环境变量字符串，再逆序压入参数字符串；16 字节对齐后布置启动字：
 
 ```text
-[argc][argv[0..argc-1]][NULL][envp[0..envc-1]][NULL][runtimeStateAddress]
+[argc][argv[0..argc-1]][NULL][envp[0..envc-1]][NULL][auxv type/value pairs][AT_NULL,0]
 ```
 
 - 无参数时默认 `argv = {programName}`。
+- 辅助向量传递程序头、主程序入口、解释器地址、实际路径和 exec 运行时状态，详见 [动态链接](dynamic-linker.md)。
 
 ### 加载流程
 
 **`UserProgramLoader::load(program, parent, bootstrapHandle, argc, argv, loadError)`**（内置程序）：
 
 1. 校验索引、父进程、引导模块就绪；
-2. `Task::create`；授予能力；DeviceServer/StorageServer 设置 `systemService`；
+2. `Task::create`；按固定 boot ProgramId 授予服务角色与受限能力；
 3. `bootstrapHandle != 0` 时复制端点句柄到子进程（`Endpoint::duplicateHandle`）；
 4. `ElfLoader::loadDynamicSetFromAddressSpace`（与 `libos-c++.so`）；
-5. `buildStack`；`Thread::createUser`（传入 `initialStackSize` 供 SystemService 复制栈到内核侧）；失败销毁进程。
+5. `buildStack`；`Thread::createUser` 创建 Ring3 线程；失败销毁进程。
 
 **`UserProgramLoader::loadImage(...)`**（SpawnImage 通用路径）：
 
 1. 创建进程、授予调用方指定能力；复制引导句柄（`Endpoint::duplicateHandle`）；
-2. 三个标准句柄：通过 `Pipe::duplicateHandle` 复制 Pipe 或 Channel；任一标准句柄为 Channel 时 `createSession()`；
-3. `sharedImageCount == 0` 用静态加载，否则动态加载；
+2. 通过 HandleTable 复制三个标准句柄；请求新会话时创建 session；
+3. `sharedImageCount == 0` 用静态加载；有 PT_INTERP 时只传入该解释器，由 Ring3 加载依赖；
 4. 构建用户栈、创建用户线程。
 
 ### 用户态启动 `UserProgramLoader::startInitial(bootInfo)`
 
-1. `initializeBootPrograms`：定位 5 个内置模块与 `libos-c++.so`（记录直接映射虚拟地址与大小），任一缺失失败；
+1. `initializeBootPrograms`：定位 13 个内置模块及四个引导共享库，记录镜像地址与大小，任一缺失失败；
 2. 以内核进程（`task::getIdle()`）为父加载 `ProgramId::Init`；
 3. 返回 init 进程。失败打印错误名并返回 nullptr（内核停机）。
 
 ## 4. POSIX 库与系统调用
 
 POSIX 库与 OS 库共用 `include/os-c++/os/syscall.h` 定义的系统调用号。编号从 1 开始，0 无效。参数布局相同的 POSIX `SYS_*` 宏在 `include/posix/sys/syscall.h` 中直接引用对应 OS 编号；其他 POSIX 函数由 libc 按 OS ABI 适配，不再存在独立的内核 POSIX 分发入口。
+固定 boot ProgramId 决定可信服务身份：所有 boot 服务进程为 Ring3；服务经现有 IPC 请求 .kernel 机制对象。磁盘 ELF 不能自行申请 capabilities 或 ServiceRole。MM 模块路径为 user/mm，guiw 来自独立项目 D:/osinfo/guiw 的软件包。详见[架构](architecture.md)。

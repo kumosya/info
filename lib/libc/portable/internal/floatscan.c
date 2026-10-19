@@ -6,7 +6,6 @@
 #include <errno.h>
 #include <ctype.h>
 
-#include "shgetc.h"
 #include "floatscan.h"
 
 #if LDBL_MANT_DIG == 53 && LDBL_MAX_EXP == 1024

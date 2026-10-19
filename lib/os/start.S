@@ -5,7 +5,7 @@
 .extern main
 .extern osRuntimeInit
 .extern exit
-.extern __libc_set_environ
+.extern __libc_initialize_environ
 .extern __libc_import_exec_state
 
 _start:
@@ -18,7 +18,7 @@ _start:
     call osRuntimeInit
     movq %rax, %r13
     movq %r14, %rdi
-    call __libc_set_environ
+    call __libc_initialize_environ
     movq %r14, %rdi
 1:
     cmpq $0, (%rdi)
@@ -26,6 +26,15 @@ _start:
     addq $8, %rdi
     jmp 1b
 2:
+    addq $8, %rdi
+5:
+    cmpq $0, (%rdi)
+    je 3f
+    cmpq $0x60000001, (%rdi)
+    je 6f
+    addq $16, %rdi
+    jmp 5b
+6:
     movq 8(%rdi), %rdi
     testq %rdi, %rdi
     jz 3f

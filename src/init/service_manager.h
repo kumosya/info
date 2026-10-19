@@ -9,7 +9,7 @@
 class ServiceManager {
    public:
     bool initialize() {
-        endpoint_ = os::createEndpoint();
+        endpoint_ = os::Endpoint::create();
         if (!endpoint_) return false;
         os::ServiceRegistry::setServiceRegistry(endpoint_);
         constexpr uint64_t stack = 0x70000000;
@@ -52,15 +52,15 @@ class ServiceManager {
     static os::ServiceRole requiredRole(const char* name) {
         struct Protected { const char* name; os::ServiceRole role; };
         const Protected protectedNames[] = {
-            {"services", os::ServiceRole::Init}, {"pipe", os::ServiceRole::Init},
-            {"msgq", os::ServiceRole::Init}, {"memory", os::ServiceRole::Init},
-            {"task.kernel", os::ServiceRole::Init}, {"system", os::ServiceRole::Init}, {"device.kernel", os::ServiceRole::Init},
+            {"services", os::ServiceRole::Init}, {"pipe", os::ServiceRole::Pipe},
+            {"msgq", os::ServiceRole::MessageQueue}, {"memory.kernel", os::ServiceRole::Init},
+            {"task.kernel", os::ServiceRole::Init}, {"system.kernel", os::ServiceRole::Init}, {"device.kernel", os::ServiceRole::Init}, {"pci.kernel", os::ServiceRole::Init},
             {"pci", os::ServiceRole::Pci}, {"task", os::ServiceRole::Task},
             {"fs", os::ServiceRole::Fs}, {"device", os::ServiceRole::Device},
             {"input", os::ServiceRole::Device}, {"storage", os::ServiceRole::Storage},
             {"tty", os::ServiceRole::Tty}, {"console", os::ServiceRole::Console},
             {"terminal", os::ServiceRole::Console}, {"guiw", os::ServiceRole::Window},
-            {"users", os::ServiceRole::Users}
+            {"users", os::ServiceRole::Users}, {"mm", os::ServiceRole::Memory}
         };
         for (const auto& item : protectedNames)
             if (os::Runtime::stringsEqual(name, item.name)) return item.role;
@@ -92,6 +92,10 @@ class ServiceManager {
         Record* record = nullptr;
         for (uint32_t i = 0; i < count_; ++i)
             if (os::Runtime::stringsEqual(records_[i].name, name)) { record = &records_[i]; break; }
+        if (record && record->endpoint) {
+            os::TaskInfo publisher{};
+            if (os::Handle::state(record->endpoint) != 0 || !query(record->publisher, publisher)) invalidate(*record);
+        }
         if (operation == os::RegistryRequest::Register) {
             const auto required = requiredRole(name);
             if (request.length < 4 || request.handleCount != 1 || (request.data[3] & ~os::serviceAccessOwnerOnly)) return;

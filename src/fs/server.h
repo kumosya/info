@@ -200,6 +200,9 @@ struct OpenFileDescription {
 struct FileDescriptor {
     uint64_t ownerPid;
     OpenFileDescription* description;
+    int flags = O_RDONLY;
+    uint64_t mappingIssuer = 0;
+    uint64_t mappingToken = 0;
 };
 
 class FsServer {
@@ -215,13 +218,16 @@ class FsServer {
 
     void handleAsync(const os::IpcMessage& request, bool writeOperation);
 
-    uint64_t open(uint64_t ownerPid, const char* path);
+    uint64_t open(uint64_t ownerPid, const char* path, int flags);
     void reapDescriptors();
 
     uint64_t close(uint64_t ownerPid, uint64_t descriptor);
 
     void cloneDescriptors(uint64_t parentPid, uint64_t childPid,
                           os::IpcMessage& reply);
+    void delegateMapping(const os::IpcMessage& request, os::IpcMessage& reply);
+    void claimMapping(const os::IpcMessage& request, os::IpcMessage& reply);
+    uint64_t nextMappingToken_ = 1;
 
     void read(uint64_t ownerPid, uint64_t descriptor, uint64_t requested,
               os::IpcMessage& reply);

@@ -2,8 +2,10 @@
 
 #include "os/abi.h"
 #include "os/file.h"
+#include "os/mm.h"
 #include "os/pty.h"
 #include "os/task.h"
+#include "os/elf.h"
 #include "os/service.h"
 #include "os/terminal.h"
 #include <new>
@@ -26,6 +28,10 @@ static_assert(sizeof(OsExecImageInfo) == sizeof(os::ExecImageInfo));
 
 #pragma GCC visibility push(hidden)
 extern "C" {
+
+void __libc_os_bind_environment(char*** environment) {
+    os::Runtime::bindEnvironment(environment);
+}
 
 void* __libc_file_adopt(uint64_t fs,uint64_t handle,const char* path,int flags,int kind) {
     auto* result=static_cast<os::File*>(malloc(sizeof(os::File)));
@@ -173,7 +179,7 @@ int64_t __libc_os_read_directory_batch(uint64_t fs, const char* path, uint64_t i
     return os::File(fs).readDirectoryBatch(path, index, reinterpret_cast<os::DirectoryEntry*>(entries), capacity);
 }
 
-uint64_t __libc_os_create_endpoint() { return os::createEndpoint(); }
+uint64_t __libc_os_create_endpoint() { return os::Endpoint::create(); }
 
 int __libc_os_read_file_async(uint64_t fs, uint64_t descriptor, uint64_t offset,
                        size_t size, uint64_t completionEndpoint,
@@ -269,7 +275,7 @@ int __libc_os_get_pending_signals(uint64_t* mask) {
     return os::Process::getPendingSignals(*mask);
 }
 int __libc_os_wait_signal(uint64_t mask) { return os::Process::waitSignal(mask); }
-void __libc_os_signal_return(void* frame) { os::signalReturn(frame); }
+void __libc_os_signal_return(void* frame) { os::Process::signalReturn(frame); }
 uint64_t __libc_os_open_message_queue(const char* name, int flags,
                                uint32_t maximumMessages,
                                uint32_t messageSize) {
@@ -299,10 +305,10 @@ int __libc_os_set_message_queue_flags(uint64_t handle, uint64_t flags,
     return os::MessageQueue::setMessageQueueFlags(handle, flags, *oldFlags);
 }
 uint64_t __libc_os_open_shared_memory(const char* name, int flags) {
-    return os::Memory::openSharedMemory(name, flags);
+    return os::VirtualMemory::openShared(name, flags);
 }
 int __libc_os_unlink_shared_memory(const char* name) {
-    return os::Memory::unlinkSharedMemory(name);
+    return os::VirtualMemory::unlinkShared(name);
 }
 int __libc_os_resize_shared_memory(uint64_t handle, uint64_t size) {
     return os::Memory::resizeSharedMemory(handle, size);
@@ -329,6 +335,9 @@ int __libc_os_replace_task_image(const OsExecImageInfo* info) {
     return os::replaceTaskImage(
         *reinterpret_cast<const os::ExecImageInfo*>(info));
 }
+int __libc_os_image_interpreter(const void* image, size_t size, char* path, size_t capacity) {
+    return os::Executable::interpreter(image, size, path, capacity);
+}
 int __libc_os_query_task(uint64_t taskId, OsTaskInfo* info) {
     if (!info) return -1;
     os::TaskInfo value{};
@@ -341,7 +350,7 @@ int __libc_os_set_credentials(uint64_t taskId, uint32_t uid, uint32_t gid, int e
     return os::Process::setCredentials(taskId, uid, gid, effectiveOnly);
 }
 uint64_t __libc_os_get_task_id() { return os::Process::getTaskId(); }
-uint64_t __libc_os_get_thread_id() { return os::getThreadId(); }
+uint64_t __libc_os_get_thread_id() { return os::Process::getThreadId(); }
 void __libc_os_exit_task(int status) { os::exitTask(status); }
 void* __libc_os_allocate_memory(size_t size) { return os::Memory::allocateMemory(size); }
 int __libc_os_free_memory(void* pointer) { return os::Memory::freeMemory(pointer); }
@@ -438,3 +447,16 @@ int File::toDescriptor() {
     return result;
 }
 }
+
+extern "C" uint64_t __libc_os_mm_anonymous(uint64_t size, uint32_t protection, uint64_t hint) {
+    return os::VirtualMemory::anonymous(size, protection, true, hint);
+}
+extern "C" uint64_t __libc_os_mm_shared(uint64_t handle, uint64_t size, uint32_t protection, uint64_t offset, uint64_t hint) {
+    return os::VirtualMemory::shared(handle, size, protection, offset, hint);
+}
+extern "C" uint64_t __libc_os_mm_file(uint64_t descriptor, uint64_t size, uint32_t protection, uint64_t offset, uint64_t hint) {
+    return os::VirtualMemory::file(descriptor, size, protection, offset, hint);
+}
+extern "C" int __libc_os_mm_unmap(uint64_t address, uint64_t size) { return os::VirtualMemory::unmap(address, size); }
+extern "C" int __libc_os_mm_protect(uint64_t address, uint64_t size, uint32_t protection) { return os::VirtualMemory::protect(address, size, protection); }
+extern "C" int __libc_os_mm_sync(uint64_t address, uint64_t size) { return os::VirtualMemory::sync(address, size); }

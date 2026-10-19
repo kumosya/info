@@ -677,7 +677,7 @@ class ConsoleService {
    public:
     bool init(uint64_t registry) {
         registry_ = registry;
-        endpoint_ = os::createEndpoint();
+        endpoint_ = os::Endpoint::create();
         if (registry_ == 0 || endpoint_ == 0 || !display_.init() ||
             !os::ServiceRegistry::registerService(registry_, os::consoleServiceName,
                                  endpoint_) ||
@@ -930,7 +930,7 @@ void inputLoop() {
 
 
 int run() {
-    os::System::log("[CONSOLE] Console and TTY service started in Ring 0\n");
+    os::System::log("[CONSOLE] Console and TTY service started in Ring 3\n");
     registryEndpoint = os::getBootstrapHandle();
     if (!consoleService.init(registryEndpoint) ||
         os::mapMemory(inputStackAddress, inputStackSize, 1) !=

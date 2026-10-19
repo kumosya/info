@@ -18,7 +18,7 @@ bool InputClient::connect(uint64_t service) {
         return false;
     }
     service_      = service;
-    wakeEndpoint_ = createEndpoint();
+    wakeEndpoint_ = Endpoint::create();
     if (wakeEndpoint_ == 0) {
         return false;
     }

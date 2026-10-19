@@ -84,7 +84,9 @@ enum class FsRequest : uint64_t {
     CloneForChild,
     Fstat,
     ReadAt,
-    WriteAt
+    WriteAt,
+    DelegateMapping,
+    ClaimMapping
 };
 constexpr uint64_t fsCompletionNotification = 0x4653434f4d504cULL;
 

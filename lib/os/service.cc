@@ -2,6 +2,9 @@
 
 #include "os/abi.h"
 #include "os/protocol.h"
+#include "os/pci.h"
+#include "os/task.h"
+#include "os/core_service.h"
 
 namespace os {
 uint64_t ServiceRegistry::configuredRegistry_;
@@ -14,8 +17,20 @@ bool ServiceRegistry::putName(os::IpcMessage& message, const char* name) {
 }
 
 
-int SystemService::pciRequest(PciRequest&) { return static_cast<int>(ErrorCode::PermissionDenied); }
-int SystemService::queryTask(uint64_t, TaskInfo&) { return static_cast<int>(ErrorCode::PermissionDenied); }
+int SystemService::pciRequest(PciRequest& command) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(command.operation); request.length = 4;
+    request.data[0] = command.operation == PciOperation::Enumerate ? command.capacity : command.offset;
+    Runtime::copyBytes(&request.data[1], &command.function, sizeof(command.function)); request.data[3] = command.value;
+    const int64_t result = CoreServiceClient::result(CoreServiceKind::Pci, request, reply);
+    if (result < 0) return result;
+    if (command.operation == PciOperation::Enumerate) {
+        if (!command.functions || static_cast<uint64_t>(result) > command.capacity) return -1;
+        Runtime::copyBytes(command.functions, &reply.data[1], result * sizeof(PciFunctionInfo));
+    } else command.value = reply.data[1];
+    return result;
+}
+int SystemService::queryTask(uint64_t id, TaskInfo& info) { return Process::queryTask(id, info); }
 int SystemService::coreCall(CoreServiceKind, IpcMessage&, IpcMessage&, uint64_t) {
     return static_cast<int>(ErrorCode::PermissionDenied);
 }

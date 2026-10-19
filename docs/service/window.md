@@ -1,4 +1,4 @@
-# guiw 服务（src/guiw/）
+# guiw 服务（独立项目 D:/osinfo/guiw/server/）
 
 guiw 服务（注册名 `"guiw"`）是窗口服务器/合成器：软件合成、窗口管理、输入分发与内置桌面演示控件。它与 `/usr/bin/terminal` 一同由 guiw 软件包交付，程序本体安装在 `/sbin/sys/guiw.elf`，授予 `taskCapabilityDisplay`。
 
@@ -94,3 +94,7 @@ class TextBox;  // 文本 ≤31 字节；焦点态白底/绿边，非焦点灰�
 ## 8. 线程模型
 
 主线程跑 IPC；`inputMain` 订阅 input 服务（栈 `0x61000000`）；`compositorMain` 每 1 ms 调 `refresh()`（脏区存在且距上帧 ≥16.67 ms 时合成，栈 `0x62000000`）。全部状态由自旋锁保护；脏区管理为单一合并矩形（`markDirtyLocked` 做并集）。
+
+窗口服务使用固定 boot WindowServer 身份运行于 Ring3；独立项目 `src/main.cc` 为普通 Ring3 终端客户端。不能通过磁盘路径申请 Display 能力。OS 仓库安装 `packages/external/guiw.inpk`，不编译 guiw 源码。
+
+事件通知采用 deadline=0 的非阻塞发送。队列满时保留等待状态，由合成线程在后续 refresh 重试，禁止在全局锁内等待客户端消费通知。成功领取事件会清除等待状态；不可恢复的端点错误关闭订阅。`tests/desktop-runtime.cc` 覆盖通知队列填满、窗口 RPC 继续响应及清空后补发。

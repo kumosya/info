@@ -28,7 +28,7 @@ static uint64_t eventEndpoint(uint64_t service, os::WindowHandle window) {
     }
     for (EventSubscription& subscription : subscriptions) {
         if (subscription.endpoint != 0) continue;
-        const uint64_t endpoint = os::createEndpoint();
+        const uint64_t endpoint = os::Endpoint::create();
         if (endpoint == 0) return 0;
         os::IpcMessage request{};
         request.type =

@@ -1,8 +1,10 @@
 #include "kernel/serial.h"
+#include "kernel/spinlock.h"
 
 namespace {
 
 constexpr uint16_t serialPort = 0x3f8;
+kernel::SpinLock outputLock;
 
 inline void writePort(uint16_t port, uint8_t value) {
     asm volatile("outb %0, %1" : : "a"(value), "Nd"(port));
@@ -12,6 +14,13 @@ inline uint8_t readPort(uint16_t port) {
     uint8_t value;
     asm volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
     return value;
+}
+
+void writeCharacter(char value) {
+    for (uint32_t timeout = 0; timeout < 100000; ++timeout) {
+        if ((readPort(serialPort + 5) & 0x20) != 0) break;
+    }
+    writePort(serialPort, static_cast<uint8_t>(value));
 }
 
 }  // namespace
@@ -29,32 +38,31 @@ void initSerial() {
 }
 
 void serialWrite(char value) {
-    for (uint32_t timeout = 0; timeout < 100000; ++timeout) {
-        if ((readPort(serialPort + 5) & 0x20) != 0) {
-            break;
-        }
-    }
-    writePort(serialPort, static_cast<uint8_t>(value));
+    InterruptSpinLockGuard guard(outputLock);
+    writeCharacter(value);
 }
 
 void serialWrite(const char* value) {
     if (value == nullptr) {
         return;
     }
+    InterruptSpinLockGuard guard(outputLock);
     while (*value != '\0') {
         if (*value == '\n') {
-            serial::serialWrite('\r');
+            writeCharacter('\r');
         }
-        serial::serialWrite(*value++);
+        writeCharacter(*value++);
     }
 }
 
 void serialWriteHex(uint64_t value) {
     static constexpr char digits[] = "0123456789abcdef";
-    serial::serialWrite("0x");
+    char text[19] = "0x";
+    uint32_t index = 2;
     for (int shift = 60; shift >= 0; shift -= 4) {
-        serial::serialWrite(digits[(value >> shift) & 0xf]);
+        text[index++] = digits[(value >> shift) & 0xf];
     }
+    serial::serialWrite(text);
 }
 
 void serialWriteDecimal(uint64_t value) {

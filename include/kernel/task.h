@@ -26,7 +26,6 @@ class TaskReference {
     Task* task_;
     ThreadCleanup cleanup_;
 };
-namespace posix { class FileTable; }
 namespace task {
 void init();
 TaskReference find(uint64_t taskId);
@@ -40,10 +39,12 @@ class AddressSpace {
     void init(uint64_t rootPhysicalAddress);
     uint64_t replaceRoot(uint64_t rootPhysicalAddress);
     uint64_t rootPhysicalAddress() const;
+    uint64_t generation() const { return generation_; }
     SpinLock& lock();
 
    private:
     uint64_t rootPhysicalAddress_;
+    uint64_t generation_ = 1;
     SpinLock lock_;
 };
 
@@ -54,10 +55,8 @@ enum class HandleType : uint16_t {
     MmioRegion,
     DmaBuffer,
     InterruptBinding,
-    Pipe,
-    Channel,
-    MessageQueue,
-    SharedMemory
+    SharedMemory,
+    PageObject
 };
 
 constexpr uint32_t handleRightRead   = 1U << 0;
@@ -83,6 +82,7 @@ class HandleTable {
     bool setFlags(uint64_t handle, uint32_t flags);
     void closeOnExec();
     bool getFlags(uint64_t handle, uint32_t& flags);
+    int64_t references(uint64_t handle);
     bool hasObjectRights(void* object, HandleType type, uint32_t rights);
     bool inspect(uint64_t handle, void** object, HandleType* type,
                  uint32_t* rights);
@@ -143,6 +143,7 @@ class HandleTable {
     uint32_t capacity_;
     SpinLock lock_;
     Task* owner_ = nullptr;
+    bool disposed_ = false;
 };
 
 class HandleTable::Pin {
@@ -180,6 +181,7 @@ constexpr uint64_t taskCapabilitySpawn   = 1ULL << 1;
 constexpr uint64_t taskCapabilityDisplay = 1ULL << 2;
 constexpr uint64_t taskCapabilityUsers = 1ULL << 3;
 constexpr uint64_t taskCapabilityPci = 1ULL << 4;
+constexpr uint64_t taskCapabilityMemory = 1ULL << 5;
 
 class Task {
    public:
@@ -221,7 +223,6 @@ class Task {
     uint32_t effectiveUid() const { return effectiveUid_; }
     uint32_t effectiveGid() const { return effectiveGid_; }
     void setCredentials(uint32_t uid, uint32_t gid, bool effectiveOnly = false);
-    posix::FileTable* files();
     uint32_t terminalId() const { return terminalId_; }
     void setTerminalId(uint32_t value) { terminalId_ = value; }
     void setBootstrapHandle(uint64_t handle);
@@ -246,8 +247,8 @@ class Task {
     uint32_t terminalId_ = 0;
     bool systemService_ = false;
     os::ServiceRole serviceRole_ = os::ServiceRole::None;
-    posix::FileTable* fileTable_ = nullptr;
     friend void task::init();
+    friend class TaskReclaimer;
     friend TaskReference task::find(uint64_t taskId);
     friend TaskReference task::at(uint32_t index);
     friend bool signal::sendSignalToTaskGroup(uint64_t taskGroupId,
@@ -255,6 +256,7 @@ class Task {
 
     bool init(const char* name, uint64_t rootPhysicalAddress, Task* parent);
     void adoptChildren();
+    bool destroyResources();
 
     uint64_t id_;
     char name_[64];
@@ -285,6 +287,7 @@ class Task {
     SpinLock lock_;
     uint32_t references_ = 1;
     uint32_t resourceState_ = 0;
+    Task* reclaimNext_ = nullptr;
 };
 
 namespace task {
@@ -371,7 +374,7 @@ class RunQueue {
 namespace schedule {
 void init();
 bool isSchedulerInitialized();
-void enqueueThread(Thread* thread);
+bool enqueueThread(Thread* thread);
 void prepareCurrentWait();
 void blockCurrentThread();
 void wakeThread(Thread* thread);
@@ -397,7 +400,8 @@ class UserProgramLoader {
         uint64_t rootPhysicalAddress, const char* programName,
         uint32_t argumentCount, const char* const* arguments,
         uint32_t environmentCount, const char* const* environment,
-        uint64_t runtimeStateAddress, uint64_t& stackPointer);
+        uint64_t runtimeStateAddress, uint64_t& stackPointer,
+        const ElfLoadResult* image = nullptr);
 
     static Task* startInitial(const BootInfo* bootInfo);
 
@@ -415,7 +419,8 @@ class UserProgramLoader {
                            const ElfSharedImage* sharedImages,
                            uint32_t sharedImageCount,
                            ElfLoadError* loadError = nullptr,
-                           os::ServiceRole serviceRole = os::ServiceRole::None);
+                             os::ServiceRole serviceRole = os::ServiceRole::None,
+                             bool newSession = false);
 };
 
 }  // namespace kernel

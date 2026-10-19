@@ -1,10 +1,10 @@
 # device 服务（src/device/）
 
-device 服务（注册名 `"device"`）由内核内置镜像加载，授予 `taskCapabilityDevice`，以可信系统服务身份在 Ring 0 运行。同一进程内还承载 **input 服务**（注册名 `"input"`）。
+device 服务（注册名 `"device"`）由内核内置镜像加载，授予 `taskCapabilityDevice`，以固定 boot 角色在 Ring3 运行。同一进程内还承载 **input 服务**（注册名 `"input"`）。
 
 ## 1. PCI 设备管理
 
-独立的 `pci` 服务由内置镜像在 Ring 0 启动，注册名为 `"pci"`。device/storage 通过 IPC 请求枚举和配置访问；只有 pci 服务持有 `taskCapabilityPci`，可向内核 `CallPciService` 提交请求。PCI 配置端口操作由内核 `PciAccess` 完成。
+独立的 `pci` 服务由固定 boot 镜像在 Ring3 启动，注册名为 `"pci"`。device/storage 通过 IPC 请求枚举和配置访问；只有 pci 服务持有 `taskCapabilityPci`，可向内核 `CallPciService` 提交请求。PCI 配置端口操作由内核 `PciAccess` 完成。
 
 ```cpp
 enum class DeviceCategory : uint8_t { Pci, Storage, Keyboard, Mouse, Display, Network, Timer, Serial };
@@ -77,10 +77,10 @@ struct InputEvent { InputEventType type; uint32_t reserved; uint64_t timestamp; 
 
 块设备发现、稳定标识及别名见 [fs 服务](fs.md)。
 
-## 系统服务执行级别
+## 服务执行级别与内核机制授权
 
-内核仅在加载固定的内置 PciServer / DeviceServer / StorageServer 镜像时设置系统服务身份。磁盘 ELF、普通 spawn、root 身份和权限位不能获得该身份。服务使用高地址 supervisor 栈，普通用户程序使用 Ring 3。
+所有服务进程都在 Ring3 运行。固定 boot 模块的内核 ServiceRole 和 capabilities 决定可调用的机制；磁盘路径、root 身份或普通请求参数不能自行获得这些权限。
 
-`os::SystemService::readPort8/writePort8` 先检查当前 CS，再执行端口指令；普通进程调用返回失败。端口访问系统调用已删除。服务其余系统调用通过 DPL 0 的 int 0x80 入口进入统一分派，普通用户不能使用该门。
+PCI 服务通过 pci.kernel 进行受限配置空间操作；device 服务通过 device.kernel 初始化 PS/2 并读取输入字节。存储驱动的 MMIO、DMA 与 IRQ 同样由 device.kernel 验证并提供。OS 库不再提供原始端口读写 API，没有端口 syscall。
 
-Ring 0 服务属于内核信任边界，服务自身的错误具有内核级影响。可执行文件的路径或用户身份不会改变执行级别。
+硬件端口实现仅存在于内核；设备枚举、驱动匹配、键鼠解析和输入事件队列都在 Ring3 服务中。

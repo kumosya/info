@@ -73,10 +73,10 @@ bool isSchedulerInitialized() {
     return schedulerInitialized.load(MemoryOrder::Acquire);
 }
 
-void enqueueThread(Thread* thread) {
+bool enqueueThread(Thread* thread) {
     if (thread == nullptr || thread->getInRunQueue() ||
         thread->getState() == ThreadState::Terminated) {
-        return;
+        return thread && thread->getState() != ThreadState::Terminated;
     }
     uint32_t targetCpuId    = thread->getCpuId();
     CpuLocalData* targetCpu = smp::getCpuLocalData(targetCpuId);
@@ -99,7 +99,7 @@ void enqueueThread(Thread* thread) {
         }
     }
     if (targetCpu == nullptr) {
-        return;
+        return false;
     }
     RunQueue* queue      = targetCpu->getRunQueue();
     const uint64_t flags = interrupt::disable();
@@ -108,7 +108,7 @@ void enqueueThread(Thread* thread) {
         thread->getState() == ThreadState::Terminated) {
         queue->getLock().unlock();
         interrupt::restore(flags);
-        return;
+        return thread->getState() != ThreadState::Terminated;
     }
     if (thread->getVruntime() < queue->getMinVruntime()) {
         thread->setVruntime(queue->getMinVruntime());
@@ -121,6 +121,7 @@ void enqueueThread(Thread* thread) {
     if (targetCpuId != cpu::getCurrentId()) {
         smp::requestRemoteReschedule(targetCpuId);
     }
+    return true;
 }
 
 void dequeueThread(Thread* thread) {
@@ -414,8 +415,9 @@ bool Thread::migrate(uint32_t cpuId) {
     }
     schedule::dequeueThread(thread);
     thread->setCpuId(cpuId);
-    schedule::enqueueThread(thread);
-    return thread->getInRunQueue() && thread->getCpuId() == cpuId;
+    // Admission is the success condition. The destination CPU can have already
+    // selected or blocked the thread by the time enqueueThread returns.
+    return schedule::enqueueThread(thread);
 }
 }  // namespace kernel
 

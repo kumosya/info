@@ -1,6 +1,7 @@
 #include "os/task.h"
 #include "os/abi.h"
 #include "os/core_service.h"
+#include "os/mm.h"
 #include "os/pci.h"
 #include "os/protocol.h"
 #include "os/service.h"
@@ -15,6 +16,11 @@ extern RuntimeFunction __fini_array_end[];
 }
 
 namespace os {
+
+char** Runtime::initialEnvironment_ = nullptr;
+char*** Runtime::environmentSlot_ = nullptr;
+void (*Runtime::sharedFinalizer_)() = nullptr;
+bool Runtime::prepared_ = false;
 
 namespace {
 
@@ -73,6 +79,8 @@ int64_t invokeSyscall(SyscallNumber number, uint64_t arg1, uint64_t arg2,
 
 
 uint64_t CoreServiceClient::openHandle(CoreServiceKind kind) {
+    if (kind == CoreServiceKind::Pipe || kind == CoreServiceKind::MessageQueue)
+        return ServiceRegistry::lookupService(ServiceRegistry::serviceRegistry(), kind == CoreServiceKind::Pipe ? "pipe" : "msgq", 1000);
     return invokeSyscall(SyscallNumber::GetBootstrapHandle, static_cast<uint64_t>(BootstrapOperation::GetCoreService), static_cast<uint64_t>(kind));
 }
 uint64_t CoreServiceClient::handles_[static_cast<uint64_t>(CoreServiceKind::Count)];
@@ -91,11 +99,23 @@ int CoreServiceClient::call(CoreServiceKind kind, IpcMessage& request, IpcMessag
         if (__atomic_compare_exchange_n(&handles_[index], &expected, created, false, __ATOMIC_RELEASE, __ATOMIC_ACQUIRE)) handle = created;
         else { closeHandle(created); handle = expected; }
     }
-    return callService(handle, request, reply, deadline);
+    IpcMessage outgoing = request;
+    const bool tagged = kind == CoreServiceKind::Pipe ? request.type != static_cast<uint64_t>(PipeOperation::Create) && request.type != static_cast<uint64_t>(PipeOperation::CreateChannel)
+        : kind == CoreServiceKind::MessageQueue && request.type != static_cast<uint64_t>(MessageQueueOperation::Open) && request.type != static_cast<uint64_t>(MessageQueueOperation::Unlink);
+    if (tagged) {
+        if (outgoing.handleCount) return static_cast<int>(ErrorCode::InvalidArgument);
+        outgoing.handleCount = 1; outgoing.handles[0] = request.data[0]; outgoing.data[0] = 0;
+    }
+    const int status = callService(handle, outgoing, reply, deadline);
+    if (status == static_cast<int>(ErrorCode::PeerDied) || status == static_cast<int>(ErrorCode::EndpointClosed) || status == static_cast<int>(ErrorCode::InvalidHandle)) {
+        uint64_t expected = handle;
+        if (__atomic_compare_exchange_n(&handles_[index], &expected, 0ULL, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) closeHandle(handle);
+    }
+    return status;
 }
 int64_t CoreServiceClient::result(CoreServiceKind kind, IpcMessage& request, IpcMessage& reply) {
     const int status = call(kind, request, reply);
-    return status ? status : static_cast<int64_t>(reply.data[0]);
+    return status ? status : kind == CoreServiceKind::MessageQueue && request.type == static_cast<uint64_t>(MessageQueueOperation::Open) && reply.handleCount ? reply.handles[0] : static_cast<int64_t>(reply.data[0]);
 }
 
 [[noreturn]] void exitTask(int exitCode) {
@@ -185,9 +205,11 @@ int Process::waitSignal(uint64_t mask) {
     return status;
 }
 
-void signalReturn(void* frame) {
-    invokeSyscall(SyscallNumber::SignalReturn,
-                  reinterpret_cast<uint64_t>(frame));
+void Process::signalReturn(void* frame) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::SignalReturn);
+    request.length = 4; request.data[0] = reinterpret_cast<uint64_t>(frame);
+    CoreServiceClient::call(CoreServiceKind::Task, request, reply);
     while (true) asm volatile("ud2");
 }
 
@@ -265,6 +287,43 @@ IpcMessage request{}, reply{};
     const int64_t status = CoreServiceClient::result(CoreServiceKind::MessageQueue, request, reply);
     if (!status) oldFlags = reply.data[1];
     return status;
+}
+
+uint64_t Memory::allocatePages(uint32_t order, uint16_t node, uint64_t owner) {
+    IpcMessage request{}, reply{}; request.type = static_cast<uint64_t>(MemoryOperation::AllocatePages); request.length = 5;
+    request.data[0] = order; request.data[1] = node; request.data[2] = owner;
+    return CoreServiceClient::result(CoreServiceKind::Memory, request, reply);
+}
+uint64_t Memory::mapPages(uint64_t handle, uint64_t address, uint64_t size, uint64_t offset, uint64_t protection, uint64_t target) {
+    IpcMessage request{}, reply{}; request.type = static_cast<uint64_t>(MemoryOperation::MapPages); request.length = 6;
+    request.data[0] = handle; request.data[1] = address; request.data[2] = size; request.data[3] = offset; request.data[4] = protection; request.data[5] = target;
+    return CoreServiceClient::result(CoreServiceKind::Memory, request, reply);
+}
+int Memory::pageInfo(uint64_t handle, PageObjectInfo& info) {
+    IpcMessage request{}, reply{}; request.type = static_cast<uint64_t>(MemoryOperation::PageInfo); request.length = 5; request.data[0] = handle;
+    const int64_t result = CoreServiceClient::result(CoreServiceKind::Memory, request, reply);
+    if (!result) Runtime::copyBytes(&info, &reply.data[1], sizeof(info));
+    return result;
+}
+int Memory::usage(MemoryUsage& info, uint64_t target) {
+    IpcMessage request{}, reply{}; request.type = static_cast<uint64_t>(MemoryOperation::Usage); request.length = 5; request.data[0] = target;
+    const int64_t result = CoreServiceClient::result(CoreServiceKind::Memory, request, reply);
+    if (!result) Runtime::copyBytes(&info, &reply.data[1], sizeof(info));
+    return result;
+}
+int64_t Memory::reclaimCaches() {
+    IpcMessage request{}, reply{}; request.type = static_cast<uint64_t>(MemoryOperation::ReclaimCaches); request.length = 5;
+    return CoreServiceClient::result(CoreServiceKind::Memory, request, reply);
+}
+int Memory::unmapTarget(uint64_t address, uint64_t size, uint64_t target) {
+    IpcMessage request{}, reply{}; request.type = static_cast<uint64_t>(MemoryOperation::UnmapTarget); request.length = 5;
+    request.data[0] = address; request.data[1] = size; request.data[2] = target;
+    return CoreServiceClient::result(CoreServiceKind::Memory, request, reply);
+}
+int Memory::protectTarget(uint64_t address, uint64_t size, uint64_t protection, uint64_t target) {
+    IpcMessage request{}, reply{}; request.type = static_cast<uint64_t>(MemoryOperation::ProtectTarget); request.length = 5;
+    request.data[0] = address; request.data[1] = size; request.data[2] = protection; request.data[3] = target;
+    return CoreServiceClient::result(CoreServiceKind::Memory, request, reply);
 }
 
 uint64_t Memory::openSharedMemory(const char* name, int flags) {
@@ -360,7 +419,7 @@ uint64_t mapMemory(uint64_t address, uint64_t size, uint64_t protection) {
     return invokeSyscall(SyscallNumber::MapMemory, address, size, protection);
 }
 
-uint64_t createEndpoint() {
+uint64_t Endpoint::create() {
 return invokeSyscall(SyscallNumber::GetBootstrapHandle, static_cast<uint64_t>(BootstrapOperation::CreateEndpoint));
 }
 
@@ -388,7 +447,7 @@ int replyMessage(uint64_t endpoint, uint64_t replyToken, IpcMessage& reply) {
                                           reinterpret_cast<uint64_t>(&reply)));
 }
 
-int cancelIpc(uint64_t endpoint, uint64_t threadId) {
+int Endpoint::cancel(uint64_t endpoint, uint64_t threadId) {
     return static_cast<int>(invokeSyscall(SyscallNumber::SendMessage, endpoint,
                                           0, 0, threadId));
 }
@@ -715,7 +774,11 @@ uint64_t Process::getTaskId() {
     return status;
 }
 
-uint64_t getThreadId() { return invokeSyscall(SyscallNumber::GetThreadId); }
+uint64_t Process::getThreadId() {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(TaskOperation::ThreadIdentity); request.length = 4;
+    return CoreServiceClient::result(CoreServiceKind::Task, request, reply);
+}
 
 bool System::getSystemInfo(SystemInfo& info) {
 IpcMessage request{}, reply{};
@@ -941,11 +1004,48 @@ bool Terminal::setForegroundTask(uint64_t taskId) {
            reply.data[0] == 0;
 }
 
-int Runtime::runtimeInit(int argumentCount, char** arguments, char**) {
+const char* Runtime::environmentValue(const char* name) {
+    if (!name || !*name) return nullptr;
+    size_t length = 0;
+    while (name[length]) {
+        if (name[length] == '=') return nullptr;
+        ++length;
+    }
+    char** environment = environmentSlot_ ? *environmentSlot_ : initialEnvironment_;
+    if (!environment) return nullptr;
+    for (size_t index = 0; environment[index]; ++index) {
+        const char* entry = environment[index];
+        size_t position = 0;
+        while (position < length && entry[position] == name[position]) ++position;
+        if (position == length && entry[position] == '=') return entry + length + 1;
+    }
+    return nullptr;
+}
+
+void Runtime::bindEnvironment(char*** environment) { environmentSlot_ = environment; }
+
+void Runtime::prepare(char** environment) {
+    if (prepared_) return;
+    prepared_ = true;
+    initialEnvironment_ = environment;
+    environmentSlot_ = nullptr;
+    sharedFinalizer_ = nullptr;
+    if (environment) {
+        char** end = environment;
+        while (*end) ++end;
+        const auto* auxiliary = reinterpret_cast<const uint64_t*>(end + 1);
+        for (uint32_t index = 0; index < 32 && auxiliary[index * 2]; ++index)
+            if (auxiliary[index * 2] == 0x60000003)
+                sharedFinalizer_ = reinterpret_cast<void (*)()>(auxiliary[index * 2 + 1]);
+    }
     HeapState::heapLock              = 0;
     HeapState::nextAllocationAddress = HeapState::heapBase;
     Terminal::initialize();
     Runtime::clearMemory(HeapState::allocations, sizeof(HeapState::allocations));
+}
+
+int Runtime::runtimeInit(int argumentCount, char** arguments, char** environment) {
+    prepare(environment);
     constexpr char prefix[] = "--os-terminal=";
     for (int index = 0; index < argumentCount; ++index) {
         const char* argument = arguments[index];
@@ -977,6 +1077,11 @@ void Runtime::runtimeFini() {
     for (RuntimeFunction* destructor = __fini_array_end;
          destructor != __fini_array_start;) {
         (*--destructor)();
+    }
+    if (sharedFinalizer_) {
+        auto finalizer = sharedFinalizer_;
+        sharedFinalizer_ = nullptr;
+        finalizer();
     }
 }
 
@@ -1038,3 +1143,106 @@ extern "C" int osRuntimeInit(int argc, char** argv, char** environment) {
     return os::Runtime::runtimeInit(argc, argv, environment);
 }
 extern "C" void osRuntimeFini() { os::Runtime::runtimeFini(); }
+
+namespace os {
+namespace {
+class VirtualMemoryClient {
+    inline static uint64_t endpoint_ = 0;
+    inline static uint8_t lock_ = 0;
+   public:
+    static int64_t call(IpcMessage& request) {
+        while (__atomic_test_and_set(&lock_, __ATOMIC_ACQUIRE)) yield();
+        if (!endpoint_) {
+            endpoint_ = ServiceRegistry::lookupService(ServiceRegistry::serviceRegistry(), "mm", 1);
+            if (endpoint_) Handle::setFlags(endpoint_, handleFlagCloseOnExec);
+        }
+        IpcMessage reply{};
+        const int status = endpoint_ ? callService(endpoint_, request, reply) : static_cast<int>(ErrorCode::NotFound);
+        if (status == static_cast<int>(ErrorCode::PeerDied) || status == static_cast<int>(ErrorCode::EndpointClosed) || status == static_cast<int>(ErrorCode::InvalidHandle)) {
+            if (endpoint_) closeHandle(endpoint_);
+            endpoint_ = 0;
+        }
+        __atomic_clear(&lock_, __ATOMIC_RELEASE);
+        return status ? status : reply.handleCount ? static_cast<int64_t>(reply.handles[0]) : static_cast<int64_t>(reply.data[0]);
+    }
+};
+}
+uint64_t VirtualMemory::anonymous(uint64_t size, uint32_t protection, bool lazy, uint64_t hint) {
+    if (!size || size > UINT64_MAX - 4095) return static_cast<int64_t>(ErrorCode::InvalidArgument);
+    IpcMessage request{};
+    request.type = static_cast<uint64_t>(MmOperation::MapAnonymous); request.length = 4;
+    request.data[0] = (size + 4095) & ~4095ULL; request.data[1] = protection;
+    request.data[2] = lazy ? 0 : mmFlagEager; request.data[3] = hint;
+    return VirtualMemoryClient::call(request);
+}
+uint64_t VirtualMemory::shared(uint64_t handle, uint64_t size, uint32_t protection, uint64_t offset, uint64_t hint) {
+    if (!handle || !size || size > UINT64_MAX - 4095) return static_cast<int64_t>(ErrorCode::InvalidArgument);
+    IpcMessage request{};
+    request.type = static_cast<uint64_t>(MmOperation::MapShared); request.length = 5;
+    request.handleCount = 1; request.handles[0] = handle;
+    request.data[0] = (size + 4095) & ~4095ULL; request.data[1] = protection;
+    request.data[2] = mmFlagShared; request.data[3] = offset; request.data[4] = hint;
+    return VirtualMemoryClient::call(request);
+}
+uint64_t VirtualMemory::file(uint64_t descriptor, uint64_t size, uint32_t protection, uint64_t offset, uint64_t hint) {
+    if (!descriptor || !size || size > UINT64_MAX - 4095) return static_cast<int64_t>(ErrorCode::InvalidArgument);
+    const uint64_t fs = ServiceRegistry::lookupService(ServiceRegistry::serviceRegistry(), fsServiceName, 1);
+    if (!fs) return static_cast<int64_t>(ErrorCode::NotFound);
+    IpcMessage delegate{}, reply{};
+    delegate.type = static_cast<uint64_t>(FsRequest::DelegateMapping); delegate.length = 1; delegate.data[0] = descriptor;
+    const int status = callService(fs, delegate, reply);
+    if (status || static_cast<int64_t>(reply.data[0])) {
+        closeHandle(fs); return status ? status : reply.data[0];
+    }
+    IpcMessage request{};
+    request.type = static_cast<uint64_t>(MmOperation::MapFile); request.length = 6;
+    request.data[0] = (size + 4095) & ~4095ULL; request.data[1] = protection;
+    request.data[3] = offset; request.data[4] = hint; request.data[5] = reply.data[1];
+    const int64_t result = VirtualMemoryClient::call(request);
+    // An unclaimed delegation belongs to the issuer and must not leak on failure.
+    if (result < 0) {
+        IpcMessage close{}, ignored{}; close.type = static_cast<uint64_t>(FsRequest::Close);
+        close.length = 1; close.data[0] = reply.data[2]; callService(fs, close, ignored);
+    }
+    closeHandle(fs); return result;
+}
+int VirtualMemory::unmap(uint64_t address, uint64_t size) {
+    if (!size || size > UINT64_MAX - 4095) return static_cast<int>(ErrorCode::InvalidArgument);
+    IpcMessage request{};
+    request.type = static_cast<uint64_t>(MmOperation::Unmap); request.length = 2;
+    request.data[0] = address; request.data[1] = (size + 4095) & ~4095ULL;
+    return VirtualMemoryClient::call(request);
+}
+int VirtualMemory::protect(uint64_t address, uint64_t size, uint32_t protection) {
+    if (!size || size > UINT64_MAX - 4095) return static_cast<int>(ErrorCode::InvalidArgument);
+    IpcMessage request{};
+    request.type = static_cast<uint64_t>(MmOperation::Protect); request.length = 3;
+    request.data[0] = address; request.data[1] = (size + 4095) & ~4095ULL; request.data[2] = protection;
+    return VirtualMemoryClient::call(request);
+}
+int VirtualMemory::sync(uint64_t address, uint64_t size) {
+    if (!size || size > UINT64_MAX - 4095) return static_cast<int>(ErrorCode::InvalidArgument);
+    IpcMessage request{}; request.type = static_cast<uint64_t>(MmOperation::Sync); request.length = 2;
+    request.data[0] = address; request.data[1] = (size + 4095) & ~4095ULL;
+    return VirtualMemoryClient::call(request);
+}
+uint64_t VirtualMemory::openShared(const char* name, int flags) {
+    if (!name || Runtime::stringLength(name) >= 64) return static_cast<int64_t>(ErrorCode::InvalidArgument);
+    IpcMessage request{}; request.type = static_cast<uint64_t>(MmOperation::SharedOpen); request.length = 9;
+    request.data[0] = flags; Runtime::copyString(reinterpret_cast<char*>(&request.data[1]), name, 64);
+    return VirtualMemoryClient::call(request);
+}
+int VirtualMemory::unlinkShared(const char* name) {
+    if (!name || Runtime::stringLength(name) >= 64) return static_cast<int>(ErrorCode::InvalidArgument);
+    IpcMessage request{}; request.type = static_cast<uint64_t>(MmOperation::SharedUnlink); request.length = 9;
+    Runtime::copyString(reinterpret_cast<char*>(&request.data[1]), name, 64);
+    return VirtualMemoryClient::call(request);
+}
+}  // namespace os
+
+namespace os {
+uint64_t Handle::identity(uint64_t handle) { return invokeSyscall(SyscallNumber::CloseHandle, handle, static_cast<uint64_t>(HandleOperation::ObjectIdentity)); }
+int64_t Handle::references(uint64_t handle) { return invokeSyscall(SyscallNumber::CloseHandle, handle, static_cast<uint64_t>(HandleOperation::References)); }
+int Handle::destroyEndpoint(uint64_t handle) { return invokeSyscall(SyscallNumber::CloseHandle, handle, static_cast<uint64_t>(HandleOperation::DestroyEndpoint)); }
+int Handle::requestActive(uint64_t endpoint, uint64_t token) { return invokeSyscall(SyscallNumber::CloseHandle, endpoint, static_cast<uint64_t>(HandleOperation::RequestActive), token); }
+}

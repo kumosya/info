@@ -12,7 +12,7 @@ constexpr uint64_t USER_STACK_TOP            = 0x00007ffffff00000ULL;
 constexpr uint64_t USER_STACK_PAGES          = 64;
 constexpr uint32_t MAXIMUM_ARGUMENT_LENGTH   = 383;
 constexpr uint32_t MAXIMUM_ARGUMENT_COUNT    = 64;
-constexpr uint32_t MAXIMUM_ENVIRONMENT_COUNT = 16;
+constexpr uint32_t MAXIMUM_ENVIRONMENT_COUNT = 64;
 constexpr uint64_t DIRECT_MAP_BASE           = 0xffff800000000000ULL;
 
 struct ProgramImage {
@@ -33,7 +33,10 @@ ProgramImage PROGRAM_IMAGES[] = {
     {"tty", "tty-server", 0, 0, 0},
     {"console", "console-server", 0, 0, kernel::taskCapabilityDisplay},
     {"guiw", "window-server", 0, 0, kernel::taskCapabilityDisplay},
-    {"users", "users-server", 0, 0, kernel::taskCapabilityUsers}};
+    {"users", "users-server", 0, 0, kernel::taskCapabilityUsers},
+    {"mm", "memory-manager", 0, 0, kernel::taskCapabilityMemory},
+    {"pipe", "pipe-server", 0, 0, 0},
+    {"msgq", "message-queue-server", 0, 0, 0}};
 kernel::ElfSharedImage bootRuntimeImages[4]{};
 bool bootProgramsReady;
 
@@ -98,7 +101,7 @@ ElfLoadError UserProgramLoader::buildStack(
     uint64_t root, const char* programName, uint32_t argumentCount,
     const char* const* arguments, uint32_t environmentCount,
     const char* const* environment, uint64_t runtimeStateAddress,
-    uint64_t& stackPointer) {
+    uint64_t& stackPointer, const ElfLoadResult* image) {
     const uint64_t stackBottom = USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE;
     for (uint64_t address = stackBottom; address < USER_STACK_TOP;
          address += PAGE_SIZE) {
@@ -155,11 +158,19 @@ ElfLoadError UserProgramLoader::buildStack(
         argumentAddresses[index - 1] = cursor;
     }
 
+    const uint32_t executableNameLength = stringLength(programName);
+    if (executableNameLength > MAXIMUM_ARGUMENT_LENGTH || cursor < stackBottom + executableNameLength + 1)
+        return ElfLoadError::InvalidArgument;
+    cursor -= executableNameLength + 1;
+    const uint64_t executableNameAddress = cursor;
+    if (!memory::copyToAddressSpace(root, cursor, programName, executableNameLength + 1))
+        return ElfLoadError::MappingFailed;
     cursor                          = alignDown(cursor, 16);
-    const uint64_t startupWordCount = argumentCount + environmentCount + 4;
+    constexpr uint32_t auxiliaryWords = 20;
+    const uint64_t startupWordCount = argumentCount + environmentCount + 3 + auxiliaryWords;
     cursor = alignDown(cursor - startupWordCount * sizeof(uint64_t), 16);
     uint64_t
-        startupWords[MAXIMUM_ARGUMENT_COUNT + MAXIMUM_ENVIRONMENT_COUNT + 4]{};
+        startupWords[MAXIMUM_ARGUMENT_COUNT + MAXIMUM_ENVIRONMENT_COUNT + 3 + auxiliaryWords]{};
     startupWords[0] = argumentCount;
     for (uint32_t index = 0; index < argumentCount; ++index) {
         startupWords[index + 1] = argumentAddresses[index];
@@ -168,7 +179,16 @@ ElfLoadError UserProgramLoader::buildStack(
     for (uint32_t index = 0; index < environmentCount; ++index) {
         startupWords[environmentStart + index] = environmentAddresses[index];
     }
-    startupWords[environmentStart + environmentCount + 1] = runtimeStateAddress;
+    const uint64_t auxiliary[] = {
+        3, image ? image->programHeaders : 0, 4, 56,
+        5, image ? image->programHeaderCount : 0, 6, PAGE_SIZE,
+        7, image ? image->interpreterBase : 0,
+        9, image ? image->applicationEntry : 0,
+        31, executableNameAddress,
+        0x60000001, runtimeStateAddress,
+        0x60000002, image ? image->applicationBias : 0, 0, 0};
+    for (uint32_t index = 0; index < auxiliaryWords; ++index)
+        startupWords[environmentStart + environmentCount + 1 + index] = auxiliary[index];
     if (cursor < stackBottom ||
         !memory::copyToAddressSpace(root, cursor, startupWords,
                                     startupWordCount * sizeof(uint64_t))) {
@@ -205,9 +225,8 @@ TaskReference UserProgramLoader::load(os::ProgramId program, Task* parent,
     TaskReference lifetime(task);
     task->grantCapabilities(image.capabilities);
     task->setServiceRole(static_cast<os::ServiceRole>(index + 1));
-    // Only immutable boot-module identities can start in supervisor mode.
-    // Disk executables and user-requested capability bits cannot opt into it.
-    task->setSystemService(program != os::ProgramId::Init);
+    // Immutable boot identities grant mechanism permissions, never Ring 0 execution.
+    task->setSystemService(false);
 
     if (bootstrapHandle != 0) {
         const uint64_t childHandle =
@@ -232,7 +251,7 @@ TaskReference UserProgramLoader::load(os::ProgramId program, Task* parent,
     if (error == ElfLoadError::None) {
         error = UserProgramLoader::buildStack(
             task->addressSpace().rootPhysicalAddress(), image.name,
-            argumentCount, arguments, 0, nullptr, 0, stackPointer);
+            argumentCount, arguments, 0, nullptr, 0, stackPointer, &result);
     }
     if (error != ElfLoadError::None ||
         Thread::createUser(task, result.entryPoint, stackPointer, 0,
@@ -255,7 +274,7 @@ TaskReference UserProgramLoader::loadImage(
     uint64_t standardInputHandle, uint64_t standardOutputHandle,
     uint64_t standardErrorHandle, uint32_t argumentCount,
     const char* const* arguments, const ElfSharedImage* sharedImages,
-    uint32_t sharedImageCount, ElfLoadError* loadError, os::ServiceRole serviceRole) {
+    uint32_t sharedImageCount, ElfLoadError* loadError, os::ServiceRole serviceRole, bool newSession) {
     if (loadError != nullptr) {
         *loadError = ElfLoadError::None;
     }
@@ -291,7 +310,7 @@ TaskReference UserProgramLoader::loadImage(
     }
     const uint64_t standardHandles[] = {
         standardInputHandle, standardOutputHandle, standardErrorHandle};
-    bool hasPtyStandardHandle = false;
+    bool hasPtyStandardHandle = newSession;
     for (uint32_t index = 0; index < 3; ++index) {
         if (standardHandles[index] == 0) {
             continue;
@@ -302,9 +321,7 @@ TaskReference UserProgramLoader::loadImage(
         source->handles().inspect(standardHandles[index], &standardObject,
                                   &standardType, &standardRights);
         const uint64_t childHandle =
-            Pipe::duplicateHandle(*source, *task, standardHandles[index]);
-        hasPtyStandardHandle =
-            hasPtyStandardHandle || standardType == HandleType::Channel;
+            standardType == HandleType::Endpoint ? Endpoint::duplicateHandle(source, task, standardHandles[index]) : 0;
         if (childHandle == 0) {
             task->destroy();
             if (loadError != nullptr) {
@@ -336,7 +353,7 @@ TaskReference UserProgramLoader::loadImage(
     if (error == ElfLoadError::None) {
         error = UserProgramLoader::buildStack(
             task->addressSpace().rootPhysicalAddress(), name, argumentCount,
-            arguments, 0, nullptr, 0, stackPointer);
+            arguments, 0, nullptr, 0, stackPointer, &result);
     }
     if (error != ElfLoadError::None ||
         Thread::createUser(task, result.entryPoint, stackPointer) == nullptr) {

@@ -4,6 +4,7 @@ ENTRY(_start)
 
 PHDRS
 {
+    interp PT_INTERP FLAGS(4);
     text PT_LOAD FLAGS(5);
     data PT_LOAD FLAGS(6);
     dynamic PT_DYNAMIC FLAGS(6);
@@ -12,6 +13,7 @@ PHDRS
 SECTIONS
 {
     . = 0x400000;
+    .interp : { *(.interp) } :text :interp
     .text :
     {
         *(.text.start)
@@ -68,6 +70,5 @@ SECTIONS
         *(.comment)
         *(.eh_frame)
         *(.note.GNU-stack)
-        *(.interp)
     }
 }

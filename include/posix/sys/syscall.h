@@ -7,7 +7,6 @@
 #define SYS_exit OS_SYS_EXIT_TASK
 #define SYS_exit_group OS_SYS_EXIT_TASK
 #define SYS_sched_yield OS_SYS_YIELD
-#define SYS_gettid OS_SYS_GET_THREAD_ID
 #define SYS_fork OS_SYS_FORK_TASK
 #define SYS_munmap OS_SYS_UNMAP_MEMORY
 #define SYS_mprotect OS_SYS_PROTECT_MEMORY

@@ -1,6 +1,5 @@
 #include "shgetc.h"
 #include "floatscan.h"
-#include "shgetc.h"
 #include <wchar.h>
 #include <wctype.h>
 

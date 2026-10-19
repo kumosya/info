@@ -14,9 +14,12 @@ int main(int argc, char** argv) {
     const int status = os::UserClient::request(os::UserOperation::Sudo, credentials, profile);
     coreutils::erase(&credentials, sizeof(credentials));
     if (status) { fputs("sudo: authentication failed or user is not in /etc/sudoers\n", stderr); return 1; }
+    os::UserProfile root{};
+    if (!coreutils::account(0, root) || !coreutils::SessionEnvironment::apply(root, true, false)) {
+        fputs("sudo: cannot initialize root environment\n", stderr); return 1;
+    }
     setenv("SUDO_USER", profile.name, 1);
     char id[24]; snprintf(id, sizeof(id), "%u", profile.uid); setenv("SUDO_UID", id, 1);
-    setenv("USER", "root", 1); setenv("HOME", "/root", 1);
     if (strchr(argv[1], '/')) { execve(argv[1], argv + 1, environ); perror(argv[1]); return 1; }
     const char* directories[] = {"/usr/sbin", "/usr/bin", "/sbin", "/bin"};
     char path[384]; struct stat file{};

@@ -4,7 +4,6 @@
 #include <stddef.h>
 struct posix_typed_mem_info { size_t posix_tmi_length; };
 
-#include <stddef.h>
 #include <sys/types.h>
 
 #define PROT_NONE 0

@@ -38,13 +38,14 @@ PageTable* allocateTable() {
     return table;
 }
 
-PageTable* getOrCreateTable(PageTable* parent, uint64_t index, uint64_t flags) {
+PageTable* getOrCreateTable(PageTable* parent, uint64_t index, uint64_t flags, uint64_t owner = 0) {
     uint64_t& entry = parent->entries[index];
     if ((entry & kernel::pagePresent) == 0) {
         PageTable* table = allocateTable();
         if (table == nullptr) {
             return nullptr;
         }
+        if (owner) kernel::memory::assignPhysicalPageOwner(getTablePhysicalAddress(table), owner);
         entry = getTablePhysicalAddress(table) | kernel::pagePresent |
                 kernel::pageWritable;
     }
@@ -94,12 +95,14 @@ bool mapPageLocked(uint64_t rootPhysicalAddress, uint64_t virtualAddress,
     const uint64_t pdptIndex = (virtualAddress >> 30) & 0x1ff;
     const uint64_t pdIndex   = (virtualAddress >> 21) & 0x1ff;
     const uint64_t ptIndex   = (virtualAddress >> 12) & 0x1ff;
+    kernel::memory::PhysicalPageInfo rootInfo{};
+    kernel::memory::queryPhysicalPage(rootPhysicalAddress, rootInfo);
     PageTable* pml4          = getTable(rootPhysicalAddress);
-    PageTable* pdpt          = getOrCreateTable(pml4, pml4Index, flags);
+    PageTable* pdpt          = getOrCreateTable(pml4, pml4Index, flags, rootInfo.owner);
     if (pdpt == nullptr || (pdpt->entries[pdptIndex] & (1ULL << 7)) != 0) {
         return false;
     }
-    PageTable* pd = getOrCreateTable(pdpt, pdptIndex, flags);
+    PageTable* pd = getOrCreateTable(pdpt, pdptIndex, flags, rootInfo.owner);
     if (pd == nullptr) {
         return false;
     }
@@ -108,13 +111,15 @@ bool mapPageLocked(uint64_t rootPhysicalAddress, uint64_t virtualAddress,
         (pd->entries[pdIndex] & (1ULL << 7)) != 0) {
         pt = splitLargePage(pd, pdIndex);
     } else {
-        pt = getOrCreateTable(pd, pdIndex, flags);
+        pt = getOrCreateTable(pd, pdIndex, flags, rootInfo.owner);
     }
     if (pt == nullptr || (pt->entries[ptIndex] & kernel::pagePresent) != 0) {
         return false;
     }
     pt->entries[ptIndex] =
         (physicalAddress & pageMask) | flags | kernel::pagePresent;
+    if (rootInfo.owner && (flags & kernel::pageUser) && !(flags & kernel::pageExternal))
+        kernel::memory::assignPhysicalPageOwner(physicalAddress, rootInfo.owner);
     return true;
 }
 
@@ -164,7 +169,7 @@ bool protectPageLocked(uint64_t rootPhysicalAddress, uint64_t virtualAddress,
     PageTable* pt   = getTable(pd->entries[pdIndex]);
     uint64_t& entry = pt->entries[ptIndex];
     if ((entry & kernel::pagePresent) == 0) return false;
-    const uint64_t preserved = entry & (pageMask | kernel::pageExternal);
+    const uint64_t preserved = entry & (pageMask | kernel::pageExternal | (1ULL << 5) | (1ULL << 6));
     entry                    = preserved | flags | kernel::pagePresent;
     return true;
 }

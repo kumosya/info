@@ -1,56 +1,11 @@
-# init 服务（src/init/）
+# init 与服务管理
 
-init 是第一个用户进程（由内核 `UserProgramLoader::startInitial` 加载），职责：
+src/init/main.cc 的 InitSupervisor 和 src/init/service_manager.h 的 ServiceManager 运行于 Ring 3。注册表线程使用 64 KiB 栈，避免大 IPC 消息和管理记录造成栈溢出。
 
-1. 运行**服务注册表**（service registry）；
-2. 按顺序启动全部内置服务与磁盘服务；
-3. 启动终端会话。
+ServiceManager 提供 Register、Lookup、Unregister；名字 24 字节，容量 64。每条记录保存发布者、内核角色、UID、访问策略、端点及 generation。注册保护名要求固定 ServiceRole；替换活动服务要求同一发布者，注销验证发布者及当前 generation。Lookup 仅传递 Write 句柄。
 
-授予能力：`taskCapabilitySpawn`。
+注册表每 50 ms 检查端点与发布者状态。服务死亡时关闭缓存端点并增加 generation。InitSupervisor 每秒检查 boot 服务，重启已退出服务，并回收已退出子进程。
 
-## 1. 服务注册表
+引导时先发布驻留对象名称，再依次启动 pci、task、device、storage、fs、mm、users、tty、console、guiw。所有特权服务从固定 boot 模块启动。GUI 终端和六个文本 shell 是普通磁盘程序。完整依赖图见[架构](../x86-64/architecture.md)。
 
-注册表是 init 进程内的一个专用线程（`registryMain`），监听独立端点。容量 12 条记录：
-
-```cpp
-struct ServiceRecord { char name[24]; uint64_t endpoint; };
-```
-
-请求类型（`os::RegistryRequest`）：
-
-| 请求 | 值 | 语义 |
-|---|---|---|
-| Register | 1 | `handleCount == 1`；把 `handles[0]`（服务端点）与 `data` 中的名字关联；同名重复注册替换端点；容量满则失败。回复 `data[0]=0` |
-| Lookup | 2 | 按名字查找；成功 `data[0]=0` 且 `handles[0]` 回传端点；失败 `data[0]=1` |
-| 其他 | — | 回复 `data[0]=2` |
-
-启动后调用 `os::setServiceRegistry` 公布注册表端点；其他服务通过引导句柄（bootstrap handle）找到它。
-
-## 2. 启动流程（`userMain`）
-
-1. `createEndpoint` 创建注册表端点；在 `0x70000000` 映射 4 页栈，`createThread(registryMain)` 启动注册表线程。
-2. 先启动内置 `ProgramId::PciServer`，等待 `pci` 注册，再依次启动其他内置服务（均接收注册表端点）：
-   - `ProgramId::TaskServer`
-   - `ProgramId::DeviceServer`
-   - `ProgramId::StorageServer`
-   - `ProgramId::FsServer`
-3. `lookupService("fs", 30000)` 等待 fs 服务注册（最多 30000 次重试）。
-4. 从磁盘启动（`os::execute`）：
-   - `/sbin/sys/tty.elf`
-   - `/sbin/sys/console.elf`
-   - `/sbin/sys/guiw.elf`（guiw 软件包）
-   - `/usr/bin/terminal`（GUI 终端）
-5. `switchTerminal(os::graphicalTerminalId)`（=6，即 tty7 图形会话）。
-6. 为 tty1-6（`os::textTerminalCount = 6`）各启动 `/bin/sh`，参数 `--os-terminal=N`（N=1..6）。
-7. 进入 `sleep(1000)` 无限循环保活。
-
-## 3. 失败码
-
-| 返回码 | 含义 |
-|---|---|
-| 1 | 注册表端点/线程创建失败 |
-| 2 | 核心内置服务启动失败 |
-| 3 | fs 服务发现失败 |
-| 4 / 5 / 6 | tty 或 console / guiw / terminal 启动失败 |
-| 7 | 图形终端切换失败 |
-| 8 | TTY shell 启动失败 |
+重启后的端点重新注册，旧客户端明确得到端点或对端死亡错误；下次操作重新发现。共享业务状态（例如 MM 旧 VMA、FS 打开描述符或驱动 DMA 状态）不能仅凭重新注册自动恢复，具体限制由各服务负责。

@@ -96,7 +96,7 @@ namespace kernel::cpu {
 | 4 | 0x20 | 用户代码（DPL 3） | 0xfa / 0x0a |
 | 5-6 | 0x28 | 64 位 TSS（类型 0x89，占两槽） | — |
 
-注意用户数据段在用户代码段之前，这是 `SYSCALL/SYSRET` 的要求（SYSRET 从 STAR 的用户基址推导段选择子，见 [syscall.md](task/syscall.md)）。
+注意用户数据段在用户代码段之前，这是 `SYSCALL/SYSRET` 的要求（SYSRET 从 STAR 的用户基址推导段选择子，见 [syscall.md](../task/syscall.md)）。
 
 TSS（104 字节，`[[gnu::packed]]`）：
 
@@ -247,7 +247,7 @@ void unregisterHandler(uint8_t vector);
 extern "C" void interruptDispatch(interrupt::Context* context);
 ```
 
-1. **向量 0x80**：系统服务快速通道——校验当前进程为 `systemService` 且来自内核态，直接调用 `syscall::dispatchSyscall`，不经过 SYSCALL 路径。
+1. 内核机制直接调用具名类方法；中断分发没有系统服务 syscall 通道。
 2. `vector < 32` → `handleException`。
 3. 否则原子（ACQUIRE）读取处理函数并调用。
 4. **向量 `0xff`（虚假中断）不发 EOI**，其余 `localapic::sendEndOfInterrupt()`。
@@ -255,7 +255,7 @@ extern "C" void interruptDispatch(interrupt::Context* context);
 
 #### 异常处理 `handleException`
 
-- 向量 14 → 转 `handlePageFault`（见 [memory.md](memory/memory.md)）。
+- 向量 14 → 转 `handlePageFault`（见 [memory.md](../memory/memory.md)）。
 - 其余先打印 vector/error/rip。
 - **向量 3 且来自内核态**：直接返回（内核断点可恢复）。
 - 用户态异常 → `Thread::terminateCurrentFromException(-vector)`。

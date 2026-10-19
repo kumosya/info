@@ -2,12 +2,14 @@
 #include "kernel/interrupt.h"
 #include "kernel/serial.h"
 #include "kernel/thread.h"
+#include "kernel/mm.h"
 
 namespace kernel::interrupt {
 
 void handlePageFault(interrupt::Context* context) {
     uint64_t faultAddress;
     asm volatile("movq %%cr2, %0" : "=r"(faultAddress));
+    if ((context->cs & 3) && memory::PagerBridge::resolve(faultAddress, context->errorCode)) return;
     serial::serialWrite("[MEMORY] page fault address=");
     serial::serialWriteHex(faultAddress);
     serial::serialWrite(" error=");

@@ -4,25 +4,25 @@
 
 ## 1. 架构定位
 
-osinfo 运行在 x86-64 架构，采用微内核风格：
+osinfo 运行在 x86-64 架构，采用混合内核架构：
 
-- 内核直接提供：内存管理、线程/进程管理、调度、中断、系统调用、IPC 原语（端点/管道/双向通道/消息队列/共享内存）、信号、时间与设备访问控制。
-- 文件系统、终端、窗口、输入、存储等高层服务全部运行在用户态，通过端点 IPC 访问。
-- 用户态程序通过 80 个系统调用（`SYSCALL`/`SYSRET`，编号从 4096 起）进入内核。
+- 内核直接提供：内存管理、线程/进程管理、调度、中断、系统调用、Endpoint 传输与共享内存机制、信号、时间与设备访问控制。
+- 所有服务进程运行于 Ring3，包括文件系统、终端、窗口、设备、存储、MM、pipe 和 msgq；Ring0 保留 task.kernel、pci.kernel、device.kernel、memory.kernel 等底层机制对象，通过现有 IPC 访问。
+- 用户态程序通过 19 个系统调用（`SYSCALL`/`SYSRET`，编号从 1 起）进入内核。
 
 ## 2. 源码目录与文档对应
 
 | 源码目录                       | 内容                              | 文档                           |
 | -------------------------- | ------------------------------- | ---------------------------- |
 | `src/kernel/boot/`         | Multiboot2 引导、长模式进入             | [boot.md](boot.md)           |
-| `src/kernel/cpu/`          | CPU 初始化、GDT/TSS、Local APIC、ACPI | [cpu.md](cpu.md)             |
-| `src/kernel/cpu/smp/`      | 多核发现与 AP 启动                     | [smp.md](smp.md)             |
-| `src/kernel/cpu/interrupt/` | IDT、异常、I/O APIC                 | [cpu.md](cpu.md) §7          |
+| `src/kernel/cpu/`          | CPU 初始化、GDT/TSS、Local APIC、ACPI | [cpu.md](cpu/cpu.md)             |
+| `src/kernel/cpu/smp/`      | 多核发现与 AP 启动                     | [smp.md](cpu/smp.md)             |
+| `src/kernel/cpu/interrupt/` | IDT、异常、I/O APIC                 | [cpu.md](cpu/cpu.md) §7          |
 | `src/kernel/memory/`       | 物理页、页表、内核堆、缺页、共享内存          | [memory.md](memory/memory.md) |
 | `src/kernel/task/`         | 线程、进程、调度器、信号                    | [task.md](task/task.md)       |
 | `src/kernel/task/ipc/`     | 端点、管道、双向通道、消息队列                  | [ipc.md](task/ipc.md)         |
 | `src/kernel/task/sync/`    | 同步原语、用户态等待（futex）               | [sync.md](task/sync.md)       |
-| `src/kernel/task/syscall/` | 系统调用入口与全部 80 个调用               | [syscall.md](task/syscall.md) |
+| `src/kernel/task/syscall/` | 系统调用入口与19 个基础调用               | [syscall.md](task/syscall.md) |
 | `src/kernel/device/`       | 串口、时间、PCI、端口、显存、中断绑定          | [time.md](device/time.md)、[device.md](device/device.md) |
 | `src/kernel/user/`         | ELF 加载、动态链接、用户态启动、POSIX 桩    | [user.md](user.md)           |
 
@@ -51,7 +51,6 @@ osinfo 运行在 x86-64 架构，采用微内核风格：
 | `kernel::Thread` | 线程类（含静态工厂方法） |
 | `kernel::Task` | 进程类 |
 | `kernel::Endpoint` | IPC 端点类 |
-| `kernel::Pipe` | 匿名管道类 |
 | `kernel::Pipe` | 管道与通用双向通道 |
 | `kernel::MessageQueue` | 消息队列类 |
 | `kernel::SharedMemory` | 共享内存类 |
@@ -61,7 +60,7 @@ osinfo 运行在 x86-64 架构，采用微内核风格：
 | `kernel::CpuLocalData` | 每 CPU 数据类 |
 | `kernel::CpuDescriptor` | CPU 描述符类 |
 
-## 4. 关键全局约定
+## 4. 全局约定
 
 以下常量贯穿整个内核，各子系统共同遵守：
 
@@ -83,7 +82,7 @@ osinfo 运行在 x86-64 架构，采用微内核风格：
 | 虚假中断向量               | `0xff`               | Local APIC spurious，不发 EOI      |
 | 定时器中断向量              | `32`                 | Local APIC Timer，1 ms 周期        |
 | IRQ 中断向量基址           | `64`                 | IRQ 0-15 → 向量 64-79             |
-| 系统调用起始编号            | `4096`               | ExitTask = 4096，递增编号             |
+| 系统调用起始编号            | `1`               | SendMessage = 1，顺序见 syscall ABI             |
 
 ## 5. 启动初始化序列
 
@@ -117,7 +116,7 @@ osinfo 运行在 x86-64 架构，采用微内核风格：
 
 任何一步失败都会打印串口诊断并停机（`cli; hlt`）。
 
-## 6. 能力模型
+## 6. 能力
 
 进程通过能力位（`Task::capabilities_`）获得特权操作资格：
 
@@ -130,9 +129,9 @@ osinfo 运行在 x86-64 架构，采用微内核风格：
 
 能力由内核在加载内置服务时授予（见 [user.md](user.md)），或由 `SpawnImage` 的父进程传递（仅允许 Display 位）。
 
-## 7. 句柄模型
+## 7. 句柄
 
-内核对象（端点、进程、管道、双向通道、消息队列、共享内存、MMIO 区域、DMA 缓冲、中断绑定）通过每进程句柄表访问：
+内核对象（端点、进程、页对象、共享内存、MMIO 区域、DMA 缓冲、中断绑定）通过每进程句柄表访问：
 
 - 句柄是 64 位值：高 16 位 generation（防悬空），低 32 位为槽位号（从 1 起）。
 - 权限位：`handleRightRead = 1<<0`、`handleRightWrite = 1<<1`、`handleRightManage = 1<<2`。
@@ -141,7 +140,7 @@ osinfo 运行在 x86-64 架构，采用微内核风格：
 
 详见 [task.md](task/task.md) 的句柄表章节。
 
-## 8. 锁与并发约定
+## 8. 锁与并发
 
 - `SpinLock`：test-and-set + `pause` 自旋，单字节。
 - `InterruptSpinLockGuard`：关中断 + 加锁的 RAII 守卫。
@@ -158,3 +157,5 @@ osinfo 运行在 x86-64 架构，采用微内核风格：
 [BOOT] [CPU] [MEMORY] [SCHED] [SMP] [INTERRUPT] [IPC]
 [SYSCALL] [ELF] [USERLAND] [TIME] [DISPLAY] [SYNC]
 ```
+
+内核架构、服务启动依赖、RPC 状态与 SMP 回收时序见[混合内核架构](architecture.md)。

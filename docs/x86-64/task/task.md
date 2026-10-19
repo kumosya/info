@@ -106,7 +106,7 @@ class Thread {
 
 ### 创建与启动
 
-- 内核栈固定 **64 KiB**（`kernelStackSize`）；SystemService 栈 256 KiB；线程 ID 由全局原子计数器分配（从 1 起）。
+- 普通线程内核栈为 **64 KiB**（`kernelStackSize`）；固定 boot 服务的用户线程分配 256 KiB 内核栈；线程 ID 由全局原子计数器分配（从 1 起）。
 - `Thread::create(task, entryPoint, argument, type, makeRunnable)`：分配 Thread + 栈；构造初始栈帧（自栈顶向下：填充 0、`Thread::bootstrap` 返回地址、RFLAGS `0x202`、15 个零寄存器槽，与 `switchThreadContext` 弹出顺序匹配）；默认 `weight = schedule::getSchedulerWeight(0)`（1024）、`timeSlice = 4 ms`；`task->attachThread`；`makeRunnable` 且调度器已初始化则入队。
 - `Thread::createUser(task, entryPoint, userStackPointer, argument, initialStackSize)`：校验入口与栈指针在用户半区；复用 `create`（User 或 SystemService 类型），记录 `userStack`/`userArgument`。SystemService 类型时从用户空间复制初始栈到内核侧。
 - `Thread::createForkedUser(task, context, signalMask)`：fork 用；堆上复制 `SyscallContext` 并置 `rax = 0`（子进程返回 0）；以 Kernel 类型、入口 `forkedUserEntry` 创建，随后显式入队；`forkedUserEntry` 将线程类型置 User 后 `resumeUserContext` 直接进入用户态。
@@ -150,19 +150,19 @@ class AddressSpace {  // init/replaceRoot/rootPhysicalAddress/lock
 
 enum class HandleType : uint16_t {
     None, Endpoint, Task, MmioRegion, DmaBuffer,
-    InterruptBinding, Pipe, Channel, MessageQueue, SharedMemory
+    InterruptBinding, SharedMemory, PageObject
 };
 constexpr uint32_t handleRightRead   = 1U << 0;
 constexpr uint32_t handleRightWrite  = 1U << 1;
 constexpr uint32_t handleRightManage = 1U << 2;
 ```
 
-句柄编码：低 32 位 = 槽位索引 + 1，高 16 位 = generation（跳过 0）。`HandleTable` 接口：`init(capacity)`、`add`、`addAt`（fork 继承，指定句柄值）、`get`（校验类型与权限）、`inspect`/`inspectAt`、`close`、`closeAll`。支持动态增长（`growLocked`）。关闭时按类型分发对象释放：Pipe/Channel/MessageQueue/SharedMemory 调用各自的 `closeHandleObject`；Endpoint/Task 等不释放。每进程初始 64 槽。
+句柄编码：低 32 位 = 槽位索引 + 1，高 16 位 = generation（跳过 0）。`HandleTable` 接口：`init(capacity)`、`add`、`addAt`（fork 继承，指定句柄值）、`get`（校验类型与权限）、`inspect`/`inspectAt`、`close`、`closeAll`。支持动态增长（`growLocked`）。关闭时释放共享 Reference，最后一个引用再按类型释放对象；Task、Endpoint 和 PageObject 均有明确引用计数。dispose 释放 entries 数组并拒绝再次安装。每进程初始 64 槽。
 
 ### 进程创建与 fork/exec
 
 - `Task::create(name, parent)`：`memory::createAddressSpaceRoot` 建页表根 → 初始化（pid 原子分配、名字 ≤63 字符、句柄表 64 槽、继承父进程 pgid/sid 或等于自身 id）→ 挂入父进程 child 链表与全局进程链表。
-- `inheritForFork(parent)`：复制能力、引导句柄、3 个标准句柄、pgid/sid、全部信号动作；逐槽复制父进程句柄表（Endpoint/Pipe/Channel/MessageQueue/SharedMemory 用各自 duplicate，其余直接 `addAt`）。
+- `inheritForFork(parent)`：复制能力、引导句柄、3 个标准句柄、pgid/sid、全部信号动作；逐槽复制父进程句柄表（Endpoint/Pipe/Channel/MessageQueue/SharedMemory 用各自 duplicate，其余通过 copyTo 共享 Reference）。
 - `commitExec(newRoot, name, currentThread)`：杀死除调用线程外的所有线程；线程计数置 1；复位非 ignore 信号动作；换名；`replaceRoot` 换页表根；释放共享内存映射、切换地址空间、销毁旧根。
 - `waitForChild(pid, waiter, status, options, childId)`：pid 语义（-1 任意 / >0 指定 / 0 同组 / < -1 指定组）；options 位 1=NOHANG、2=UNTRACED、8=CONTINUED；status 编码：正常退出 `(exitCode & 0xff) << 8`、信号致死 `(-exitCode) & 0x7f`、停止 `(stopSignal << 8) | 0x7f`、继续 `0xffff`；返回 -1 无匹配 / 0 已回收 / 1 需阻塞 / 2 NOHANG 无事件。
 
@@ -180,13 +180,12 @@ class Task {
     void setSystemService(bool value);
     uint32_t terminalId() const;
     void setTerminalId(uint32_t value);
-    posix::FileTable* files();
 };
 ```
 
 - 凭据模型：uid/gid + effectiveUid/effectiveGid；`setCredentials` 支持仅修改 effective 版本。
-- 文件表：`posix::FileTable` 按需创建（首次 `files()` 调用时），原子 CAS 保证只创建一次。
-- 系统服务进程：`isSystemService` 标志，线程使用 SystemService 类型，通过 0x80 中断门进行快速系统调用。
+- POSIX 文件描述符表由 libc 与 fs 服务维护，不在 Task 中创建 FileTable。
+- 所有服务进程使用 User 线程在 Ring3 运行；SystemService 枚举是未启用的旧入口，boot 加载器始终设置 isSystemService=false。
 
 ### 线程与退出
 
@@ -351,3 +350,9 @@ class SignalAction {
 ```
 
 `handler` 取值：0 = 默认、1 = 忽略、>1 = 用户处理函数地址。
+
+TaskReference 为跨锁、跨阻塞路径持引用；Task 的退出状态保留到 wait 回收。destroy 将清理提交给专用内核 TaskReclaimer，队列持有独立 Task 引用，以 resourceState 防止重复提交；请求线程被杀或取消不影响清理完成。内核工作线程释放线程栈、HandleTable entries、映射引用和地址空间。wait 摘除子进程时，在父进程锁内先提交回收并转移引用，再从全局表移除；等待线程中途死亡也不会遗失回收责任。
+
+exec 的不可逆提交区禁止抢占但保持中断可用，保证已摘除线程和新地址空间的所有权交接完成；同时拒绝重复 exec 提交和对已终止进程重新开放线程创建。exec 与 destroy 先调用 quiesceTask 等待远端 CPU 实际离开旧 Task，再释放页表。fork 在子线程可运行前同步 Ring 3 MM 的 VMA 和 COW 页面状态；地址空间 generation 在 exec 时递增。
+
+make build/tests/kernel-lifecycle.elf 构建独立测试内核，配合 script/smoke-hybrid.py --lifecycle-test --memory-test --smp 4 运行。测试把目标线程固定在 CPU 1、操作线程固定在 CPU 2；包含清理请求发起者被杀、远端持续访问旧页表，以及 exec 提交中并发 kill。生产内核不包含该测试代码。

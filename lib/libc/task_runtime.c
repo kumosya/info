@@ -9,12 +9,7 @@
 #include "internal.h"
 
 #define LIBC_CHILD_CAPACITY 32
-#define LIBC_SHARED_IMAGE_COUNT 4
-
-static const char* const shared_image_paths[LIBC_SHARED_IMAGE_COUNT] = {
-    "/usr/lib/libos-c++.so",
-    "/usr/lib/libc.so",
-    "/usr/lib/libc++.so", "/usr/lib/libosgui-c++.so"};
+#define LIBC_SHARED_IMAGE_COUNT 1
 
 typedef struct ChildTask {
     uint64_t handle;
@@ -137,7 +132,7 @@ pid_t fork(void) {
 
 int execve(const char* path, char* const arguments[],
            char* const environment[]) {
-    enum { maximum_arguments = 64, maximum_environment = 16 };
+    enum { maximum_arguments = 64, maximum_environment = 64 };
     const uint64_t maximum_image_size = 8ULL * 1024 * 1024;
     char absolute[LIBC_PATH_CAPACITY];
     OsFileStat status;
@@ -152,6 +147,8 @@ int execve(const char* path, char* const arguments[],
     int environmentCount = 0;
     int result;
     int sharedIndex;
+    char interpreter[256];
+    int interpreterCount;
     if (path == NULL || arguments == NULL) {
         errno = EFAULT;
         return -1;
@@ -207,12 +204,14 @@ int execve(const char* path, char* const arguments[],
         errno = EIO;
         return -1;
     }
-    for (sharedIndex = 0; sharedIndex < LIBC_SHARED_IMAGE_COUNT;
+    interpreterCount = __libc_os_image_interpreter(image, status.size, interpreter, sizeof(interpreter));
+    if (interpreterCount < 0) { free(image); errno = ENOEXEC; return -1; }
+    for (sharedIndex = 0; sharedIndex < interpreterCount;
          ++sharedIndex) {
         OsFileStat sharedStatus;
         uint64_t sharedDescriptor;
         uint64_t sharedOffset = 0;
-        if (!__libc_os_stat_file(libcFsService(), shared_image_paths[sharedIndex],
+        if (!__libc_os_stat_file(libcFsService(), interpreter,
                           &sharedStatus) ||
             sharedStatus.type != OS_FILE_TYPE_FILE ||
             sharedStatus.size == 0 ||
@@ -221,7 +220,7 @@ int execve(const char* path, char* const arguments[],
         }
         sharedBuffers[sharedIndex] = malloc((size_t)sharedStatus.size);
         sharedDescriptor = __libc_os_open_file(
-            libcFsService(), shared_image_paths[sharedIndex]);
+            libcFsService(), interpreter);
         if (sharedBuffers[sharedIndex] == NULL || sharedDescriptor == 0) {
             if (sharedDescriptor != 0) {
                 __libc_os_close_file(libcFsService(), sharedDescriptor);
@@ -240,9 +239,9 @@ int execve(const char* path, char* const arguments[],
         if (sharedOffset != sharedStatus.size) break;
         sharedImages[sharedIndex].image = sharedBuffers[sharedIndex];
         sharedImages[sharedIndex].imageSize = sharedStatus.size;
-        sharedImages[sharedIndex].name = shared_image_paths[sharedIndex];
+        sharedImages[sharedIndex].name = interpreter;
     }
-    if (sharedIndex != LIBC_SHARED_IMAGE_COUNT) {
+    if (sharedIndex != interpreterCount) {
         int cleanup;
         for (cleanup = 0; cleanup < LIBC_SHARED_IMAGE_COUNT; ++cleanup) {
             free(sharedBuffers[cleanup]);
@@ -261,7 +260,7 @@ int execve(const char* path, char* const arguments[],
     info.environment = (const char* const*)environment;
     info.runtimeState = &runtimeState;
     info.runtimeStateSize = sizeof(runtimeState);
-    info.sharedImageCount = LIBC_SHARED_IMAGE_COUNT;
+    info.sharedImageCount = interpreterCount;
     info.sharedReserved = 0;
     info.sharedImages = sharedImages;
     result = __libc_os_replace_task_image(&info);

@@ -9,31 +9,31 @@
 #include "os/service.h"
 #include "os/users.h"
 #include "password.h"
+#include "sessions.h"
 
 namespace users {
 class UserService {
    public:
     bool init() {
-        if (!load()) return false;
-        mkdir("/etc/inpkg", 0755); mkdir("/etc/inpkg/system", 0755);
+        if (!load()) { os::System::log("[USERS] cannot load account database\n"); return false; }
+        if (!directories_.initialize()) { os::System::log("[USERS] cannot initialize system directories\n"); return false; }
         for (uint32_t i = 0; i < count_; ++i) {
-            char path[128]; snprintf(path, sizeof(path), "/etc/inpkg/%s", accounts_[i].profile.name);
-            mkdir(path, 0700); chown(path, accounts_[i].profile.uid, accounts_[i].profile.gid);
-            const char* suffixes[] = {"", "/app", "/app/bin", "/app/lib", "/app/include"};
-            for (const char* suffix : suffixes) {
-                snprintf(path, sizeof(path), "%s%s", accounts_[i].profile.home, suffix);
-                mkdir(path, *suffix ? 0755 : accounts_[i].profile.uid ? 0755 : 0700);
-                chown(path, accounts_[i].profile.uid, accounts_[i].profile.gid);
+            if (!directories_.prepare(accounts_[i].profile)) {
+                os::System::log("[USERS] cannot prepare home: ");
+                os::System::log(accounts_[i].profile.home);
+                os::System::log("\n");
+                return false;
             }
         }
-        endpoint_ = os::createEndpoint();
+        endpoint_ = os::Endpoint::create();
         return endpoint_ && os::ServiceRegistry::registerService(os::ServiceRegistry::serviceRegistry(), "users", endpoint_);
     }
     void run() {
         os::System::log("[USERS] account and authentication service started\n");
         while (true) {
+            sessions_.sweep();
             os::IpcMessage request{}, reply{};
-            if (os::receiveMessage(endpoint_, request)) continue;
+            if (os::receiveMessage(endpoint_, request, os::Clock::getMonotonicTime() + 100000000ULL)) continue;
             reply.data[0] = 1; reply.length = 1;
             if (request.length >= (sizeof(os::UserCredentials) + 7) / 8) handle(request, reply);
             os::replyMessage(endpoint_, request.replyToken, reply);
@@ -143,6 +143,10 @@ class UserService {
             if (!Password::verify(input.password, account->hash) ||
                 os::Process::setCredentials( request.senderPid,
                                  account->profile.uid, account->profile.gid)) return;
+            if (!sessions_.begin(request.senderPid, account->profile)) return;
+        } else if (operation == os::UserOperation::BeginSession) {
+            if (caller.effectiveUid != account->profile.uid ||
+                !sessions_.begin(request.senderPid, account->profile)) return;
         } else if (operation == os::UserOperation::Sudo) {
             account = find("", caller.uid);
             if (!account || !allowedSudo(*account) || (caller.effectiveUid != 0 && !Password::verify(input.password, account->hash)) ||
@@ -164,6 +168,8 @@ class UserService {
         Password::erase(&input, sizeof(input));
     }
     Account accounts_[32]{};
+    DirectoryManager directories_;
+    SessionManager sessions_{directories_};
     uint32_t count_ = 0;
     uint64_t endpoint_ = 0, saltCounter_ = 0;
 };

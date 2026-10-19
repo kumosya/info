@@ -56,7 +56,7 @@ void respond(const os::IpcMessage& request, os::IpcMessage& reply) {
 
 int run() {
     const uint64_t registry = os::getBootstrapHandle();
-    endpoint = os::createEndpoint();
+    endpoint = os::Endpoint::create();
     if (registry == 0 || endpoint == 0 ||
         !os::ServiceRegistry::registerService(registry, os::pciServiceName, endpoint)) {
         os::System::log("[PCI] service registration failed\n");
