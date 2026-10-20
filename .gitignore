@@ -40,9 +40,9 @@
 # debug information files
 *.dwo
 
-.VSCodeCounter/*
-.vscode/*
-docs/prompts/*
-build/*
-obj/*
-config/*
+/.VSCodeCounter/*
+/.vscode/*
+/docs/prompts/*
+/build/*
+/obj/*
+/config/*
