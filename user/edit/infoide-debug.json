@@ -1,0 +1,14 @@
+{
+  "boot": "disk",
+  "disk_template": "",
+  "iso_template": "",
+  "disk_image": "osinfo.img",
+  "iso_image": "osinfo.iso",
+  "qemu": "qemu-system-x86_64",
+  "memory_mb": 512,
+  "cpus": 4,
+  "display": "gtk",
+  "serial": "stdio",
+  "gdb_port": 1234,
+  "wait_for_gdb": true
+}

@@ -5,6 +5,8 @@
 #include "os/protocol.h"
 #include "os/service.h"
 #include "os/terminal.h"
+#include "os/pty.h"
+#include "../service/lifecycle.h"
 
 namespace {
 class TaskServer {
@@ -12,95 +14,35 @@ class TaskServer {
 
 
 static constexpr uint32_t maximumArgumentCount  = 64;
-static constexpr uint32_t executePayloadSize    = 7 * sizeof(uint64_t);
+static constexpr uint32_t executePayloadSize    = (os::ipcDataWordCount - 1) * sizeof(uint64_t);
 static constexpr uint64_t maximumExecutableSize = 8ULL * 1024 * 1024;
 static constexpr uint32_t sharedImageCount = 1;
-static constexpr uint32_t taskRecordCapacity = 64;
+
 static constexpr uint32_t executableReadWindow  = 8;
 
-struct TaskRecord {
-    uint64_t handle;
-    uint64_t id;
-    char name[48];
-};
-
-TaskRecord taskRecords[taskRecordCapacity];
 uint64_t executableCompletionEndpoint;
-
-void reapTaskRecords() {
-    for (TaskRecord& record : taskRecords) {
-        if (record.handle == 0) continue;
-        os::TaskInfo info{};
-        if (os::Process::getTaskInfo(record.handle, info) != 0 || info.state == 2) {
-            os::closeHandle(record.handle);
-            record = {};
-        }
-    }
-}
-
-void trackTask(uint64_t handle, const char* name) {
-    reapTaskRecords();
-    os::TaskInfo info{};
-    if (handle == 0 || os::Process::getTaskInfo(handle, info) != 0) return;
-    for (TaskRecord& record : taskRecords) {
-        if (record.handle == 0) {
-            record.handle = handle;
-            record.id = info.id;
-            os::Runtime::copyString(record.name, name, sizeof(record.name));
-            return;
-        }
-    }
-}
-
-bool listTask(uint32_t requested, os::IpcMessage& reply) {
-    reapTaskRecords();
-    uint32_t visible = 0;
-    for (TaskRecord& record : taskRecords) {
-        if (record.handle == 0) continue;
-        os::TaskInfo info{};
-        if (os::Process::getTaskInfo(record.handle, info) != 0) continue;
-        if (visible++ != requested) continue;
-        reply.data[0] = 0;
-        reply.data[1] = info.id;
-        reply.data[2] = info.state;
-        os::Runtime::copyString(reinterpret_cast<char*>(&reply.data[3]), record.name,
-                       6 * sizeof(uint64_t));
-        reply.length = 9;
-        return true;
-    }
-    reply.data[0] = 1;
-    return false;
-}
-
-bool killTask(uint64_t taskId) {
-    reapTaskRecords();
-    for (TaskRecord& record : taskRecords) {
-        if (record.handle != 0 && record.id == taskId) {
-            return os::Process::terminateTask(record.handle, -15) == 0;
-        }
-    }
-    return false;
-}
 
 bool parseArguments(const os::IpcMessage& request, const char*& path,
                     const char* (&arguments)[maximumArgumentCount],
                     uint32_t& argumentCount) {
     argumentCount = static_cast<uint32_t>(request.data[0]);
+    if (request.length < 2 || request.length > os::ipcDataWordCount) return false;
     if (argumentCount == 0 || argumentCount > maximumArgumentCount) {
         return false;
     }
     const char* payload = reinterpret_cast<const char*>(&request.data[1]);
+    const uint32_t payloadSize = (request.length - 1) * sizeof(uint64_t);
     const char* values[maximumArgumentCount + 1]{};
     uint32_t offset = 0;
     for (uint32_t index = 0; index <= argumentCount; ++index) {
-        if (offset >= executePayloadSize) {
+        if (offset >= payloadSize) {
             return false;
         }
         values[index] = payload + offset;
-        while (offset < executePayloadSize && payload[offset] != '\0') {
+        while (offset < payloadSize && payload[offset] != '\0') {
             ++offset;
         }
-        if (offset == executePayloadSize) {
+        if (offset == payloadSize) {
             return false;
         }
         ++offset;
@@ -185,7 +127,7 @@ uint64_t loadAndSpawn(uint64_t fs, const char* path, uint64_t bootstrap,
                       uint64_t standardInput, uint64_t standardOutput,
                       uint64_t standardError, uint32_t argumentCount,
                       const char* const* arguments,
-                      uint64_t parentTaskId) {
+                      uint64_t parentTaskId, bool managed) {
     os::File stat(fs);
     if (!(stat.refresh(path) == 0) || stat.getType() != os::FileType::File ||
         stat.getSize() == 0 || stat.getSize() > maximumExecutableSize) {
@@ -243,13 +185,32 @@ uint64_t loadAndSpawn(uint64_t fs, const char* path, uint64_t bootstrap,
         info.standardOutputHandle = standardOutput;
         info.standardErrorHandle = standardError;
         info.capabilities = 0;
-        if (standardInput && os::Pipe::getChannelIdentity(standardInput)) info.flags = os::spawnFlagNewSession;
+        if (managed) {
+            info.flags |= os::spawnFlagManagedService;
+            if (os::Runtime::stringsEqual(path, "/sbin/sys/users.elf")) { info.serviceRole = static_cast<uint32_t>(os::ServiceRole::Users); }
+            else if (os::Runtime::stringsEqual(path, "/sbin/sys/tty.elf")) info.serviceRole = static_cast<uint32_t>(os::ServiceRole::Tty);
+            else if (os::Runtime::stringsEqual(path, "/sbin/sys/console.elf")) { info.serviceRole = static_cast<uint32_t>(os::ServiceRole::Console); }
+            else if (os::Runtime::stringsEqual(path, "/sbin/sys/guiw.elf")) { info.serviceRole = static_cast<uint32_t>(os::ServiceRole::Window); }
+        }
+        os::TaskInfo parentInfo{};
+        const bool parentValid = os::Task::query(parentTaskId, parentInfo) == 0;
+        uint32_t pty = 0;
+        if (!parentInfo.terminalKind && standardInput && os::Pty::getPtyNumber(standardInput, pty)) {
+            info.flags |= os::spawnFlagNewSession;
+            info.terminalKind = 2; info.terminalIndex = pty;
+        }
+        if (!managed && !parentInfo.terminalKind && parentInfo.serviceRole == static_cast<uint32_t>(os::ServiceRole::Init)) {
+            for (uint32_t i = 0; i < argumentCount; ++i) if (isTerminalArgument(arguments[i]) &&
+                arguments[i][14] >= '1' && arguments[i][14] <= '7' && !arguments[i][15]) {
+                info.flags |= os::spawnFlagNewSession; info.terminalKind = 1; info.terminalIndex = arguments[i][14] - '1';
+            }
+        }
         info.parentTaskId = parentTaskId;
         info.argumentCount = argumentCount;
         info.arguments = arguments;
         info.sharedImageCount = imagesToRead;
         info.sharedImages = imagesToRead == 0 ? nullptr : sharedImages;
-        const int64_t result = static_cast<int64_t>(os::Process::spawnImage(info));
+        const int64_t result = parentValid ? static_cast<int64_t>(os::Task::spawnImage(info)) : -1;
         if (result > 0) {
             task = static_cast<uint64_t>(result);
         } else {
@@ -276,6 +237,8 @@ uint64_t loadAndSpawn(uint64_t fs, const char* path, uint64_t bootstrap,
 int run() {
     os::System::log("[TASK] Task Server started in Ring 3\n");
     const uint64_t registry = os::getBootstrapHandle();
+    static services::Lifecycle children;
+    if (!children.initialize("task", registry) || !children.bootstrap() || !children.supervise()) return 1;
     const uint64_t endpoint = os::Endpoint::create();
     executableCompletionEndpoint = os::Endpoint::create();
     if (registry == 0 || endpoint == 0 ||
@@ -291,32 +254,17 @@ int run() {
             continue;
         }
         os::IpcMessage reply{};
-        const bool spawnRequest =
-            request.type == static_cast<uint64_t>(os::TaskRequest::Spawn);
-        const bool executeRequest =
-            request.type == static_cast<uint64_t>(os::TaskRequest::Execute);
-        const uint64_t bootstrap =
-            (spawnRequest || executeRequest) && request.handleCount >= 1
-                ? request.handles[0]
-                : 0;
-        if (request.type == static_cast<uint64_t>(os::TaskRequest::Spawn)) {
-            const int64_t result = static_cast<int64_t>(os::Process::spawnProgram(
-                static_cast<os::ProgramId>(request.data[0]), bootstrap));
-            const uint64_t task =
-                result > 0 ? static_cast<uint64_t>(result) : 0;
-            trackTask(task, "system-service");
-            reply.data[0] = task == 0 ? 1 : 0;
-            if (task != 0) {
-                reply.handleCount = 1;
-                reply.handles[0]  = task;
-            }
-        } else if (request.type ==
-                   static_cast<uint64_t>(os::TaskRequest::Execute)) {
+        const bool serviceRequest = request.type == static_cast<uint64_t>(os::TaskRequest::ExecuteService);
+        const bool executeRequest = serviceRequest || request.type == static_cast<uint64_t>(os::TaskRequest::Execute);
+        const uint64_t bootstrap = executeRequest && request.handleCount ? request.handles[0] : 0;
+        if (executeRequest) {
             const char* arguments[maximumArgumentCount]{};
             const char* path       = nullptr;
             uint32_t argumentCount = 0;
             bool valid =
                 parseArguments(request, path, arguments, argumentCount);
+            os::TaskInfo caller{};
+            if (serviceRequest && (os::Task::query(request.senderPid, caller) || caller.serviceRole != static_cast<uint32_t>(os::ServiceRole::Init))) valid = false;
             const uint32_t encodedTerminal =
                 static_cast<uint32_t>((request.data[0] >> 32) & 0xffU);
             uint32_t handleIndex    = 1;
@@ -373,14 +321,8 @@ int run() {
                 valid && fs != 0
                     ? loadAndSpawn(fs, path, bootstrap, standardInput,
                                    standardOutput, standardError, argumentCount,
-                                   arguments, request.senderPid)
+                                   arguments, request.senderPid, serviceRequest)
                     : 0;
-            for (uint32_t index = 0; index < request.handleCount; ++index) {
-                os::closeHandle(request.handles[index]);
-            }
-            if (task != 0) {
-                trackTask(task, programName(path));
-            }
             reply.data[0] = task == 0 ? 1 : 0;
             if (task != 0) {
                 reply.handleCount = 1;
@@ -390,21 +332,15 @@ int run() {
                        static_cast<uint64_t>(os::TaskRequest::Wait) &&
                    request.handleCount == 1) {
             int exitCode    = 0;
-            const int state = os::Process::getTaskState(request.handles[0], exitCode);
+            const int state = os::Task::getState(request.handles[0], exitCode);
             os::closeHandle(request.handles[0]);
             reply.data[0] = state < 0 ? 2 : static_cast<uint64_t>(state);
             reply.data[1] = static_cast<uint64_t>(exitCode);
             reply.length  = 2;
-        } else if (request.type ==
-                   static_cast<uint64_t>(os::TaskRequest::List)) {
-            listTask(static_cast<uint32_t>(request.data[0]), reply);
-        } else if (request.type ==
-                   static_cast<uint64_t>(os::TaskRequest::Kill)) {
-            reply.data[0] = killTask(request.data[0]) ? 0 : 1;
         } else {
             reply.data[0] = 3;
         }
-        if (spawnRequest || executeRequest) {
+        if (executeRequest) {
             for (uint32_t index = 0; index < request.handleCount; ++index) {
                 os::closeHandle(request.handles[index]);
             }
@@ -413,6 +349,7 @@ int run() {
             reply.length = 1;
         }
         os::replyMessage(endpoint, request.replyToken, reply);
+        for (uint32_t i = 0; i < reply.handleCount; ++i) os::closeHandle(reply.handles[i]);
     }
 }
 };

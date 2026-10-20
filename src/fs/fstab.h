@@ -1,6 +1,6 @@
 #pragma once
-#include <stddef.h>
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
 
 namespace vfs::server {
 struct MountSpec {

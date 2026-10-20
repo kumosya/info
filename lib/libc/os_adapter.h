@@ -25,6 +25,8 @@ typedef struct OsFileStat {
 typedef struct OsDirectoryEntry {
     uint64_t type;
     char name[256];
+    uint64_t inode;
+    uint64_t nextOffset;
 } OsDirectoryEntry;
 int __libc_os_rename_file(uint64_t fs, const char* existing, const char* newPath);
 
@@ -54,6 +56,13 @@ typedef struct OsTaskInfo {
     uint64_t parentId;
     uint32_t trustedDeviceService;
     uint32_t serviceRole;
+    uint64_t taskGroupId, sessionId;
+    uint64_t terminalForegroundGroup;
+    uint64_t startedNanoseconds, cpuNanoseconds;
+    uint32_t terminalKind, terminalIndex;
+    uint32_t commandLineSize;
+    uint32_t managedService;
+    char commandLine[384];
 } OsTaskInfo;
 
 typedef struct OsSignalAction {

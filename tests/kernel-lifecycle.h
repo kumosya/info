@@ -141,7 +141,47 @@ class TaskLifecycleTest {
     static void run() {
         require(smp::getOnlineCpuCount() >= 3, "requires at least three CPUs");
         interruptReclaimer();
+        joinedRecords();
         execAndKill();
+    }
+   private:
+    static void joinAnchor(void* argument) {
+        auto& scenario = *static_cast<Scenario*>(argument);
+        __atomic_store_n(&scenario.ready, 1U, __ATOMIC_RELEASE);
+        while (!__atomic_load_n(&scenario.release, __ATOMIC_ACQUIRE)) schedule::yieldThread();
+    }
+    static void joinedWorker(void*) { Thread::exitCurrent(37); }
+    static uint32_t records(Task& task) {
+        InterruptSpinLockGuard guard(task.lock_);
+        uint32_t count = 0;
+        for (auto* thread = task.threads_; thread; thread = thread->getTaskNext()) ++count;
+        return count;
+    }
+    static void joinedRecords() {
+        Task* target = Task::create("joined-workers", task::getCurrent());
+        require(target, "joined task");
+        Scenario anchor{};
+        launch(target, joinAnchor, anchor, 1);
+        await([&] { return __atomic_load_n(&anchor.ready, __ATOMIC_ACQUIRE); });
+        for (unsigned iteration = 0; iteration < 128; ++iteration) {
+            auto* thread = Thread::create(target, joinedWorker, nullptr, ThreadType::Kernel, false);
+            require(thread, "joined worker");
+            const uint64_t id = thread->getId();
+            thread->setCpuAffinity(1ULL << (1 + iteration % 2));
+            schedule::enqueueThread(thread);
+            int code = 0;
+            await([&] {
+                const int result = target->waitForThread(id, Thread::getCurrent(), code, true);
+                require(result == 0 || result == 2, "join result");
+                return result == 0;
+            });
+            require(code == 37, "join exit status");
+            require(target->waitForThread(id, Thread::getCurrent(), code, true) == -1, "join consumed once");
+            await([&] { return records(*target) == 1; });
+        }
+        __atomic_store_n(&anchor.release, 1U, __ATOMIC_RELEASE);
+        reap(target);
+        serial::serialWrite("[TASK TEST] joined thread records reclaimed (128 rounds)\n");
     }
 };
 }  // namespace kernel

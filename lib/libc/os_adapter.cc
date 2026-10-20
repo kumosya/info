@@ -9,9 +9,9 @@
 #include "os/service.h"
 #include "os/terminal.h"
 #include <new>
-#include <stdlib.h>
+#include <cstdlib>
 #include <sys/stat.h>
-#include <errno.h>
+#include <cerrno>
 extern "C" {
 #include "internal.h"
 }
@@ -57,6 +57,7 @@ ssize_t __libc_file_write(void* object,const void* data,size_t size) { return ob
 ssize_t __libc_file_pread(void* object,void* data,size_t size,off_t offset) { return object?static_cast<os::File*>(object)->pread(data,size,offset):-9; }
 ssize_t __libc_file_pwrite(void* object,const void* data,size_t size,off_t offset) { return object?static_cast<os::File*>(object)->pwrite(data,size,offset):-9; }
 off_t __libc_file_seek(void* object,off_t offset,int whence) { return object?static_cast<os::File*>(object)->lseek(offset,whence):-9; }
+int __libc_file_fsync(void* object) { return object?static_cast<os::File*>(object)->fsync():-9; }
 
 int __libc_file_stat(void* object, struct stat* result) {
     if (!object) return -EBADF;
@@ -252,7 +253,7 @@ uint64_t __libc_os_create_thread(void (*entry)(void*), void* argument,
 }
 int __libc_os_wait_thread(uint64_t threadId, int* exitCode, int noHang) {
     if (exitCode == nullptr) return -1;
-    return os::Process::waitThread(threadId, *exitCode, noHang != 0);
+    return os::Task::waitThread(threadId, *exitCode, noHang != 0);
 }
 int __libc_os_wait_address(volatile uint32_t* address, uint32_t expected) {
     return os::waitAddress(address, expected);
@@ -262,20 +263,20 @@ int __libc_os_wake_address(volatile uint32_t* address, uint32_t count) {
 }
 int __libc_os_set_signal_action(uint32_t signal, const OsSignalAction* action,
                          OsSignalAction* oldAction) {
-    return os::Process::setSignalAction(
+    return os::Task::setSignalAction(
         signal, reinterpret_cast<const os::SignalAction*>(action),
         reinterpret_cast<os::SignalAction*>(oldAction));
 }
 int __libc_os_set_signal_mask(int how, uint64_t mask, uint64_t* oldMask) {
     if (oldMask == nullptr) return -1;
-    return os::Process::setSignalMask(how, mask, *oldMask);
+    return os::Task::setSignalMask(how, mask, *oldMask);
 }
 int __libc_os_get_pending_signals(uint64_t* mask) {
     if (mask == nullptr) return -1;
-    return os::Process::getPendingSignals(*mask);
+    return os::Task::getPendingSignals(*mask);
 }
-int __libc_os_wait_signal(uint64_t mask) { return os::Process::waitSignal(mask); }
-void __libc_os_signal_return(void* frame) { os::Process::signalReturn(frame); }
+int __libc_os_wait_signal(uint64_t mask) { return os::Task::waitSignal(mask); }
+void __libc_os_signal_return(void* frame) { os::Task::signalReturn(frame); }
 uint64_t __libc_os_open_message_queue(const char* name, int flags,
                                uint32_t maximumMessages,
                                uint32_t messageSize) {
@@ -319,7 +320,7 @@ uint64_t __libc_os_map_shared_memory(uint64_t handle, uint64_t address,
     return os::Memory::mapSharedMemory(handle, address, size, offset, protection);
 }
 int __libc_os_send_thread_signal(uint64_t threadId, uint32_t signal) {
-    return os::Process::sendThreadSignal(threadId, signal);
+    return os::Task::sendThreadSignal(threadId, signal);
 }
 int __libc_os_register_message_queue_notification(uint64_t handle, int type,
                                            uint32_t signal) {
@@ -328,7 +329,7 @@ int __libc_os_register_message_queue_notification(uint64_t handle, int type,
 int64_t __libc_os_fork_task() { return os::forkTask(); }
 int64_t __libc_os_wait_child(int64_t taskId, int* status, int options) {
     if (status == nullptr) return -1;
-    return os::Process::waitChild(taskId, *status, options);
+    return os::Task::waitChild(taskId, *status, options);
 }
 int __libc_os_replace_task_image(const OsExecImageInfo* info) {
     if (info == nullptr) return -1;
@@ -341,16 +342,16 @@ int __libc_os_image_interpreter(const void* image, size_t size, char* path, size
 int __libc_os_query_task(uint64_t taskId, OsTaskInfo* info) {
     if (!info) return -1;
     os::TaskInfo value{};
-    const int result = os::Process::queryTask(taskId, value);
+    const int result = os::Task::query(taskId, value);
     if (!result) os::Runtime::copyBytes(info, &value, sizeof(value));
     return result;
 }
 int __libc_os_set_credentials(uint64_t taskId, uint32_t uid, uint32_t gid, int effectiveOnly) {
     if (effectiveOnly < 0 || effectiveOnly > 1) return -1;
-    return os::Process::setCredentials(taskId, uid, gid, effectiveOnly);
+    return os::Task::setCredentials(taskId, uid, gid, effectiveOnly);
 }
-uint64_t __libc_os_get_task_id() { return os::Process::getTaskId(); }
-uint64_t __libc_os_get_thread_id() { return os::Process::getThreadId(); }
+uint64_t __libc_os_get_task_id() { return os::Task::getId(); }
+uint64_t __libc_os_get_thread_id() { return os::Task::getThreadId(); }
 void __libc_os_exit_task(int status) { os::exitTask(status); }
 void* __libc_os_allocate_memory(size_t size) { return os::Memory::allocateMemory(size); }
 int __libc_os_free_memory(void* pointer) { return os::Memory::freeMemory(pointer); }
@@ -370,7 +371,7 @@ uint64_t __libc_os_get_clock_resolution() { return os::Clock::getClockResolution
 int __libc_os_get_task_identifiers(OsTaskIdentifiers* identifiers, uint64_t taskId) {
     if (identifiers == nullptr) return -1;
     os::TaskIdentifiers value{};
-    const int result = os::Process::getTaskIdentifiers(value, taskId);
+    const int result = os::Task::getIdentifiers(value, taskId);
     if (result == 0) {
         identifiers->parentId = value.parentId;
         identifiers->taskGroupId = value.taskGroupId;
@@ -380,32 +381,32 @@ int __libc_os_get_task_identifiers(OsTaskIdentifiers* identifiers, uint64_t task
 }
 
 int __libc_os_send_signal(uint64_t taskId, uint32_t signal) {
-    return os::Process::sendSignal(taskId, signal);
+    return os::Task::sendSignal(taskId, signal);
 }
 
 int __libc_os_set_task_group(uint64_t taskGroupId, uint64_t taskId) {
-    return os::Process::setTaskGroup(taskGroupId, taskId);
+    return os::Task::setGroup(taskGroupId, taskId);
 }
 
-int64_t __libc_os_create_session() { return os::Process::createSession(); }
+int64_t __libc_os_create_session() { return os::Task::createSession(); }
 
 uint64_t __libc_os_execute_task(const char* path, int argumentCount,
                             const char* const* arguments,
                             uint64_t standardInput,
                             uint64_t standardOutput,
                             uint64_t standardError) {
-    return os::Process::executeWithIo(path, argumentCount, arguments, standardInput,
+    return os::Task::executeWithIo(path, argumentCount, arguments, standardInput,
                              standardOutput, standardError);
 }
 
 int __libc_os_get_task_state(uint64_t handle, int* exitCode) {
     if (exitCode == nullptr) return -1;
-    return os::Process::getTaskState(handle, *exitCode);
+    return os::Task::getState(handle, *exitCode);
 }
 
 int __libc_os_get_task_info(uint64_t handle, OsTaskInfo* info) {
     if (info == nullptr) return -1;
-    return os::Process::getTaskInfo(handle,
+    return os::Task::getInfo(handle,
                               *reinterpret_cast<os::TaskInfo*>(info));
 }
 

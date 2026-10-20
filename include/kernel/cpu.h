@@ -5,7 +5,7 @@
 
 #ifndef __ASSEMBLER__
 
-#include <stdint.h>
+#include <cstdint>
 
 namespace kernel {
 

@@ -1,7 +1,7 @@
 #ifndef _OSGUI_FONT_H
 #define _OSGUI_FONT_H
 
-#include <stdint.h>
+#include <cstdint>
 
 namespace os {
 

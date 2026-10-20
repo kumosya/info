@@ -1,0 +1,5 @@
+# name|owner|enabled|executable|arguments(comma-separated or -)|requires|order|ready|timeout-ms|restart
+users|init|1|/sbin/sys/users.elf|-|fs,mm|10|users|30000|1
+tty|init|1|/sbin/sys/tty.elf|-|users|20|tty|30000|1
+console|init|1|/sbin/sys/console.elf|-|tty|30|console|30000|1
+guiw|init|1|/sbin/sys/guiw.elf|-|console|40|guiw|30000|1

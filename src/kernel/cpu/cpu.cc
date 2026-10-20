@@ -1,6 +1,6 @@
 #include "kernel/cpu.h"
 
-#include <stddef.h>
+#include <cstddef>
 
 #include "kernel/mm.h"
 #include "kernel/new.h"

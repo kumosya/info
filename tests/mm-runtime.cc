@@ -8,7 +8,7 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <signal.h>
+#include <csignal>
 
 class MemoryRuntimeTest {
     inline static volatile sig_atomic_t signalReceived_ = 0;
@@ -110,6 +110,7 @@ class MemoryRuntimeTest {
         return true;
     }
     static bool run() {
+        if (!boundaries()) return false;
         auto* data = static_cast<volatile unsigned char*>(mmap(nullptr, 12288, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
         if (!check(data != MAP_FAILED, "reserve lazy anonymous")) return false;
         if (!check(data[0] == 0 && data[8192] == 0, "zero-fill page faults")) return false;
@@ -164,6 +165,41 @@ class MemoryRuntimeTest {
         struct sigaction action{}; action.sa_handler = signalHandler; sigemptyset(&action.sa_mask);
         if (!check(sigaction(SIGUSR1, &action, nullptr) == 0 && kill(getpid(), SIGUSR1) == 0 && signalReceived_, "signal return through task service")) return false;
         os::System::log("[MM TEST] anonymous, protection, partial unmap, COW, shared, file and signal passed\n");
+        return true;
+    }
+    static bool boundaries() {
+        const int64_t denied = static_cast<int64_t>(os::ErrorCode::PermissionDenied);
+        if (!check(os::invokeSyscall(os::SyscallNumber::MapMemory, 0x72000000, 4096, 1, 0, 0, 1) == denied &&
+                   os::invokeSyscall(os::SyscallNumber::UnmapMemory, 0x72000000, 4096, 1) == denied &&
+                   os::invokeSyscall(os::SyscallNumber::ProtectMemory, 0x72000000, 4096, 1, 1) == denied &&
+                   os::Memory::protectTarget(0x72000000, 4096, OS_PROTECT_COPY_ON_WRITE) == denied,
+                   "mapping syscalls reject foreign targets and forged COW authority")) return false;
+        const uint64_t page = os::Memory::allocatePages(0, UINT16_MAX);
+        if (!check(static_cast<int64_t>(page) > 0 &&
+                   os::Memory::mapPages(page, 0x72000000, 4096, 0, 1) == 0x72000000,
+                   "page object mapping uses syscall")) return false;
+        auto* bytes = reinterpret_cast<volatile unsigned char*>(0x72000000);
+        bytes[0] = 67;
+        if (!check(bytes[0] == 67 && os::Memory::unmapTarget(0x72000000, 4096) == 0,
+                   "page object syscall mapping lifetime")) return false;
+        os::closeHandle(page);
+        os::IpcMessage request{}, reply{};
+        request.type = 3; request.length = 5;
+        if (!check(os::CoreServiceClient::result(os::CoreServiceKind::Memory, request, reply) < 0,
+                   "removed mapping RPC rejects its old operation number")) return false;
+        const char* files[] = {"/lib/version.1", "/etc/hostname"};
+        const char* nodes[] = {"/sys/kernel/osrelease", "/sys/kernel/hostname"};
+        for (unsigned i = 0; i < 2; ++i) {
+            const int source = open(files[i], O_RDONLY), node = open(nodes[i], O_RDONLY);
+            char expected[64]{}, actual[64]{};
+            const ssize_t size = source >= 0 ? read(source, expected, sizeof(expected)) : -1;
+            const ssize_t found = node >= 0 ? read(node, actual, sizeof(actual)) : -1;
+            close(source); close(node);
+            if (!check(size > 0 && size == found, "system metadata file sizes")) return false;
+            for (ssize_t j = 0; j < size; ++j)
+                if (!check(actual[j] == expected[j], "system metadata comes from configuration")) return false;
+        }
+        os::System::log("[SYSTEM TEST] configuration and mapping authority passed\n");
         return true;
     }
 };

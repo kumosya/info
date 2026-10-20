@@ -1,7 +1,7 @@
 #ifndef _OSGUI_GUI_H
 #define _OSGUI_GUI_H
 
-#include <stdint.h>
+#include <cstdint>
 
 #include "os/input.h"
 

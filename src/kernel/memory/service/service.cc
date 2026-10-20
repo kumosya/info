@@ -1,3 +1,4 @@
+#include "kernel/core_service.h"
 #include "kernel/mm.h"
 #include "kernel/ipc.h"
 #include "kernel/page.h"
@@ -20,7 +21,7 @@ class RequestData {
         auto* output = static_cast<uint8_t*>(destination); auto* input = static_cast<const uint8_t*>(source);
         for (size_t i = 0; i < size; ++i) output[i] = input[i];
     }
-    static bool authorized(Task& caller, uint64_t target) { return !target || target == caller.id() || caller.hasCapability(taskCapabilityMemory); }
+    static bool authorized(Task& caller, uint64_t target) { return !target || target == caller.id() || (caller.serviceRole() == os::ServiceRole::Memory && caller.hasCapability(taskCapabilityMemory)); }
 };
 }
 int MemoryService::call(Task& caller, const IpcMessage& request, IpcMessage& reply) {
@@ -55,17 +56,6 @@ int MemoryService::call(Task& caller, const IpcMessage& request, IpcMessage& rep
                 if (memory::getPhysicalAddressInAddressSpace(root, args[1] + offset)) { reply.data[1] = 0; break; }
             break;
         }
-        case os::MemoryOperation::MapSharedTarget: {
-            if (request.length < 6 || !RequestData::authorized(caller, args[5])) return -3;
-            auto target = task::find(args[5] ? args[5] : caller.id());
-            if (!target || target->isTerminated()) return -4;
-            const uint64_t copied = SharedMemory::duplicateHandle(caller, *target, args[0]);
-            if (!copied) return -2;
-            reply.data[0] = SharedMemory::map(*target, copied, args[1], args[2], args[3], args[4]);
-            target->handles().close(copied);
-            if (!reply.data[0]) return -1;
-            break;
-        }
         case os::MemoryOperation::Open:
             if (!RequestData::name(request, 5, name) || args[0] > UINT32_MAX) return -1;
             reply.data[0] = SharedMemory::open(caller, name, args[0]);
@@ -76,8 +66,6 @@ int MemoryService::call(Task& caller, const IpcMessage& request, IpcMessage& rep
             reply.data[0] = SharedMemory::unlink(name) ? 0 : -1; break;
         case os::MemoryOperation::Resize:
             reply.data[0] = SharedMemory::resize(caller, args[0], args[1]) ? 0 : -1; break;
-        case os::MemoryOperation::Map:
-            reply.data[0] = SharedMemory::map(caller, args[0], args[1], args[2], args[3], args[4]); break;
         case os::MemoryOperation::AllocatePages: {
             if (args[0] > 12 || args[1] > UINT16_MAX || !RequestData::authorized(caller, args[2])) return -3;
             if (args[1] != anyMemoryNode && args[1] >= MemoryTopology::nodeCount()) return -1;
@@ -88,18 +76,6 @@ int MemoryService::call(Task& caller, const IpcMessage& request, IpcMessage& rep
             const uint64_t handle = caller.handles().add(object, HandleType::PageObject, handleRightRead | handleRightWrite | handleRightManage);
             if (!handle) { object->release(); return -5; }
             reply.data[0] = handle; reply.handles[reply.handleCount++] = handle; break;
-        }
-        case os::MemoryOperation::MapPages: {
-            if (request.length < 6 || args[4] > 2 || !RequestData::authorized(caller, args[5])) return -3;
-            HandleTable::Pin pin(caller.handles(), args[0], HandleType::PageObject, handleRightRead | ((args[4] & 1) ? handleRightWrite : 0));
-            auto* object = pin.as<PageObject>(); if (!object) return -2;
-            auto target = task::find(args[5] ? args[5] : caller.id());
-            if (!target || target->isTerminated()) return -4;
-            void* inspected = nullptr; HandleType type = HandleType::None; uint32_t rights = 0;
-            if (!caller.handles().inspect(args[0], &inspected, &type, &rights) || inspected != object || type != HandleType::PageObject) return -2;
-            const uint64_t maximum = 2 | ((rights & handleRightWrite) ? 1 : 0);
-            if (!PageMappings::map(*target, *object, args[1], args[2], args[3], args[4], maximum)) return -1;
-            reply.data[0] = args[1]; break;
         }
         case os::MemoryOperation::PageInfo: {
             HandleTable::Pin pin(caller.handles(), args[0], HandleType::PageObject, handleRightRead);
@@ -120,24 +96,24 @@ int MemoryService::call(Task& caller, const IpcMessage& request, IpcMessage& rep
         case os::MemoryOperation::ReclaimCaches:
             if (!caller.hasCapability(taskCapabilityMemory)) return -3;
             reply.data[0] = heap::reclaimCaches(); break;
-        case os::MemoryOperation::UnmapTarget:
-        case os::MemoryOperation::ProtectTarget: {
-            const bool protect = request.type == static_cast<uint64_t>(os::MemoryOperation::ProtectTarget);
-            const uint64_t id = args[protect ? 3 : 2];
-            if (!RequestData::authorized(caller, id)) return -3;
-            auto target = task::find(id ? id : caller.id());
-            if (!target || target->isTerminated()) return -4;
-            if (protect && args[2] == 4) {
-                if (!caller.hasCapability(taskCapabilityMemory)) return -3;
-                PreemptionSpinLockGuard guard(target->addressSpace().lock());
-                if (!PageMappings::markCopyOnWrite(*target, args[0], args[1])) return -1;
-                break;
-            }
-            reply.data[0] = protect ? MappingOperations::protect(*target, args[0], args[1], args[2]) : MappingOperations::unmap(*target, args[0], args[1]);
-            break;
-        }
         default: return -1;
     }
     reply.length = os::ipcDataWordCount; return 0;
 }
 }  // namespace kernel::memory
+
+namespace kernel {
+namespace {
+class ResidentMemoryService final : public EndpointService {
+    memory::MemoryService implementation_;
+   public:
+    int call(Task& caller, const IpcMessage& request, IpcMessage& reply) override {
+        return implementation_.call(caller, request, reply);
+    }
+};
+}  // namespace
+EndpointService& memoryKernelService() {
+    static ResidentMemoryService service;
+    return service;
+}
+}  // namespace kernel

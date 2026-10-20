@@ -1,7 +1,7 @@
 #ifndef _OS_SYNC_H
 #define _OS_SYNC_H
 
-#include <stdint.h>
+#include <cstdint>
 
 namespace os {
 

@@ -25,7 +25,8 @@ DIR* opendir(const char* path) {
     struct stat status;
     struct DirectoryStream* directory;
     libcCopyPath(absolute, path);
-    if (stat(absolute, &status) != 0 || !S_ISDIR(status.st_mode)) {
+    if (stat(absolute, &status) != 0) return NULL;
+    if (!S_ISDIR(status.st_mode)) {
         errno = ENOTDIR;
         return NULL;
     }
@@ -55,11 +56,11 @@ struct dirent* readdir(DIR* value) {
         }
         value->batchIndex = 0;
         value->batchCount = (uint32_t)count;
-        value->index += value->batchCount;
+        value->index = value->entries[value->batchCount - 1].nextOffset;
     }
     entry = &value->entries[value->batchIndex++];
-    value->entry.d_ino = value->index - value->batchCount + value->batchIndex;
-    value->entry.d_off = value->entry.d_ino;
+    value->entry.d_ino = entry->inode;
+    value->entry.d_off = entry->nextOffset;
     value->entry.d_reclen = sizeof(value->entry);
     OpenDescription* description=libcDescriptor(value->descriptor);
     if (description) description->offset=value->entry.d_off;
@@ -101,8 +102,7 @@ long telldir(DIR* directory) {
         errno = EBADF;
         return -1;
     }
-    return (long)(directory->index - directory->batchCount +
-                  directory->batchIndex);
+    return directory->batchIndex ? directory->entry.d_off : (long)directory->index;
 }
 
 int dirfd(DIR* directory) {
@@ -160,7 +160,10 @@ ssize_t posix_getdents(int fd,void* buffer,size_t size,int flags) {
         int64_t n=__libc_os_read_directory_batch(libcFsService(),description->path,description->offset,&entry,1);
         if(n<0) { if(used) break; errno=EIO; return -1; }
         if(!n) break;
-        struct dirent value={0}; value.d_ino=++description->offset; value.d_off=description->offset;
+        struct dirent value={0};
+        value.d_ino=entry.inode;
+        description->offset=entry.nextOffset;
+        value.d_off=description->offset;
         value.d_type=entry.type==OS_FILE_TYPE_DIRECTORY?DT_DIR:DT_REG; value.d_reclen=sizeof(value);
         strncpy(value.d_name,entry.name,sizeof(value.d_name)-1);
         memcpy((char*)buffer+used,&value,sizeof(value)); used+=sizeof(value);

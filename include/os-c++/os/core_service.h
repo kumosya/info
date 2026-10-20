@@ -7,15 +7,16 @@ enum class BootstrapOperation : uint64_t { GetHandle, CreateEndpoint, GetCoreSer
 enum class CoreServiceKind : uint64_t { Pipe, MessageQueue, Memory, Device, System, Task, Pci, Count };
 enum class PipeOperation : uint64_t { Create, Read, Write, CreateChannel, Identity, Nonblocking, Eof };
 enum class MessageQueueOperation : uint64_t { Open, Unlink, Send, Receive, Attributes, Flags, Notify };
-enum class MemoryOperation : uint64_t { Open, Unlink, Resize, Map, AllocatePages, MapPages, PageInfo, Usage, ReclaimCaches, UnmapTarget, ProtectTarget, BindPager, PageState, MapSharedTarget, RangeAvailable };
-enum class DeviceOperation : uint64_t { MapMmio, AllocateDma, BindIrq, AcknowledgeIrq, Framebuffer, InitializeInput, ReadInput };
+enum class MemoryOperation : uint64_t { Open = 0, Unlink = 1, Resize = 2, AllocatePages = 4, PageInfo = 6, Usage = 7, ReclaimCaches = 8, BindPager = 11, PageState = 12, RangeAvailable = 14 };
+enum class DeviceOperation : uint64_t { MapMmio, AllocateDma, BindIrq, AcknowledgeIrq, Framebuffer, InitializeInput, ReadInput, BootImageInfo, BootImageRead, BootImageWrite };
 enum class SystemOperation : uint64_t { MonotonicTime, WallClockTime, ClockResolution, Info, Log };
 
 enum class TaskOperation : uint64_t {
     State, Info, Terminate, Identity, Query, Enumerate, SetCredentials,
     SendSignal, SendThreadSignal, CreateSession, Identifiers, SetGroup,
     SignalAction, SignalMask, PendingSignals, TakeSignal,
-    SpawnProgram, SpawnImage, WaitChild, WaitThread, ThreadIdentity, SignalReturn
+    SpawnProgram, SpawnImage, WaitChild, WaitThread, ThreadIdentity, SignalReturn,
+    ControlSignal, ControlTerminate, SetTerminalForeground
 };
 
 class CoreServiceClient {

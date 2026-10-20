@@ -28,7 +28,7 @@ void FsServer::claimMapping(const os::IpcMessage& request, os::IpcMessage& reply
     reply.data[0] = static_cast<int64_t>(os::ErrorCode::PermissionDenied);
     reply.length = 3;
     os::TaskInfo caller{};
-    if (request.length != 2 || os::Process::queryTask(request.senderPid, caller) ||
+    if (request.length != 2 || os::Task::query(request.senderPid, caller) ||
         caller.serviceRole != static_cast<uint32_t>(os::ServiceRole::Memory)) return;
     std::lock_guard<std::mutex> guard(descriptorLock_);
     for (uint32_t i = 0; i < descriptorCapacity; ++i) {
@@ -66,7 +66,21 @@ void FsServer::handleAsync(const os::IpcMessage& request, bool writeOperation) {
             4 + (writeOperation
                      ? (size + sizeof(uint64_t) - 1) / sizeof(uint64_t)
                      : 0));
-        if (entry->filesystem != nullptr && size != 0 && size <= capacity &&
+        if (!writeOperation && size && size <= capacity && request.length >= 4 &&
+            (entry->backend == DescriptorBackend::ProcessFile || entry->backend == DescriptorBackend::SystemFile)) {
+            int64_t count = 0;
+            if (entry->backend == DescriptorBackend::ProcessFile) {
+                const uint64_t offset = request.data[1];
+                if (offset < entry->size) {
+                    if (size > entry->size - offset) size = entry->size - offset;
+                    os::Runtime::copyBytes(&completion.data[3], entry->snapshot + offset, size);
+                    count = size;
+                }
+            } else count = vfs::SystemFiles::read(entry->inode, request.data[1], &completion.data[3], size);
+            completion.data[1] = count < 0 ? static_cast<int64_t>(os::ErrorCode::IoError) : 0;
+            completion.data[2] = count < 0 ? 0 : count;
+            if (count > 0) completion.length = 3 + (count + 7) / 8;
+        } else if (entry->filesystem != nullptr && size != 0 && size <= capacity &&
             request.length >= requiredLength &&
             (!writeOperation || !readOnly(entry->mountIndex))) {
             const vfs::FileStatus status{
@@ -112,12 +126,24 @@ uint64_t FsServer::open(uint64_t ownerPid, const char* path, int flags) {
     uint32_t inode            = 0;
     uint64_t fileSize         = 0;
     const int deviceIndex     = catalog_.resolve(path);
+    vfs::FileStatus virtualStatus{};
+    char processSnapshot[1536]{};
     if (PathText::startsWithPath(path, "/sys")) {
-        vfs::FileStatus status{};
-        if (!vfs::SystemFiles::lookup(path, status) || (status.mode & 0xf000) != vfs::modeRegular) return 0;
+        if (!vfs::SystemFiles::lookup(path, virtualStatus) || (flags & O_ACCMODE) != O_RDONLY ||
+            (flags & (O_TRUNC | O_CREAT))) return 0;
         backend = DescriptorBackend::SystemFile;
-        inode = status.inode;
-        fileSize = status.size;
+        inode = virtualStatus.inode;
+        fileSize = virtualStatus.size;
+    } else if (PathText::startsWithPath(path, "/proc")) {
+        if (!vfs::ProcessFiles::lookup(path, ownerPid, virtualStatus) || (flags & O_ACCMODE) != O_RDONLY ||
+            (flags & (O_TRUNC | O_CREAT))) return 0;
+        backend = DescriptorBackend::ProcessFile;
+        inode = virtualStatus.inode;
+        if ((virtualStatus.mode & 0xf000) == vfs::modeRegular) {
+            const auto count = vfs::ProcessFiles::snapshot(path, ownerPid, processSnapshot, sizeof(processSnapshot));
+            if (count < 0) return 0;
+            fileSize = static_cast<uint64_t>(count);
+        }
     } else if (os::Runtime::stringsEqual(path, "/dev/zero")) {
         backend  = DescriptorBackend::Zero;
         fileSize = ~0ULL;
@@ -195,7 +221,12 @@ uint64_t FsServer::open(uint64_t ownerPid, const char* path, int flags) {
         return 0;
     }
     OpenFileDescription& description = openDescriptions_[descriptionIndex];
-    description.mode                 = 0;
+    description.mode                 = virtualStatus.mode;
+    description.uid                  = virtualStatus.uid;
+    description.gid                  = virtualStatus.gid;
+    description.links                = virtualStatus.links;
+    if (backend == DescriptorBackend::ProcessFile)
+        os::Runtime::copyBytes(description.snapshot, processSnapshot, fileSize);
     description.inode                = inode;
     description.offset               = 0;
     description.size                 = fileSize;
@@ -230,7 +261,7 @@ void FsServer::reapDescriptors() {
     for (auto& entry : descriptors_) {
         if (!entry.description) continue;
         os::TaskInfo info{};
-        const int64_t result = os::Process::queryTask(entry.ownerPid, info);
+        const int64_t result = os::Task::query(entry.ownerPid, info);
         if (result == 0 && info.state != 2) continue;
         OpenFileDescription* description = entry.description;
         entry = {};
@@ -273,6 +304,12 @@ void FsServer::transferAt(const os::IpcMessage& request, os::IpcMessage& reply, 
     const uint64_t size = request.data[2], offset = request.data[1];
     const uint64_t maximum = (os::ipcDataWordCount - 3) * 8;
     int64_t result = -11;
+    if (!writing && size <= maximum && entry->backend == DescriptorBackend::ProcessFile) {
+        result = offset >= entry->size ? 0 : static_cast<int64_t>(entry->size - offset < size ? entry->size - offset : size);
+        if (result) os::Runtime::copyBytes(&reply.data[1], entry->snapshot + offset, result);
+    } else if (!writing && size <= maximum && entry->backend == DescriptorBackend::SystemFile) {
+        result = vfs::SystemFiles::read(entry->inode, offset, &reply.data[1], size);
+    }
     if (entry->filesystem && size <= maximum && (!writing || request.length >= 3 + (size + 7) / 8) &&
         (!writing || !readOnly(entry->mountIndex))) {
         const vfs::FileStatus status{entry->inode, entry->mode, entry->size, entry->uid, entry->gid, 1, 0, 0, 0, entry->privateData};
@@ -361,6 +398,10 @@ void FsServer::read(uint64_t ownerPid, uint64_t descriptor, uint64_t requested,
                                         requested);
     } else if (entry->backend == DescriptorBackend::SystemFile) {
         count = vfs::SystemFiles::read(entry->inode, entry->offset, &reply.data[1], requested);
+    } else if (entry->backend == DescriptorBackend::ProcessFile) {
+        count = entry->offset >= entry->size ? 0 :
+            static_cast<int64_t>(entry->size - entry->offset < requested ? entry->size - entry->offset : requested);
+        if (count) os::Runtime::copyBytes(&reply.data[1], entry->snapshot + entry->offset, count);
     } else if (entry->backend == DescriptorBackend::BlockDevice) {
         count = readDevice(static_cast<uint32_t>(entry->privateData),
                            entry->offset, &reply.data[1], requested);
@@ -475,7 +516,16 @@ void FsServer::seek(uint64_t ownerPid, uint64_t descriptor, int64_t offset,
     releaseDescription(entry);
 }
 
-void FsServer::stat(const char* path, os::IpcMessage& reply) {
+void FsServer::stat(const char* path, os::IpcMessage& reply, uint64_t caller) {
+    if (PathText::startsWithPath(path, "/proc")) {
+        vfs::FileStatus status{};
+        if (!vfs::ProcessFiles::lookup(path, caller, status)) { reply.data[0] = 1; return; }
+        setStat(reply, (status.mode & 0xf000) == vfs::modeDirectory ? os::FileType::Directory : os::FileType::File, status.size, status.mode);
+        reply.data[4] = status.inode; reply.data[5] = status.links;
+        reply.data[6] = status.uid; reply.data[7] = status.gid;
+        reply.data[11] = os::DeviceNumber::deviceNumber(0, 3);
+        return;
+    }
     if (PathText::startsWithPath(path, "/sys")) {
         vfs::FileStatus status{};
         if (!vfs::SystemFiles::lookup(path, status)) { reply.data[0] = 1; return; }

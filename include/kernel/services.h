@@ -44,7 +44,5 @@ class Services {
     static int allocateDma(uint64_t address, os::DmaBufferInfo& info);
     static uint64_t bindIrq(uint8_t irq, uint64_t endpoint, bool levelTriggered);
     static int acknowledgeIrq(uint64_t handle);
-    static int coreCall(os::CoreServiceKind kind, os::IpcMessage& request,
-                        os::IpcMessage& reply, uint64_t deadline);
 };
 }  // namespace kernel

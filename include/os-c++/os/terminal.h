@@ -1,8 +1,8 @@
 #ifndef _OS_TERMINAL_H
 #define _OS_TERMINAL_H
 
-#include <stddef.h>
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
 
 namespace os {
 

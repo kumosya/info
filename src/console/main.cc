@@ -1,5 +1,6 @@
 #include "os/task.h"
-#include <signal.h>
+#include "os/core_service.h"
+#include <csignal>
 
 #include "os/abi.h"
 #include "os/ansi.h"
@@ -162,7 +163,7 @@ class Tty {
                 lineCursor_      = 0;
                 historyPosition_ = historyCount_;
                 if (foregroundTask_ != 0) {
-                    os::Process::sendSignal(static_cast<uint64_t>(-static_cast<int64_t>(foregroundTask_)),
+                    os::Task::sendSignal(static_cast<uint64_t>(-static_cast<int64_t>(foregroundTask_)),
                                    keyCode == os::KeyCode::C ? SIGINT
                                                             : SIGTSTP);
                 } else {
@@ -283,8 +284,23 @@ class Tty {
     const Cell* cells() const { return cells_; }
     uint32_t cursorX() const { return cursorX_; }
     uint32_t cursorY() const { return cursorY_; }
+    void resetSession() {
+        inputRead_ = inputWrite_ = inputCount_ = lineLength_ = lineCursor_ = 0;
+        historyCount_ = historyPosition_ = 0;
+        os::Runtime::clearMemory(line_, sizeof(line_));
+        os::Runtime::clearMemory(history_, sizeof(history_));
+        setForegroundTask(0);
+        echo_ = insertMode_ = true;
+        eofPending_ = false;
+        ansi_ = {};
+        style_ = {};
+    }
     void setForegroundTask(uint64_t taskId) {
         foregroundTask_ = taskId;
+        os::IpcMessage request{}, reply{};
+        request.type = static_cast<uint64_t>(os::TaskOperation::SetTerminalForeground); request.length = 4;
+        request.data[0] = 1; request.data[1] = id_; request.data[2] = taskId;
+        os::CoreServiceClient::result(os::CoreServiceKind::Task, request, reply);
         if (!taskId) echo_ = true;
     }
     bool echo() const { return echo_; }
@@ -777,6 +793,12 @@ class ConsoleService {
                 reply.length = 2;
                 if (operation == os::TerminalRequest::SetEcho) terminals_[terminal].setEcho(request.data[1] != 0);
             }
+        } else if (operation == os::TerminalRequest::ResetSession) {
+            os::TaskInfo caller{};
+            if (request.length != 1 || request.data[0] >= os::textTerminalCount ||
+                os::Task::query(request.senderPid, caller) || caller.serviceRole != static_cast<uint32_t>(os::ServiceRole::Init))
+                reply.data[0] = static_cast<int64_t>(os::ErrorCode::PermissionDenied);
+            else { terminals_[request.data[0]].resetSession(); reply.data[0] = 0; }
         } else if (operation ==
                    os::TerminalRequest::SetForegroundTask) {
             const uint32_t terminal = static_cast<uint32_t>(request.data[0]);
@@ -784,7 +806,7 @@ class ConsoleService {
                 reply.data[0] = static_cast<uint64_t>(
                     static_cast<int64_t>(os::ErrorCode::InvalidArgument));
             } else {
-                terminals_[terminal].setForegroundTask(request.data[1]);
+            terminals_[terminal].setForegroundTask(request.data[1]);
                 reply.data[0] = 0;
             }
         } else {
@@ -827,6 +849,7 @@ class ConsoleService {
         if (window != 0) {
             os::Window::setWindowSessionActive(window,
                                        terminal == os::graphicalTerminalId);
+            os::closeHandle(window);
         }
         activeTerminal_                       = terminal;
         constexpr const char* terminalNames[] = {
@@ -852,17 +875,11 @@ class ConsoleService {
     void loadConfiguration() {
         defaultTerminal_ = 0;
         serialConsole_   = false;
-        const uint64_t fs =
-            os::ServiceRegistry::lookupService(registry_, os::fsServiceName, 5000);
-        const uint64_t file =
-            fs == 0 ? 0 : ([&]() -> uint64_t { os::File opened(fs); return opened.open("/etc/console.conf", O_RDONLY) == 0 ? opened.releaseNativeHandle() : 0; }());
-        if (file == 0) {
-            return;
-        }
+        os::File file;
+        if (file.open("/etc/console", O_RDONLY)) return;
         char configuration[256]{};
         const int64_t count =
-            os::File::borrow(fs, file).read(configuration, sizeof(configuration) - 1);
-        os::File::borrow(fs, file).close();
+            file.read(configuration, sizeof(configuration) - 1);
         if (count <= 0) {
             return;
         }

@@ -1,7 +1,7 @@
 #ifndef _OS_PROTOCOL_H
 #define _OS_PROTOCOL_H
 
-#include <stdint.h>
+#include <cstdint>
 
 namespace os {
 
@@ -9,7 +9,7 @@ constexpr uint32_t serviceNameCapacity = 24;
 
 enum class RegistryRequest : uint64_t { Register = 1, Lookup = 2, Unregister = 3 };
 constexpr uint64_t serviceAccessOwnerOnly = 1U;
-enum class TaskRequest : uint64_t { Spawn = 1, Wait, Execute, List, Kill };
+enum class TaskRequest : uint64_t { Wait = 2, Execute = 3, ExecuteService = 6 };
 constexpr uint64_t taskExecuteHasStdin  = 1ULL << 40;
 constexpr uint64_t taskExecuteHasStdout = 1ULL << 41;
 constexpr uint64_t taskExecuteHasStderr = 1ULL << 42;
@@ -23,7 +23,8 @@ enum class TerminalRequest : uint64_t {
     GetInfo,
     SetForegroundTask,
     GetEcho,
-    SetEcho
+    SetEcho,
+    ResetSession
 };
 enum class TtyRequest : uint64_t {
     CreatePty = 1,
@@ -32,7 +33,8 @@ enum class TtyRequest : uint64_t {
     GetWindowSize,
     SetWindowSize,
     SetForegroundGroup,
-    SetNonblocking
+    SetNonblocking,
+    GetNumber
 };
 enum class StorageRequest : uint64_t {
     GetInfo = 0x100,
@@ -86,7 +88,8 @@ enum class FsRequest : uint64_t {
     ReadAt,
     WriteAt,
     DelegateMapping,
-    ClaimMapping
+    ClaimMapping,
+    Sync
 };
 constexpr uint64_t fsCompletionNotification = 0x4653434f4d504cULL;
 

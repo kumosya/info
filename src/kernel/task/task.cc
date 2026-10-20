@@ -1,4 +1,5 @@
 #include "kernel/task.h"
+#include "kernel/time.h"
 
 #include "kernel/atomic.h"
 #include "kernel/device.h"
@@ -19,6 +20,7 @@ kernel::Task* kernelTask;
 kernel::Task* initTask;
 kernel::Task* taskList;
 kernel::SpinLock taskListLock;
+uint64_t terminalForegroundGroups[2][8]{};
 
 void clearMemory(void* address, uint64_t size) {
     uint8_t* bytes = static_cast<uint8_t*>(address);
@@ -632,6 +634,8 @@ bool Task::init(const char* name, uint64_t rootPhysicalAddress, Task* parent) {
     parent_          = parent;
     if (parent_) parent_->retain();
     terminalId_ = parent ? parent->terminalId() : 0;
+    terminalKind_ = parent ? parent->terminalKind() : 0;
+    startedNanoseconds_ = time::getMonotonicTime();
     uid_ = effectiveUid_ = parent ? parent->effectiveUid() : 0;
     gid_ = effectiveGid_ = parent ? parent->effectiveGid() : 0;
     firstChild_      = nullptr;
@@ -754,6 +758,8 @@ bool Task::inheritForFork(Task& parent) {
         }
         taskGroupId_ = parent.taskGroupId_;
         sessionId_   = parent.sessionId_;
+        commandLineSize_ = parent.commandLineSize_;
+        for (size_t i = 0; i < sizeof(commandLine_); ++i) commandLine_[i] = parent.commandLine_[i];
         for (uint32_t signal = 0; signal <= maximumSignal; ++signal) {
             signalActions_[signal] = parent.signalActions_[signal];
         }
@@ -1006,11 +1012,13 @@ int Task::waitForThread(uint64_t threadId, Thread* waiter, int& exitCode,
     while (target != nullptr && target->getId() != threadId) {
         target = target->getTaskNext();
     }
-    if (target == nullptr) {
+    if (target == nullptr || target->isJoinConsumed()) {
         return -1;
     }
     if (target->getState() == ThreadState::Terminated) {
         exitCode = target->getExitCode();
+        target->setJoinConsumed(true);
+        if (target->isStackRetired()) reapJoinedThreadLocked(target);
         return 0;
     }
     if (noHang) {
@@ -1028,6 +1036,21 @@ int Task::waitForThread(uint64_t threadId, Thread* waiter, int& exitCode,
     target->setJoinWaitersTail(waiter);
     exitCode = 0;
     return 1;
+}
+
+void Task::reapJoinedThreadLocked(Thread* thread) {
+    Thread** link = &threads_;
+    while (*link && *link != thread) link = &(*link)->accessTaskNext();
+    if (!*link) return;
+    *link = thread->getTaskNext();
+    if (mainThread_ == thread) mainThread_ = threads_;
+    heap::kernelFree(thread);
+}
+
+void Task::retireJoinedThread(Thread* thread) {
+    InterruptSpinLockGuard guard(lock_);
+    thread->setStackRetired(true);
+    if (thread->isJoinConsumed()) reapJoinedThreadLocked(thread);
 }
 
 void Task::notifyThreadExit(Thread* thread) {
@@ -1189,6 +1212,22 @@ uint64_t Task::standardHandle(uint32_t index) const {
 uint64_t Task::taskGroupId() const { return taskGroupId_; }
 
 uint64_t Task::sessionId() const { return sessionId_; }
+void Task::setCommandLine(uint32_t count, const char* const* arguments) {
+    size_t used = 0;
+    for (uint32_t i = 0; i < count && used + 1 < sizeof(commandLine_); ++i) {
+        const char* text = arguments ? arguments[i] : nullptr;
+        if (!text) continue;
+        constexpr char prefix[] = "--os-terminal=";
+        size_t p = 0;
+        while (prefix[p] && prefix[p] == text[p]) ++p;
+        if (!prefix[p] && text[p] >= '1' && text[p] <= '7' && !text[p + 1]) {
+            continue;
+        }
+        while (*text && used + 1 < sizeof(commandLine_)) commandLine_[used++] = *text++;
+        commandLine_[used++] = 0;
+    }
+    commandLineSize_ = used;
+}
 
 bool Task::setTaskGroup(uint64_t taskGroupId) {
     if (taskGroupId == 0) taskGroupId = id_;
@@ -1207,6 +1246,7 @@ bool Task::createSession() {
     }
     sessionId_   = id_;
     taskGroupId_ = id_;
+    terminalKind_ = terminalId_ = 0;
     return true;
 }
 
@@ -1441,9 +1481,27 @@ TaskReference task::at(uint32_t index) {
     return nullptr;
 }
 
+TaskReference task::next(uint64_t minimumId) {
+    InterruptSpinLockGuard guard(taskListLock);
+    Task* selected = nullptr;
+    for (Task* task = taskList; task; task = task->nextGlobal_)
+        if (task != kernelTask && task->id() >= minimumId && (!selected || task->id() < selected->id())) selected = task;
+    return selected;
+}
+
+uint64_t task::terminalForeground(uint32_t kind, uint32_t index) {
+    return kind >= 1 && kind <= 2 && index < 8 ? __atomic_load_n(&terminalForegroundGroups[kind - 1][index], __ATOMIC_ACQUIRE) : 0;
+}
+bool task::setTerminalForeground(uint32_t kind, uint32_t index, uint64_t group) {
+    if (kind < 1 || kind > 2 || index >= (kind == 1 ? 6U : 8U)) return false;
+    __atomic_store_n(&terminalForegroundGroups[kind - 1][index], group, __ATOMIC_RELEASE);
+    return true;
+}
+
 bool signal::sendSignalToTask(uint64_t taskId, uint32_t signal, Task* authenticatedCaller) {
     auto task = task::find(taskId);
     Task* caller = authenticatedCaller ? authenticatedCaller : task::getCurrent();
+    if (task && signal && task->managedService()) return false;
     if (task && caller && caller->effectiveUid() != 0 && caller->uid() != task->uid() &&
         caller->effectiveUid() != task->uid()) return false;
     return task != nullptr && (signal == 0 ? !task->isTerminated() : task->deliverSignal(signal));
@@ -1472,7 +1530,7 @@ bool signal::sendSignalToTaskGroup(uint64_t taskGroupId, uint32_t signal, Task* 
             Task* caller = authenticatedCaller ? authenticatedCaller : task::getCurrent();
             const bool permitted = !caller || caller->effectiveUid() == 0 || caller->uid() == task->uid() ||
                                    caller->effectiveUid() == task->uid();
-            if (permitted && task->taskGroupId() == taskGroupId)
+            if (permitted && (!signal || !task->managedService()) && task->taskGroupId() == taskGroupId)
                 delivered = (signal == 0 ? !task->isTerminated() : task->deliverSignal(signal)) || delivered;
         }
     }

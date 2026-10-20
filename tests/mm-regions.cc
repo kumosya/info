@@ -1,6 +1,6 @@
 #include <cassert>
 #include <cstdio>
-#include "../user/mm/page.h"
+#include "../src/mm/page.h"
 int main() {
     mm::RegionTable table;
     mm::Region region{}; region.task = 12; region.address = 0x50000000; region.size = 8 * 4096; region.backing = 7;

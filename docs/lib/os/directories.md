@@ -26,4 +26,4 @@ if (os::Directories::data(os::DirectoryScope::User, path, sizeof(path), "editor"
 
 镜像布局增加 `/media`、`/proc`、`/run/lock`、`/lib`、`/var/{lib,cache,log,tmp}`；`/tmp` 和 `/var/tmp` 使用 01777。`/proc` 当前只提供挂载目录，尚无 procfs。用户旧 `app` 合并迁移到 `.local`，路径冲突保留源文件并记录，避免覆盖已有数据。用户包数据库位于 `.local/state/inpkg`。
 
-布局工具 `script/layout.py` 供镜像制作与隔离测试共用。WSL 普通用户制作的 ext3 镜像通过离线 debugfs 设置真实 UID/GID 与权限，避免将宿主开发者 UID 错写成系统文件所有者。
+布局配置集中在 `config/layout.conf`，由 C++ 工具 `build/host/osinfo-host layout` 供镜像制作与隔离测试共用。WSL 普通用户制作的 ext3 镜像通过离线 debugfs 设置真实 UID/GID 与权限，避免将宿主开发者 UID 错写成系统文件所有者。

@@ -1,5 +1,7 @@
 # 混合内核重构实施记录
 
+> 2026-10-19 后续更正：服务目录和 syscall/服务边界已在 [v0.1.1 实施记录](v0.1.1-refinement-progress.md) 更新；下文保留此前阶段记录。
+
 规格：[hybrid-kernel-refactor-prompt.md](hybrid-kernel-refactor-prompt.md)。内存细节及最新证据见 [memory-progress.md](memory-progress.md)。
 
 ## P0–P4 核查
@@ -35,7 +37,7 @@
 
 ## 文档和测试入口
 
-- [混合内核架构图、RPC 状态、SMP 时序](../x86-64/architecture.md)
+- [混合内核架构图、RPC 状态、SMP 时序](../architecture.md)
 - [19 个 syscall 及历史迁移表](../x86-64/task/syscall.md)
 - [内存管理](../x86-64/memory/memory.md)
 - make check：构建、35 个可信 import、头文件边界和服务对象化审计。

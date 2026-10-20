@@ -707,7 +707,7 @@ ElfLoadError ElfLoader::loadDynamicSetFromAddressSpace(
     for (uint32_t index = 0; index < sharedImageCount; ++index) {
         images[index + 1].sourceAddress = sharedImages[index].sourceAddress;
         images[index + 1].sourceSize    = sharedImages[index].size;
-        error = loadImage(destinationRoot, sourceRoot, sharedImageBases[index],
+        error = loadImage(destinationRoot, sharedImages[index].sourceRoot ? sharedImages[index].sourceRoot : sourceRoot, sharedImageBases[index],
                           false, images[index + 1]);
         if (error != ElfLoadError::None) return error;
     }

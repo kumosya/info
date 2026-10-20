@@ -179,4 +179,4 @@ class UserProgramLoader {
 ## 4. POSIX 库与系统调用
 
 POSIX 库与 OS 库共用 `include/os-c++/os/syscall.h` 定义的系统调用号。编号从 1 开始，0 无效。参数布局相同的 POSIX `SYS_*` 宏在 `include/posix/sys/syscall.h` 中直接引用对应 OS 编号；其他 POSIX 函数由 libc 按 OS ABI 适配，不再存在独立的内核 POSIX 分发入口。
-固定 boot ProgramId 决定可信服务身份：所有 boot 服务进程为 Ring3；服务经现有 IPC 请求 .kernel 机制对象。磁盘 ELF 不能自行申请 capabilities 或 ServiceRole。MM 模块路径为 user/mm，guiw 来自独立项目 D:/osinfo/guiw 的软件包。详见[架构](architecture.md)。
+固定 boot ProgramId 决定可信服务身份：所有 boot 服务进程为 Ring3；服务经现有 IPC 请求 .kernel 机制对象。磁盘 ELF 不能自行申请 capabilities 或 ServiceRole。MM 模块路径为 src/mm，guiw 来自独立项目 D:/osinfo/guiw 的软件包。详见[架构](../architecture.md)。

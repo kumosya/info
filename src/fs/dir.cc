@@ -31,14 +31,16 @@ int FsServer::deviceDirectory(const char* path, uint32_t index,
 }
 
 void FsServer::readDirectory(const char* path, uint64_t index,
-                             os::IpcMessage& reply) {
+                             os::IpcMessage& reply, uint64_t caller) {
     if (index > UINT32_MAX) {
         reply.data[0] = 1;
         return;
     }
     vfs::DirectoryEntry entry{};
     int result = -1;
-    if (PathText::startsWithPath(path, "/sys"))
+    if (PathText::startsWithPath(path, "/proc"))
+        result = vfs::ProcessFiles::directory(path, index, caller, entry);
+    else if (PathText::startsWithPath(path, "/sys"))
         result = vfs::SystemFiles::directory(path, static_cast<uint32_t>(index), entry);
     else if (PathText::startsWithPath(path, "/dev"))
         result = deviceDirectory(path, static_cast<uint32_t>(index), entry);
@@ -57,12 +59,15 @@ void FsServer::readDirectory(const char* path, uint64_t index,
         reply.data[1] = static_cast<uint64_t>(
             entry.type == 2 ? os::FileType::Directory : os::FileType::File);
         os::Runtime::copyString(reinterpret_cast<char*>(&reply.data[2]), entry.name, 256);
-        reply.length = 34;
+        reply.data[34] = entry.inode;
+        reply.data[35] = PathText::startsWithPath(path, "/proc") ?
+            vfs::ProcessFiles::nextCursor(path, entry, index) : index + 1;
+        reply.length = 36;
     }
 }
 
 void FsServer::readDirectoryBatch(const char* path, uint64_t index,
-                                  uint64_t requested, os::IpcMessage& reply) {
+                                  uint64_t requested, os::IpcMessage& reply, uint64_t caller) {
     constexpr uint32_t maximum =
         (os::ipcDataWordCount - 2) * 8 / sizeof(os::DirectoryEntry);
     const uint32_t capacity =
@@ -73,7 +78,16 @@ void FsServer::readDirectoryBatch(const char* path, uint64_t index,
     }
     vfs::DirectoryEntry entries[maximum]{};
     int count = 0;
-    if (PathText::startsWithPath(path, "/dev") || PathText::startsWithPath(path, "/sys")) {
+    if (PathText::startsWithPath(path, "/proc")) {
+        uint64_t cursor = index;
+        while (count < static_cast<int>(capacity)) {
+            const int result = vfs::ProcessFiles::directory(path, cursor, caller, entries[count]);
+            if (result < 0) { reply.data[0] = 1; return; }
+            if (result > 0) break;
+            cursor = vfs::ProcessFiles::nextCursor(path, entries[count], cursor);
+            ++count;
+        }
+    } else if (PathText::startsWithPath(path, "/dev") || PathText::startsWithPath(path, "/sys")) {
         while (count < static_cast<int>(capacity)) {
             const int result = PathText::startsWithPath(path, "/sys") ? vfs::SystemFiles::directory(
                 path, static_cast<uint32_t>(index + count), entries[count]) : deviceDirectory(
@@ -102,10 +116,15 @@ void FsServer::readDirectoryBatch(const char* path, uint64_t index,
         }
     }
     auto* output = reinterpret_cast<os::DirectoryEntry*>(&reply.data[2]);
+    uint64_t cursor = index;
     for (int i = 0; i < count; ++i) {
         output[i].type =
             entries[i].type == 2 ? os::FileType::Directory : os::FileType::File;
         os::Runtime::copyString(output[i].name, entries[i].name, sizeof(output[i].name));
+        output[i].inode = entries[i].inode;
+        cursor = PathText::startsWithPath(path, "/proc") ?
+            vfs::ProcessFiles::nextCursor(path, entries[i], cursor) : cursor + 1;
+        output[i].nextOffset = cursor;
     }
     reply.data[0] = 0;
     reply.data[1] = static_cast<uint64_t>(count);

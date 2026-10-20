@@ -8,5 +8,15 @@ using ::clock_gettime;
 using ::time;
 using ::time_t;
 using ::timespec;
+using ::tm;
+using ::clock;
+using ::clock_t;
+using ::difftime;
+using ::mktime;
+using ::asctime;
+using ::ctime;
+using ::gmtime;
+using ::localtime;
+using ::strftime;
 
 }  // namespace std

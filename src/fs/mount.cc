@@ -1,4 +1,5 @@
 #include "server.h"
+#include "sysfs.h"
 
 namespace vfs::server {
 namespace {
@@ -116,6 +117,7 @@ bool FsServer::init(uint64_t storageEndpoint, uint64_t deviceEndpoint) {
     }
     mountTable_[0].deviceIndex = selected;
     if (!loadMountTable()) return false;
+    if (!SystemFiles::initialize(*fileSystems_[0])) return false;
     mounted_[0] = true;
     os::System::log("[FS] root resolved to /dev/");
     os::System::log(catalog_.get(selected)->identity.name);
@@ -333,6 +335,7 @@ void FsServer::listMount(uint32_t requested, os::IpcMessage& reply) const {
 
 PathBackend FsServer::pathBackend(const char* path) const {
     if (!path || path[0] != '/') return PathBackend::Invalid;
+    if (PathText::startsWithPath(path, "/sys") || PathText::startsWithPath(path, "/proc")) return PathBackend::Invalid;
     std::lock_guard<std::mutex> guard(mountStateLock_);
     PathBackend result = PathBackend::Root;
     size_t length      = 0;

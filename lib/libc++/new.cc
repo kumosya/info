@@ -1,5 +1,5 @@
 #include <new>
-#include <stdlib.h>
+#include <cstdlib>
 
 void* operator new(size_t size) noexcept { return malloc(size); }
 

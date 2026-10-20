@@ -32,6 +32,12 @@ static bool request(os::TtyRequest operation, uint64_t handle, const void* input
 }  // namespace
 
 namespace os {
+bool Pty::getPtyNumber(uint64_t handle, uint32_t& number) {
+    uint64_t value = 0;
+    if (!PtyProtocol::request(TtyRequest::GetNumber, handle, nullptr, 0, &value, sizeof(value))) return false;
+    number = static_cast<uint32_t>(value);
+    return true;
+}
 
 bool Pty::createPty(PtyHandles& handles) {
     handles = {};

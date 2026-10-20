@@ -46,7 +46,7 @@ void reapDetachedThreads() {
     for (ThreadState& state : states) {
         int exitCode = 0;
         if (state.used && state.detached && state.id != 0 &&
-            os::Process::waitThread(state.id, exitCode, true) == 0) {
+            os::Task::waitThread(state.id, exitCode, true) == 0) {
             releaseState(state);
         }
     }
@@ -95,7 +95,7 @@ void joinStandardThread(ThreadState* state) {
         return;
     }
     int exitCode = 0;
-    os::Process::waitThread(state->id, exitCode);
+    os::Task::waitThread(state->id, exitCode);
     lockStates();
     releaseState(*state);
     unlockStates();

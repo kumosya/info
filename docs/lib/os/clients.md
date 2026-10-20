@@ -8,9 +8,15 @@ os::ServiceRegistry::registerService、lookupService、unregisterService 传递�
 
 ## 任务
 
-os::Process::execute / executeWithIo 请求 task 服务读取并加载磁盘 ELF，最多 64 个参数，支持重定向标准流。任务查询、等待、终止、进程组、凭据及信号经驻留 task.kernel 内联执行。fork/exec 的完整上下文机制保留直接 syscall。
+os::Task::execute / executeWithIo 请求 task 服务读取并加载磁盘 ELF，最多 64 个参数，支持重定向标准流。任务查询、等待、终止、进程组、凭据及信号经驻留 task.kernel 内联执行。fork/exec 的完整上下文机制保留直接 syscall。
+
+类名统一为 os::Task，不提供 Process 别名。方法为 getId/getInfo/getState/query/terminate/wait/kill/getIdentifiers/setGroup；TaskHandle 与数值 PID 分开使用。公共 listTask、TaskListEntry 已删除，进程枚举读取 [procfs](../../service/procfs.md)。TaskInfo 增加会话、控制 TTY、单调启动/CPU 时间、参数和 managedService 字段，必须重新导出 SDK 并重建所有调用方。
+
+executeService 是受控的 Init 请求，普通程序调用会被真实发送者身份检查拒绝。服务管理使用 os::ServiceControl 与独立 systemctl 客户端；普通 kill/terminate 不能终止受监护服务。
 
 终端身份属于 os::Terminal 类；端点工厂和取消属于 os::Endpoint 类。内存策略通过 os::VirtualMemory 访问 Ring 3 mm 服务，底层页对象通过 os::Memory 访问驻留 memory 服务。
+
+Memory::mapPages、mapSharedMemory、unmapTarget、protectTarget 是 syscall 客户端方法，不发送 memory.kernel RPC。普通调用只操作自身，固定 MM 角色及能力才可操作目标进程；映射句柄权限仍由内核核验。`os/service.h` 只声明服务客户端，不包含 CS 检查或硬件访问实现。
 
 ## 3. 文件客户端（os::File，fs 服务）
 

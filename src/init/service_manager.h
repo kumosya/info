@@ -36,7 +36,7 @@ class ServiceManager {
 
     static void threadMain(void* manager) { static_cast<ServiceManager*>(manager)->run(); }
     static bool query(uint64_t id, os::TaskInfo& info) {
-        return os::Process::queryTask(id, info) == 0 && info.state != 2;
+        return os::Task::query(id, info) == 0 && info.state != 2;
     }
     static bool validName(const os::IpcMessage& request) {
         if (request.length < 3) return false;
@@ -53,6 +53,7 @@ class ServiceManager {
         struct Protected { const char* name; os::ServiceRole role; };
         const Protected protectedNames[] = {
             {"services", os::ServiceRole::Init}, {"pipe", os::ServiceRole::Pipe},
+            {"control.init", os::ServiceRole::Init}, {"control.task", os::ServiceRole::Task}, {"control.device", os::ServiceRole::Device},
             {"msgq", os::ServiceRole::MessageQueue}, {"memory.kernel", os::ServiceRole::Init},
             {"task.kernel", os::ServiceRole::Init}, {"system.kernel", os::ServiceRole::Init}, {"device.kernel", os::ServiceRole::Init}, {"pci.kernel", os::ServiceRole::Init},
             {"pci", os::ServiceRole::Pci}, {"task", os::ServiceRole::Task},
@@ -127,6 +128,8 @@ class ServiceManager {
             reply.data[0] = 0;
             reply.data[1] = record->generation;
             reply.handleCount = 1;
+            reply.data[2] = record->publisher;
+            reply.length = 3;
             reply.handles[0] = record->endpoint;
             reply.handleOptions[0] = os::ipcHandleRestrictRights;
             reply.handleRights[0] = 2;

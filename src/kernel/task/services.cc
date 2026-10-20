@@ -57,8 +57,11 @@ uint64_t Services::createThread(void (*entry)(), uint64_t stack) {
 }
 uint64_t Services::createThreadWithArgument(void (*entry)(void*), uint64_t stack, void* argument) {
     auto* thread = Thread::createUser(task::getCurrent(), reinterpret_cast<uint64_t>(entry),
-        stack, reinterpret_cast<uint64_t>(argument));
-    return thread ? thread->getId() : 0;
+        stack, reinterpret_cast<uint64_t>(argument), 0, ~0ULL, false);
+    if (!thread) return 0;
+    const uint64_t id = thread->getId();
+    schedule::enqueueThread(thread);
+    return id;
 }
 int Services::send(uint64_t handle, os::IpcMessage& message, uint64_t deadline) {
     auto pin = endpoint(handle, handleRightWrite);
@@ -142,21 +145,12 @@ int Services::acknowledgeIrq(uint64_t handle) {
     return deviceAccess() && binding && binding->acknowledge(*task::getCurrent()) ? 0 : -1;
 }
 
-int Services::coreCall(os::CoreServiceKind kind, os::IpcMessage& request,
-                       os::IpcMessage& response, uint64_t deadline) {
-    const uint64_t handle = CoreServices::getHandle(*task::getCurrent(), kind);
-    if (!handle) return static_cast<int>(os::ErrorCode::OutOfMemory);
-    const int result = call(handle, request, response, deadline);
-    closeHandle(handle);
-    return result;
-}
-
 uint64_t Services::resolve(const char* symbol) {
     struct Import { const char* name; uint64_t address; };
     const Import imports[] = {
         {"_ZN2os17CoreServiceClient10openHandleENS_15CoreServiceKindE", reinterpret_cast<uint64_t>(&coreHandle)},
         {"_ZN2os17getStandardHandleEj", reinterpret_cast<uint64_t>(&standardHandle)},
-        {"_ZN2os7Process11getThreadIdEv", reinterpret_cast<uint64_t>(&threadId)},
+        {"_ZN2os4Task11getThreadIdEv", reinterpret_cast<uint64_t>(&threadId)},
         {"_ZN2os11unmapMemoryEmm", reinterpret_cast<uint64_t>(&unmapMemory)},
         {"_ZN2os13protectMemoryEmmm", reinterpret_cast<uint64_t>(&protectMemory)},
         {"_ZN2os11waitAddressEPVjj", reinterpret_cast<uint64_t>(&waitAddress)},
@@ -184,7 +178,6 @@ uint64_t Services::resolve(const char* symbol) {
         {"_ZN2os6System3logEPKc", reinterpret_cast<uint64_t>(&log)},
         {"_ZN2os13SystemService10pciRequestERNS_10PciRequestE", reinterpret_cast<uint64_t>(&pciRequest)},
         {"_ZN2os13SystemService9queryTaskEmRNS_8TaskInfoE", reinterpret_cast<uint64_t>(&queryTask)},
-        {"_ZN2os13SystemService8coreCallENS_15CoreServiceKindERNS_10IpcMessageES3_m", reinterpret_cast<uint64_t>(&coreCall)},
         {"_ZN2os6Device13mapDeviceMmioERKNS_15PciFunctionInfoEhmm", reinterpret_cast<uint64_t>(&mapMmio)},
         {"_ZN2os6Device11allocateDmaEmRNS_13DmaBufferInfoE", reinterpret_cast<uint64_t>(&allocateDma)},
         {"_ZN2os6Device7bindIrqEhmb", reinterpret_cast<uint64_t>(&bindIrq)},

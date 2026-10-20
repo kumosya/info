@@ -8,7 +8,7 @@
 #ifndef _KERNEL_ATOMIC_H_
 #define _KERNEL_ATOMIC_H_
 
-#include <stdint.h>
+#include <cstdint>
 
 namespace kernel {
 

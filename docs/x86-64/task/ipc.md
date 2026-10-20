@@ -1,6 +1,6 @@
 # Endpoint IPC 与驻留服务
 
-src/kernel/task/ipc/ipc.cc 实现内核 Endpoint。管道缓冲区、消息队列和等待请求分别位于 user/pipe/main.cc、user/msgq/main.cc，运行于 Ring3；旧内核 pipe/mqueue 后端已经移除。
+src/kernel/task/ipc/ipc.cc 实现内核 Endpoint。管道缓冲区、消息队列和等待请求分别位于 src/task/pipe/main.cc、src/task/msgq/main.cc，运行于 Ring3；旧内核 pipe/mqueue 后端已经移除。
 
 IpcMessage 由 os/abi.h 定义：type、内核认证 senderPid/senderTid、replyToken、length、handleCount、515 个数据字、4 个句柄、逐句柄 handleRights 与 handleOptions。不得使用客户端自填 PID 进行授权。
 
@@ -35,4 +35,4 @@ SendMessage、ReceiveMessage、CallService 接受绝对单调纳秒 deadline：U
 
 task.kernel 等机制对象的 EndpointService::call 在调用线程内联执行，使用显式 Task 参数。pipe/msgq 在 Ring3 保存 Reply Token 和能力引用，定期查询请求有效性，取消后释放所持引用。
 
-运行验证见 script/check-kernel-ipc.sh；RPC 状态图和 SMP 回收时序见[混合内核架构](../architecture.md)。
+运行验证见 tests/check-kernel-ipc.sh；RPC 状态图和 SMP 回收时序见[混合内核架构](../../architecture.md)。

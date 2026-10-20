@@ -1,0 +1,4 @@
+# name|executable|argv0
+terminal|/usr/bin/terminal|terminal
+shell|/bin/sh|sh
+recovery|/bin/login|login

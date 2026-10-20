@@ -1,6 +1,6 @@
 #pragma once
 
-#include <stdint.h>
+#include <cstdint>
 
 #include "kernel/elf.h"
 #include "kernel/signal.h"
@@ -30,6 +30,9 @@ namespace task {
 void init();
 TaskReference find(uint64_t taskId);
 TaskReference at(uint32_t index);
+TaskReference next(uint64_t minimumId);
+uint64_t terminalForeground(uint32_t kind, uint32_t index);
+bool setTerminalForeground(uint32_t kind, uint32_t index, uint64_t group);
 }  // namespace task
 
 enum class TaskState : uint8_t { Created, Running, Terminated, Stopped };
@@ -207,6 +210,7 @@ class Task {
                      uint32_t options, uint64_t& childId);
     void notifyChildStateChange();
     bool attachThread(Thread* thread);
+    void retireJoinedThread(Thread* thread);
     int waitForThread(uint64_t threadId, Thread* waiter, int& exitCode,
                       bool noHang);
     void notifyThreadExit(Thread* thread);
@@ -217,7 +221,9 @@ class Task {
     bool isSystemService() const { return systemService_; }
     void setSystemService(bool value) { systemService_ = value; }
     os::ServiceRole serviceRole() const { return serviceRole_; }
-    void setServiceRole(os::ServiceRole role) { serviceRole_ = role; }
+    void setServiceRole(os::ServiceRole role) { serviceRole_ = role; if (role != os::ServiceRole::None) managedService_ = true; }
+    bool managedService() const { return managedService_; }
+    void setManagedService(bool value) { managedService_ = value; }
     uint32_t uid() const { return uid_; }
     uint32_t gid() const { return gid_; }
     uint32_t effectiveUid() const { return effectiveUid_; }
@@ -225,6 +231,15 @@ class Task {
     void setCredentials(uint32_t uid, uint32_t gid, bool effectiveOnly = false);
     uint32_t terminalId() const { return terminalId_; }
     void setTerminalId(uint32_t value) { terminalId_ = value; }
+    uint32_t terminalKind() const { return terminalKind_; }
+    uint32_t terminalIndex() const { return terminalId_; }
+    void setTerminal(uint32_t kind, uint32_t index) { terminalKind_ = kind; terminalId_ = index; }
+    uint64_t startedNanoseconds() const { return startedNanoseconds_; }
+    uint64_t cpuNanoseconds() const { return __atomic_load_n(&cpuNanoseconds_, __ATOMIC_RELAXED); }
+    void accountCpu(uint64_t elapsed) { __atomic_fetch_add(&cpuNanoseconds_, elapsed, __ATOMIC_RELAXED); }
+    const char* commandLine() const { return commandLine_; }
+    uint32_t commandLineSize() const { return commandLineSize_; }
+    void setCommandLine(uint32_t count, const char* const* arguments);
     void setBootstrapHandle(uint64_t handle);
     uint64_t bootstrapHandle() const;
     void setStandardHandle(uint32_t index, uint64_t handle);
@@ -245,18 +260,26 @@ class Task {
    private:
     uint32_t uid_ = 0, gid_ = 0, effectiveUid_ = 0, effectiveGid_ = 0;
     uint32_t terminalId_ = 0;
+    uint32_t terminalKind_ = 0;
+    uint64_t startedNanoseconds_ = 0, cpuNanoseconds_ = 0;
+    char commandLine_[384]{};
+    uint32_t commandLineSize_ = 0;
     bool systemService_ = false;
+    bool managedService_ = false;
     os::ServiceRole serviceRole_ = os::ServiceRole::None;
     friend void task::init();
     friend class TaskReclaimer;
+    friend class TaskLifecycleTest;
     friend TaskReference task::find(uint64_t taskId);
     friend TaskReference task::at(uint32_t index);
+    friend TaskReference task::next(uint64_t minimumId);
     friend bool signal::sendSignalToTaskGroup(uint64_t taskGroupId,
                                               uint32_t signal, Task* caller);
 
     bool init(const char* name, uint64_t rootPhysicalAddress, Task* parent);
     void adoptChildren();
     bool destroyResources();
+    void reapJoinedThreadLocked(Thread* thread);
 
     uint64_t id_;
     char name_[64];
@@ -420,7 +443,8 @@ class UserProgramLoader {
                            uint32_t sharedImageCount,
                            ElfLoadError* loadError = nullptr,
                              os::ServiceRole serviceRole = os::ServiceRole::None,
-                             bool newSession = false);
+                             bool newSession = false, bool managedService = false,
+                             uint32_t terminalKind = 0, uint32_t terminalIndex = 0);
 };
 
 }  // namespace kernel

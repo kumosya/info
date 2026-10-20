@@ -62,9 +62,6 @@ static uint64_t alignToPage(size_t size) {
 int64_t invokeSyscall(SyscallNumber number, uint64_t arg1, uint64_t arg2,
                       uint64_t arg3, uint64_t arg4, uint64_t arg5,
                       uint64_t arg6) {
-    uint16_t selector;
-    asm volatile("mov %%cs, %0" : "=r"(selector));
-    if ((selector & 3) != 3) return static_cast<int64_t>(ErrorCode::NotSupported);
     register uint64_t r10 asm("r10") = arg4;
     register uint64_t r8 asm("r8")   = arg5;
     register uint64_t r9 asm("r9")   = arg6;
@@ -86,7 +83,6 @@ uint64_t CoreServiceClient::openHandle(CoreServiceKind kind) {
 uint64_t CoreServiceClient::handles_[static_cast<uint64_t>(CoreServiceKind::Count)];
 
 int CoreServiceClient::call(CoreServiceKind kind, IpcMessage& request, IpcMessage& reply, uint64_t deadline) {
-    if (SystemService::isPrivileged()) return SystemService::coreCall(kind, request, reply, deadline);
     const auto index = static_cast<uint64_t>(kind);
     if (index >= static_cast<uint64_t>(CoreServiceKind::Count)) return static_cast<int>(ErrorCode::InvalidArgument);
     uint64_t handle = __atomic_load_n(&handles_[index], __ATOMIC_ACQUIRE);
@@ -145,7 +141,7 @@ uint64_t createThread(void (*entry)(void*), uint64_t stackPointer,
                          reinterpret_cast<uint64_t>(argument));
 }
 
-int Process::waitThread(uint64_t threadId, int& exitCode, bool noHang) {
+int Task::waitThread(uint64_t threadId, int& exitCode, bool noHang) {
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(TaskOperation::WaitThread); request.length = 4;
     request.data[0] = threadId; request.data[1] = noHang;
@@ -166,7 +162,7 @@ int wakeAddress(volatile uint32_t* address, uint32_t count) {
         count));
 }
 
-int Process::setSignalAction(uint32_t signal, const SignalAction* action, SignalAction* oldAction) {
+int Task::setSignalAction(uint32_t signal, const SignalAction* action, SignalAction* oldAction) {
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(TaskOperation::SignalAction);
     request.length = 4;
@@ -176,7 +172,7 @@ int Process::setSignalAction(uint32_t signal, const SignalAction* action, Signal
     return status;
 }
 
-int Process::setSignalMask(int how, uint64_t mask, uint64_t& oldMask) {
+int Task::setSignalMask(int how, uint64_t mask, uint64_t& oldMask) {
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(TaskOperation::SignalMask);
     request.length = 4;
@@ -186,7 +182,7 @@ int Process::setSignalMask(int how, uint64_t mask, uint64_t& oldMask) {
     return status;
 }
 
-int Process::getPendingSignals(uint64_t& mask) {
+int Task::getPendingSignals(uint64_t& mask) {
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(TaskOperation::PendingSignals);
     request.length = 4;
@@ -196,7 +192,7 @@ int Process::getPendingSignals(uint64_t& mask) {
     return status;
 }
 
-int Process::waitSignal(uint64_t mask) {
+int Task::waitSignal(uint64_t mask) {
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(TaskOperation::TakeSignal);
     request.length = 4;
@@ -206,7 +202,7 @@ int Process::waitSignal(uint64_t mask) {
     return status;
 }
 
-void Process::signalReturn(void* frame) {
+void Task::signalReturn(void* frame) {
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(TaskOperation::SignalReturn);
     request.length = 4; request.data[0] = reinterpret_cast<uint64_t>(frame);
@@ -296,9 +292,8 @@ uint64_t Memory::allocatePages(uint32_t order, uint16_t node, uint64_t owner) {
     return CoreServiceClient::result(CoreServiceKind::Memory, request, reply);
 }
 uint64_t Memory::mapPages(uint64_t handle, uint64_t address, uint64_t size, uint64_t offset, uint64_t protection, uint64_t target) {
-    IpcMessage request{}, reply{}; request.type = static_cast<uint64_t>(MemoryOperation::MapPages); request.length = 6;
-    request.data[0] = handle; request.data[1] = address; request.data[2] = size; request.data[3] = offset; request.data[4] = protection; request.data[5] = target;
-    return CoreServiceClient::result(CoreServiceKind::Memory, request, reply);
+    if (protection & ~3ULL) return static_cast<int64_t>(ErrorCode::InvalidArgument);
+    return invokeSyscall(SyscallNumber::MapMemory, address, size, protection | OS_MAP_PAGE_OBJECT, handle, offset, target);
 }
 int Memory::pageInfo(uint64_t handle, PageObjectInfo& info) {
     IpcMessage request{}, reply{}; request.type = static_cast<uint64_t>(MemoryOperation::PageInfo); request.length = 5; request.data[0] = handle;
@@ -317,14 +312,10 @@ int64_t Memory::reclaimCaches() {
     return CoreServiceClient::result(CoreServiceKind::Memory, request, reply);
 }
 int Memory::unmapTarget(uint64_t address, uint64_t size, uint64_t target) {
-    IpcMessage request{}, reply{}; request.type = static_cast<uint64_t>(MemoryOperation::UnmapTarget); request.length = 5;
-    request.data[0] = address; request.data[1] = size; request.data[2] = target;
-    return CoreServiceClient::result(CoreServiceKind::Memory, request, reply);
+    return invokeSyscall(SyscallNumber::UnmapMemory, address, size, target);
 }
 int Memory::protectTarget(uint64_t address, uint64_t size, uint64_t protection, uint64_t target) {
-    IpcMessage request{}, reply{}; request.type = static_cast<uint64_t>(MemoryOperation::ProtectTarget); request.length = 5;
-    request.data[0] = address; request.data[1] = size; request.data[2] = protection; request.data[3] = target;
-    return CoreServiceClient::result(CoreServiceKind::Memory, request, reply);
+    return invokeSyscall(SyscallNumber::ProtectMemory, address, size, protection, target);
 }
 
 uint64_t Memory::openSharedMemory(const char* name, int flags) {
@@ -358,19 +349,12 @@ IpcMessage request{}, reply{};
 }
 
 uint64_t Memory::mapSharedMemory(uint64_t handle, uint64_t address, uint64_t size,
-                         uint64_t offset, uint64_t protection) {
-IpcMessage request{}, reply{};
-    request.type = static_cast<uint64_t>(MemoryOperation::Map);
-    request.length = 5;
-    request.data[0] = handle;
-    request.data[1] = address;
-    request.data[2] = size;
-    request.data[3] = offset;
-    request.data[4] = protection;
-    return CoreServiceClient::result(CoreServiceKind::Memory, request, reply);
+                         uint64_t offset, uint64_t protection, uint64_t target) {
+    if (protection & ~3ULL) return static_cast<int64_t>(ErrorCode::InvalidArgument);
+    return invokeSyscall(SyscallNumber::MapMemory, address, size, protection | OS_MAP_SHARED_OBJECT, handle, offset, target);
 }
 
-int Process::sendThreadSignal(uint64_t threadId, uint32_t signal) {
+int Task::sendThreadSignal(uint64_t threadId, uint32_t signal) {
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(TaskOperation::SendThreadSignal);
     request.length = 4;
@@ -395,7 +379,7 @@ int64_t forkTask() {
     return invokeSyscall(SyscallNumber::ForkTask);
 }
 
-int64_t Process::waitChild(int64_t taskId, int& status, int options) {
+int64_t Task::waitChild(int64_t taskId, int& status, int options) {
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(TaskOperation::WaitChild); request.length = 4;
     request.data[0] = taskId; request.data[1] = options;
@@ -453,7 +437,7 @@ int Endpoint::cancel(uint64_t endpoint, uint64_t threadId) {
                                           0, 0, threadId));
 }
 
-uint64_t Process::spawnProgram(ProgramId program, uint64_t bootstrapHandle, uint32_t argumentCount, const char* const* arguments) {
+uint64_t Task::spawnProgram(ProgramId program, uint64_t bootstrapHandle, uint32_t argumentCount, const char* const* arguments) {
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(TaskOperation::SpawnProgram); request.length = 4;
     request.data[0] = static_cast<uint64_t>(program); request.data[1] = bootstrapHandle; request.data[2] = argumentCount; request.data[3] = reinterpret_cast<uint64_t>(arguments);
@@ -462,7 +446,7 @@ uint64_t Process::spawnProgram(ProgramId program, uint64_t bootstrapHandle, uint
     return result;
 }
 
-uint64_t Process::spawnImage(const SpawnImageInfo& info) {
+uint64_t Task::spawnImage(const SpawnImageInfo& info) {
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(TaskOperation::SpawnImage); request.length = 4;
     request.data[0] = reinterpret_cast<uint64_t>(&info);
@@ -662,7 +646,7 @@ IpcMessage request{}, reply{};
     return CoreServiceClient::result(CoreServiceKind::Device, request, reply);
 }
 
-int Process::getTaskState(uint64_t taskHandle, int& exitCode) {
+int Task::getState(uint64_t taskHandle, int& exitCode) {
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(TaskOperation::State);
     request.length = 4;
@@ -672,7 +656,7 @@ int Process::getTaskState(uint64_t taskHandle, int& exitCode) {
     return status;
 }
 
-int Process::getTaskInfo(uint64_t taskHandle, TaskInfo& info) {
+int Task::getInfo(uint64_t taskHandle, TaskInfo& info) {
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(TaskOperation::Info);
     request.length = 4;
@@ -682,7 +666,7 @@ int Process::getTaskInfo(uint64_t taskHandle, TaskInfo& info) {
     return status;
 }
 
-int Process::terminateTask(uint64_t taskHandle, int exitCode) {
+int Task::terminate(uint64_t taskHandle, int exitCode) {
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(TaskOperation::Terminate);
     request.length = 4;
@@ -692,7 +676,7 @@ int Process::terminateTask(uint64_t taskHandle, int exitCode) {
     return status;
 }
 
-int Process::sendSignal(uint64_t taskId, uint32_t signal) {
+int Task::sendSignal(uint64_t taskId, uint32_t signal) {
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(TaskOperation::SendSignal);
     request.length = 4;
@@ -702,7 +686,7 @@ int Process::sendSignal(uint64_t taskId, uint32_t signal) {
     return status;
 }
 
-int Process::setTaskGroup(uint64_t taskGroupId, uint64_t taskId) {
+int Task::setGroup(uint64_t taskGroupId, uint64_t taskId) {
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(TaskOperation::SetGroup);
     request.length = 4;
@@ -712,7 +696,7 @@ int Process::setTaskGroup(uint64_t taskGroupId, uint64_t taskId) {
     return status;
 }
 
-int64_t Process::createSession() {
+int64_t Task::createSession() {
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(TaskOperation::CreateSession);
     request.length = 4;
@@ -722,7 +706,7 @@ int64_t Process::createSession() {
     return status;
 }
 
-int Process::getTaskIdentifiers(TaskIdentifiers& identifiers, uint64_t taskId) {
+int Task::getIdentifiers(TaskIdentifiers& identifiers, uint64_t taskId) {
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(TaskOperation::Identifiers);
     request.length = 4;
@@ -765,7 +749,7 @@ int Handle::state(uint64_t handle) {
     return invokeSyscall(SyscallNumber::CloseHandle, handle, static_cast<uint64_t>(HandleOperation::GetState));
 }
 
-uint64_t Process::getTaskId() {
+uint64_t Task::getId() {
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(TaskOperation::Identity);
     request.length = 4;
@@ -775,7 +759,7 @@ uint64_t Process::getTaskId() {
     return status;
 }
 
-uint64_t Process::getThreadId() {
+uint64_t Task::getThreadId() {
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(TaskOperation::ThreadIdentity); request.length = 4;
     return CoreServiceClient::result(CoreServiceKind::Task, request, reply);

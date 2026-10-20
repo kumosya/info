@@ -90,7 +90,7 @@ Thread* Thread::create(Task* task, ThreadEntry entryPoint, void* argument,
 
 Thread* Thread::createUser(Task* task, uint64_t entryPoint,
                            uint64_t userStackPointer, uint64_t argument,
-                           uint64_t initialStackSize) {
+                           uint64_t initialStackSize, uint64_t initialAffinity, bool makeRunnable) {
     if (task == nullptr || entryPoint == 0 || userStackPointer == 0 ||
         entryPoint >= 0x0000800000000000ULL ||
         userStackPointer >= 0x0000800000000000ULL) {
@@ -113,7 +113,8 @@ Thread* Thread::createUser(Task* task, uint64_t entryPoint,
         }
         thread->setUserStack(reinterpret_cast<void*>(userStackPointer));
         thread->setUserArgument(reinterpret_cast<void*>(argument));
-        if (schedule::isSchedulerInitialized()) {
+        thread->setCpuAffinity(initialAffinity);
+        if (makeRunnable && schedule::isSchedulerInitialized()) {
             schedule::enqueueThread(thread);
         }
     }

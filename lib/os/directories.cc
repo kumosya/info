@@ -7,7 +7,7 @@
 namespace os {
 bool Directories::userId(uint32_t& uid) {
     TaskInfo info{};
-    if (Process::queryTask(Process::getTaskId(), info)) return false;
+    if (Task::query(Task::getId(), info)) return false;
     uid = info.effectiveUid;
     return true;
 }

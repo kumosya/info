@@ -205,6 +205,7 @@ void finishContextSwitch() {
         heap::kernelFree(thread->getKernelStack());
         thread->setKernelStack(nullptr);
         thread->setKernelStackTop(nullptr);
+        if (thread->getTask()) thread->getTask()->retireJoinedThread(thread);
     }
     __atomic_store_n(&executingTasks[cpu::getCurrentId()], Thread::getCurrent()->getTask(), __ATOMIC_RELEASE);
     interrupt::restore(flags);
@@ -332,6 +333,7 @@ void schedulerTick() {
     if (current != nullptr && current != queue->getIdleThread() &&
         current->getState() == ThreadState::Running) {
         current->setRuntime(current->getRuntime() + (elapsed));
+        if (current->getTask()) current->getTask()->accountCpu(elapsed);
         current->setSliceRuntime(current->getSliceRuntime() + (elapsed));
         const uint64_t delta =
             calculateVruntimeDelta(elapsed, current->getWeight());

@@ -29,3 +29,11 @@
 | 19 | WakeAddress | futex 唤醒热路径 |
 
 参数为 rdi/rsi/rdx/r10/r8/r9，号及返回值为 rax。错误为负 int64，具体值见 os::ErrorCode。IPC deadline 使用绝对单调纳秒；UINT64_MAX 无限，0 非阻塞。
+
+## v0.1.1 映射入口
+
+编号保持不变。`MapMemory(address, size, flags, handle, offset, target)` 的 flags 低两位沿用 Write=1、Execute=2；类型取 `OS_MAP_ANONYMOUS=0`、`OS_MAP_PAGE_OBJECT=0x100` 或 `OS_MAP_SHARED_OBJECT=0x200`。匿名模式要求 handle/offset 为 0。页对象/共享对象按句柄类型和读写权限校验，W^X 约束不变。
+
+`UnmapMemory(address, size, target)` 与 `ProtectMemory(address, size, protection, target)` 的 target=0 表示自身。其他进程目标必须同时满足固定 `ServiceRole::Memory` 与 `taskCapabilityMemory`，普通进程即使是 root 也不能操作其他进程的地址空间。Protect 的 `OS_PROTECT_COPY_ON_WRITE=4` 仅允许该 MM 身份设置。
+
+这些机制复用 `MappingOperations`、`PageMappings` 和 `SharedMemory`，memory.kernel 删除对应映射 RPC；旧操作编号留空，不重用。VMA、延迟分页、文件 backing 和 COW 策略仍位于 Ring3 MM。修改 SDK 接口后需重建关联程序和服务。

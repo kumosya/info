@@ -1,6 +1,8 @@
 # ELF 解释器与用户态动态链接
 
-普通磁盘应用使用 `PT_INTERP=/lib/ld-osinfo-x86-64.so`。解释器实现位于 `user/ld/`，是自包含的 Ring3 ELF64 程序，静态链接一份 OS 引导运行时，不依赖 libc 或共享库。操作复用现有 IPC、映射和句柄机制，未新增 syscall。
+普通应用使用 `PT_INTERP=/lib/ld-osinfo-x86-64.so`。解释器实现位于 `user/ld/`，是自包含的 Ring3 ELF64 程序，静态链接一份 OS 引导运行时，不依赖 libc 或共享库。操作复用现有 IPC、映射和句柄机制，未新增 syscall。
+
+`make libraries` 生成 `build/lib/ld-osinfo-x86-64.so`，镜像安装及隔离测试流程将其直接部署到 `/lib/ld-osinfo-x86-64.so`，不生成或安装 ld-osinfo.inpk。SDK 保留构建配套信息和解释器副本；普通包禁止占用解释器与 `/lib/version.1` 路径。升级内核运行组件时应配套重建解释器及相关程序，解释器路径保持稳定。
 
 ## 加载边界
 
@@ -26,7 +28,7 @@ sequenceDiagram
 
 内核不解析普通应用的库搜索路径或依赖集。`ExecImageInfo.sharedImages` 与 `SpawnImageInfo.sharedImages` 在此路径只承载解释器文件，数量为 1；静态程序为 0。内核仍检查文件大小、地址范围、段权限和入口。缺失解释器时 exec 在提交前失败。缺失依赖或未定义符号由解释器输出 `[LD]` 错误及名称，以退出码 127 结束新程序。
 
-固定 boot ProgramId 在文件系统可用前启动，继续使用引导模块提供的四个运行时镜像及封闭内核链接路径。这只解决引导依赖，不对普通应用固定依赖，也不改变任何服务的 Ring3 身份。独立 guiw 包中的服务镜像使用此引导格式。
+固定 boot ProgramId 在文件系统可用前启动，使用引导模块提供的四个运行时镜像。users/tty/console/guiw 的主 ELF 从文件系统受控加载；它们仍使用无 PT_INTERP 的服务链接格式，共享库取自保留的引导运行库。主 ELF 的来源任务地址空间与共享库的内核来源地址空间分别记录，不能以一个 sourceRoot 读取两者。普通应用继续由 Ring3 解释器解析 DT_NEEDED，不固定四个依赖。所有服务仍在 Ring3 执行。
 
 ## 栈与辅助向量
 

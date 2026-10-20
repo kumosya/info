@@ -355,4 +355,4 @@ TaskReference 为跨锁、跨阻塞路径持引用；Task 的退出状态保留�
 
 exec 的不可逆提交区禁止抢占但保持中断可用，保证已摘除线程和新地址空间的所有权交接完成；同时拒绝重复 exec 提交和对已终止进程重新开放线程创建。exec 与 destroy 先调用 quiesceTask 等待远端 CPU 实际离开旧 Task，再释放页表。fork 在子线程可运行前同步 Ring 3 MM 的 VMA 和 COW 页面状态；地址空间 generation 在 exec 时递增。
 
-make build/tests/kernel-lifecycle.elf 构建独立测试内核，配合 script/smoke-hybrid.py --lifecycle-test --memory-test --smp 4 运行。测试把目标线程固定在 CPU 1、操作线程固定在 CPU 2；包含清理请求发起者被杀、远端持续访问旧页表，以及 exec 提交中并发 kill。生产内核不包含该测试代码。
+make build/tests/kernel-lifecycle.elf 构建独立测试内核，配合 sh tests/smoke-hybrid.sh --lifecycle-test --smp 4 运行。内存回归另用 --memory-test 模式运行，两种模式各自使用隔离镜像。生命周期测试把目标线程固定在 CPU 1、操作线程固定在 CPU 2；包含清理请求发起者被杀、远端持续访问旧页表，以及 exec 提交中并发 kill。生产内核不包含该测试代码。

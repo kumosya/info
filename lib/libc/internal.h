@@ -88,6 +88,7 @@ ssize_t __libc_file_write(void* object, const void* buffer, size_t count);
 ssize_t __libc_file_pread(void* object, void* buffer, size_t count, off_t offset);
 ssize_t __libc_file_pwrite(void* object, const void* buffer, size_t count, off_t offset);
 off_t __libc_file_seek(void* object, off_t offset, int whence);
+int __libc_file_fsync(void* object);
 uint64_t __libc_file_handle(void* object);
 void __libc_file_set_flags(void* object, int flags);
 struct stat;

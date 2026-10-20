@@ -1,7 +1,7 @@
 #ifndef _OS_STORAGE_H
 #define _OS_STORAGE_H
 
-#include <stdint.h>
+#include <cstdint>
 
 namespace os {
 
@@ -9,7 +9,8 @@ enum class BlockDeviceType : uint32_t {
     VirtioBlock = 1,
     Ahci,
     Nvme,
-    UsbStorage
+    UsbStorage,
+    BootImage
 };
 
 enum class StorageError : int64_t {

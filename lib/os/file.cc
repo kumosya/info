@@ -3,7 +3,7 @@
 #include "os/abi.h"
 #include "os/service.h"
 #include "os/terminal.h"
-#include <errno.h>
+#include <cerrno>
 #include <sys/stat.h>
 
 namespace {
@@ -316,6 +316,9 @@ static bool readDirectory(uint64_t fs, const char* path, uint64_t index,
     entry.type = static_cast<FileType>(reply.data[1]);
     Runtime::copyString(entry.name, reinterpret_cast<const char*>(&reply.data[2]),
                sizeof(entry.name));
+    if (reply.length < 36) return false;
+    entry.inode = reply.data[34];
+    entry.nextOffset = reply.data[35];
     return true;
 }
 
@@ -564,7 +567,13 @@ int File::unlink(const char* path) { return FileProtocol::removePath(service(),p
 int File::rmdir(const char* path) { return unlink(path); }
 int File::truncate(const char* path,off_t length) { if (length<0) return -EINVAL; if (length) return -ENOSYS; return FileProtocol::truncateFile(service(),path)?0:-EIO; }
 int File::ftruncate(off_t length) { metadataValid_=false; return handle_?truncate(path_,length):-EBADF; }
-int File::fsync() { return handle_?-ENOSYS:-EBADF; }
+int File::fsync() {
+    if (!handle_) return error_ = -EBADF;
+    if (backend_ != Backend::Filesystem) return error_ = -EINVAL;
+    IpcMessage request{}, reply{}; request.type = static_cast<uint64_t>(FsRequest::Sync);
+    request.length = 1; request.data[0] = handle_;
+    return error_ = callService(service(), request, reply) ? -EIO : static_cast<int>(reply.data[0]);
+}
 int File::link(const char* existing,const char* target) { return FileProtocol::linkFile(service(),existing,target)?0:-EIO; }
 int File::rename(const char* existing,const char* target) {
     if (!existing || !target || Runtime::stringLength(existing)>=384 || Runtime::stringLength(target)>=384) return -EINVAL;

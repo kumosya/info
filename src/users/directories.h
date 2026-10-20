@@ -2,9 +2,9 @@
 
 #include "os/users.h"
 #include <dirent.h>
-#include <errno.h>
-#include <stdio.h>
-#include <string.h>
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -13,7 +13,7 @@ class DirectoryManager {
    public:
     bool initialize() {
         if (!removeTree("/run", 0)) return false;
-        const char* directories[] = {"/media", "/proc", "/run", "/run/lock", "/run/user",
+        const char* directories[] = {"/media", "/run", "/run/lock", "/run/user",
             "/lib", "/var", "/var/log", "/var/lib", "/var/lib/inpkg", "/var/cache", "/var/tmp",
             "/etc/xdg", "/usr/share", "/usr/local", "/usr/local/share"};
         for (const char* directory : directories)

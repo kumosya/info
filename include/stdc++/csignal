@@ -1,0 +1,9 @@
+#pragma once
+
+#include <signal.h>
+
+namespace std {
+using ::sig_atomic_t;
+using ::signal;
+using ::raise;
+}  // namespace std

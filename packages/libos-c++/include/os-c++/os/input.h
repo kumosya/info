@@ -1,7 +1,7 @@
 #ifndef _OS_INPUT_H
 #define _OS_INPUT_H
 
-#include <stdint.h>
+#include <cstdint>
 
 namespace os {
 

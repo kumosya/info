@@ -8,6 +8,10 @@ SDK 分别安装到 `/usr/include/stdc`、`/usr/include/stdc++`、`/usr/include/
 
 目录流使用真实 fd，支持 dirfd、fdopendir、scandir、readdir_r 和 posix_getdents。glob/fnmatch 按路径分量展开、排序并遵守隐藏文件规则，递归缓冲位于堆上。
 
+目录记录包含 inode 与不透明 nextOffset，readdir/telldir/getdents 不再对 /proc 做路径特判。C++ 的 os::File::fsync 与 C 的 fsync/fdatasync 经 FS Sync 请求调用实际文件系统同步；非法描述符和非文件后端明确失败。服务配置持久化使用该同步路径后替换临时文件，接口存在不再等同于返回 ENOSYS。
+
+公共 C++ 任务类为 os::Task；libc 保持 POSIX C 函数名，OsTaskInfo 与 SDK TaskInfo 同步布局。进程工具从 /proc 获取列表，C 适配不保留旧 TaskListEntry 列表包装。C++ 源和专用头采用 cstdio/cstdint/cstring 等包装头；C 源、C/C++ 共用头及包装头自身保留正确 C 头。
+
 POSIX 进程接口使用与 OS 库统一的系统调用号；文件服务操作通过 libc 私有 C++ 适配连接 File。公开 OS SDK 不含 C 适配头。errno 是按内核线程 id 分配的可修改左值宏，线程退出时回收槽位。pthread 提供线程、同步、TLS 与清理栈；缺少后端的操作通过标准返回值指示错误。
 
 数学、复数、浮点环境、字符串、排序搜索、正则表达式、整数/浮点解析、printf/scanf、C/UTF-8 locale 和编码转换在用户态实现。日历转换当前以 UTC 为本地时区。文件系统时间戳精度由相应驱动决定。

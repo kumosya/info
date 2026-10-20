@@ -30,10 +30,7 @@ int SystemService::pciRequest(PciRequest& command) {
     } else command.value = reply.data[1];
     return result;
 }
-int SystemService::queryTask(uint64_t id, TaskInfo& info) { return Process::queryTask(id, info); }
-int SystemService::coreCall(CoreServiceKind, IpcMessage&, IpcMessage&, uint64_t) {
-    return static_cast<int>(ErrorCode::PermissionDenied);
-}
+int SystemService::queryTask(uint64_t id, TaskInfo& info) { return Task::query(id, info); }
 
 void ServiceRegistry::setServiceRegistry(uint64_t endpoint) { configuredRegistry_ = endpoint; }
 

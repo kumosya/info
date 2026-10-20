@@ -1,7 +1,7 @@
 #pragma once
 
-#include <stddef.h>
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
 
 namespace kernel {
 
@@ -44,6 +44,7 @@ struct ElfSharedImage {
     uint64_t sourceAddress;
     uint64_t size;
     const char* name;
+    uint64_t sourceRoot = 0;
 };
 
 class ElfLoader {

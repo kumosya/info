@@ -1,8 +1,8 @@
 #ifndef _OS_ABI_H
 #define _OS_ABI_H
 
-#include <stddef.h>
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
 #include <os/syscall.h>
 
 namespace os {
@@ -74,6 +74,13 @@ struct TaskInfo {
     uint64_t parentId;
     uint32_t trustedDeviceService;
     uint32_t serviceRole;
+    uint64_t taskGroupId, sessionId;
+    uint64_t terminalForegroundGroup;
+    uint64_t startedNanoseconds, cpuNanoseconds;
+    uint32_t terminalKind, terminalIndex;
+    uint32_t commandLineSize;
+    uint32_t managedService;
+    char commandLine[384];
 };
 
 enum class ServiceRole : uint32_t { None, Init, Task, Fs, Pci, Device, Storage, Tty, Console, Window, Users, Memory, Pipe, MessageQueue };
@@ -103,9 +110,11 @@ struct SpawnImageInfo {
     const char* const* arguments;
     uint32_t sharedImageCount;
     uint32_t flags;
+    uint32_t terminalKind, terminalIndex;
     const struct SharedImageInfo* sharedImages;
 };
 constexpr uint32_t spawnFlagNewSession = 1U;
+constexpr uint32_t spawnFlagManagedService = 2U;
 
 struct SharedImageInfo {
     const void* image;
@@ -338,7 +347,7 @@ class Memory {
     static int unmapTarget(uint64_t address, uint64_t size, uint64_t target = 0);
     static int protectTarget(uint64_t address, uint64_t size, uint64_t protection, uint64_t target = 0);
     static uint64_t mapSharedMemory(uint64_t handle, uint64_t address, uint64_t size,
-                         uint64_t offset, uint64_t protection);
+                              uint64_t offset, uint64_t protection, uint64_t target = 0);
     static int resizeSharedMemory(uint64_t handle, uint64_t size);
     static int unlinkSharedMemory(const char* name);
     static uint64_t openSharedMemory(const char* name, int flags);

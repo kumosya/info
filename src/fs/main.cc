@@ -1,12 +1,27 @@
 #include "os/task.h"
 #include "server.h"
 #include <fcntl.h>
-#include <errno.h>
+#include <cerrno>
 
 namespace vfs::server {
 
-bool FsServer::handle(const os::IpcMessage& request, os::IpcMessage& reply) {
+bool FsServer::handle(const os::IpcMessage& original, os::IpcMessage& reply) {
+    os::IpcMessage request = original;
     const auto operation = static_cast<os::FsRequest>(request.type);
+    switch (operation) {
+        case os::FsRequest::Open: case os::FsRequest::Stat: case os::FsRequest::Create:
+        case os::FsRequest::Remove: case os::FsRequest::MakeDirectory: case os::FsRequest::ReadDirectory:
+        case os::FsRequest::ReadDirectoryBatch: case os::FsRequest::Truncate: case os::FsRequest::ChangeMode:
+        case os::FsRequest::ChangeOwner: case os::FsRequest::ChangeTimes:
+        case os::FsRequest::Link: case os::FsRequest::Rename:
+            if (!PathText::collapseSlashes(reinterpret_cast<char*>(request.data), 384) ||
+                ((operation == os::FsRequest::Link || operation == os::FsRequest::Rename) &&
+                 !PathText::collapseSlashes(reinterpret_cast<char*>(request.data) + 384, 384))) {
+                reply.length = 1; reply.data[0] = 1; return true;
+            }
+            break;
+        default: break;
+    }
     if (!permitted(request)) {
         if ((operation == os::FsRequest::ReadAtAsync || operation == os::FsRequest::WriteAtAsync) && request.handleCount == 1) {
             os::IpcMessage completion{};
@@ -32,7 +47,7 @@ bool FsServer::handle(const os::IpcMessage& request, os::IpcMessage& reply) {
         case os::FsRequest::Open: {
             const int flags = request.length >= 49 ? static_cast<int>(request.data[48]) : O_RDONLY;
             const uint16_t mode = request.length >= 50 ? request.data[49] & 07777 : 0666;
-            os::IpcMessage status{}; stat(path,status);
+            os::IpcMessage status{}; stat(path,status,request.senderPid);
             const bool exists = status.data[0] == 0;
             reply.length=2;
             if ((flags&O_ACCMODE) > O_RDWR) {
@@ -46,7 +61,7 @@ bool FsServer::handle(const os::IpcMessage& request, os::IpcMessage& reply) {
             if (!exists) {
                 if (!create(path,false)) { reply.data[0]=0; reply.data[1]=static_cast<uint64_t>(-EEXIST); break; }
                 os::TaskInfo caller{};
-                if (!os::Process::queryTask(request.senderPid, caller))
+                if (!os::Task::query(request.senderPid, caller))
                     changeOwner(path,caller.effectiveUid,caller.effectiveGid);
                 changeMode(path,mode);
             }
@@ -60,6 +75,20 @@ bool FsServer::handle(const os::IpcMessage& request, os::IpcMessage& reply) {
         case os::FsRequest::Close:
             reply.data[0] = close(request.senderPid, request.data[0]);
             break;
+        case os::FsRequest::Sync: {
+            auto* entry = acquireDescription(request.senderPid, request.data[0]);
+            int result = -EBADF;
+            if (entry) {
+                result = -EINVAL;
+                if (entry->filesystem) {
+                    std::lock_guard<std::mutex> guard(fileSystemLock(entry->mountIndex));
+                    result = entry->filesystem->sync() ? 0 : -EIO;
+                }
+                releaseDescription(entry);
+            }
+            reply.data[0] = static_cast<int64_t>(result); reply.length = 1;
+            break;
+        }
         case os::FsRequest::Read:
             read(request.senderPid, request.data[0], request.data[1], reply);
             break;
@@ -71,14 +100,14 @@ bool FsServer::handle(const os::IpcMessage& request, os::IpcMessage& reply) {
                  static_cast<int64_t>(request.data[1]), request.data[2], reply);
             break;
         case os::FsRequest::Stat:
-            stat(path, reply);
+            stat(path, reply, request.senderPid);
             break;
         case os::FsRequest::Create:
         case os::FsRequest::MakeDirectory:
             reply.data[0] = create(path, operation == os::FsRequest::MakeDirectory) ? 0 : 1;
             if (!reply.data[0]) {
                 os::TaskInfo caller{};
-                if (!os::Process::queryTask(request.senderPid, caller))
+                if (!os::Task::query(request.senderPid, caller))
                     changeOwner(path, caller.effectiveUid, caller.effectiveGid);
             }
             break;
@@ -86,10 +115,10 @@ bool FsServer::handle(const os::IpcMessage& request, os::IpcMessage& reply) {
             reply.data[0] = remove(path) ? 0 : 1;
             break;
         case os::FsRequest::ReadDirectory:
-            readDirectory(path, request.data[48], reply);
+            readDirectory(path, request.data[48], reply, request.senderPid);
             break;
         case os::FsRequest::ReadDirectoryBatch:
-            readDirectoryBatch(path, request.data[48], request.data[49], reply);
+            readDirectoryBatch(path, request.data[48], request.data[49], reply, request.senderPid);
             break;
         case os::FsRequest::Truncate:
             reply.data[0] = truncate(path);

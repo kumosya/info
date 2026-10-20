@@ -395,7 +395,7 @@ class DynamicLinker {
         if (!entry || !phdr || !phnum || phnum > programLimit) fail("missing application auxiliary data");
         os::Runtime::runtimeInit(0, nullptr, environment_);
         os::TaskInfo task{};
-        if (os::Process::queryTask(os::Process::getTaskId(), task)) fail("cannot query process credentials");
+        if (os::Task::query(os::Task::getId(), task)) fail("cannot query process credentials");
         secure_ = task.uid != task.effectiveUid || task.gid != task.effectiveGid;
         Image& main = images_[0];
         if (!copy(main.path, sizeof(main.path), executableName)) fail("program path too long");

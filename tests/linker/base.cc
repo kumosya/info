@@ -1,5 +1,5 @@
-#include <stdlib.h>
-#include <string.h>
+#include <cstdlib>
+#include <cstring>
 #include "os/abi.h"
 namespace { int* value; }
 __attribute__((constructor)) static void initialize() {

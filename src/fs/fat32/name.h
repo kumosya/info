@@ -1,8 +1,8 @@
 #ifndef _FS_FAT32_NAME_H
 #define _FS_FAT32_NAME_H
 
-#include <stddef.h>
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
 
 namespace fat32::detail {
 

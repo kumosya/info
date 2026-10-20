@@ -27,7 +27,7 @@ class SessionManager {
         for (auto& session : sessions_) {
             if (!session.task) continue;
             os::TaskInfo task{};
-            if (!os::Process::queryTask(session.task, task) && task.state != 2 &&
+            if (!os::Task::query(session.task, task) && task.state != 2 &&
                 task.effectiveUid == session.uid) continue;
             const uint32_t uid = session.uid;
             session = {};

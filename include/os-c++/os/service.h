@@ -1,7 +1,7 @@
 #ifndef _OS_SERVICE_H
 #define _OS_SERVICE_H
 
-#include <stdint.h>
+#include <cstdint>
 
 namespace os {
 struct PciRequest;
@@ -13,12 +13,6 @@ class SystemService {
    public:
     static int pciRequest(PciRequest& request);
     static int queryTask(uint64_t id, TaskInfo& info);
-    static int coreCall(CoreServiceKind kind, IpcMessage& request, IpcMessage& reply, uint64_t deadline);
-    static bool isPrivileged() {
-        uint16_t selector;
-        asm volatile("mov %%cs, %0" : "=r"(selector));
-        return (selector & 3) == 0;
-    }
 };
 
 class ServiceRegistry {

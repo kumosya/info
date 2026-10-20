@@ -1,10 +1,12 @@
 # 桌面与开发环境实施记录
 
+> 2026-10-19 后续更正：InfoIDE 已改为 Linux C++ CLI，基础工具已独立。当前实现和验证见 [v0.1.1 实施记录](v0.1.1-refinement-progress.md)，下文保留此前阶段记录。
+
 规格：[desktop-runtime-development-prompt.md](desktop-runtime-development-prompt.md)。保留混合内核、Task 生命周期与内存重构成果。所有服务仍为 Ring3，19 个有效 syscall；未增加端口访问接口。
 
 ## 文档导览
 
-- [架构](../x86-64/architecture.md)、[服务总览](../service/overview.md)：Ring3 服务与 Ring0 机制边界、启动依赖及架构图。
+- [架构](../architecture.md)、[服务总览](../service/overview.md)：Ring3 服务与 Ring0 机制边界、启动依赖及架构图。
 - [窗口](../service/window.md)、[终端](../service/console.md)、[TTY](../service/tty.md)：合成、输入、事件通知与 PTY。
 - [用户程序](../x86-64/user.md)、[动态链接](../x86-64/dynamic-linker.md)、[运行时](../lib/os/runtime.md)：ELF 映射、解释器、辅助向量与 libc 状态。
 - [目录 API](../lib/os/directories.md)、[软件包](../app/inpkg.md)、[Info IDE](../app/infoide.md)：XDG、迁移、SDK 与独立构建。

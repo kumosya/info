@@ -25,5 +25,23 @@ using ::putchar;
 using ::puts;
 using ::snprintf;
 using ::vsnprintf;
+using ::rename;
+using ::remove;
+using ::freopen;
+using ::fseek;
+using ::ftell;
+using ::rewind;
+using ::fgetpos;
+using ::fsetpos;
+using ::setbuf;
+using ::setvbuf;
+using ::ungetc;
+using ::scanf;
+using ::fscanf;
+using ::sscanf;
+using ::sprintf;
+using ::vprintf;
+using ::vfprintf;
+using ::vsprintf;
 
 }  // namespace std

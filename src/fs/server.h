@@ -4,6 +4,7 @@
 
 #include "block.h"
 #include "devices.h"
+#include "procfs.h"
 #include "ext3.h"
 #include "ext4.h"
 #include "fat32.h"
@@ -27,6 +28,17 @@ constexpr uint32_t workerThreadCount  = 3;
 
 class PathText {
  public:
+static bool collapseSlashes(char* path, size_t capacity) {
+    size_t read = 0, write = 0;
+    while (read < capacity && path[read]) {
+        const char value = path[read++];
+        if (value == '/' && write && path[write - 1] == '/') continue;
+        path[write++] = value;
+    }
+    if (read == capacity) return false;
+    path[write] = 0;
+    return true;
+}
 static bool startsWithPath(const char* path, const char* prefix) {
     uint32_t index = 0;
     while (prefix[index] != '\0' && path[index] == prefix[index]) ++index;
@@ -171,7 +183,8 @@ enum class DescriptorBackend : uint8_t {
     Zero,
     Null,
     BlockDevice,
-    SystemFile
+    SystemFile,
+    ProcessFile
 };
 enum class PathBackend : uint8_t { Root = 0, Invalid = 0xff };
 
@@ -182,6 +195,7 @@ struct MountEntry {
 };
 
 struct OpenFileDescription {
+    char snapshot[1536]{};
     uint32_t inode;
     uint16_t mode;
     uint16_t uid, gid;
@@ -240,16 +254,16 @@ class FsServer {
     void descriptorStat(uint64_t ownerPid, uint64_t descriptor, os::IpcMessage& reply);
     void transferAt(const os::IpcMessage& request, os::IpcMessage& reply, bool writing);
 
-    void stat(const char* path, os::IpcMessage& reply);
+    void stat(const char* path, os::IpcMessage& reply, uint64_t caller = 0);
     int64_t readDevice(uint32_t index, uint64_t offset, void* buffer,
                        size_t size);
 
     uint64_t truncate(const char* path);
 
-    void readDirectory(const char* path, uint64_t index, os::IpcMessage& reply);
+    void readDirectory(const char* path, uint64_t index, os::IpcMessage& reply, uint64_t caller = 0);
 
     void readDirectoryBatch(const char* path, uint64_t index,
-                            uint64_t requested, os::IpcMessage& reply);
+                            uint64_t requested, os::IpcMessage& reply, uint64_t caller = 0);
 
     bool mount(const os::IpcMessage& request);
 

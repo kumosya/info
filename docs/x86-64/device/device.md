@@ -1,6 +1,6 @@
 # 设备管理（src/kernel/device/）
 
-本文档描述 `src/kernel/device/device.cc` 的实现：内核侧的设备访问控制层，为可信 pci/device/storage 服务及显示服务提供受能力门控的硬件资源。对应头文件 `include/kernel/device.h`。
+本文档描述 `src/kernel/device/` 的实现：内核侧的设备访问控制层，为可信 pci/device/storage 服务及显示服务提供受能力门控的硬件资源。对应头文件 `include/kernel/device.h`。
 
 内核负责硬件访问控制；device/storage 服务在 Ring3 运行。PCI 配置、MMIO、DMA、中断通过内核接口管理，端口指令仅在内核 PS/2 与 PCI 机制中执行。所有类和函数位于 `namespace kernel::device`。
 
@@ -39,7 +39,7 @@ class DisplayAccess {
 
 填充 `os::DisplayInfo`：address（含页内偏移）、size、width、height、pitch、bitsPerPixel、颜色分量位置；像素格式判定：32bpp 且 R=16,G=8,B=0 → `Bgra`；R=0,G=8,B=16 → `Rgba`；其他 → `Unknown`。
 
-对应系统调用 MapFramebuffer（60）。console 与 guiw 服务使用。
+对应 device.kernel 的 Framebuffer 请求，由已有 IPC syscall 承载；console 与 guiw 服务使用。
 
 ## 4. PCI 访问（PciAccess）
 
@@ -62,7 +62,7 @@ class PciAccess {
 - **读/写**：校验 `segment == 0 && device < 32 && function < 8`、`offset < 256`、4 字节对齐。
 - **BAR 探测**（`getMemoryBar`）：保存原值；I/O BAR（bit 0）返回 false；临时关闭命令寄存器内存/IO 解码，向 BAR 写全 1 读回掩码，恢复原值；输出 base 与 `size = ~mask + 1`；支持 64 位内存 BAR。
 
-独立的 `pci` 服务通过 `CallPciService`（4111）向内核 `PciAccess` 提交枚举、配置读取和配置写入请求；只有该服务持有 PCI 能力。device/storage 通过 IPC 调用 pci 服务。端口指令只存在于内核 PCI 驱动中。
+独立的 `pci` 服务通过 IPC 调用 `pci.kernel`，由 `src/kernel/device/pci/service.cc` 检查固定 PCI 角色及能力，再调用同目录 `access.cc` 中的 PciAccess。没有独立 PCI syscall。device/storage 通过 IPC 调用 pci 服务。端口指令只存在于内核 PCI 驱动中。
 
 ```cpp
 struct PciFunctionInfo {   // os/abi.h
@@ -88,7 +88,7 @@ class MmioRegion {
 
 校验用户地址/大小页对齐、无溢出、在用户半区；`getMemoryBar` 且 `size <= barSize`、BAR 物理基址页对齐；逐页映射（标志同帧缓冲）；失败回滚。成功返回对象（作为 `HandleType::MmioRegion` 句柄）。
 
-对应系统调用 MapDeviceMmio（4114）。storage 服务用它映射 virtio PCI 能力区域。
+对应 device.kernel 的 MapMmio 请求。storage 服务用它映射 virtio PCI 能力区域。
 
 ## 6. DMA 缓冲（DmaBuffer）
 
@@ -106,7 +106,7 @@ class DmaBuffer {
 
 分配**一个物理页**并映射到用户地址（`pageUser | pageWritable | pageNoExecute`）；填充 `DmaBufferInfo`：`virtualAddress = userAddress`、`deviceAddress = 物理地址`、`size = 4096`（固定单页）。
 
-对应系统调用 AllocateDma（4115）。storage 服务用它构建 virtqueue。
+对应 device.kernel 的 AllocateDma 请求。storage 服务用它构建 virtqueue。
 
 ## 7. 中断绑定（InterruptBinding）
 
@@ -134,17 +134,19 @@ class InterruptBinding {
 - `interrupt::setIrq(irq, 64 + irq, cpu::getCurrent()->getApicId(), levelTriggered)` 配置 I/O APIC 路由（见 [cpu.md](../cpu/cpu.md)）。
 
 中断触发时 `irqHandler` 校验向量在 `[64, 79]`：
-- 电平触发中断先屏蔽 IRQ（`interrupt::maskIrq`），用户态通过 AcknowledgeIrq（4167）系统调用重新启用；
+- 电平触发中断先屏蔽 IRQ（`interrupt::maskIrq`），用户态通过 device.kernel 的 AcknowledgeIrq 请求重新启用；
 - 调用 `endpoint->notifyFromInterrupt(0x495251, irq)`——以消息类型 `0x495251`（ASCII "IRQ"）向绑定的 IPC 端点投递通知（见 [ipc.md](../task/ipc.md)）。
 
-对应系统调用 BindIrq（20）、AcknowledgeIrq（4167）。device 服务绑定键盘（IRQ 1）与鼠标（IRQ 12），storage 服务绑定 virtio-blk 中断。
+对应 device.kernel 的 BindIrq、AcknowledgeIrq 请求。device 服务绑定键盘（IRQ 1）与鼠标（IRQ 12），storage 服务绑定 virtio-blk 中断。
 
 ## 8. 接口汇总
 
-| 接口               | 所需能力    | 系统调用       | 使用者                          |
-| ---------------- | ------- | ---------- | ---------------------------- |
-| DisplayAccess    | Display | 60       | console、guiw               |
-| PciAccess        | Pci     | 4111       | pci-server                    |
-| MmioRegion       | Device  | 4114       | storage-server（virtio）       |
-| DmaBuffer        | Device  | 4115       | storage-server（virtqueue）    |
-| InterruptBinding | Device  | 4116       | device-server、storage-server |
+| 接口 | 所需能力 | 驻留端点/操作 | 使用者 |
+| --- | --- | --- | --- |
+| DisplayAccess | Display | device.kernel / Framebuffer | console、guiw |
+| PciAccess | Pci + 固定 PCI 角色 | pci.kernel / Enumerate、ReadConfig、WriteConfig | PCI 服务 |
+| MmioRegion | Device + 固定设备角色 | device.kernel / MapMmio | storage |
+| DmaBuffer | Device + 固定设备角色 | device.kernel / AllocateDma | storage |
+| InterruptBinding | Device + 固定设备角色 | device.kernel / BindIrq、AcknowledgeIrq | device、storage |
+
+Ring3 入口分别位于 `src/device/main.cc`、`src/device/pci/main.cc`、`src/device/storage/main.cc`。Ring0 的通用设备端点位于 `src/kernel/device/service/service.cc`，PCI 端点与配置端口实现位于 `src/kernel/device/pci/`。公共 SDK 只提供协议和客户端声明，不包含原始端口指令或 CS 检查。

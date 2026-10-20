@@ -29,15 +29,39 @@ class SystemSnapshot {
  public:
     static bool contents(uint32_t index, Text& text);
 };
+class SystemMetadata {
+ public:
+    inline static char version[64]{};
+    inline static char hostname[64]{};
+    static bool load(vfs::FileSystem& root, const char* path, char* output, bool host) {
+        vfs::FileStatus status{};
+        char bytes[66]{};
+        if (!root.lookup(path, status) || (status.mode & 0xf000) != vfs::modeRegular ||
+            !status.size || status.size > sizeof(bytes) ||
+            root.read(status, 0, bytes, status.size) != static_cast<int64_t>(status.size)) return false;
+        size_t length = status.size;
+        if (bytes[length - 1] == '\n') --length;
+        if (length && bytes[length - 1] == '\r') --length;
+        if (!length || length >= 64) return false;
+        for (size_t i = 0; i < length; ++i) {
+            const char c = bytes[i];
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || c == '.' || c == '-' || (!host && (c == '_' || c == '+')))) return false;
+        }
+        os::Runtime::copyBytes(output, bytes, length);
+        output[length] = 0;
+        return true;
+    }
+};
 
 bool SystemSnapshot::contents(uint32_t index, Text& text) {
     if (index >= sizeof(nodes) / sizeof(nodes[0]) || nodes[index].directory) return false;
     os::SystemInfo info{};
-    if (!os::System::getSystemInfo(info)) return false;
+    if (index >= 7 && !os::System::getSystemInfo(info)) return false;
     switch (index) {
         case 4: text.append("osinfo"); break;
-        case 5: text.append("0.1"); break;
-        case 6: text.append("localhost"); break;
+        case 5: text.append(SystemMetadata::version); break;
+        case 6: text.append(SystemMetadata::hostname); break;
         case 7: text.number(info.uptimeNanoseconds / 1000000000ULL); break;
         case 8: text.number(info.onlineCpus); break;
         case 9: text.number(info.totalMemoryBytes); break;
@@ -53,9 +77,22 @@ bool SystemSnapshot::contents(uint32_t index, Text& text) {
 }
 
 namespace vfs {
+bool SystemFiles::initialize(FileSystem& root) {
+    if (!SystemMetadata::load(root, "/lib/version.1", SystemMetadata::version, false) ||
+        !SystemMetadata::load(root, "/etc/hostname", SystemMetadata::hostname, true)) {
+        os::System::log("[FS] missing or invalid /lib/version.1 or /etc/hostname\n");
+        return false;
+    }
+    return true;
+}
 bool SystemFiles::lookup(const char* path, FileStatus& status) {
     for (uint32_t i = 0; i < sizeof(nodes) / sizeof(nodes[0]); ++i) {
-        if (!os::Runtime::stringsEqual(path, nodes[i].path)) continue;
+        size_t length = 0;
+        while (nodes[i].path[length] && path[length] == nodes[i].path[length]) ++length;
+        if (nodes[i].path[length]) continue;
+        const char* tail = path + length;
+        if (nodes[i].directory) while (*tail == '/') ++tail;
+        if (*tail) continue;
         Text text;
         if (!nodes[i].directory && !SystemSnapshot::contents(i, text)) return false;
         status = {};

@@ -1,22 +1,27 @@
 PROJECT := osinfo
 SMP ?= 4
-BUILD_DIR := build
-PACKAGE_DIR := packages
-OBJECT_DIR := obj
+CONFIGURE_BUILD ?= build
+CONFIGURATION := $(CONFIGURE_BUILD)/config.mk
+ifeq ($(filter clean,$(MAKECMDGOALS)),)
+ifeq ($(wildcard $(CONFIGURATION)),)
+$(error Run ./configure before make)
+endif
+include $(CONFIGURATION)
+else
+-include $(CONFIGURATION)
+endif
+BUILD_DIR ?= build
+PACKAGE_DIR ?= packages
+OBJECT_DIR ?= obj
 INCLUDE_DIR := include
 SOURCE_DIR := src
 KERNEL_LINKER_SCRIPT := script/kernel.lds
+HOST_CXX ?= g++
+HOST_TOOL := tools/osinfo-host
+INPKG_HOST := tools/inpkg
+CONFIG_FILES := $(wildcard config/*.conf)
 
-CROSS ?= x86_64-elf-
-ifeq ($(shell command -v $(CROSS)gcc 2>/dev/null),)
-CC := gcc
-CXX := g++
-else
-CC := $(CROSS)gcc
-CXX := $(CROSS)g++
-endif
-
-CPPFLAGS := -I$(INCLUDE_DIR) -I$(INCLUDE_DIR)/stdc -I$(INCLUDE_DIR)/stdc++ -I$(INCLUDE_DIR)/posix -I$(INCLUDE_DIR)/os-c++ -I$(INCLUDE_DIR)/osgui-c++
+CPPFLAGS := -I$(INCLUDE_DIR) -I$(INCLUDE_DIR)/stdc -I$(INCLUDE_DIR)/stdc++ -I$(INCLUDE_DIR)/posix -I$(INCLUDE_DIR)/os-c++ -I$(INCLUDE_DIR)/osgui-c++ -I$(BUILD_DIR)/generated
 DEPENDENCY_FLAGS := -MMD -MP
 CFLAGS := -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -nostdinc -m32 -O2 -Wall -Wextra
 CXXFLAGS := -std=c++20 -ffreestanding -fno-builtin -fno-stack-protector -fno-exceptions -fno-rtti \
@@ -48,26 +53,22 @@ USER_RUNTIME_OBJECTS := $(OBJECT_DIR)/user/runtime/runtime.o \
 	$(OBJECT_DIR)/user/runtime/pty.o
 USER_RUNTIME_OBJECTS += $(OBJECT_DIR)/user/runtime/directories.o
 USER_RUNTIME_OBJECTS += $(OBJECT_DIR)/user/runtime/elf.o
-CORE_SERVICE_NAMES := init task fs pci device storage mm pipe msgq
-DISK_SERVICE_NAMES := tty console users
-SERVICE_NAMES := $(CORE_SERVICE_NAMES) $(DISK_SERVICE_NAMES)
-PACKAGE_CONFIGS := $(wildcard user/*/package.conf lib/*.conf)
+-include $(BUILD_DIR)/package-inputs.mk
+ifeq ($(filter clean,$(MAKECMDGOALS)),)
+include $(BUILD_DIR)/generated/services.mk
 include $(BUILD_DIR)/packages.mk
+else
+-include $(BUILD_DIR)/generated/services.mk $(BUILD_DIR)/packages.mk
+endif
 SERVICE_PROGRAMS := $(addprefix $(BUILD_DIR)/services/,$(addsuffix .elf,$(SERVICE_NAMES)))
 USER_PROGRAMS := $(SERVICE_PROGRAMS) $(APPLICATION_PROGRAMS)
-SERVICE_SOURCES := $(foreach service,$(SERVICE_NAMES),$(wildcard \
-	$(SOURCE_DIR)/$(service)/*.cc $(SOURCE_DIR)/$(service)/*/*.cc))
-SERVICE_ASM_SOURCES := $(foreach service,$(SERVICE_NAMES),$(wildcard $(SOURCE_DIR)/$(service)/*.S))
+service_directory = $(if $(SERVICE_DIR_$(1)),$(SERVICE_DIR_$(1)),$(1))
+service_sources = $(wildcard $(SOURCE_DIR)/$(call service_directory,$(1))/*.cc) $(SERVICE_EXTRA_$(1))
+SERVICE_SOURCES := $(foreach service,$(SERVICE_NAMES),$(call service_sources,$(service)))
+SERVICE_ASM_SOURCES := $(foreach service,$(SERVICE_NAMES),$(wildcard $(SOURCE_DIR)/$(call service_directory,$(service))/*.S))
 SERVICE_CXX_OBJECTS := $(patsubst $(SOURCE_DIR)/%.cc,$(OBJECT_DIR)/%.o,$(SERVICE_SOURCES))
-MM_SOURCES := $(wildcard user/mm/*.cc)
-PIPE_OBJECTS := $(OBJECT_DIR)/user/pipe/main.o
-MSGQ_OBJECTS := $(OBJECT_DIR)/user/msgq/main.o
-MM_OBJECTS := $(patsubst user/mm/%.cc,$(OBJECT_DIR)/user/mm/%.o,$(MM_SOURCES))
-SERVICE_CXX_OBJECTS += $(MM_OBJECTS) $(PIPE_OBJECTS) $(MSGQ_OBJECTS)
 SERVICE_ASM_OBJECTS := $(patsubst $(SOURCE_DIR)/%.S,$(OBJECT_DIR)/%.o,$(SERVICE_ASM_SOURCES))
 SERVICE_OBJECTS := $(SERVICE_CXX_OBJECTS) $(SERVICE_ASM_OBJECTS)
-application_object = $(OBJECT_DIR)/user/$(1)/main.o
-APPLICATION_MAIN_OBJECTS := $(foreach app,$(APPLICATION_NAMES),$(call application_object,$(app)))
 AR ?= ar
 DISK_IMAGE := $(BUILD_DIR)/$(PROJECT).img
 LIBC := $(BUILD_DIR)/lib/libc.a
@@ -80,7 +81,7 @@ LIBCXX_SO := $(PACKAGE_DIR)/libc++/libc++.so
 USER_SHARED_LIBRARIES := $(LIBOS_CXX_SO) $(LIBC_SO) $(LIBCXX_SO) $(LIBOSGUI_CXX_SO)
 INTERPRETER := $(BUILD_DIR)/lib/ld-osinfo-x86-64.so
 IMAGE_INPUTS := $(KERNEL) $(APPLICATION_PROGRAMS) $(SERVICE_PROGRAMS) \
-	$(USER_SHARED_LIBRARIES)
+	$(USER_SHARED_LIBRARIES) $(INTERPRETER) script/lib/version.1 script/etc/hostname
 USER_SHARED_LDFLAGS := -shared -nostdlib -nostartfiles -nodefaultlibs \
 	-Wl,--build-id=none -Wl,--hash-style=sysv
 LIBC_SOURCES := internal.c fd.c filesystem.c directory.c glob.c credentials.c memory_runtime.c \
@@ -106,7 +107,7 @@ DEPENDENCY_FILES := $(sort $(GENERATED_OBJECTS:.o=.d))
 
 .SECONDARY: $(SERVICE_OBJECTS) $(APPLICATION_MAIN_OBJECTS)
 
-.PHONY: all build kernel services applications libraries package-archives disk mkimg cpfiles check \
+.PHONY: all build kernel services applications libraries package-archives disk mkimg check \
 	run debug clean
 
 .DEFAULT_GOAL := all
@@ -114,13 +115,20 @@ all: build package-archives
 
 .PHONY: sdk
 sdk: libraries $(OBJECT_DIR)/user/runtime/start.o $(OBJECT_DIR)/user/runtime/service_start.o
-	@python3 script/export-sdk.py --output "$(BUILD_DIR)/sdk"
+	@$(HOST_TOOL) sdk --build "$(BUILD_DIR)" --packages "$(PACKAGE_DIR)" --objects "$(OBJECT_DIR)" --output "$(BUILD_DIR)/sdk"
 
-$(BUILD_DIR)/packages.mk: script/packages.py $(PACKAGE_CONFIGS) Makefile user lib $(wildcard user/*/)
-	@python3 script/packages.py --package-dir "$(PACKAGE_DIR)" --makefile "$@"
+.PHONY: host-tools
+host-tools: $(HOST_TOOL) $(INPKG_HOST) tools/infoide
+$(CONFIGURATION): configure Makefile $(CONFIG_FILES) $(wildcard lib/*.conf tools/host/*.cc tools/host/*.h) tools/host/Makefile $(PACKAGE_INPUTS) $(HOST_TOOL) $(INPKG_HOST) tools/infoide
+	@echo "Configuration changed; run ./configure again" >&2
+	@false
+$(BUILD_DIR)/generated/services.mk $(BUILD_DIR)/generated/stamp $(BUILD_DIR)/packages.mk $(BUILD_DIR)/package-inputs.mk $(HOST_TOOL) $(INPKG_HOST) tools/infoide:
+	@echo "Missing configured input: $@; run ./configure" >&2
+	@false
+$(KERNEL_CPP_OBJECTS) $(SERVICE_CXX_OBJECTS) $(OBJECT_DIR)/tests/lifecycle-main.o: $(BUILD_DIR)/generated/stamp
 
 package-archives: applications libraries
-	@python3 script/packages.py --package-dir "$(PACKAGE_DIR)"
+	@$(INPKG_HOST) catalog --config "$(BUILD_DIR)/packages.conf" --package-dir "$(PACKAGE_DIR)"
 
 build: kernel services applications libraries
 
@@ -129,7 +137,7 @@ kernel: $(KERNEL)
 services: $(SERVICE_PROGRAMS)
 applications: $(APPLICATION_PROGRAMS)
 
-libraries: $(USER_SHARED_LIBRARIES) $(PACKAGE_DIR)/libc++/COPYRIGHT $(PACKAGE_DIR)/ld-osinfo/ld-osinfo-x86-64.so
+libraries: $(USER_SHARED_LIBRARIES) $(PACKAGE_DIR)/libc++/COPYRIGHT $(INTERPRETER)
 
 $(OBJECT_DIR)/user/ld/main.o: user/ld/main.cc
 	@mkdir -p $(@D)
@@ -143,10 +151,6 @@ $(INTERPRETER): $(OBJECT_DIR)/user/ld/main.o $(OBJECT_DIR)/user/ld/start.o $(USE
 	@mkdir -p $(@D)
 	@$(CXX) -no-pie -nostdlib -nostartfiles -nodefaultlibs -Wl,--build-id=none,--no-relax -Wl,-T,script/interpreter.lds \
 		-o $@ $(OBJECT_DIR)/user/ld/main.o $(OBJECT_DIR)/user/ld/start.o $(USER_RUNTIME_OBJECTS) -lgcc
-
-$(PACKAGE_DIR)/ld-osinfo/ld-osinfo-x86-64.so: $(INTERPRETER)
-	@mkdir -p $(@D)
-	@cp $< $@
 
 $(PACKAGE_DIR)/libc++/COPYRIGHT: lib/libc/portable/COPYRIGHT
 	@mkdir -p $(@D)
@@ -185,24 +189,13 @@ $(OBJECT_DIR)/user/runtime/%.o: lib/os/%.S
 	@echo "[USER AS] $<"
 	@$(CC) $(CPPFLAGS) -m64 -ffreestanding -fno-pic $(DEPENDENCY_FLAGS) -c $< -o $@
 
-$(filter-out $(MM_OBJECTS) $(PIPE_OBJECTS) $(MSGQ_OBJECTS),$(SERVICE_CXX_OBJECTS)): $(OBJECT_DIR)/%.o: $(SOURCE_DIR)/%.cc
+$(OBJECT_DIR)/user/runtime/service_start.o: src/service/start.S
+	@mkdir -p $(@D)
+	@$(CC) $(CPPFLAGS) -m64 -ffreestanding -fno-pic $(DEPENDENCY_FLAGS) -c $< -o $@
+
+$(SERVICE_CXX_OBJECTS): $(OBJECT_DIR)/%.o: $(SOURCE_DIR)/%.cc
 	@mkdir -p $(@D)
 	@echo "[SERVICE CXX] $<"
-	@$(CXX) $(CPPFLAGS) $(USER_CXXFLAGS) $(DEPENDENCY_FLAGS) -c $< -o $@
-
-$(MM_OBJECTS): $(OBJECT_DIR)/user/mm/%.o: user/mm/%.cc
-	@mkdir -p $(@D)
-	@echo "[MM CXX] $<"
-	@$(CXX) $(CPPFLAGS) $(USER_CXXFLAGS) $(DEPENDENCY_FLAGS) -c $< -o $@
-
-$(OBJECT_DIR)/user/pipe/%.o: user/pipe/%.cc
-	@mkdir -p $(@D)
-	@echo "[MM CXX] $<"
-	@$(CXX) $(CPPFLAGS) $(USER_CXXFLAGS) $(DEPENDENCY_FLAGS) -c $< -o $@
-
-$(OBJECT_DIR)/user/msgq/%.o: user/msgq/%.cc
-	@mkdir -p $(@D)
-	@echo "[MM CXX] $<"
 	@$(CXX) $(CPPFLAGS) $(USER_CXXFLAGS) $(DEPENDENCY_FLAGS) -c $< -o $@
 
 $(SERVICE_ASM_OBJECTS): $(OBJECT_DIR)/%.o: $(SOURCE_DIR)/%.S
@@ -286,8 +279,7 @@ $(LIBCXX_SO): $(LIBCXX_OBJECTS) $(LIBCXXABI_OBJECTS) $(LIBC_SO) $(LIBOS_CXX_SO) 
 define SERVICE_template
 $(BUILD_DIR)/services/$(1).elf: $$(call service_objects,$(1)) \
 		$(OBJECT_DIR)/user/runtime/service_start.o $$(LIBOS_CXX_SO) \
-		$$(if $$(filter $(1),$$(DISK_SERVICE_NAMES)),$$(LIBOSGUI_CXX_SO)) \
-		$$(if $$(filter $(1),users),$$(LIBC_SO)) \
+		$$(SERVICE_LIBS_$(1)) \
 		script/boot-service.lds Makefile
 	@mkdir -p $$(@D)
 	@echo "[SERVICE LD] $$@"
@@ -295,29 +287,11 @@ $(BUILD_DIR)/services/$(1).elf: $$(call service_objects,$(1)) \
 		$$(call service_objects,$(1)) \
 		$(OBJECT_DIR)/user/runtime/service_start.o \
 		-Wl,-E,--no-dynamic-linker -Wl,--no-as-needed $$(LIBOS_CXX_SO) \
-		$$(if $$(filter $(1),$$(DISK_SERVICE_NAMES)),$$(LIBOSGUI_CXX_SO)) \
-		$$(if $$(filter $(1),users),$$(LIBC_SO)) -lgcc
+		$$(SERVICE_LIBS_$(1)) -lgcc
 endef
 
-service_objects = $(if $(filter mm,$(1)),$(MM_OBJECTS),$(if $(filter pipe,$(1)),$(PIPE_OBJECTS),$(if $(filter msgq,$(1)),$(MSGQ_OBJECTS),$(filter $(OBJECT_DIR)/$(1)/%,$(SERVICE_OBJECTS)))))
+service_objects = $(patsubst $(SOURCE_DIR)/%.cc,$(OBJECT_DIR)/%.o,$(call service_sources,$(1))) $(patsubst $(SOURCE_DIR)/%.S,$(OBJECT_DIR)/%.o,$(wildcard $(SOURCE_DIR)/$(call service_directory,$(1))/*.S))
 $(foreach service,$(SERVICE_NAMES),$(eval $(call SERVICE_template,$(service))))
-
-define APPLICATION_template
-$(call application_object,$(1)): $$(firstword $$(wildcard user/coreutils/$(1)/main.cc user/$(1)/main.cc user/mount/$(1)/main.cc))
-	@mkdir -p $$(@D)
-	@echo "[USER CXX] $$<"
-	@$$(CXX) $$(CPPFLAGS) $$(USER_CXXFLAGS) $$(DEPENDENCY_FLAGS) -c $$< -o $$@
-
-$$(APP_OUTPUT_$(1)): $(call application_object,$(1)) \
-		$(OBJECT_DIR)/user/runtime/start.o $(USER_SHARED_LIBRARIES) script/user.lds \
-		Makefile
-	@mkdir -p $$(@D)
-	@echo "[APP LD] $$@"
-	@$$(CXX) $$(USER_CXXFLAGS) $$(USER_LDFLAGS) -o $$@ $$< \
-		$(OBJECT_DIR)/user/runtime/start.o -Wl,-E,--dynamic-linker=/lib/ld-osinfo-x86-64.so \
-		-Wl,--no-as-needed $$(LIBCXX_SO) $$(LIBC_SO) $$(LIBOS_CXX_SO) $$(LIBOSGUI_CXX_SO) -lgcc
-endef
-$(foreach application,$(APPLICATION_NAMES),$(eval $(call APPLICATION_template,$(application))))
 
 $(OBJECT_DIR)/tests/%.o: tests/%.cc
 	@mkdir -p $(@D)
@@ -352,30 +326,17 @@ $(BUILD_DIR)/tests/linker/undefined: $(OBJECT_DIR)/tests/linker/main.o $(BUILD_D
 .PHONY: linker-tests
 linker-tests: $(BUILD_DIR)/tests/linker/probe $(BUILD_DIR)/tests/linker/undefined
 
-disk: mkimg cpfiles
+disk: mkimg
+	+$(MAKE) install DESTDIR= INSTALL_GRUB=0
 
-mkimg:
+mkimg: host-tools $(BUILD_DIR)/generated/services.mk
+	@test "$(IMAGE_TOOLS)" = 1 || { echo "Run ./configure with image tools enabled" >&2; exit 1; }
 	@echo "[MKIMG] $(DISK_IMAGE)"
 	@sudo sh script/mkimg.sh "$(DISK_IMAGE)" "$(BUILD_DIR)"
 
-cpfiles: all
-	@missing=0; \
-	for input in $(IMAGE_INPUTS); do \
-		if [ ! -f "$$input" ]; then \
-			echo "missing build input: $$input" >&2; \
-			missing=1; \
-		fi; \
-	done; \
-	if [ "$$missing" -ne 0 ]; then \
-		exit 1; \
-	fi
-	@echo "[CPFILES] $(DISK_IMAGE)"
-	@sudo sh script/cpfiles.sh "$(DISK_IMAGE)" "$(BUILD_DIR)" "$(PACKAGE_DIR)"
-
 check: $(KERNEL) $(USER_PROGRAMS) $(USER_SHARED_LIBRARIES) $(INTERPRETER)
-	@python3 script/check-service-imports.py
-	@python3 script/check-memory-headers.py
-	@python3 script/audit-service-functions.py
+	@$(HOST_TOOL) audit --build "$(BUILD_DIR)" --objects "$(OBJECT_DIR)"
+	@sh tests/check-no-python.sh
 	@grub-file --is-x86-multiboot2 $(KERNEL)
 	@readelf -h $(KERNEL) | grep -q 'EXEC (Executable file)'
 	@test -z "$$(readelf -d $(KERNEL) 2>/dev/null | grep NEEDED)"
@@ -393,14 +354,40 @@ check: $(KERNEL) $(USER_PROGRAMS) $(USER_SHARED_LIBRARIES) $(INTERPRETER)
 		readelf -d "$$application" | grep -q 'Shared library: \[libos-c++.so\]' || exit 1; \
 	done
 
-run: cpfiles
-	qemu-system-x86_64 -smp $(SMP) -boot c \
+DESTDIR ?=
+INSTALL_GRUB ?= 0
+GRUB_DISK ?=
+.PHONY: install image iso export-images
+install: all
+	@missing=0; for input in $(IMAGE_INPUTS); do \
+		if [ ! -f "$$input" ]; then echo "missing build input: $$input" >&2; missing=1; fi; \
+		done; test "$$missing" = 0
+	@set -eu; if [ -n "$(DESTDIR)" ]; then \
+		set -- sh script/install.sh "$(DESTDIR)" "$(BUILD_DIR)" "$(PACKAGE_DIR)" "$(INSTALL_GRUB)" "$(GRUB_DISK)"; \
+	else \
+		test "$(IMAGE_TOOLS)" = 1 || { echo 'Run ./configure with image tools enabled' >&2; exit 1; }; \
+		set -- sh script/install.sh --image "$(DISK_IMAGE)" "$(BUILD_DIR)" "$(PACKAGE_DIR)" "$(INSTALL_GRUB)" "$(GRUB_DISK)"; \
+		if [ "$$(id -u)" != 0 ]; then set -- sudo "$$@"; fi; \
+	fi; "$$@"
+
+image: all
+	@test "$(IMAGE_TOOLS)" = 1 || { echo 'Run ./configure with image tools enabled' >&2; exit 1; }
+	@sh script/mkbootimg.sh "$(BUILD_DIR)" "$(PACKAGE_DIR)" "$(BUILD_DIR)/export/osinfo.img"
+
+iso: all
+	@test "$(IMAGE_TOOLS)" = 1 || { echo 'Run ./configure with image tools enabled' >&2; exit 1; }
+	@sh script/mkiso.sh "$(BUILD_DIR)" "$(PACKAGE_DIR)" "$(BUILD_DIR)/export/osinfo.iso"
+
+export-images: image iso
+
+run: install
+	qemu-system-x86_64 -m 512 -smp $(SMP) -boot c \
 		-drive file=$(DISK_IMAGE),if=none,format=raw,id=osdisk \
 		-device virtio-blk-pci,drive=osdisk,disable-legacy=on,bootindex=0 \
 		-display gtk -serial stdio
 
-debug: cpfiles
-	qemu-system-x86_64 -smp $(SMP) -boot c \
+debug: install
+	qemu-system-x86_64 -m 512 -smp $(SMP) -boot c \
 		-drive file=$(DISK_IMAGE),if=none,format=raw,id=osdisk \
 		-device virtio-blk-pci,drive=osdisk,disable-legacy=on,bootindex=0 \
 		-display gtk -serial stdio -S -s
@@ -412,4 +399,4 @@ endif
 clean:
 	rm -rf $(OBJECT_DIR) $(KERNEL) $(BUILD_DIR)/bin $(BUILD_DIR)/services \
 		$(BUILD_DIR)/lib $(BUILD_DIR)/isodir \
-		$(BUILD_DIR)/packages $(PACKAGE_DIR) $(DISK_IMAGE)
+		$(BUILD_DIR)/packages $(DISK_IMAGE)

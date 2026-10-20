@@ -1,8 +1,8 @@
 #ifndef _OS_PTY_H
 #define _OS_PTY_H
 
-#include <stddef.h>
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
 
 namespace os {
 
@@ -31,6 +31,7 @@ struct TerminalWindowSize {
 
 class Pty {
    public:
+    static bool getPtyNumber(uint64_t handle, uint32_t& number);
     static bool setPtyNonblocking(uint64_t handle, bool enabled);
     static bool setPtyForegroundGroup(uint64_t handle, uint64_t taskGroupId);
     static bool setPtyWindowSize(uint64_t handle, const TerminalWindowSize& size);

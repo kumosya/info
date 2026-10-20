@@ -1,4 +1,5 @@
 #include "kernel/boot.h"
+#include "kernel/boot_image.h"
 #include "kernel/cpu.h"
 #include "kernel/device.h"
 #include "kernel/elf.h"
@@ -14,6 +15,10 @@
 #include "kernel/task.h"
 #include "kernel/thread.h"
 #include "kernel/time.h"
+
+#ifdef OS_TASK_LIFECYCLE_TEST
+#include "../../tests/kernel-lifecycle.h"
+#endif
 
 
 namespace {
@@ -74,14 +79,10 @@ kernel::Task* createSyscallProbe() {
         stack[index] = 0;
     }
     kernel::Thread* thread = kernel::Thread::createUser(
-        task, userProbeCode, userProbeStackBase + pageSize);
+        task, userProbeCode, userProbeStackBase + pageSize, 0, 0,
+        kernel::smp::getOnlineCpuCount() > 1 ? 1ULL << 1 : 1ULL);
     if (thread == nullptr) {
         kernel::serial::serialWrite("[SYSCALL] probe thread creation failed\n");
-        return nullptr;
-    }
-    if (kernel::smp::getOnlineCpuCount() > 1 &&
-        !thread->setAffinity(1ULL << 1)) {
-        kernel::serial::serialWrite("[SYSCALL] probe thread affinity failed\n");
         return nullptr;
     }
     return task;
@@ -164,6 +165,7 @@ void kernelMain(const BootInfo* bootInfo) {
     interrupt::initIdt();
     interrupt::initControllers(bootInfo);
     device::init(bootInfo);
+    device::BootImage::initialize(*bootInfo);
     smp::initSmp(bootInfo);
     Thread::init();
     schedule::init();

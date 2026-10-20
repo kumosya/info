@@ -238,12 +238,14 @@ int ftruncate(int fileDescriptor, off_t length) {
 }
 
 int fsync(int fileDescriptor) {
-    if (libcDescriptor(fileDescriptor) == NULL) {
+    OpenDescription* description = libcDescriptor(fileDescriptor);
+    if (description == NULL) {
         errno = EBADF;
         return -1;
     }
-    errno = ENOSYS;
-    return -1;
+    const int result = __libc_file_fsync(description->fileObject);
+    if (result < 0) { errno = -result; return -1; }
+    return 0;
 }
 
 int fdatasync(int fileDescriptor) { return fsync(fileDescriptor); }

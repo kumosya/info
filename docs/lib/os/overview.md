@@ -28,7 +28,7 @@ os:: C++ 运行时（runtime.cc 等）
 | `input.cc` | input 服务客户端（`InputClient`） | [clients.md](clients.md) |
 | `pty.cc` | tty 服务 IPC 客户端 | [runtime.md](runtime.md) |
 | `start.S` | 普通程序 `_start` 入口 | [c_api.md](c_api.md) |
-| `service_start.S` | 服务程序 `_start` 入口（`userMain`） | [c_api.md](c_api.md) |
+| `src/service/start.S`（库目录外） | 服务程序 `_start` 入口，CS=3 检查后调用 main | [c_api.md](c_api.md) |
 
 ## 3. 头文件
 
@@ -55,7 +55,7 @@ os:: C++ 运行时（runtime.cc 等）
 - **终端参数**：`--os-terminal=N`（N=1..7）由 `runtimeInit` 解析并从 argv 移除。
 - **同步根基**：futex 式 `waitAddress`/`wakeAddress` + `__atomic_*`；`os::SpinLock` 为 test-and-set + pause。
 
-Ring3 硬件服务使用的 Ring0 机制见 [device.md](../../service/device.md)。File 方法使用负 errno；底层原生 ABI 的其他接口仍使用 os::ErrorCode。
+Ring3 硬件服务使用的 Ring0 机制见 [device.md](../../service/device/README.md)。File 方法使用负 errno；底层原生 ABI 的其他接口仍使用 os::ErrorCode。
 
 OS 非 syscall 接口采用 Process、Terminal、File、Handle、Clock、Memory、VirtualMemory、ServiceRegistry 等类。VirtualMemory 的用户内存策略由 Ring 3 MM 提供；memory 机制对象驻留 Ring 0。
 

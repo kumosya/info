@@ -8,7 +8,7 @@
 #ifndef _KERNEL_ACPI_H_
 #define _KERNEL_ACPI_H_
 
-#include <stdint.h>
+#include <cstdint>
 
 namespace kernel {
 

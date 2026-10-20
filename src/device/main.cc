@@ -1,5 +1,6 @@
 #include "os/core_service.h"
 #include "os/abi.h"
+#include "../service/lifecycle.h"
 #include "os/input.h"
 #include "os/pci.h"
 #include "os/protocol.h"
@@ -122,14 +123,21 @@ class InputQueue {
         return count;
     }
 
-    void unsubscribe(uint64_t wakeEndpoint) {
+    bool unsubscribe(uint64_t wakeEndpoint) {
         os::SpinLockGuard guard(lock_);
         for (Subscriber& subscriber : subscribers_) {
             if (subscriber.wakeEndpoint == wakeEndpoint) {
                 subscriber = {};
-                return;
+                return true;
             }
         }
+        return false;
+    }
+
+    void retryNotification(uint64_t wakeEndpoint) {
+        os::SpinLockGuard guard(lock_);
+        for (auto& subscriber : subscribers_)
+            if (subscriber.wakeEndpoint == wakeEndpoint) subscriber.notified = false;
     }
 
     uint32_t size(uint64_t taskId) {
@@ -517,7 +525,8 @@ class InputService {
     [[noreturn]] void run() {
         while (true) {
             os::IpcMessage request{};
-            if (os::receiveMessage(requestEndpoint_, request) != 0) {
+            if (os::receiveMessage(requestEndpoint_, request, os::Clock::getMonotonicTime() + 10000000) != 0) {
+                notifySubscribers();
                 continue;
             }
             os::IpcMessage reply{};
@@ -600,8 +609,12 @@ class InputService {
         for (uint32_t index = 0; index < count; ++index) {
             os::IpcMessage notification{};
             notification.type = os::inputEventNotification;
-            if (os::sendMessage(endpoints[index], notification) != 0) {
-                queue_.unsubscribe(endpoints[index]);
+            const int result = os::sendMessage(endpoints[index], notification, 0);
+            if (result == static_cast<int>(os::ErrorCode::WouldBlock) ||
+                result == static_cast<int>(os::ErrorCode::Timeout) ||
+                result == static_cast<int>(os::ErrorCode::Interrupted)) {
+                queue_.retryNotification(endpoints[index]);
+            } else if (result && queue_.unsubscribe(endpoints[index])) {
                 os::closeHandle(endpoints[index]);
             }
         }
@@ -766,6 +779,8 @@ class DeviceApplication {
     int run() {
     os::System::log("[DEVICE] Device Server started in Ring 3\n");
     const uint64_t registry = os::getBootstrapHandle();
+    static services::Lifecycle children;
+    if (!children.initialize("device", registry) || !children.bootstrap() || !children.supervise()) return 1;
     const uint64_t endpoint = os::Endpoint::create();
     if (registry == 0 || endpoint == 0 ||
         !os::ServiceRegistry::registerService(registry, os::deviceServiceName, endpoint)) {

@@ -1,0 +1,95 @@
+#!/bin/sh
+# GitHub release assets: edit or append URLs here. A ZIP is a bundle of .inpk
+# files and is expanded directly into packages/. Existing packages/ is offline.
+RELEASE_URLS=${OSINFO_RELEASE_URLS:-'
+https://github.com/kumosya/inpkg/releases/latest/download/inpkg.inpk
+https://github.com/kumosya/guiw/releases/latest/download/guiw.inpk
+https://github.com/kumosya/osinfo-base-tools/releases/latest/download/osinfo-base-tools.zip
+'}
+
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+build=build
+objects=obj
+packages=packages
+image_tools=1
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --build-dir) build=${2:?missing build directory}; shift 2;;
+        --object-dir) objects=${2:?missing object directory}; shift 2;;
+        --package-dir) packages=${2:?missing package directory}; shift 2;;
+        --disable-image-tools) image_tools=0; shift;;
+        --help) printf '%s\n' 'Usage: ./configure [--build-dir DIR] [--object-dir DIR] [--package-dir DIR] [--disable-image-tools]' 'Compiler overrides: HOST_CXX, CC, CXX, AR, CROSS. Release URLs are at the top of this file.'; exit 0;;
+        *) echo "unknown configure option: $1" >&2; exit 2;;
+    esac
+done
+for path in "$build" "$objects" "$packages"; do
+    case "$path" in ''|/*|*..*|*[!a-zA-Z0-9_./+-]*) echo "use a simple repository-relative directory: $path" >&2; exit 2;; esac
+    case "$path" in src|src/*|include|include/*|lib|lib/*|tools|tools/*|config|config/*|script|script/*|docs|docs/*|tests|tests/*|user|user/*|.) echo "output directory overlaps sources: $path" >&2; exit 2;; esac
+done
+if [ "$build" = "$packages" ] || [ "$objects" = "$packages" ] || [ "$build" = "$objects" ]; then
+    echo 'build, object and package directories must differ' >&2; exit 2
+fi
+require() { command -v "$1" >/dev/null 2>&1 || { echo "configure: missing tool: $1" >&2; exit 1; }; }
+mkdir -p "$build"
+# Invalidate earlier configuration before checking the requested environment.
+rm -f -- "$build/config.mk"
+test "$(uname -s)" = Linux || { echo 'configure requires Linux' >&2; exit 1; }
+HOST_CXX=${HOST_CXX:-g++}
+CROSS=${CROSS:-x86_64-elf-}
+if command -v "${CROSS}gcc" >/dev/null 2>&1; then
+    CC=${CC:-${CROSS}gcc}; CXX=${CXX:-${CROSS}g++}; AR=${AR:-${CROSS}ar}
+else
+    CC=${CC:-gcc}; CXX=${CXX:-g++}; AR=${AR:-ar}
+fi
+for tool in make "$HOST_CXX" "$CC" "$CXX" "$AR" nm readelf grub-file; do require "$tool"; done
+if [ "$image_tools" -eq 1 ]; then
+    for tool in grub-mkrescue grub-mkimage grub-install xorriso mkfs.ext3 mkfs.ext4 mkfs.fat debugfs truncate sfdisk losetup partprobe blockdev mount mountpoint umount sync flock qemu-system-x86_64; do require "$tool"; done
+fi
+probe=$(mktemp -d "$build/.configure-XXXXXX")
+trap 'rm -rf -- "$probe"' EXIT HUP INT TERM
+printf 'int configure_probe;\n' >"$probe/check.c"
+"$CC" -m32 -ffreestanding -c "$probe/check.c" -o "$probe/check32.o"
+"$CXX" -m64 -std=c++20 -ffreestanding -fno-exceptions -fno-rtti -mcmodel=large -x c++ -c "$probe/check.c" -o "$probe/check64.o"
+printf '#include <filesystem>\n#include <regex>\nint main(){std::regex value("x"); return std::filesystem::path(".").empty();}\n' >"$probe/host.cc"
+"$HOST_CXX" -std=c++20 "$probe/host.cc" -o "$probe/host"
+"$probe/host"
+for tool in tools/inpkg tools/infoide; do
+    test -f "$tool" && test -x "$tool" || { echo "missing Linux tool binary: $tool" >&2; exit 1; }
+done
+tools/inpkg --help >/dev/null
+tools/infoide --version
+make -C tools/host CXX="$HOST_CXX"
+tools/osinfo-host defaults
+if [ ! -d "$packages" ]; then
+    if command -v curl >/dev/null 2>&1; then downloader=curl
+    else require wget; downloader=wget; fi
+    mkdir -p "$probe/download"
+    printf '%s\n' "$RELEASE_URLS" >"$probe/urls"
+    while IFS= read -r url; do
+        case "$url" in ''|'#'*) continue;; https://github.com/*) ;; *) echo "invalid GitHub release URL: $url" >&2; exit 1;; esac
+        filename=${url##*/}
+        case "$filename" in ''|*[!a-zA-Z0-9_.+-]*) echo "invalid release filename: $filename" >&2; exit 1;; esac
+        test ! -e "$probe/download/$filename" || { echo "duplicate release filename: $filename" >&2; exit 1; }
+        printf 'Downloading %s\n' "$url"
+        if [ "$downloader" = curl ]; then
+            curl --fail --location --retry 2 --output "$probe/download/$filename" "$url"
+        else
+            wget --https-only --tries=3 --output-document="$probe/download/$filename" "$url"
+        fi || {
+            echo 'Release download failed; edit RELEASE_URLS at the top of ./configure, or populate packages/ manually.' >&2; exit 1;
+        }
+    done <"$probe/urls"
+    test -n "$(ls -A "$probe/download")" || { echo 'release URL list is empty' >&2; exit 1; }
+    mkdir -p "$(dirname -- "$packages")"
+    mv -- "$probe/download" "$packages"
+fi
+tools/osinfo-host prepare --build "$build" --objects "$objects" --packages "$packages"
+tools/osinfo-host generate --build "$build" --packages "$packages"
+{
+    printf '# Generated by ./configure; rerun configure to change it.\n'
+    printf 'BUILD_DIR := %s\nOBJECT_DIR := %s\nPACKAGE_DIR := %s\n' "$build" "$objects" "$packages"
+    printf 'CC := %s\nCXX := %s\nAR := %s\nHOST_CXX := %s\nIMAGE_TOOLS := %s\n' "$CC" "$CXX" "$AR" "$HOST_CXX" "$image_tools"
+} >"$probe/config.mk"
+mv -- "$probe/config.mk" "$build/config.mk"
+printf 'Configured. Run make -j, make check, or make sdk. Tools stay in tools/.\n'

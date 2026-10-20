@@ -17,6 +17,14 @@
 #define OS_SYS_MAP_MEMORY 8U
 #define OS_SYS_UNMAP_MEMORY 9U
 #define OS_SYS_PROTECT_MEMORY 10U
+/* map(address, size, protection | kind, handle, offset, target).
+ * Target 0 is self; other targets require the fixed MM role and capability.
+ * unmap(address, size, target); protect(address, size, protection, target).
+ */
+#define OS_MAP_ANONYMOUS 0U
+#define OS_MAP_PAGE_OBJECT 0x100U
+#define OS_MAP_SHARED_OBJECT 0x200U
+#define OS_PROTECT_COPY_ON_WRITE 4U
 /* Task, thread and synchronization mechanisms */
 #define OS_SYS_EXIT_TASK 11U
 #define OS_SYS_CREATE_THREAD 12U

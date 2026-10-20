@@ -1,0 +1,12 @@
+{
+  "name": "edit",
+  "version": "0.1.1",
+  "cppflags": ["-nostdinc", "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-fPIC", "-m64", "-mcmodel=small", "-mno-red-zone"],
+  "cflags": ["-std=c17", "-Os", "-Wall", "-Wextra"],
+  "cxxflags": ["-std=c++20", "-fno-exceptions", "-fno-rtti", "-fno-use-cxa-atexit", "-fno-threadsafe-statics", "-nostdinc++", "-Os", "-Wall", "-Wextra"],
+  "asflags": [],
+  "ldflags": ["-nostdlib", "-nostartfiles", "-nodefaultlibs", "-Wl,--build-id=none,--hash-style=sysv", "-Wl,--no-as-needed"],
+  "ldlibs": ["gcc"],
+  "targets": [{"name": "edit", "sources": ["main.cc"], "libraries": ["c", "os-c++"]}],
+  "install": {"edit": "/usr/bin/edit"}
+}

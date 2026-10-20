@@ -1,6 +1,6 @@
 #pragma once
 
-#include <stdint.h>
+#include <cstdint>
 
 namespace kernel {
 
@@ -89,7 +89,9 @@ class Thread {
                           bool makeRunnable = true);
     static Thread* createUser(Task* task, uint64_t entryPoint,
                               uint64_t userStackPointer, uint64_t argument = 0,
-                              uint64_t initialStackSize = 0);
+                              uint64_t initialStackSize = 0,
+                              uint64_t initialAffinity = ~0ULL,
+                              bool makeRunnable = true);
     static Thread* createForkedUser(Task* task, const SyscallContext& context,
                                     uint64_t signalMask);
     [[noreturn]] static void exitCurrent(int exitCode);
@@ -102,6 +104,10 @@ class Thread {
     void setActiveEndpoint(Endpoint* endpoint) { activeEndpoint = endpoint; }
     bool isExitAccounted() const { return exitAccounted; }
     void setExitAccounted(bool value) { exitAccounted = value; }
+    bool isStackRetired() const { return stackRetired; }
+    void setStackRetired(bool value) { stackRetired = value; }
+    bool isJoinConsumed() const { return joinConsumed; }
+    void setJoinConsumed(bool value) { joinConsumed = value; }
     bool hasCleanup() const { return cleanupHead != nullptr; }
     ThreadCleanup*& cleanupList() { return cleanupHead; }
     void setIpcWaitResult(int* result, bool immediate = false) { ipcWaitResult = result; ipcImmediate = immediate; }
@@ -290,6 +296,7 @@ class Thread {
         return pendingSignals;
     }
     Thread* getTaskNext() const { return taskNext; }
+    Thread*& accessTaskNext() { return taskNext; }
     Thread* setTaskNext(Thread* value) {
         taskNext = value;
         return taskNext;
@@ -335,6 +342,8 @@ class Thread {
     bool wakePending;
     bool activeIpcCall;
     bool exitAccounted;
+    bool stackRetired;
+    bool joinConsumed;
     ThreadCleanup* cleanupHead;
     SyscallContext* syscallContext_;
     bool contextRestored_;

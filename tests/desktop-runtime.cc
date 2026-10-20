@@ -6,10 +6,10 @@
 #include "os/file.h"
 #include "os/pty.h"
 #include "os/users.h"
-#include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <csignal>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -229,7 +229,7 @@ class DesktopRuntimeTest {
         ok = ok && stat("/run/user/1000", &status) != 0;
         if (!check(ok, "real login, HOME prompts, XDG session and runtime cleanup")) {
             char message[128];
-            snprintf(message, sizeof(message), "[DESKTOP TEST] child=%d waited=%d status=%d\n", child, waited, result);
+            std::snprintf(message, sizeof(message), "[DESKTOP TEST] child=%d waited=%d status=%d\n", child, waited, result);
             os::System::log(message);
             os::System::log(output);
             return false;

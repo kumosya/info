@@ -1,8 +1,8 @@
 #ifndef _USERS_PASSWORD_H
 #define _USERS_PASSWORD_H
-#include <stdint.h>
-#include <stddef.h>
-#include <string.h>
+#include <cstdint>
+#include <cstddef>
+#include <cstring>
 
 namespace users {
 class Sha256 {

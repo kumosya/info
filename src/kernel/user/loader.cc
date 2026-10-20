@@ -21,23 +21,13 @@ struct ProgramImage {
     uint64_t sourceAddress;
     uint64_t size;
     uint64_t capabilities;
+    os::ServiceRole role;
+    bool builtin;
 };
 
-ProgramImage PROGRAM_IMAGES[] = {
-    {"init", "init", 0, 0, kernel::taskCapabilitySpawn},
-    {"task", "task-server", 0, 0, kernel::taskCapabilitySpawn},
-    {"fs", "fs-server", 0, 0, 0},
-    {"pci", "pci-server", 0, 0, kernel::taskCapabilityPci},
-    {"device", "device-server", 0, 0, kernel::taskCapabilityDevice},
-    {"storage", "storage-server", 0, 0, kernel::taskCapabilityDevice},
-    {"tty", "tty-server", 0, 0, 0},
-    {"console", "console-server", 0, 0, kernel::taskCapabilityDisplay},
-    {"guiw", "window-server", 0, 0, kernel::taskCapabilityDisplay},
-    {"users", "users-server", 0, 0, kernel::taskCapabilityUsers},
-    {"mm", "memory-manager", 0, 0, kernel::taskCapabilityMemory},
-    {"pipe", "pipe-server", 0, 0, 0},
-    {"msgq", "message-queue-server", 0, 0, 0}};
-kernel::ElfSharedImage bootRuntimeImages[4]{};
+#include "boot-abi.inc"
+#include "boot-images.inc"
+kernel::ElfSharedImage bootRuntimeImages[configuredRuntimeCount]{};
 bool bootProgramsReady;
 
 bool moduleNameEquals(const char* commandLine, const char* expected) {
@@ -64,17 +54,18 @@ const kernel::BootModule* findModule(const kernel::BootInfo& bootInfo,
 
 bool initializeBootPrograms(const kernel::BootInfo& bootInfo) {
     for (ProgramImage& image : PROGRAM_IMAGES) {
+        if (!image.builtin) continue;
         const kernel::BootModule* module =
             findModule(bootInfo, image.moduleName);
         if (module == nullptr) return false;
         image.sourceAddress = DIRECT_MAP_BASE + module->start;
         image.size          = module->end - module->start;
     }
-    const char* libraries[] = {"libos-c++.so", "libc.so", "libc++.so", "libosgui-c++.so"};
-    for (uint32_t i = 0; i < 4; ++i) {
-        const auto* module = findModule(bootInfo, libraries[i]);
+    for (uint32_t i = 0; i < configuredRuntimeCount; ++i) {
+        const auto* module = findModule(bootInfo, configuredRuntimeLibraries[i]);
         if (!module) return false;
-        bootRuntimeImages[i] = {DIRECT_MAP_BASE + module->start, module->end - module->start, libraries[i]};
+        bootRuntimeImages[i] = {DIRECT_MAP_BASE + module->start, module->end - module->start,
+                                configuredRuntimeLibraries[i], kernel::memory::getKernelAddressSpaceRoot()};
     }
     bootProgramsReady = true;
     return true;
@@ -215,6 +206,7 @@ TaskReference UserProgramLoader::load(os::ProgramId program, Task* parent,
     }
 
     const ProgramImage& image = PROGRAM_IMAGES[index];
+    if (!image.builtin) { if (loadError) *loadError = ElfLoadError::InvalidArgument; return nullptr; }
     Task* task                = Task::create(image.name, parent);
     if (task == nullptr) {
         if (loadError != nullptr) {
@@ -224,7 +216,8 @@ TaskReference UserProgramLoader::load(os::ProgramId program, Task* parent,
     }
     TaskReference lifetime(task);
     task->grantCapabilities(image.capabilities);
-    task->setServiceRole(static_cast<os::ServiceRole>(index + 1));
+    task->setServiceRole(image.role);
+    task->setCommandLine(argumentCount, arguments);
     // Immutable boot identities grant mechanism permissions, never Ring 0 execution.
     task->setSystemService(false);
 
@@ -246,7 +239,7 @@ TaskReference UserProgramLoader::load(os::ProgramId program, Task* parent,
     ElfLoadError error = ElfLoader::loadDynamicSetFromAddressSpace(
         task->addressSpace().rootPhysicalAddress(),
         memory::getKernelAddressSpaceRoot(), image.sourceAddress, image.size,
-        bootRuntimeImages, 4, result, task->isSystemService());
+        bootRuntimeImages, configuredRuntimeCount, result, task->isSystemService());
     uint64_t stackPointer = 0;
     if (error == ElfLoadError::None) {
         error = UserProgramLoader::buildStack(
@@ -274,7 +267,8 @@ TaskReference UserProgramLoader::loadImage(
     uint64_t standardInputHandle, uint64_t standardOutputHandle,
     uint64_t standardErrorHandle, uint32_t argumentCount,
     const char* const* arguments, const ElfSharedImage* sharedImages,
-    uint32_t sharedImageCount, ElfLoadError* loadError, os::ServiceRole serviceRole, bool newSession) {
+    uint32_t sharedImageCount, ElfLoadError* loadError, os::ServiceRole serviceRole, bool newSession,
+    bool managedService, uint32_t terminalKind, uint32_t terminalIndex) {
     if (loadError != nullptr) {
         *loadError = ElfLoadError::None;
     }
@@ -295,6 +289,8 @@ TaskReference UserProgramLoader::loadImage(
     task->grantCapabilities(capabilities);
     TaskReference lifetime(task);
     task->setServiceRole(serviceRole);
+    task->setManagedService(managedService || serviceRole != os::ServiceRole::None);
+    task->setCommandLine(argumentCount, arguments);
     if (bootstrapHandle != 0) {
         const uint64_t childHandle =
             Endpoint::duplicateHandle(source, task, bootstrapHandle);
@@ -310,7 +306,7 @@ TaskReference UserProgramLoader::loadImage(
     }
     const uint64_t standardHandles[] = {
         standardInputHandle, standardOutputHandle, standardErrorHandle};
-    bool hasPtyStandardHandle = newSession;
+    bool hasPtyStandardHandle = newSession || managedService;
     for (uint32_t index = 0; index < 3; ++index) {
         if (standardHandles[index] == 0) {
             continue;
@@ -338,10 +334,13 @@ TaskReference UserProgramLoader::loadImage(
         }
         return nullptr;
     }
+    if (terminalKind) task->setTerminal(terminalKind, terminalIndex);
 
     ElfLoadResult result{};
-    ElfLoadError error =
-        sharedImageCount == 0
+    ElfLoadError error = serviceRole != os::ServiceRole::None
+            ? ElfLoader::loadDynamicSetFromAddressSpace(task->addressSpace().rootPhysicalAddress(), source->addressSpace().rootPhysicalAddress(), sourceAddress,
+                imageSize, bootRuntimeImages, configuredRuntimeCount, result)
+            : sharedImageCount == 0
             ? ElfLoader::loadFromAddressSpace(
                   *task, source->addressSpace().rootPhysicalAddress(),
                   sourceAddress, imageSize, result)

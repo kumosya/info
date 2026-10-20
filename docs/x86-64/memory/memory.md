@@ -1,6 +1,6 @@
 # 内存管理
 
-内存管理只公开 mm.h 和 page.h 两种头文件名：内核位于 include/kernel/，MM 内部位于 user/mm/，OS 客户端位于 include/os-c++/os/mm.h。实现继续按 physical、object、virtual、service 子目录拆分。
+内存管理只公开 mm.h 和 page.h 两种头文件名：内核位于 include/kernel/，MM 内部位于 src/mm/，OS 客户端位于 include/os-c++/os/mm.h。实现继续按 physical、object、virtual、service 子目录拆分。
 
 ## Ring 0 机制
 
@@ -25,7 +25,7 @@ Buddy 使用实际 RAM 对应的 PageFrame 元数据，不再线性扫描位图�
 
 PageObject(order, owner, node) 直接构造并清零物理块。调用者先分配对象存储，再 placement-new；必须检查 valid()。order 超限或分配失败得到无效对象，release() 仍能安全释放元数据。最后一个对象引用消失才析构并释放物理块；没有静态 create 工厂。
 
-memory 服务提供页对象、连续页块、共享对象、usage 和 cache reclaim 接口。跨任务操作要求固定 boot MM 身份拥有的 Memory 能力；客户端传入 PID 不能自行获得权限。基本映射保留 syscall 8–10。内核内部直接使用具名方法。
+memory 服务提供页对象分配、共享对象管理、usage、cache reclaim、pager 绑定和页状态查询。map/unmap/protect 全部使用 syscall 8–10，不再提供同类服务 RPC；页对象和共享对象映射也走 MapMemory。跨任务操作要求同时具有固定 boot MM 角色和 Memory 能力；客户端传入 PID 不能自行获得权限。内核内部复用具名机制方法，参数见 [syscall ABI](../task/syscall.md)。
 
 用户地址范围为 [0x10000, 2^47)，页大小 4096。内核直接映射从 0xffff800000000000 开始，NX 堆别名从 0xffff804000000000 开始。所有用户写入与执行权限遵守 W^X。
 
@@ -61,7 +61,7 @@ libc 的 mmap/munmap/mprotect/msync 调用 os::VirtualMemory，区域状态由 M
 
 ## 验证
 
-- script/check-kernel-memory.sh：Buddy、所有权与引用、NUMA、Slab、Pool、Per-CPU、PageObject 构造/失败与 VMA 原子性。
+- tests/check-kernel-memory.sh：Buddy、所有权与引用、NUMA、Slab、Pool、Per-CPU、PageObject 构造/失败与 VMA 原子性。
 - tests/mm-runtime.cc：用户态延迟分页、保护、部分解除、COW、共享对象、文件委托和信号返回。
-- script/smoke-hybrid.py --memory-test：用隔离磁盘运行上述测试，再进入真实 GUI 终端。
-- SMP exec/kill 压力和设备 DMA 停止协议另见[架构文档](../architecture.md)，不能用启动成功代替压力验证。
+- sh tests/smoke-hybrid.sh --memory-test：用隔离光盘运行上述测试，再进入真实 GUI 终端。
+- SMP exec/kill 压力和设备 DMA 停止协议另见[架构文档](../../architecture.md)，不能用启动成功代替压力验证。

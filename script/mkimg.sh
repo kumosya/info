@@ -8,12 +8,7 @@ mountPath="/tmp/osinfo-mkimg-$$"
 loopDevice=""
 
 cleanup() {
-    for target in "$mountPath/mnt/fat32" "$mountPath/mnt/ext4" \
-        "$mountPath"; do
-        if mountpoint -q "$target"; then
-            umount "$target"
-        fi
-    done
+    if mountpoint -q "$mountPath"; then umount "$mountPath"; fi
     if [ -n "$loopDevice" ]; then
         losetup -d "$loopDevice"
     fi
@@ -21,14 +16,6 @@ cleanup() {
 }
 
 trap cleanup EXIT INT TERM
-
-for tool in truncate sfdisk losetup blockdev partprobe mkfs.ext3 mkfs.ext4 \
-    mkfs.fat mount mountpoint umount grub-install sync flock; do
-    command -v "$tool" >/dev/null 2>&1 || {
-        echo "$tool is required" >&2
-        exit 1
-    }
-done
 
 test "$(id -u)" -eq 0 || {
     echo "mkimg.sh must run as root" >&2
@@ -72,14 +59,9 @@ mkfs.ext4 -F -b 4096 -L OSINFO_EXT4 \
     -O ^has_journal,^metadata_csum,^64bit "$ext4Partition"
 mkfs.fat -F 32 -n FAT32 "$fat32Partition"
 mount "$rootPartition" "$mountPath"
-mkdir -p "$mountPath/boot/grub" "$mountPath/mnt/ext4" \
-    "$mountPath/mnt/fat32"
-mount "$ext4Partition" "$mountPath/mnt/ext4"
-mount "$fat32Partition" "$mountPath/mnt/fat32"
-cp script/grub.cfg "$mountPath/boot/grub/grub.cfg"
+tools/osinfo-host layout --root "$mountPath"
+cp "$buildPath/generated/grub.cfg" "$mountPath/boot/grub/grub.cfg"
 grub-install --target=i386-pc --boot-directory="$mountPath/boot" \
     --modules="part_msdos ext2 multiboot2" --no-floppy "$loopDevice"
-for target in "$mountPath/mnt/fat32" "$mountPath/mnt/ext4" "$mountPath"; do
-    sync -f "$target"
-done
+umount "$mountPath"
 echo "created partitioned ext3/ext4/FAT32 image: $imagePath"

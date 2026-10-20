@@ -8,4 +8,4 @@ C 程序使用标准头文件。文件描述符表及必要的 C/C++ 转换位�
 
 普通程序的 `lib/os/start.S` 解析 argc/argv/envp，初始化运行时及 environ，导入 exec 描述符状态，调用 main，最后调用 libc 的 exit 完成清理。
 
-服务入口 `service_start.S` 初始化 C++ 运行时后调用 main，返回后通过 `os::exitTask` 退出。服务入口检查 CS，确保所有服务都在 Ring3；基础机制通过 syscall 和 IPC 访问 .kernel 对象。
+服务入口 `src/service/start.S` 初始化 C++ 运行时后调用 main，返回后通过 `os::exitTask` 退出；SDK 输出名仍为 service_start.o。CS 检查留在此内部入口，公共 os/ 头文件不包含寄存器或硬件 I/O 实现；基础机制通过 syscall 和 IPC 访问。

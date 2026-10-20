@@ -1,7 +1,7 @@
 #ifndef _OS_ANSI_H
 #define _OS_ANSI_H
 
-#include <stdint.h>
+#include <cstdint>
 
 namespace os::terminal {
 

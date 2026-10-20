@@ -1,5 +1,6 @@
 #include "os/task.h"
-#include <signal.h>
+#include "os/core_service.h"
+#include <csignal>
 
 #include "os/abi.h"
 #include "os/protocol.h"
@@ -29,10 +30,11 @@ struct PtyState {
     uint8_t line[lineCapacity];
     uint32_t lineLength;
     bool active;
+    uint32_t closing;
+    uint64_t workers[2];
 };
 
 PtyState states[ptyCapacity];
-uint32_t stateCount;
 
 static void copyRaw(void* destination, const void* source, size_t count) {
     auto* target = static_cast<uint8_t*>(destination);
@@ -40,16 +42,23 @@ static void copyRaw(void* destination, const void* source, size_t count) {
     for (size_t index = 0; index < count; ++index) target[index] = bytes[index];
 }
 
-static void writeAll(uint64_t handle, const void* data, size_t count) {
-    if (count) os::Pipe::writePipe(handle, data, count);
+static void writeAll(PtyState& state, uint64_t handle, const void* data, size_t count) {
+    size_t offset = 0;
+    while (offset < count && !__atomic_load_n(&state.closing, __ATOMIC_ACQUIRE)) {
+        const auto written = os::Pipe::writePipe(handle, static_cast<const uint8_t*>(data) + offset, count - offset);
+        if (written > 0) offset += written;
+        else if (written == static_cast<int>(os::ErrorCode::WouldBlock)) os::sleep(1);
+        else { __atomic_store_n(&state.closing, 1, __ATOMIC_RELEASE); break; }
+    }
 }
 
 static void masterInput(void* argument) {
     auto& state = *static_cast<PtyState*>(argument);
     uint8_t input[512];
-    while (true) {
+    while (!__atomic_load_n(&state.closing, __ATOMIC_ACQUIRE)) {
         const int64_t count = os::Pipe::readPipe(state.masterServer, input,
                                             sizeof(input));
+        if (count == static_cast<int>(os::ErrorCode::WouldBlock)) { os::sleep(1); continue; }
         if (count <= 0) break;
         for (int64_t index = 0; index < count; ++index) {
             const uint8_t value = input[index];
@@ -109,46 +118,75 @@ static void masterInput(void* argument) {
                     }
                 }
             }
-            writeAll(state.masterServer, echo, echoLength);
-            writeAll(state.slaveServer, delivery, deliveryLength);
+            writeAll(state, state.masterServer, echo, echoLength);
+            writeAll(state, state.slaveServer, delivery, deliveryLength);
             if (endOfFile) os::Pipe::signalChannelEof(state.slaveServer);
-            if (signalGroup) os::Process::sendSignal(static_cast<uint64_t>(
+            if (signalGroup) os::Task::sendSignal(static_cast<uint64_t>(
                 -static_cast<int64_t>(signalGroup)), signalNumber);
         }
     }
+    __atomic_store_n(&state.closing, 1, __ATOMIC_RELEASE);
+    os::Pipe::signalChannelEof(state.slaveServer);
     os::exitThread(0);
 }
 
 static void slaveOutput(void* argument) {
     auto& state = *static_cast<PtyState*>(argument);
     uint8_t bytes[512];
-    while (true) {
+    while (!__atomic_load_n(&state.closing, __ATOMIC_ACQUIRE)) {
         const int64_t count = os::Pipe::readPipe(state.slaveServer, bytes,
                                             sizeof(bytes));
+        if (count == static_cast<int>(os::ErrorCode::WouldBlock)) { os::sleep(1); continue; }
         if (count <= 0) break;
-        writeAll(state.masterServer, bytes, static_cast<size_t>(count));
+        writeAll(state, state.masterServer, bytes, static_cast<size_t>(count));
     }
+    __atomic_store_n(&state.closing, 1, __ATOMIC_RELEASE);
+    os::Pipe::signalChannelEof(state.masterServer);
     os::exitThread(0);
 }
 
 PtyState* findState(uint64_t identity) {
-    for (uint32_t index = 0; index < stateCount; ++index) {
+    for (uint32_t index = 0; index < ptyCapacity; ++index) {
         PtyState& state = states[index];
-        if (state.active && (state.masterIdentity == identity ||
+        if (state.active && !__atomic_load_n(&state.closing, __ATOMIC_ACQUIRE) && (state.masterIdentity == identity ||
                              state.slaveIdentity == identity)) return &state;
     }
     return nullptr;
 }
 
-bool startWorker(void (*entry)(void*), PtyState& state, uint32_t slot) {
+uint64_t startWorker(void (*entry)(void*), PtyState& state, uint32_t slot) {
     const uint64_t base = stackBase + static_cast<uint64_t>(slot) * stackSize;
-    return os::mapMemory(base, stackSize, 1) == base &&
-           os::createThread(entry, base + stackSize, &state) != 0;
+    if (os::mapMemory(base, stackSize, 1) != base) return 0;
+    const auto thread = os::createThread(entry, base + stackSize, &state);
+    if (!thread) os::unmapMemory(base, stackSize);
+    return thread;
+}
+
+void reap() {
+    for (uint32_t index = 0; index < ptyCapacity; ++index) {
+        auto& state = states[index];
+        if (!state.active || !__atomic_load_n(&state.closing, __ATOMIC_ACQUIRE)) continue;
+        for (uint32_t n = 0; n < 2; ++n) if (state.workers[n]) {
+            int code = 0;
+            if (os::Task::waitThread(state.workers[n], code, true) == 0) {
+                state.workers[n] = 0;
+                os::unmapMemory(stackBase + (index * 2 + n) * stackSize, stackSize);
+            }
+        }
+        if (!state.workers[0] && !state.workers[1]) {
+            os::closeHandle(state.masterServer);
+            os::closeHandle(state.slaveServer);
+            state.active = false;
+        }
+    }
 }
 
 bool createPty(os::IpcMessage& reply, uint64_t& masterClient,
                uint64_t& slaveClient) {
-    if (stateCount >= ptyCapacity) return false;
+    reap();
+    uint32_t index = 0;
+    while (index < ptyCapacity && states[index].active) ++index;
+    if (index == ptyCapacity) return false;
     os::ChannelHandles master{}, slave{};
     if (!os::Pipe::createChannelPair(master)) return false;
     if (!os::Pipe::createChannelPair(slave)) {
@@ -156,7 +194,7 @@ bool createPty(os::IpcMessage& reply, uint64_t& masterClient,
         os::closeHandle(master.secondHandle);
         return false;
     }
-    PtyState& state = states[stateCount];
+    PtyState& state = states[index];
     state.masterServer = master.firstHandle;
     state.slaveServer = slave.firstHandle;
     state.masterIdentity = os::Pipe::getChannelIdentity(master.secondHandle);
@@ -166,9 +204,16 @@ bool createPty(os::IpcMessage& reply, uint64_t& masterClient,
     state.lineLength = 0;
     state.foregroundGroup = 0;
     state.active = true;
-    const uint32_t slot = stateCount++ * 2;
-    if (!startWorker(masterInput, state, slot) ||
-        !startWorker(slaveOutput, state, slot + 1)) return false;
+    __atomic_store_n(&state.closing, 0, __ATOMIC_RELEASE);
+    state.workers[0] = state.workers[1] = 0;
+    if (!os::Pipe::setChannelNonblocking(state.masterServer, true) ||
+        !os::Pipe::setChannelNonblocking(state.slaveServer, true) ||
+        !(state.workers[0] = startWorker(masterInput, state, index * 2)) ||
+        !(state.workers[1] = startWorker(slaveOutput, state, index * 2 + 1))) {
+        __atomic_store_n(&state.closing, 1, __ATOMIC_RELEASE);
+        os::closeHandle(master.secondHandle); os::closeHandle(slave.secondHandle);
+        return false;
+    }
     masterClient = master.secondHandle;
     slaveClient = slave.secondHandle;
     reply.handleCount = 2;
@@ -189,6 +234,9 @@ void handleControl(const os::IpcMessage& request, os::IpcMessage& reply) {
     }
     const auto operation = static_cast<os::TtyRequest>(request.type);
     switch (operation) {
+        case os::TtyRequest::GetNumber:
+            reply.data[0] = 0; reply.data[1] = static_cast<uint64_t>(state - states); reply.length = 2;
+            break;
         case os::TtyRequest::GetAttributes: {
             os::SpinLockGuard guard(state->lock);
             copyRaw(&reply.data[1], &state->attributes,
@@ -225,7 +273,10 @@ void handleControl(const os::IpcMessage& request, os::IpcMessage& reply) {
             if (request.length >= 1) {
                 os::SpinLockGuard guard(state->lock);
                 state->foregroundGroup = request.data[0];
-                reply.data[0] = 0;
+                os::IpcMessage metadata{}, result{};
+                metadata.type = static_cast<uint64_t>(os::TaskOperation::SetTerminalForeground); metadata.length = 4;
+                metadata.data[0] = 2; metadata.data[1] = state - states; metadata.data[2] = state->foregroundGroup;
+                reply.data[0] = os::CoreServiceClient::result(os::CoreServiceKind::Task, metadata, result);
             }
             break;
         case os::TtyRequest::SetNonblocking:
@@ -247,8 +298,9 @@ int run() {
         !os::ServiceRegistry::registerService(registry, os::ttyServiceName, endpoint)) return 1;
     os::System::log("[TTY] PTY service started\n");
     while (true) {
+        reap();
         os::IpcMessage request{};
-        if (os::receiveMessage(endpoint, request) != 0) continue;
+        if (os::receiveMessage(endpoint, request, os::Clock::getMonotonicTime() + 100000000) != 0) continue;
         os::IpcMessage reply{};
         uint64_t masterClient = 0, slaveClient = 0;
         if (request.type == static_cast<uint64_t>(os::TtyRequest::CreatePty)) {

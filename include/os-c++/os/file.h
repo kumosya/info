@@ -1,11 +1,11 @@
 #ifndef _OS_FILE_H
 #define _OS_FILE_H
 
-#include <stddef.h>
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
 #include <fcntl.h>
 #include <sys/types.h>
-#include <time.h>
+#include <ctime>
 
 #include "os/abi.h"
 #include "os/protocol.h"
@@ -15,6 +15,8 @@ namespace os {
 struct DirectoryEntry {
     FileType type;
     char name[256];
+    uint64_t inode;
+    uint64_t nextOffset;
 };
 
 struct MountInfo {
