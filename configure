@@ -2,9 +2,9 @@
 # GitHub release assets: edit or append URLs here. A ZIP is a bundle of .inpk
 # files and is expanded directly into packages/. Existing packages/ is offline.
 RELEASE_URLS=${OSINFO_RELEASE_URLS:-'
-https://github.com/kumosya/inpkg/releases/latest/download/inpkg.inpk
-https://github.com/kumosya/guiw/releases/latest/download/guiw.inpk
-https://github.com/kumosya/osinfo-base-tools/releases/latest/download/osinfo-base-tools.zip
+https://github.com/kumosya/inpkg/releases/download/v0.1-beta/inpkg.inpk
+https://github.com/kumosya/guiw/releases/download/v0.1-beta/guiw.inpk
+https://github.com/kumosya/osinfo-base-tools/releases/download/v0.1-beta/osinfo-base-tools.zip
 '}
 
 set -eu
