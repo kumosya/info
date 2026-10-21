@@ -51,16 +51,38 @@ class DeviceService final : public EndpointService {
                     if (args[0] > 5) return -1;
                     auto* object = device::MmioRegion::map(caller, function, args[0], args[1], args[2]);
                     reply.data[0] = object ? caller.handles().add(object, HandleType::MmioRegion, 3) : 0;
+                    if (object && !reply.data[0]) object->destroy();
                     MessageData::created(reply, reply.data[0]);
                     break;
                 }
                 case os::DeviceOperation::AllocateDma: {
+                    HandleTable::Pin pin(caller.handles(), args[1], HandleType::DeviceDomain, handleRightManage);
+                    auto* domain = pin.as<device::ResourceDomain>();
+                    if (!domain) return -2;
                     os::DmaBufferInfo info{};
-                    auto* object = device::DmaBuffer::create(caller, args[0], info);
+                    auto* object = device::DmaBuffer::create(caller, *domain, args[0], info);
                     if (!object) return -5;
                     info.handle = caller.handles().add(object, HandleType::DmaBuffer, 3);
+                    if (!info.handle) { object->destroy(); return -5; }
                     MessageData::created(reply, info.handle);
                     MessageData::copy(&reply.data[1], &info, sizeof(info));
+                    break;
+                }
+                case os::DeviceOperation::ClaimDevice: {
+                    os::PciFunctionInfo function{};
+                    MessageData::copy(&function, args, sizeof(function));
+                    auto* domain = device::ResourceDomain::claim(caller, function);
+                    if (!domain) return -3;
+                    const auto handle = caller.handles().add(domain, HandleType::DeviceDomain, handleRightManage);
+                    if (!handle) { domain->closeLease(); return -5; }
+                    reply.data[0] = handle; MessageData::created(reply, handle); break;
+                }
+                case os::DeviceOperation::StopDevice: {
+                    HandleTable::Pin pin(caller.handles(), args[0], HandleType::DeviceDomain, handleRightManage);
+                    auto* domain = pin.as<device::ResourceDomain>();
+                    if (!domain) return -2;
+                    const int result = domain->stop(caller);
+                    if (result) return result;
                     break;
                 }
                 case os::DeviceOperation::BindIrq: {
@@ -68,6 +90,7 @@ class DeviceService final : public EndpointService {
                     if (args[0] > 15 || args[2] > 1) return -1;
                     auto* object = device::InterruptBinding::create(caller, args[0], pin.as<Endpoint>(), args[2]);
                     reply.data[0] = object ? caller.handles().add(object, HandleType::InterruptBinding, 4) : 0;
+                    if (object && !reply.data[0]) object->destroy();
                     MessageData::created(reply, reply.data[0]);
                     break;
                 }

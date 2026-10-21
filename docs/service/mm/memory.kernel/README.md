@@ -12,6 +12,8 @@
 | AllocatePages / PageInfo | 页对象分配及所有者、大小、引用数、节点信息 |
 | Usage | 总内存、可用内存、目标占用和地址空间代次 |
 | ReclaimCaches | Memory 能力授权的缓存回收 |
+| Freeze / Thaw | 当前 MM 实例受控暂停/恢复普通任务，保留原有 SIGSTOP 状态 |
+| FrozenNext / MappingNext | 枚举暂停任务和 pager 管理的既存映射，用于恢复对账 |
 
 **没有 Map/MapPages/MapSharedTarget/UnmapTarget/ProtectTarget RPC。** map/unmap/protect 统一复用 syscall 8–10，不能因 MM 服务需要映射而在此复现一份映射业务。
 
@@ -23,6 +25,6 @@
 
 ## 失败与验证
 
-非法参数、无权限、死亡目标、分配失败分别返回原生 ErrorCode。pager 故障仍按缺页处理边界清理用户任务；服务保护不应阻断内核异常清理。systemctl 不可停止该驻留对象，重启 Ring3 MM 也不会恢复其原有策略表。
+非法参数、无权限、死亡目标、分配失败分别返回原生 ErrorCode。pager 故障期间缺页/fork 有界等待新实例，Ring3 MM 负责恢复 VMA 和业务事务；本驻留对象不解释检查点里的策略结构。暂停超时由独立回收监督线程终止受影响普通任务，服务保护不阻断内核异常清理。systemctl 不可停止该驻留机制对象。
 
 参考 `tests/mm-runtime.cc`、`tests/kernel-lifecycle.h` 和本轮执行记录；诊断同时检查 `/sys/memory`、地址空间 generation、页引用和 MM 日志，不只看全局 free 值。

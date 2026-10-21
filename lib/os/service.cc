@@ -19,9 +19,10 @@ bool ServiceRegistry::putName(os::IpcMessage& message, const char* name) {
 
 int SystemService::pciRequest(PciRequest& command) {
     IpcMessage request{}, reply{};
-    request.type = static_cast<uint64_t>(command.operation); request.length = 4;
+    request.type = static_cast<uint64_t>(command.operation); request.length = 5;
     request.data[0] = command.operation == PciOperation::Enumerate ? command.capacity : command.offset;
     Runtime::copyBytes(&request.data[1], &command.function, sizeof(command.function)); request.data[3] = command.value;
+    request.data[4] = command.requester;
     const int64_t result = CoreServiceClient::result(CoreServiceKind::Pci, request, reply);
     if (result < 0) return result;
     if (command.operation == PciOperation::Enumerate) {

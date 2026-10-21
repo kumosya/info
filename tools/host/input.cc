@@ -173,7 +173,7 @@ void input(const Context& context) {
                 throw std::runtime_error("QEMU exited before input test");
             }
             if (fs::exists(qmp) && fs::exists(log) &&
-                read(log).find("[INIT] tty1-tty6 shells started") !=
+                read(log).find("[INIT] tty1-tty6 login sessions started") !=
                     std::string::npos) {
                 ready = true;
                 break;
@@ -184,6 +184,26 @@ void input(const Context& context) {
         Qmp control;
         control.connect(qmp);
         Qmp::sleep(2000);
+        auto occurrences = [&](const std::string& marker) {
+            const auto serial = read(log); size_t offset = 0; unsigned count = 0;
+            while ((offset = serial.find(marker, offset)) != std::string::npos) { ++count; offset += marker.size(); }
+            return count;
+        };
+        if (context.pattern == "windows") {
+            for (unsigned tabs = 1; tabs <= 4; ++tabs) {
+                if (occurrences("[TERMINAL] tab started") >= tabs) continue;
+                if (tabs > 1) {
+                    control.move(-127, -127); control.move(-127, -127);
+                    control.exact(130 + (tabs - 1) * 136 + 18, 105); control.click();
+                }
+                bool started = false;
+                for (unsigned attempt = 0; attempt < 200; ++attempt) {
+                    if (occurrences("[TERMINAL] tab started") >= tabs) { started = true; break; }
+                    Qmp::sleep(50);
+                }
+                if (!started) throw std::runtime_error("four terminal tabs were not ready before input stress");
+            }
+        }
         if (context.pattern == "pressure" && read(log).find("[INPUT PRESSURE] subscriber queue full") == std::string::npos)
             throw std::runtime_error("input pressure client was not armed");
         control.request("screendump",
@@ -191,9 +211,10 @@ void input(const Context& context) {
                             quote((stage / "input-before.ppm").string()) + "}");
         for (unsigned i = 0; i < context.clicks; ++i) {
             if (context.pattern == "windows") {
-                static const int positions[][2] = {{110,190}, {110,250}, {600,80}, {280,105}, {110,250}, {600,80}, {420,105}, {550,105}};
+                static const int positions[][2] = {{110,190}, {110,250}, {600,80}, {280,105}, {110,250}, {600,80}, {420,105}, {550,105}, {690,105}};
                 control.move(-127, -127); control.move(-127, -127);
-                control.exact(positions[i % 8][0], positions[i % 8][1]);
+                const auto position = i % (sizeof(positions) / sizeof(positions[0]));
+                control.exact(positions[position][0], positions[position][1]);
                 control.click();
             } else { control.move(2, 0); control.click(); control.move(-2, 0); }
         }
@@ -207,9 +228,7 @@ void input(const Context& context) {
         if (context.argument == "killall sh") {
             bool restored = false;
             for (unsigned attempt = 0; attempt < 300; ++attempt) {
-                const auto serial = read(log);
-                size_t offset = 0; unsigned count = 0;
-                while ((offset = serial.find("[TERMINAL] login restored", offset)) != std::string::npos) { ++count; ++offset; }
+                const unsigned count = occurrences("[TERMINAL] login restored");
                 if (count >= (context.pattern == "windows" ? 4U : 1U)) { restored = true; break; }
                 Qmp::sleep(100);
             }

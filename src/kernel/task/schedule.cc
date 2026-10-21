@@ -110,6 +110,10 @@ bool enqueueThread(Thread* thread) {
         interrupt::restore(flags);
         return thread->getState() != ThreadState::Terminated;
     }
+    if (thread->getTask() && thread->getTask()->memoryFrozen()) {
+        thread->setStateBeforeStop(ThreadState::Ready); thread->setState(ThreadState::Stopped);
+        queue->getLock().unlock(); interrupt::restore(flags); return true;
+    }
     if (thread->getVruntime() < queue->getMinVruntime()) {
         thread->setVruntime(queue->getMinVruntime());
     }

@@ -136,16 +136,19 @@ bool DisplayAccess::mapFramebuffer(Task& task, uint64_t userAddress,
 MmioRegion* MmioRegion::map(Task& task, const os::PciFunctionInfo& function,
                             uint8_t barIndex, uint64_t userAddress,
                             uint64_t size) {
-    uint64_t barBase;
-    uint64_t barSize;
-    if ((userAddress & (pageSize - 1)) != 0 || userAddress < 0x10000 ||
+    if (barIndex >= 6 || (userAddress & (pageSize - 1)) != 0 || userAddress < 0x10000 ||
         size == 0 || userAddress + size < userAddress ||
         userAddress + size >= 0x0000800000000000ULL ||
-        (size & (pageSize - 1)) != 0 ||
-        !PciAccess::getMemoryBar(function, barIndex, barBase, barSize) ||
-        size > barSize || (barBase & (pageSize - 1)) != 0) {
+        (size & (pageSize - 1)) != 0) {
         return nullptr;
     }
+    ResourceDomain* domain = ResourceDomain::find(task, function);
+    if (!domain) return nullptr;
+    auto create = [&]() -> MmioRegion* {
+    const uint64_t barBase = domain->barBases_[barIndex], barSize = domain->barSizes_[barIndex];
+    if (!barBase || size > barSize || (barBase & (pageSize - 1))) return nullptr;
+    PreemptionSpinLockGuard guard(task.addressSpace().lock());
+    if (!task.addressSpace().rootPhysicalAddress()) return nullptr;
     for (uint64_t offset = 0; offset < size; offset += pageSize) {
         if (!memory::mapPageInAddressSpace(
                 task.addressSpace().rootPhysicalAddress(), userAddress + offset,
@@ -172,21 +175,33 @@ MmioRegion* MmioRegion::map(Task& task, const os::PciFunctionInfo& function,
     region->physicalAddress_ = barBase;
     region->virtualAddress_  = userAddress;
     region->size_            = size;
+    region->mapped_          = true;
+    if (!domain->attach(*region)) {
+        for (uint64_t offset = 0; offset < size; offset += pageSize)
+            memory::unmapPageInAddressSpace(task.addressSpace().rootPhysicalAddress(), userAddress + offset);
+        heap::kernelFree(region); return nullptr;
+    }
+    return region;
+    };
+    MmioRegion* region = create();
+    domain->drop();
     return region;
 }
 
-DmaBuffer* DmaBuffer::create(Task& task, uint64_t userAddress,
+DmaBuffer* DmaBuffer::create(Task& task, ResourceDomain& domain, uint64_t userAddress,
                              os::DmaBufferInfo& info) {
-    if ((userAddress & (pageSize - 1)) != 0 || userAddress < 0x10000 ||
+    if (!domain.active(task) || (userAddress & (pageSize - 1)) != 0 || userAddress < 0x10000 ||
         userAddress + pageSize < userAddress ||
         userAddress + pageSize >= 0x0000800000000000ULL) {
         return nullptr;
     }
+    PreemptionSpinLockGuard guard(task.addressSpace().lock());
+    if (!task.addressSpace().rootPhysicalAddress()) return nullptr;
     const uint64_t physical = memory::allocatePhysicalPage();
     if (physical == 0 ||
         !memory::mapPageInAddressSpace(
             task.addressSpace().rootPhysicalAddress(), userAddress, physical,
-            pageUser | pageWritable | pageNoExecute)) {
+            pageUser | pageWritable | pageNoExecute | pageExternal)) {
         if (physical != 0) {
             memory::freePhysicalPage(physical);
         }
@@ -202,6 +217,12 @@ DmaBuffer* DmaBuffer::create(Task& task, uint64_t userAddress,
     buffer->physicalAddress_ = physical;
     buffer->virtualAddress_  = userAddress;
     buffer->size_            = pageSize;
+    buffer->mapped_          = true;
+    memory::KernelMapping::clear(physical, pageSize);
+    if (!domain.attach(*buffer)) {
+        memory::unmapPageInAddressSpace(task.addressSpace().rootPhysicalAddress(), userAddress);
+        memory::freePhysicalPage(physical); heap::kernelFree(buffer); return nullptr;
+    }
     info.virtualAddress      = userAddress;
     info.deviceAddress       = physical;
     info.size                = pageSize;

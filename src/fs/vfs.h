@@ -31,6 +31,12 @@ struct DirectoryEntry {
 
 class FileSystem {
    public:
+    // Called under the filesystem lock, once per open file description.
+    virtual bool retainOpenFile(uint32_t inode) { (void)inode; return true; }
+    virtual bool releaseOpenFile(uint32_t inode) { (void)inode; return true; }
+    virtual bool statInode(uint32_t inode, FileStatus& status) {
+        (void)inode; (void)status; return false;
+    }
     virtual bool mount(SectorDevice& device)                  = 0;
     virtual bool lookup(const char* path, FileStatus& status) = 0;
     virtual int64_t read(const FileStatus& status, uint64_t offset,
@@ -104,7 +110,38 @@ class FileSystem {
     virtual bool readOnly() const = 0;
 
    protected:
+    // Only backends with stable inode identities opt into deferred reclamation.
+    bool retainInode(uint32_t inode) {
+        for (auto& entry : openFiles_) if (entry.inode == inode && entry.references) {
+            if (entry.references == UINT32_MAX) return false;
+            ++entry.references; return true;
+        }
+        for (auto& entry : openFiles_) if (!entry.references) { entry = {inode, 1, false, false}; return true; }
+        return false;
+    }
+    bool releaseInode(uint32_t inode) {
+        for (auto& entry : openFiles_) if (entry.inode == inode && entry.references) {
+            if (entry.references == 1 && entry.unlinked) {
+                if (entry.failed) return false;
+                if (!reclaimUnlinked(inode)) { entry.failed = true; return false; }
+            }
+            if (!--entry.references) entry = {};
+            return true;
+        }
+        return false;
+    }
+    bool preserveUnlinked(uint32_t inode) {
+        for (auto& entry : openFiles_) if (entry.inode == inode && entry.references) { entry.unlinked = true; return true; }
+        return false;
+    }
+    bool inodeRetained(uint32_t inode) const {
+        for (const auto& entry : openFiles_) if (entry.inode == inode && entry.references) return true;
+        return false;
+    }
+    virtual bool reclaimUnlinked(uint32_t inode) { (void)inode; return false; }
     ~FileSystem() = default;
+   private:
+    struct OpenFile { uint32_t inode, references; bool unlinked, failed; } openFiles_[64]{};
 };
 
 class FileSystemFactory {

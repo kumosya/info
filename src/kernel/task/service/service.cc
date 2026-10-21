@@ -1,4 +1,6 @@
 #include "kernel/core_service.h"
+#include "kernel/recovery.h"
+#include "os/session_identity.h"
 #include "os/pci.h"
 
 #include "kernel/device.h"
@@ -268,7 +270,28 @@ class TaskService final : public EndpointService {
         Thread* thread = Thread::getCurrent();
         if (!thread || thread->getTask() != &caller || request.length < 4) return failure(os::ErrorCode::InvalidArgument);
         const auto* args = request.data;
+        if (request.type >= static_cast<uint64_t>(os::TaskOperation::RecoveryAcquire) &&
+            request.type <= static_cast<uint64_t>(os::TaskOperation::RecoveryList)) return ServiceRecovery::call(caller, request, reply);
+        if (request.type == static_cast<uint64_t>(os::TaskOperation::RecoveryAppend) ||
+            request.type == static_cast<uint64_t>(os::TaskOperation::RecoveryReadLog) ||
+            request.type == static_cast<uint64_t>(os::TaskOperation::RecoveryGeneration)) return ServiceRecovery::call(caller, request, reply);
         switch (static_cast<os::TaskOperation>(request.type)) {
+            case os::TaskOperation::Authentication: {
+                auto target = task::find(args[0] ? args[0] : caller.id());
+                if (!target) return failure(os::ErrorCode::NotFound);
+                if (target != &caller && (caller.serviceRole() != os::ServiceRole::Users || !caller.hasCapability(taskCapabilityUsers)))
+                    return failure(os::ErrorCode::PermissionDenied);
+                os::SessionIdentityInfo identity{};
+                target->authentication(identity.session, identity.uid, identity.gid);
+                MessageData::copy(&reply.data[1], &identity, sizeof(identity)); break;
+            }
+            case os::TaskOperation::AuthenticateSession: {
+                if (caller.serviceRole() != os::ServiceRole::Users || !caller.hasCapability(taskCapabilityUsers)) return failure(os::ErrorCode::PermissionDenied);
+                auto target = task::find(args[0]);
+                if (!target || args[1] >= 65535 || args[2] >= 65535 || args[3] > 1 || !target->authenticate(args[1], args[2], args[3]))
+                    return failure(os::ErrorCode::InvalidArgument);
+                break;
+            }
             case os::TaskOperation::SpawnProgram:
             case os::TaskOperation::SpawnImage: {
                 TaskImages images(caller);

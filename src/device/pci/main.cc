@@ -18,6 +18,7 @@ void respond(const os::IpcMessage& request, os::IpcMessage& reply) {
     if (request.senderPid == 0 ||
         os::SystemService::queryTask(request.senderPid, caller) != 0 ||
         caller.trustedDeviceService == 0) return;
+    command.requester = request.senderPid;
     if (request.type == static_cast<uint64_t>(os::PciServiceRequest::Enumerate)) {
         command.operation = os::PciOperation::Enumerate;
         command.capacity = request.data[0] > 64 ? 64 :

@@ -19,6 +19,18 @@
 #ifdef OS_TASK_LIFECYCLE_TEST
 #include "../../tests/kernel-lifecycle.h"
 #endif
+#ifdef OS_DEVICE_RESOURCE_TEST
+#include "../../tests/kernel-device.h"
+#endif
+#ifdef OS_SERVICE_RECOVERY_TEST
+#include "../../tests/kernel-recovery.h"
+#endif
+#ifdef OS_MM_RECOVERY_TEST
+#include "../../tests/kernel-mm.h"
+#endif
+#ifdef OS_PIPE_RECOVERY_TEST
+#include "../../tests/kernel-pipe.h"
+#endif
 
 
 namespace {
@@ -223,9 +235,21 @@ void kernelMain(const BootInfo* bootInfo) {
 #ifdef OS_TASK_LIFECYCLE_TEST
     TaskLifecycleTest::run();
 #endif
+#ifdef OS_SERVICE_RECOVERY_TEST
+    ServiceRecoveryTest::run();
+#endif
     if (UserProgramLoader::startInitial(bootInfo) == nullptr) {
         cpu::halt();
     }
+#ifdef OS_DEVICE_RESOURCE_TEST
+    if (!Thread::create(task::getCurrent(), DeviceResourceTest::run, nullptr)) cpu::halt();
+#endif
+#ifdef OS_MM_RECOVERY_TEST
+    if (!Thread::create(task::getCurrent(), MmRecoveryTest::run, nullptr)) cpu::halt();
+#endif
+#ifdef OS_PIPE_RECOVERY_TEST
+    if (!Thread::create(task::getCurrent(), PipeRecoveryTest::run, nullptr)) cpu::halt();
+#endif
     // serial::serialWrite("[KERNEL] entering idle loop\n");
 
     // The per-CPU idle thread owns idle time. Keeping this bootstrap thread

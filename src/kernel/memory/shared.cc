@@ -43,6 +43,7 @@ struct SharedMemoryMapping {
     uint64_t address;
     uint64_t size;
     bool writable;
+    bool pagerManaged = false;
 };
 
 SharedMemoryObject objects[objectCapacity];
@@ -251,6 +252,7 @@ uint64_t SharedMemory::map(Task& task, uint64_t handle, uint64_t address,
         mapped += pageSize;
     }
     mapping->used     = true;
+    mapping->pagerManaged = kernel::task::getCurrent() != &task && kernel::task::getCurrent()->serviceRole() == os::ServiceRole::Memory;
     mapping->task     = &task;
     mapping->object   = object;
     mapping->address  = address;
@@ -358,6 +360,15 @@ void SharedMemory::closeHandleObject(void* object) {
     sharedHandle->object       = nullptr;
     if (shared != nullptr && shared->references != 0) --shared->references;
     if (shared != nullptr) releaseObject(*shared);
+}
+bool SharedMemory::nextManagedMapping(Task& task, uint64_t cursor, uint64_t& address, uint64_t& size) {
+    PreemptionSpinLockGuard guard(registryLock);
+    const SharedMemoryMapping* selected = nullptr;
+    for (const auto& mapping : mappings)
+        if (mapping.used && mapping.task == &task && mapping.pagerManaged && mapping.address >= cursor &&
+            (!selected || mapping.address < selected->address)) selected = &mapping;
+    if (!selected) return false;
+    address = selected->address; size = selected->size; return true;
 }
 
 }  // namespace kernel

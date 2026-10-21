@@ -388,7 +388,9 @@ class Device {
     static int mapFramebuffer(uint64_t address, DisplayInfo& info);
     static int acknowledgeIrq(uint64_t binding);
     static uint64_t bindIrq(uint8_t irq, uint64_t endpoint, bool levelTriggered = false);
-    static int allocateDma(uint64_t address, DmaBufferInfo& info);
+    static uint64_t claimDevice(const PciFunctionInfo& function);
+    static int stopDevice(uint64_t device);
+    static int allocateDma(uint64_t device, uint64_t address, DmaBufferInfo& info);
     static uint64_t mapDeviceMmio(const PciFunctionInfo& function, uint8_t barIndex,
                        uint64_t address, uint64_t size);
 };

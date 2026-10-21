@@ -3,6 +3,7 @@
 #include "kernel/ipc.h"
 #include "kernel/page.h"
 #include "kernel/task.h"
+#include "kernel/recovery.h"
 #include "kernel/new.h"
 #include "os/mm.h"
 #include "os/core_service.h"
@@ -21,7 +22,7 @@ class RequestData {
         auto* output = static_cast<uint8_t*>(destination); auto* input = static_cast<const uint8_t*>(source);
         for (size_t i = 0; i < size; ++i) output[i] = input[i];
     }
-    static bool authorized(Task& caller, uint64_t target) { return !target || target == caller.id() || (caller.serviceRole() == os::ServiceRole::Memory && caller.hasCapability(taskCapabilityMemory)); }
+    static bool authorized(Task& caller, uint64_t target) { return !target || target == caller.id() || (caller.serviceRole() == os::ServiceRole::Memory && caller.hasCapability(taskCapabilityMemory) && ServiceRecovery::current(caller)); }
 };
 }
 int MemoryService::call(Task& caller, const IpcMessage& request, IpcMessage& reply) {
@@ -31,6 +32,38 @@ int MemoryService::call(Task& caller, const IpcMessage& request, IpcMessage& rep
         case os::MemoryOperation::BindPager: {
             HandleTable::Pin pin(caller.handles(), args[0], HandleType::Endpoint, handleRightRead);
             if (!PagerBridge::bind(caller, pin.as<Endpoint>())) return -3;
+            break;
+        }
+        case os::MemoryOperation::Freeze:
+        case os::MemoryOperation::Thaw: {
+            if (caller.serviceRole() != os::ServiceRole::Memory || !caller.hasCapability(taskCapabilityMemory) || !ServiceRecovery::current(caller)) return -3;
+            auto target = task::find(args[0]);
+            if (!args[0] || !target || target->isTerminated()) return -4;
+            if (!target->setMemoryFrozen(request.type == static_cast<uint64_t>(os::MemoryOperation::Freeze))) return -8;
+            PreemptionSpinLockGuard guard(target->addressSpace().lock());
+            reply.data[1] = target->addressSpace().generation(); break;
+        }
+        case os::MemoryOperation::FrozenNext: {
+            if (caller.serviceRole() != os::ServiceRole::Memory || !caller.hasCapability(taskCapabilityMemory) || !ServiceRecovery::current(caller)) return -3;
+            uint64_t cursor = args[0] ? args[0] : 1;
+            for (;;) {
+                auto target = task::next(cursor);
+                if (!target) { reply.data[1] = 0; break; }
+                cursor = target->id() + 1;
+                if (target->memoryFrozen() && !target->isTerminated()) { reply.data[1] = target->id(); break; }
+            }
+            break;
+        }
+        case os::MemoryOperation::MappingNext: {
+            if (caller.serviceRole() != os::ServiceRole::Memory || !caller.hasCapability(taskCapabilityMemory) || !ServiceRecovery::current(caller)) return -3;
+            auto target = task::find(args[0]);
+            if (!target || !target->memoryFrozen()) return -8;
+            uint64_t pageAddress = 0, pageSize = 0, sharedAddress = 0, sharedSize = 0;
+            const bool page = PageMappings::nextManagedMapping(*target, args[1], pageAddress, pageSize);
+            const bool shared = SharedMemory::nextManagedMapping(*target, args[1], sharedAddress, sharedSize);
+            reply.data[1] = reply.data[2] = 0;
+            if (page && (!shared || pageAddress < sharedAddress)) { reply.data[1] = pageAddress; reply.data[2] = pageSize; }
+            else if (shared) { reply.data[1] = sharedAddress; reply.data[2] = sharedSize; }
             break;
         }
         case os::MemoryOperation::PageState: {

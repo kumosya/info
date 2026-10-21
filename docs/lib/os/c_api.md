@@ -1,6 +1,6 @@
 # POSIX 适配与程序入口
 
-OS SDK 仅提供 C++ 接口，不再安装 `os/c_api.h`，libos-c++ 不再导出原来的 `os_*` C 适配函数。
+OS SDK 仅提供 C++ 接口，不安装 `os/c_api.h`，libos-c++ 不导出原来的 `os_*` C 适配函数。
 
 C 程序使用标准头文件。文件描述符表及必要的 C/C++ 转换位于 libc 内部的 `os_adapter.cc` / `os_adapter.h`，这些头文件不进入 SDK，桥接符号使用隐藏可见性。基础机制使用统一的 Ring 3 syscall ABI；其余操作由 libc 内部连接 OS 类客户端。
 

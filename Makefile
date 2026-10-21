@@ -163,11 +163,65 @@ $(KERNEL): $(KERNEL_OBJECTS) $(KERNEL_LINKER_SCRIPT) Makefile
 
 $(OBJECT_DIR)/tests/lifecycle-main.o: $(SOURCE_DIR)/kernel/main.cc tests/kernel-lifecycle.h
 	@mkdir -p $(@D)
-	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) -DOS_TASK_LIFECYCLE_TEST -c $< -o $@
+	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DEPENDENCY_FLAGS) -DOS_TASK_LIFECYCLE_TEST -c $< -o $@
 
 $(BUILD_DIR)/tests/kernel-lifecycle.elf: $(filter-out $(OBJECT_DIR)/kernel/main.o,$(KERNEL_OBJECTS)) $(OBJECT_DIR)/tests/lifecycle-main.o $(KERNEL_LINKER_SCRIPT) Makefile
 	@mkdir -p $(@D)
 	@$(CXX) $(CXXFLAGS) $(KERNEL_LDFLAGS) -o $@ $(filter %.o,$^) -lgcc
+
+$(OBJECT_DIR)/tests/device-main.o: $(SOURCE_DIR)/kernel/main.cc tests/kernel-device.h
+	@mkdir -p $(@D)
+	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DEPENDENCY_FLAGS) -DOS_DEVICE_RESOURCE_TEST -c $< -o $@
+
+$(OBJECT_DIR)/tests/device-domain.o: $(SOURCE_DIR)/kernel/device/resource/domain.cc
+	@mkdir -p $(@D)
+	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DEPENDENCY_FLAGS) -DOS_DEVICE_RESOURCE_TEST -c $< -o $@
+
+$(BUILD_DIR)/tests/kernel-device.elf: $(filter-out $(OBJECT_DIR)/kernel/main.o $(OBJECT_DIR)/kernel/device/resource/domain.o,$(KERNEL_OBJECTS)) $(OBJECT_DIR)/tests/device-main.o $(OBJECT_DIR)/tests/device-domain.o $(KERNEL_LINKER_SCRIPT) Makefile
+	@mkdir -p $(@D)
+	@$(CXX) $(CXXFLAGS) $(KERNEL_LDFLAGS) -o $@ $(filter %.o,$^) -lgcc
+
+$(OBJECT_DIR)/tests/recovery-main.o: $(SOURCE_DIR)/kernel/main.cc tests/kernel-recovery.h
+	@mkdir -p $(@D)
+	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DEPENDENCY_FLAGS) -DOS_SERVICE_RECOVERY_TEST -c $< -o $@
+
+$(BUILD_DIR)/tests/kernel-recovery.elf: $(filter-out $(OBJECT_DIR)/kernel/main.o,$(KERNEL_OBJECTS)) $(OBJECT_DIR)/tests/recovery-main.o $(KERNEL_LINKER_SCRIPT) Makefile
+	@mkdir -p $(@D)
+	@$(CXX) $(CXXFLAGS) $(KERNEL_LDFLAGS) -o $@ $(filter %.o,$^) -lgcc
+
+$(OBJECT_DIR)/tests/mm-kernel-main.o: $(SOURCE_DIR)/kernel/main.cc tests/kernel-mm.h tests/mm-control.h
+	@mkdir -p $(@D)
+	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DEPENDENCY_FLAGS) -DOS_MM_RECOVERY_TEST -c $< -o $@
+
+$(BUILD_DIR)/tests/kernel-mm.elf: $(filter-out $(OBJECT_DIR)/kernel/main.o,$(KERNEL_OBJECTS)) $(OBJECT_DIR)/tests/mm-kernel-main.o $(KERNEL_LINKER_SCRIPT) Makefile
+	@mkdir -p $(@D)
+	@$(CXX) $(CXXFLAGS) $(KERNEL_LDFLAGS) -o $@ $(filter %.o,$^) -lgcc
+
+$(OBJECT_DIR)/tests/mm-service-main.o: $(SOURCE_DIR)/mm/main.cc tests/mm-phase.h tests/mm-control.h
+	@mkdir -p $(@D)
+	@$(CXX) $(CPPFLAGS) $(USER_CXXFLAGS) $(DEPENDENCY_FLAGS) -DOS_MM_TRANSACTION_TEST -c $< -o $@
+
+$(BUILD_DIR)/tests/mm-phase.elf: $(filter-out $(OBJECT_DIR)/mm/main.o,$(patsubst $(SOURCE_DIR)/%.cc,$(OBJECT_DIR)/%.o,$(wildcard $(SOURCE_DIR)/mm/*.cc))) $(OBJECT_DIR)/tests/mm-service-main.o $(OBJECT_DIR)/user/runtime/service_start.o $(LIBOS_CXX_SO) $(SERVICE_LIBS_mm) script/boot-service.lds Makefile
+	@mkdir -p $(@D)
+	@$(CXX) $(USER_CXXFLAGS) $(BOOT_SERVICE_LDFLAGS) -o $@ $(filter %.o,$^) -Wl,-E,--no-dynamic-linker -Wl,--no-as-needed $(LIBOS_CXX_SO) $(SERVICE_LIBS_mm) -lgcc
+
+$(OBJECT_DIR)/tests/pipe-kernel-main.o: $(SOURCE_DIR)/kernel/main.cc tests/kernel-pipe.h tests/pipe-control.h
+	@mkdir -p $(@D)
+	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DEPENDENCY_FLAGS) -DOS_PIPE_RECOVERY_TEST -c $< -o $@
+
+$(BUILD_DIR)/tests/kernel-pipe.elf: $(filter-out $(OBJECT_DIR)/kernel/main.o,$(KERNEL_OBJECTS)) $(OBJECT_DIR)/tests/pipe-kernel-main.o $(KERNEL_LINKER_SCRIPT) Makefile
+	@mkdir -p $(@D)
+	@$(CXX) $(CXXFLAGS) $(KERNEL_LDFLAGS) -o $@ $(filter %.o,$^) -lgcc
+
+$(OBJECT_DIR)/tests/pipe-service-main.o: $(SOURCE_DIR)/task/pipe/main.cc tests/pipe-phase.h tests/pipe-control.h src/service/replay.h src/service/recovery.h include/os-c++/os/recovery.h
+	@mkdir -p $(@D)
+	@$(CXX) $(CPPFLAGS) $(USER_CXXFLAGS) $(DEPENDENCY_FLAGS) -DOS_PIPE_TRANSACTION_TEST -c $< -o $@
+
+$(BUILD_DIR)/tests/pipe-phase.elf: $(OBJECT_DIR)/tests/pipe-service-main.o $(OBJECT_DIR)/user/runtime/service_start.o $(LIBOS_CXX_SO) script/boot-service.lds Makefile
+	@mkdir -p $(@D)
+	@$(CXX) $(USER_CXXFLAGS) $(BOOT_SERVICE_LDFLAGS) -o $@ $(filter %.o,$^) -Wl,-E,--no-dynamic-linker -Wl,--no-as-needed $(LIBOS_CXX_SO) -lgcc
+
+$(addprefix $(OBJECT_DIR)/tests/,lifecycle-main.o device-main.o device-domain.o recovery-main.o mm-kernel-main.o mm-service-main.o pipe-kernel-main.o pipe-service-main.o): Makefile
 
 $(OBJECT_DIR)/kernel/%.o: $(SOURCE_DIR)/kernel/%.cc
 	@mkdir -p $(@D)
@@ -357,6 +411,7 @@ check: $(KERNEL) $(USER_PROGRAMS) $(USER_SHARED_LIBRARIES) $(INTERPRETER)
 DESTDIR ?=
 INSTALL_GRUB ?= 0
 GRUB_DISK ?=
+EXPORT_ACCOUNT_PROFILE ?= development
 .PHONY: install image iso export-images
 install: all
 	@missing=0; for input in $(IMAGE_INPUTS); do \
@@ -372,11 +427,11 @@ install: all
 
 image: all
 	@test "$(IMAGE_TOOLS)" = 1 || { echo 'Run ./configure with image tools enabled' >&2; exit 1; }
-	@sh script/mkbootimg.sh "$(BUILD_DIR)" "$(PACKAGE_DIR)" "$(BUILD_DIR)/export/osinfo.img"
+	@sh script/mkbootimg.sh "$(BUILD_DIR)" "$(PACKAGE_DIR)" "$(BUILD_DIR)/export/osinfo.img" "$(EXPORT_ACCOUNT_PROFILE)"
 
 iso: all
 	@test "$(IMAGE_TOOLS)" = 1 || { echo 'Run ./configure with image tools enabled' >&2; exit 1; }
-	@sh script/mkiso.sh "$(BUILD_DIR)" "$(PACKAGE_DIR)" "$(BUILD_DIR)/export/osinfo.iso"
+	@sh script/mkiso.sh "$(BUILD_DIR)" "$(PACKAGE_DIR)" "$(BUILD_DIR)/export/osinfo.iso" "$(EXPORT_ACCOUNT_PROFILE)"
 
 export-images: image iso
 
@@ -393,7 +448,7 @@ debug: install
 		-display gtk -serial stdio -S -s
 
 ifeq ($(filter clean,$(MAKECMDGOALS)),)
--include $(DEPENDENCY_FILES)
+-include $(sort $(DEPENDENCY_FILES) $(wildcard $(OBJECT_DIR)/tests/*.d $(OBJECT_DIR)/tests/linker/*.d))
 endif
 
 clean:

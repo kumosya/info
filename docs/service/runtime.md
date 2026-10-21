@@ -27,7 +27,7 @@ guiw|init|1|/sbin/sys/guiw.elf|-|console|40|guiw|30000|1
 
 ## 会话与其他配置
 
-`/etc/sessions` 恰好包含 terminal、shell、recovery 三条 `kind|absolute-path|argv0`；缺失、重复和非法输入使会话启动失败。默认 GUI 终端为 `/usr/bin/terminal`，初次 shell 为 `/bin/sh`，故障恢复为 `/bin/login`。`/etc/console` 保存默认 TTY 与串口选项；旧 console.conf 需迁移到此路径。版本是 `/lib/version.1`，动态链接器是系统程序，不是 `/etc` 配置或 inpk。
+`/etc/sessions` 包含 terminal、login 两条 `kind|absolute-path|argv0`；缺失、重复和非法输入使会话启动失败。默认 GUI 终端为 `/usr/bin/terminal`，文本 TTY 与 GUI 新终端统一运行 `/bin/login`，认证后使用账户配置的 shell。旧 terminal/shell/recovery 三条格式仍可读，所有登录均使用 recovery，shell 项不提供首次免认证入口。`/etc/console` 保存默认 TTY 与串口选项；旧 console.conf 需迁移到此路径。版本是 `/lib/version.1`，动态链接器是系统程序，不是 `/etc` 配置或 inpk。登录和镜像账户规则见 [登录](login.md)。
 
 ## systemctl 独立项目
 
@@ -39,7 +39,7 @@ guiw|init|1|/sbin/sys/guiw.elf|-|console|40|guiw|30000|1
 
 start/stop 改当前 desired；enable/disable 只改下次启动设置，互不隐含。持久化先比较当前 `/etc/services` 与已读取版本，发现外部编辑则拒绝写入；写临时文件、fsync 后 rename。不同服务的 enabledOffset 随整条记录排序移动，修改仍落在原文件的对应字节。
 
-停止被活动服务依赖的目标返回 Busy 和依赖名；基础 boot 服务当前拒绝停止、重启和禁用，避免孤儿子服务及不可恢复业务状态。文件服务先 SIGTERM，再有界强制终止；普通 kill/killall/pkill、句柄 terminate 和进程组信号均不能替代该流程。保护由内核 managedService 标记执行，与名称、UID 或固定硬件能力分开。
+停止被活动服务依赖的目标返回 Busy 和依赖名；基础 boot 服务拒绝永久停止和禁用。已有检查点/事务恢复的 MM、pipe，以及从内核认证标记重建会话的 users，允许受控 restart 并保留客户端业务状态；其他服务仍按既有依赖限制执行，不能把新实例视为原业务已经恢复。文件服务先 SIGTERM，再有界强制终止；普通 kill/killall/pkill、句柄 terminate 和进程组信号均不能替代该流程。保护由内核 managedService 标记执行，与名称、UID 或固定硬件能力分开。恢复契约及当前范围见 [恢复](recovery.md)。
 
 配置错误、端点失效、启动超时、权限失败应保留原错误；不要以普通 install 替代失败 upgrade，也不要自动重试有副作用请求。实际验证入口为 `tests/service-runtime.sh`，对文件升级保留策略另见 `tests/check-install.sh`。
 

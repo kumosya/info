@@ -2,6 +2,7 @@
 
 #include "kernel/cpu.h"
 #include "kernel/device.h"
+#include "kernel/recovery.h"
 #include "kernel/ipc.h"
 #include "kernel/mm.h"
 #include "kernel/page.h"
@@ -10,6 +11,7 @@
 #include "kernel/sync.h"
 #include "kernel/smp.h"
 #include "kernel/task.h"
+#include "kernel/device.h"
 #include "kernel/thread.h"
 #include "kernel/time.h"
 #include "kernel/services.h"
@@ -176,7 +178,7 @@ class MappingCaller {
  public:
     static bool manager(const Task& caller) {
         return caller.serviceRole() == os::ServiceRole::Memory &&
-               caller.hasCapability(taskCapabilityMemory);
+               caller.hasCapability(taskCapabilityMemory) && ServiceRecovery::current(caller);
     }
     static bool authorized(const Task& caller, uint64_t target) {
         return !target || target == caller.id() || manager(caller);
@@ -407,6 +409,8 @@ uint64_t handleForkTask(SyscallContext* context) {
         parent == task::getIdle()) {
         return error(SyscallError::InvalidArgument);
     }
+    // Hardware mappings cannot escape their owner through copied page tables.
+    if (device::ResourceDomain::owned(*parent)) return error(SyscallError::PermissionDenied);
     Task* child = Task::create(parent->name(), parent);
     if (child == nullptr) return error(SyscallError::OutOfMemory);
     bool cloned = false;

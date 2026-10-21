@@ -15,6 +15,7 @@ struct PciRequest {
     uint16_t reserved;
     uint32_t value;
     PciFunctionInfo* functions;
+    uint64_t requester;
 };
 
 static_assert(sizeof(PciFunctionInfo) == 16);

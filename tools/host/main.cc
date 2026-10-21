@@ -158,7 +158,7 @@ int main(int argc, char** argv) {
         if (argc < 2)
             throw std::runtime_error(
                 "usage: osinfo-host "
-                "prepare|generate|sdk|layout|deploy|audit|image|input [options]");
+                "prepare|generate|sdk|layout|deploy|audit|image|input|accounts [options]");
         host::Context context;
         for (int i = 2; i < argc; ++i) {
             std::string key = argv[i];
@@ -211,6 +211,8 @@ int main(int argc, char** argv) {
             host::image(context);
         else if (command == "input")
             host::input(context);
+        else if (command == "accounts")
+            host::accounts(context);
         else
             throw std::runtime_error("unknown command " + command);
         return 0;

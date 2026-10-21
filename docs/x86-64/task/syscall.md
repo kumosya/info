@@ -11,7 +11,7 @@
 | 1 | SendMessage | IPC 发送；也承载同进程线程取消子操作 |
 | 2 | ReceiveMessage | IPC 领取及句柄事务提交 |
 | 3 | CallService | 同步 RPC、绝对截止时间 |
-| 4 | ReplyMessage | 以显式 Reply Token 回复 |
+| 4 | ReplyMessage | 以 Reply Token 回复 |
 | 5 | GetStandardHandle | 三个标准流句柄 |
 | 6 | GetBootstrapHandle | 引导句柄、端点工厂及驻留服务发现子操作 |
 | 7 | CloseHandle | 进程句柄表关闭及对象引用释放 |

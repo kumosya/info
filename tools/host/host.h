@@ -47,4 +47,5 @@ void deploy(const Context& context);
 void audit(const Context& context);
 void image(const Context& context);
 void input(const Context& context);
+void accounts(const Context& context);
 }  // namespace host

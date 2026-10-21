@@ -22,7 +22,7 @@ uint32_t Filesystem::allocateInode(bool directory, uint32_t preferredGroup) {
         for (uint32_t local = 0; local < limit; ++local) {
             const uint32_t number =
                 group * superblock_.inodesPerGroup + local + 1;
-            if (number < superblock_.firstInode ||
+            if (number < superblock_.firstInode || inodeRetained(number) ||
                 (bitmap[local / 8] & (1U << (local % 8))) != 0)
                 continue;
             bitmap[local / 8] |= static_cast<uint8_t>(1U << (local % 8));

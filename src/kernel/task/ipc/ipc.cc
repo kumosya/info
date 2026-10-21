@@ -185,9 +185,9 @@ void unlinkCall(EndpointImplementation& state, PendingCall& call) {
     call.next = nullptr;
 }
 
-void closeLocked(EndpointImplementation& state, os::ErrorCode error) {
+void closeLocked(EndpointImplementation& state, os::ErrorCode error, bool permanent = true) {
     if (state.destroyed) return;
-    state.destroyed = true;
+    state.destroyed = permanent;
     Waiter* lists[] = {state.receivers, state.senders, state.callers};
     for (auto* list : lists)
         for (auto* waiter = list; waiter; waiter = waiter->next) complete(*waiter, failure(error));
@@ -198,6 +198,7 @@ void closeLocked(EndpointImplementation& state, os::ErrorCode error) {
         queued = {};
     }
     state.count = 0;
+    state.pendingIrqs = 0;
 }
 
 void discardCallMessage(EndpointImplementation& state, PendingCall& call) {
@@ -224,6 +225,7 @@ int enqueue(Endpoint* endpoint, IpcMessage& message, PendingCall* call, uint64_t
         {
             InterruptSpinLockGuard guard(state.lock);
             if (state.destroyed) return failure(os::ErrorCode::EndpointClosed);
+            if (!endpoint->getOwner()) return failure(os::ErrorCode::PeerDied);
             if (!kernelOrigin && !hasRightLocked(endpoint, sender, endpointRightSend))
                 return failure(os::ErrorCode::PermissionDenied);
             if (state.count < queueCapacity) {
@@ -314,7 +316,7 @@ void Endpoint::closeOwner(Task* owner) {
     for (auto* state = endpoints; state; state = state->next) {
         InterruptSpinLockGuard guard(state->lock);
         if (state->endpoint->getOwner() == owner) {
-            closeLocked(*state, os::ErrorCode::PeerDied);
+            closeLocked(*state, os::ErrorCode::PeerDied, state->endpoint->recoveryRole == 0);
             state->endpoint->setOwner(nullptr);
             state->endpoint->release();
         }
@@ -326,6 +328,25 @@ void Endpoint::closeOwner(Task* owner) {
             heap::kernelFree(grant);
         }
     }
+}
+
+bool Endpoint::protectRecovery(Task& task) {
+    InterruptSpinLockGuard guard(implementation->lock);
+    const auto role = static_cast<uint32_t>(task.serviceRole());
+    if (implementation->destroyed || implementation->service || getOwner() != &task || !task.managedService() || !role ||
+        (recoveryRole && recoveryRole != role)) return false;
+    recoveryRole = role; return true;
+}
+bool Endpoint::adoptRecovery(Task& task) {
+    InterruptSpinLockGuard guard(implementation->lock);
+    if (implementation->destroyed || !recoveryRole || recoveryRole != static_cast<uint32_t>(task.serviceRole()) ||
+        (getOwner() && getOwner() != &task)) return false;
+    if (!getOwner()) { retain(); setOwner(&task); }
+    return true;
+}
+void Endpoint::releaseRecovery(Task& task) {
+    InterruptSpinLockGuard guard(implementation->lock);
+    if (recoveryRole == static_cast<uint32_t>(task.serviceRole())) recoveryRole = 0;
 }
 
 bool Endpoint::grantAccess(Task* task, uint32_t rights) {
@@ -369,6 +390,7 @@ int Endpoint::receive(IpcMessage* message, uint64_t deadline) {
             if (state.destroyed) return failure(os::ErrorCode::EndpointClosed);
             if (!hasRightLocked(this, task::getCurrent(), endpointRightReceive))
                 return failure(os::ErrorCode::PermissionDenied);
+            if (recoveryRole && getOwner() != task::getCurrent()) return failure(os::ErrorCode::PermissionDenied);
             if (state.pendingIrqs) {
                 const uint32_t irq = __builtin_ctz(state.pendingIrqs);
                 state.pendingIrqs &= static_cast<uint16_t>(~(1U << irq));

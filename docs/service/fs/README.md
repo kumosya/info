@@ -8,7 +8,7 @@
 
 fs 枚举 storage 的全部块设备，探测格式、卷标和 UUID，再按根卷的 /etc/fstab 挂载。main.cc 只负责服务启动与 IPC 分发，不指定磁盘路径或设备序号。
 
-InfoIDE 的显式可选光盘模式把完整根卷放入 ISO 的 /boot/rootfs.ext3，经 GRUB 载入内存后由 storage 发布 /dev/ram0。FS 仍按卷内 LABEL=OSINFO_ROOT 的 fstab 确定根卷，运行时可写，关机不保存。这里不依赖 ATAPI 驱动，也不会将 ram0 冒充 /dev/cdrom；仅该可选模式只连接 ISO 光驱。OS 本体和 InfoIDE 项目默认使用 VirtIO 硬盘。
+InfoIDE 的可选光盘模式把完整根卷放入 ISO 的 /boot/rootfs.ext3，经 GRUB 载入内存后由 storage 发布 /dev/ram0。FS 仍按卷内 LABEL=OSINFO_ROOT 的 fstab 确定根卷，运行时可写，关机不保存。这里不依赖 ATAPI 驱动，也不会将 ram0 冒充 /dev/cdrom；仅该可选模式只连接 ISO 光驱。OS 本体和 InfoIDE 项目默认使用 VirtIO 硬盘。
 
 ## 文件划分
 
@@ -67,9 +67,13 @@ ls 支持 -l、-a、-la 和 --color=auto/always/never；普通列表以两个空
 
 sysfs 与 procfs 的目录允许 O_RDONLY/O_DIRECTORY 打开；大小零不表示没有条目。FS 统一折叠路径中的重复斜线，不依赖 ls 特判。目录协议返回 inode 与 nextOffset，libc 对所有文件系统统一采用返回游标；proc 根用单调 PID 下界应对创建和退出竞争。普通进程文件在 open 时保存内容快照，self 使用真实请求 PID。格式与权限详见 [procfs/sysfs](../procfs.md)。
 
-虚拟路径不能落入磁盘后端执行 create/truncate/chmod/chown/rename，避免修改被遮蔽的底层目录。users 的目录初始化也不再修改内核生成的 /proc 权限。未实现的 proc stat 字段必须保持已说明的限制，不能把零值解释为真实前台进程组。
-
 ## 监护、并发和诊断
+
+MM 文件映射使用稳定租约，不把引用寿命绑定到旧 MM PID。ClaimMapping 返回租约 ID 与描述符，原 FD 关闭或文件 rename 后仍由同一打开文件对象提供页。MM 在检查点提交后发送 ReleaseMapping；新实例通过 ListMappings 回收未提交请求留下的孤儿租约。CancelMapping 只按发行者和稳定 token 取消尚未兑换的委托，避免按复用的描述符数字误关闭其他文件。以上不等于 FS 自身重启已支持完整状态恢复。
+
+ext3/ext4 按打开文件对象保留 inode。unlink 最后一个名字、rmdir 空目录或 rename 覆盖旧目标时，仍有打开引用或 MM 租约的对象只把链接数降到零；数据块和 inode 留到最后一个对象关闭之后回收。同名重建使用独立 inode，旧 FD 与映射不会读到替代文件。fstat 直接查询 inode，正确返回零链接数，不依赖旧路径是否还存在。dup/fork/映射租约共享 OpenFileDescription 引用，不重复计算底层保留。
+
+引用归零的描述对象先进入待回收状态，按“文件系统锁→描述符表锁”回收，避免关闭路径反向取锁。主 worker 每秒回收退出任务的描述符。底层回收报告失败时隔离该 inode 与描述对象，保留槽位且禁止 inode 再分配；没有完整磁盘事务时不能自动重做可能已释放部分块的操作，以免二次释放。此类介质/元数据错误仍需文件系统修复，不宣称具备完整写入事务恢复。当前保留表属于 FS 实例内存，没有实现跨 FS 重启或整机崩溃的持久 orphan 恢复；FAT32 的 unlink 寿命保证尚未迁移。`tests/fs-inode-host.sh` 对 ext3/ext4 执行内容、同名重建、rename 覆盖、打开目录和 128 轮回收，并用 e2fsck 检查正常路径磁盘；MM 故障测试覆盖 unlink 后的未触页文件映射。
 
 init 创建并监护 fs；角色 Fs，没有任意设备 I/O 能力。块访问通过 storage IPC；挂载和格式化验证实际请求凭据。打开文件描述符归 PID，OpenFileDescription 可由 fork/dup 共享，引用归零才释放；每挂载独立锁，描述符表锁与描述符偏移锁分开。
 

@@ -82,7 +82,7 @@ uint64_t CoreServiceClient::openHandle(CoreServiceKind kind) {
 }
 uint64_t CoreServiceClient::handles_[static_cast<uint64_t>(CoreServiceKind::Count)];
 
-int CoreServiceClient::call(CoreServiceKind kind, IpcMessage& request, IpcMessage& reply, uint64_t deadline) {
+int CoreServiceClient::callOnce(CoreServiceKind kind, IpcMessage& request, IpcMessage& reply, uint64_t deadline) {
     const auto index = static_cast<uint64_t>(kind);
     if (index >= static_cast<uint64_t>(CoreServiceKind::Count)) return static_cast<int>(ErrorCode::InvalidArgument);
     uint64_t handle = __atomic_load_n(&handles_[index], __ATOMIC_ACQUIRE);
@@ -97,7 +97,7 @@ int CoreServiceClient::call(CoreServiceKind kind, IpcMessage& request, IpcMessag
         else { closeHandle(created); handle = expected; }
     }
     IpcMessage outgoing = request;
-    const bool tagged = kind == CoreServiceKind::Pipe ? request.type != static_cast<uint64_t>(PipeOperation::Create) && request.type != static_cast<uint64_t>(PipeOperation::CreateChannel)
+    const bool tagged = kind == CoreServiceKind::Pipe ? request.type != static_cast<uint64_t>(PipeOperation::Create) && request.type != static_cast<uint64_t>(PipeOperation::CreateChannel) && request.type != static_cast<uint64_t>(PipeOperation::Acknowledge)
         : kind == CoreServiceKind::MessageQueue && request.type != static_cast<uint64_t>(MessageQueueOperation::Open) && request.type != static_cast<uint64_t>(MessageQueueOperation::Unlink);
     if (tagged) {
         if (outgoing.handleCount) return static_cast<int>(ErrorCode::InvalidArgument);
@@ -107,6 +107,76 @@ int CoreServiceClient::call(CoreServiceKind kind, IpcMessage& request, IpcMessag
     if (status == static_cast<int>(ErrorCode::PeerDied) || status == static_cast<int>(ErrorCode::EndpointClosed) || status == static_cast<int>(ErrorCode::InvalidHandle)) {
         uint64_t expected = handle;
         if (__atomic_compare_exchange_n(&handles_[index], &expected, 0ULL, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) closeHandle(handle);
+    }
+    return status;
+}
+int CoreServiceClient::call(CoreServiceKind kind, IpcMessage& request, IpcMessage& reply, uint64_t deadline) {
+    if (kind != CoreServiceKind::Pipe || request.type == static_cast<uint64_t>(PipeOperation::Acknowledge))
+        return callOnce(kind, request, reply, deadline);
+    if (request.length > ipcDataWordCount - 3) return static_cast<int>(ErrorCode::InvalidArgument);
+    static uint64_t sequence;
+    struct PendingAcknowledgement { uint64_t id, thread; uint32_t state; };
+    static PendingAcknowledgement pendingAcknowledgements[128];
+    const auto thread = Task::getThreadId();
+    if (static_cast<int64_t>(thread) <= 0) return static_cast<int>(ErrorCode::InvalidArgument);
+    auto acknowledge = [&](uint64_t value, uint64_t origin) {
+        IpcMessage message{}, result{}; message.type = static_cast<uint64_t>(PipeOperation::Acknowledge);
+        message.length = 2; message.data[0] = value; message.data[1] = origin;
+        return !callOnce(kind, message, result, Clock::getMonotonicTime() + 1000000000ULL) && !static_cast<int64_t>(result.data[0]);
+    };
+    auto defer = [&](uint64_t value, uint64_t origin) {
+        for (auto& slot : pendingAcknowledgements) {
+            uint32_t empty = 0;
+            if (!__atomic_compare_exchange_n(&slot.state, &empty, 1U, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) continue;
+            slot.id = value; slot.thread = origin;
+            __atomic_store_n(&slot.state, 2U, __ATOMIC_RELEASE); return;
+        }
+        // The bounded server cache retains any result that cannot be confirmed.
+    };
+    unsigned acknowledgements = 0;
+    for (auto& slot : pendingAcknowledgements) {
+        if (acknowledgements == 4) break;
+        uint32_t ready = 2;
+        if (!__atomic_compare_exchange_n(&slot.state, &ready, 1U, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) continue;
+        const uint64_t value = slot.id, origin = slot.thread;
+        __atomic_store_n(&slot.state, 0U, __ATOMIC_RELEASE);
+        ++acknowledgements;
+        if (!acknowledge(value, origin)) { defer(value, origin); break; }
+    }
+    IpcMessage outgoing = request;
+    const bool tagged = request.type != static_cast<uint64_t>(PipeOperation::Create) && request.type != static_cast<uint64_t>(PipeOperation::CreateChannel);
+    int64_t copied = 0;
+    if (tagged) {
+        const uint32_t rights = request.type == static_cast<uint64_t>(PipeOperation::Read) ? 1 :
+            request.type == static_cast<uint64_t>(PipeOperation::Write) || request.type == static_cast<uint64_t>(PipeOperation::Eof) ? 2 : 0;
+        copied = Handle::duplicate(request.data[0], rights, handleFlagNoInherit | handleFlagCloseOnExec);
+        if (copied <= 0) return copied ? copied : static_cast<int>(ErrorCode::InvalidHandle);
+        outgoing.data[0] = copied;
+    }
+    // Keep the original object alive if another thread closes/reuses its FD.
+    Handle retained(copied);
+    const uint32_t end = outgoing.length;
+    const uint64_t id = __atomic_add_fetch(&sequence, 1ULL, __ATOMIC_RELAXED);
+    outgoing.data[end] = serviceReplayMagic; outgoing.data[end + 1] = id; outgoing.data[end + 2] = 0;
+    outgoing.length += 3;
+    uint64_t recoveryDeadline = 0, attemptDeadline = deadline;
+    int status;
+    for (;;) {
+        status = callOnce(kind, outgoing, reply, attemptDeadline);
+        const bool unavailable = status == static_cast<int>(ErrorCode::PeerDied) || status == static_cast<int>(ErrorCode::EndpointClosed) ||
+            status == static_cast<int>(ErrorCode::InvalidHandle) || status == static_cast<int>(ErrorCode::NotFound);
+        const bool interrupted = status == static_cast<int>(ErrorCode::Interrupted) || status == static_cast<int>(ErrorCode::Timeout);
+        if (!unavailable && !interrupted) break;
+        const uint64_t now = Clock::getMonotonicTime();
+        if (!recoveryDeadline) recoveryDeadline = now + 20000000000ULL;
+        if (now >= recoveryDeadline) return static_cast<int>(ErrorCode::Timeout);
+        if (interrupted && !outgoing.data[end + 2]) outgoing.data[end + 2] = static_cast<uint64_t>(static_cast<int64_t>(status));
+        attemptDeadline = recoveryDeadline;
+        sleep(1);
+    }
+    if (!status) {
+        // Once the reply is in client memory, its replay record may be retired.
+        if (!acknowledge(id, thread)) defer(id, thread);
     }
     return status;
 }
@@ -618,11 +688,24 @@ IpcMessage request{}, reply{};
     return CoreServiceClient::result(CoreServiceKind::Device, request, reply);
 }
 
-int Device::allocateDma(uint64_t address, DmaBufferInfo& info) {
+uint64_t Device::claimDevice(const PciFunctionInfo& function) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(DeviceOperation::ClaimDevice); request.length = 5;
+    Runtime::copyBytes(request.data, &function, sizeof(function));
+    const int64_t result = CoreServiceClient::result(CoreServiceKind::Device, request, reply);
+    return result > 0 ? result : 0;
+}
+int Device::stopDevice(uint64_t device) {
+    IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(DeviceOperation::StopDevice); request.length = 5; request.data[0] = device;
+    return CoreServiceClient::result(CoreServiceKind::Device, request, reply);
+}
+int Device::allocateDma(uint64_t device, uint64_t address, DmaBufferInfo& info) {
 IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(DeviceOperation::AllocateDma);
     request.length = 5;
     request.data[0] = address;
+    request.data[1] = device;
     const auto status = CoreServiceClient::result(CoreServiceKind::Device, request, reply);
     if (!status) Runtime::copyBytes(&info, &reply.data[1], sizeof(info));
     return status;
@@ -1133,20 +1216,37 @@ namespace os {
 namespace {
 class VirtualMemoryClient {
     inline static uint64_t endpoint_ = 0;
+    inline static uint64_t sequence_ = 0;
     inline static uint8_t lock_ = 0;
    public:
     static int64_t call(IpcMessage& request) {
         while (__atomic_test_and_set(&lock_, __ATOMIC_ACQUIRE)) yield();
-        if (!endpoint_) {
-            endpoint_ = ServiceRegistry::lookupService(ServiceRegistry::serviceRegistry(), "mm", 1);
-            if (endpoint_) Handle::setFlags(endpoint_, handleFlagCloseOnExec);
-        }
-        IpcMessage reply{};
-        const int status = endpoint_ ? callService(endpoint_, request, reply) : static_cast<int>(ErrorCode::NotFound);
-        if (status == static_cast<int>(ErrorCode::PeerDied) || status == static_cast<int>(ErrorCode::EndpointClosed) || status == static_cast<int>(ErrorCode::InvalidHandle)) {
+        if (request.length > ipcDataWordCount - 3) { __atomic_clear(&lock_, __ATOMIC_RELEASE); return static_cast<int>(ErrorCode::InvalidArgument); }
+        const uint32_t original = request.length;
+        request.data[original] = 0x4d4d525043303031ULL;
+        request.data[original + 1] = ++sequence_;
+        request.data[original + 2] = 0;
+        request.length += 3;
+        const uint64_t deadline = Clock::getMonotonicTime() + 20000000000ULL;
+        IpcMessage reply{}; int status = 0;
+        for (;;) {
+            if (!endpoint_) {
+                endpoint_ = ServiceRegistry::lookupService(ServiceRegistry::serviceRegistry(), "mm", 1);
+                if (endpoint_) Handle::setFlags(endpoint_, handleFlagCloseOnExec);
+            }
+            status = endpoint_ ? callService(endpoint_, request, reply, deadline) : static_cast<int>(ErrorCode::NotFound);
+            const bool recovering = status == static_cast<int>(ErrorCode::PeerDied) || status == static_cast<int>(ErrorCode::EndpointClosed) ||
+                status == static_cast<int>(ErrorCode::InvalidHandle) || status == static_cast<int>(ErrorCode::NotFound);
+            if (!recovering) break;
             if (endpoint_) closeHandle(endpoint_);
             endpoint_ = 0;
+            // One-shot FS delegations and namespace changes may only resume a committed result.
+            if (request.type == static_cast<uint64_t>(MmOperation::MapFile) || request.type == static_cast<uint64_t>(MmOperation::SharedOpen) ||
+                request.type == static_cast<uint64_t>(MmOperation::SharedUnlink)) request.data[original + 2] = 1;
+            if (Clock::getMonotonicTime() >= deadline) { status = static_cast<int>(ErrorCode::Timeout); break; }
+            sleep(10);
         }
+        request.length = original;
         __atomic_clear(&lock_, __ATOMIC_RELEASE);
         return status ? status : reply.handleCount ? static_cast<int64_t>(reply.handles[0]) : static_cast<int64_t>(reply.data[0]);
     }
@@ -1186,8 +1286,8 @@ uint64_t VirtualMemory::file(uint64_t descriptor, uint64_t size, uint32_t protec
     const int64_t result = VirtualMemoryClient::call(request);
     // An unclaimed delegation belongs to the issuer and must not leak on failure.
     if (result < 0) {
-        IpcMessage close{}, ignored{}; close.type = static_cast<uint64_t>(FsRequest::Close);
-        close.length = 1; close.data[0] = reply.data[2]; callService(fs, close, ignored);
+        IpcMessage close{}, ignored{}; close.type = static_cast<uint64_t>(FsRequest::CancelMapping);
+        close.length = 1; close.data[0] = reply.data[1]; callService(fs, close, ignored);
     }
     closeHandle(fs); return result;
 }

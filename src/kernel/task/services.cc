@@ -108,7 +108,7 @@ int Services::pciRequest(os::PciRequest& request) {
         case os::PciOperation::ReadConfig:
             return device::PciAccess::read(request.function, request.offset, request.value) ? 0 : -1;
         case os::PciOperation::WriteConfig:
-            return device::PciAccess::write(request.function, request.offset, request.value) ? 0 : -1;
+            return device::ResourceDomain::writeConfiguration(request.requester, request.function, request.offset, request.value) ? 0 : -1;
     }
     return -1;
 }
@@ -123,13 +123,19 @@ int Services::queryTask(uint64_t id, os::TaskInfo& info) {
 uint64_t Services::mapMmio(const os::PciFunctionInfo& function, uint8_t bar, uint64_t address, uint64_t size) {
     if (!deviceAccess()) return 0;
     auto* region = device::MmioRegion::map(*task::getCurrent(), function, bar, address, size);
-    return region ? task::getCurrent()->handles().add(region, HandleType::MmioRegion, 3) : 0;
+    const auto handle = region ? task::getCurrent()->handles().add(region, HandleType::MmioRegion, 3) : 0;
+    if (region && !handle) region->destroy();
+    return handle;
 }
-int Services::allocateDma(uint64_t address, os::DmaBufferInfo& info) {
+int Services::allocateDma(uint64_t device, uint64_t address, os::DmaBufferInfo& info) {
     if (!deviceAccess()) return static_cast<int>(os::ErrorCode::PermissionDenied);
-    auto* buffer = device::DmaBuffer::create(*task::getCurrent(), address, info);
+    HandleTable::Pin pin(task::getCurrent()->handles(), device, HandleType::DeviceDomain, handleRightManage);
+    auto* domain = pin.as<device::ResourceDomain>();
+    if (!domain) return static_cast<int>(os::ErrorCode::InvalidHandle);
+    auto* buffer = device::DmaBuffer::create(*task::getCurrent(), *domain, address, info);
     if (!buffer) return static_cast<int>(os::ErrorCode::OutOfMemory);
     info.handle = task::getCurrent()->handles().add(buffer, HandleType::DmaBuffer, 3);
+    if (!info.handle) buffer->destroy();
     return info.handle ? 0 : static_cast<int>(os::ErrorCode::OutOfMemory);
 }
 uint64_t Services::bindIrq(uint8_t irq, uint64_t handle, bool levelTriggered) {
@@ -179,7 +185,7 @@ uint64_t Services::resolve(const char* symbol) {
         {"_ZN2os13SystemService10pciRequestERNS_10PciRequestE", reinterpret_cast<uint64_t>(&pciRequest)},
         {"_ZN2os13SystemService9queryTaskEmRNS_8TaskInfoE", reinterpret_cast<uint64_t>(&queryTask)},
         {"_ZN2os6Device13mapDeviceMmioERKNS_15PciFunctionInfoEhmm", reinterpret_cast<uint64_t>(&mapMmio)},
-        {"_ZN2os6Device11allocateDmaEmRNS_13DmaBufferInfoE", reinterpret_cast<uint64_t>(&allocateDma)},
+        {"_ZN2os6Device11allocateDmaEmmRNS_13DmaBufferInfoE", reinterpret_cast<uint64_t>(&allocateDma)},
         {"_ZN2os6Device7bindIrqEhmb", reinterpret_cast<uint64_t>(&bindIrq)},
         {"_ZN2os6Device14acknowledgeIrqEm", reinterpret_cast<uint64_t>(&acknowledgeIrq)}
     };

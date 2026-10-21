@@ -166,6 +166,15 @@ bool FsServer::handle(const os::IpcMessage& original, os::IpcMessage& reply) {
         case os::FsRequest::ClaimMapping:
             claimMapping(request, reply);
             break;
+        case os::FsRequest::ReleaseMapping:
+            releaseMapping(request, reply);
+            break;
+        case os::FsRequest::ListMappings:
+            listMappings(request, reply);
+            break;
+        case os::FsRequest::CancelMapping:
+            cancelMapping(request, reply);
+            break;
         case os::FsRequest::CloneForChild:
             cloneDescriptors(request.senderPid, request.data[0], reply);
             break;
@@ -216,14 +225,21 @@ class FsApplication {
 FsServer fsServer;
 uint64_t fsEndpoint;
 
-[[noreturn]] void workerLoop() {
+[[noreturn]] void workerLoop(bool maintenance = false) {
+    uint64_t nextMaintenance = 0;
     while (true) {
+        const auto now = os::Clock::getMonotonicTime();
+        if (maintenance && now >= nextMaintenance) {
+            fsServer.reapDescriptors();
+            nextMaintenance = os::Clock::getMonotonicTime() + 1000000000ULL;
+        }
         os::IpcMessage request{};
-        if (os::receiveMessage(fsEndpoint, request) != 0) continue;
+        if (os::receiveMessage(fsEndpoint, request, maintenance ? nextMaintenance : os::ipcInfiniteDeadline) != 0) continue;
         os::IpcMessage reply{};
         if (fsServer.handle(request, reply)) {
             os::replyMessage(fsEndpoint, request.replyToken, reply);
         }
+        fsServer.collectClosedDescriptions();
     }
 }
 
@@ -260,7 +276,7 @@ int run() {
     }
     os::System::log("[FS] storage IPC probe complete\n");
     os::System::log("[FS] mounted filesystems configured in /etc/fstab\n");
-    workerLoop();
+    workerLoop(true);
 }
 };
 }  // namespace vfs::server

@@ -25,7 +25,7 @@ class SessionCleanup {
 };
 class SessionConfiguration {
  public:
-    char terminal[128]{}, terminalName[24]{}, shell[128]{}, shellName[24]{}, recovery[128]{}, recoveryName[24]{};
+    char terminal[128]{}, terminalName[24]{}, login[128]{}, loginName[24]{};
     bool load() {
         File input; if (input.open("/etc/sessions", O_RDONLY)) return false;
         char bytes[1024]{}; size_t used = 0;
@@ -40,17 +40,21 @@ class SessionConfiguration {
                 char* field[3] = {line}; unsigned count = 1;
                 for (char* p = line; *p; ++p) if (*p == '|') { if (count == 3) return false; *p = 0; field[count++] = p + 1; }
                 if (count != 3 || !ConfigurationText::absolutePath(field[1]) || !*field[2] || Runtime::stringLength(field[1]) >= 128 || Runtime::stringLength(field[2]) >= 24) return false;
-                unsigned bit = Runtime::stringsEqual(field[0], "terminal") ? 1 : Runtime::stringsEqual(field[0], "shell") ? 2 : Runtime::stringsEqual(field[0], "recovery") ? 4 : 0;
+                unsigned bit = Runtime::stringsEqual(field[0], "terminal") ? 1 : Runtime::stringsEqual(field[0], "login") ? 2 :
+                    Runtime::stringsEqual(field[0], "shell") ? 4 : Runtime::stringsEqual(field[0], "recovery") ? 8 : 0;
                 if (!bit || (seen & bit)) return false;
                 seen |= bit;
-                char* path = bit == 1 ? terminal : bit == 2 ? shell : recovery;
-                char* name = bit == 1 ? terminalName : bit == 2 ? shellName : recoveryName;
-                Runtime::copyString(path, field[1], 128); Runtime::copyString(name, field[2], 24);
+                // Legacy shell/recovery files use recovery for every session.
+                if (bit != 4) {
+                    char* path = bit == 1 ? terminal : login;
+                    char* name = bit == 1 ? terminalName : loginName;
+                    Runtime::copyString(path, field[1], 128); Runtime::copyString(name, field[2], 24);
+                }
             }
             if (last) break;
             line = end + 1;
         }
-        return seen == 7;
+        return seen == 3 || seen == 13;
     }
 };
 }

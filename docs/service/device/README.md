@@ -29,7 +29,7 @@ enum class DriverState : uint8_t { Created, Initialized, Running, Stopping, Stop
 
 ### IRQ 与 PS/2 控制器
 
-- 绑定 **IRQ 1（键盘）与 IRQ 12（鼠标）**到专用端点；IRQ 线程收到 `0x495251`（"IRQ"）通知后持续排空已缓存字节，每 64 字节让出一次 CPU，避免边沿触发中断不再到达而遗留输入。
+- 绑定 **IRQ 1（键盘）与 IRQ 12（鼠标）**到专用端点；IRQ 线程收到 `0x495251`（"IRQ"）通知后持续排空已缓存字节，每 64 字节让出一次 CPU，避免边沿触发中断不到达而遗留输入。
 - `Ps2Controller`（8042）初始化：清空输出缓冲 → 禁用两端口（0xAD/0xA7）→ 读配置字节（0x20）→ 置 IRQ1/IRQ2 并清位 4/5 → 写回（0x60）→ 启用（0xAE/0xA8）→ 鼠标滚轮探测（采样率 200/100/80 序列 + 0xF2 读设备 ID，ID=3 则 4 字节包）→ 键盘/鼠标发 0xF4 开启扫描。
 
 ### 键盘驱动（KeyboardDriver）
@@ -81,7 +81,7 @@ struct InputEvent { InputEventType type; uint32_t reserved; uint64_t timestamp; 
 
 所有服务进程都在 Ring3 运行。固定 boot 模块的内核 ServiceRole 和 capabilities 决定可调用的机制；磁盘路径、root 身份或普通请求参数不能自行获得这些权限。
 
-PCI 服务通过 pci.kernel 进行受限配置空间操作；device 服务通过 device.kernel 初始化 PS/2 并读取输入字节。存储驱动的 MMIO、DMA 与 IRQ 同样由 device.kernel 验证并提供。OS 库不再提供原始端口读写 API，没有端口 syscall。
+PCI 服务通过 pci.kernel 进行受限配置空间操作；device 服务通过 device.kernel 初始化 PS/2 并读取输入字节。存储驱动的 MMIO、DMA 与 IRQ 同样由 device.kernel 验证并提供。OS 库不提供原始端口读写 API，没有端口 syscall。
 
 纯光盘根卷由 GRUB 加载为 rootfs 内存模块。device.kernel 的 BootImageInfo/Read/Write 仅允许带设备能力的固定 Storage 身份访问这个模块，按块校验边界；实现放在 `src/kernel/device/storage/boot_image.cc`。Ring3 storage 提供标准块设备协议，普通程序无法通过该接口获得任意物理内存访问，也没有新增通用 map 服务。
 

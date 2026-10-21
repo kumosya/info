@@ -14,11 +14,22 @@ Backing* MemoryState::createBacking(BackingKind kind) {
     return nullptr;
 }
 uint64_t MemoryState::pagesUsed(uint64_t task) const { uint64_t count = 0; for (const auto& p : pages) if (p.used && p.task == task) ++count; return count; }
-void MemoryState::collectBackings() {
+bool MemoryState::references(uint64_t id) const {
+    if (regions.references(id)) return true;
+    for (const auto& page : pages) if (page.used && page.backing == id) return true;
+    return false;
+}
+void MemoryState::collectBackings(bool releaseFiles) {
     for (auto& b : backings) {
         if (!b.used || regions.references(b.id)) continue;
         bool live = false; for (const auto& p : pages) if (p.used && p.backing == b.id) live = true;
         if (live) continue;
+        if (b.lease) {
+            if (!releaseFiles) continue;
+            os::IpcMessage request{}, reply{};
+            request.type = static_cast<uint64_t>(os::FsRequest::ReleaseMapping); request.length = 1; request.data[0] = b.lease;
+            if (!b.fs || os::callService(b.fs, request, reply) || static_cast<int64_t>(reply.data[0])) continue;
+        }
         if (b.handle) os::closeHandle(b.handle);
         if (b.descriptor) os::File::borrow(b.fs, b.descriptor).close();
         if (b.fs) os::closeHandle(b.fs);
@@ -46,12 +57,24 @@ int MemoryState::synchronize(uint64_t task) {
     for (auto& domain : domains_) if (!domain.task) { domain = {task, usage.generation}; return 0; }
     return -5;
 }
-void MemoryState::sweep() {
+bool MemoryState::sweep() {
+    bool changed = false;
     for (auto& domain : domains_) if (domain.task) {
         os::TaskInfo info{};
-        if (os::Task::query(domain.task, info) || info.state == 2) { releaseTask(domain.task); continue; }
+        if (os::Task::query(domain.task, info) || info.state == 2) { releaseTask(domain.task); changed = true; continue; }
         os::MemoryUsage usage{};
-        if (os::Memory::usage(usage, domain.task) || usage.generation != domain.generation) releaseTask(domain.task);
+        if (os::Memory::usage(usage, domain.task) || usage.generation != domain.generation) { releaseTask(domain.task); changed = true; }
     }
+    return changed;
+}
+void MemoryState::pruneRecovered() {
+    for (auto& domain : domains_) if (domain.task) {
+        os::MemoryUsage usage{};
+        if (!os::Memory::usage(usage, domain.task) && usage.generation == domain.generation) continue;
+        regions.removeTask(domain.task);
+        for (auto& page : pages) if (page.used && page.task == domain.task) page = {};
+        domain = {};
+    }
+    for (auto& backing : backings) if (backing.used && !references(backing.id)) backing = {};
 }
 }  // namespace mm

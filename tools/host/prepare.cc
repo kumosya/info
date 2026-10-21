@@ -133,13 +133,13 @@ void prepare(const Context& context) {
             throw std::runtime_error("missing service package: " + service[0]);
     std::set<std::string> sessions;
     for (const auto& app : table("script/etc/sessions")) {
-        if (app.size() != 3 || (app[0] != "terminal" && app[0] != "shell" && app[0] != "recovery") ||
+        if (app.size() != 3 || (app[0] != "terminal" && app[0] != "login") ||
             !sessions.insert(app[0]).second)
             throw std::runtime_error("invalid session defaults");
         if (!provided.count(app[1]))
             throw std::runtime_error("missing session application package: " + app[1]);
     }
-    if (sessions.size() != 3) throw std::runtime_error("incomplete session defaults");
+    if (sessions.size() != 2) throw std::runtime_error("incomplete session defaults");
     dependencies << '\n';
     write(context.build / "packages.conf", catalog.str());
     write(context.build / "package-inputs.mk", dependencies.str());

@@ -4,10 +4,13 @@ cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 build=${1:-build}
 packages=${2:-packages}
 output=${3:-$build/export/osinfo.img}
+profile=${4:-development}
+case "$profile" in development|system) ;; *) echo 'unknown account profile' >&2; exit 2;; esac
 stage=$(mktemp -d "${TMPDIR:-/tmp}/osinfo-system-image.XXXXXX")
 temporary="$output.tmp.$$"
 trap 'rm -rf -- "$stage"; rm -f -- "$temporary"' EXIT HUP INT TERM
 sh script/install.sh "$stage/root" "$build" "$packages" 0
+if [ "$profile" = development ]; then tools/osinfo-host accounts --root "$stage/root" --argument development; fi
 printf 'LABEL=OSINFO_ROOT / ext3 defaults 0 1\n' >"$stage/root/etc/fstab"
 mkdir -p "$stage/root/boot/grub/fonts" "$(dirname -- "$output")"
 cp /usr/share/grub/unicode.pf2 "$stage/root/boot/grub/fonts/unicode.pf2"

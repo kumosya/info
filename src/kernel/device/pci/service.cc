@@ -32,8 +32,8 @@ class PciService final : public EndpointService {
             if (request.data[0] > UINT16_MAX || !device::PciAccess::read(function, request.data[0], value)) return -1;
             reply.data[1] = value;
         } else if (operation == os::PciOperation::WriteConfig) {
-            if (request.data[0] > UINT16_MAX || request.data[3] > UINT32_MAX ||
-                !device::PciAccess::write(function, request.data[0], request.data[3])) return -1;
+            if (request.length < 5 || request.data[0] > UINT16_MAX || request.data[3] > UINT32_MAX ||
+                !device::ResourceDomain::writeConfiguration(request.data[4], function, request.data[0], request.data[3])) return -1;
         } else return -1;
         reply.length = os::ipcDataWordCount; return 0;
     }

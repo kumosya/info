@@ -3,11 +3,34 @@
 #include "kernel/task.h"
 #include "kernel/time.h"
 #include "kernel/page.h"
+#include "kernel/recovery.h"
 #include "os/mm.h"
 namespace kernel::memory {
-namespace { SpinLock pagerLock; Endpoint* pagerEndpoint; }
+namespace {
+SpinLock pagerLock; Endpoint* pagerEndpoint;
+int exchange(IpcMessage& request, IpcMessage& reply, bool optional = false) {
+    const auto flags = interrupt::disable(); interrupt::enable();
+    const uint64_t deadline = time::getMonotonicTime() + 20000000000ULL;
+    bool observed = false;
+    for (;;) {
+        Endpoint* endpoint;
+        {
+            InterruptSpinLockGuard guard(pagerLock); endpoint = pagerEndpoint;
+            if (endpoint) { endpoint->retain(); observed = true; }
+        }
+        if (!endpoint && !observed) { interrupt::restore(flags); return optional ? 0 : static_cast<int>(os::ErrorCode::PeerDied); }
+        const int result = endpoint ? endpoint->callFromKernel(&request, &reply, deadline) : static_cast<int>(os::ErrorCode::PeerDied);
+        if (endpoint) endpoint->release();
+        if (result != static_cast<int>(os::ErrorCode::PeerDied) && result != static_cast<int>(os::ErrorCode::EndpointClosed)) {
+            interrupt::restore(flags); return result;
+        }
+        if (time::getMonotonicTime() >= deadline) { interrupt::restore(flags); return static_cast<int>(os::ErrorCode::Timeout); }
+        Thread::sleepCurrent(1);
+    }
+}
+}
 bool PagerBridge::bind(Task& owner, Endpoint* endpoint) {
-    if (!endpoint || !owner.hasCapability(taskCapabilityMemory) || owner.serviceRole() != os::ServiceRole::Memory || endpoint->getOwner() != &owner) return false;
+    if (!endpoint || !owner.hasCapability(taskCapabilityMemory) || owner.serviceRole() != os::ServiceRole::Memory || !ServiceRecovery::current(owner) || endpoint->getOwner() != &owner) return false;
     InterruptSpinLockGuard guard(pagerLock);
     if (pagerEndpoint && !pagerEndpoint->isClosed() && pagerEndpoint->getOwner() != &owner) return false;
     endpoint->retain(); if (pagerEndpoint) pagerEndpoint->release(); pagerEndpoint = endpoint; return true;
@@ -15,18 +38,10 @@ bool PagerBridge::bind(Task& owner, Endpoint* endpoint) {
 bool PagerBridge::resolve(uint64_t address, uint64_t flags) {
     Task* caller = task::getCurrent();
     if (!caller || caller->serviceRole() == os::ServiceRole::Memory || address < 0x10000 || address >= 0x0000800000000000ULL || (flags & 8)) return false;
-    Endpoint* endpoint;
-    {
-        InterruptSpinLockGuard guard(pagerLock); endpoint = pagerEndpoint;
-        if (!endpoint || endpoint->isClosed()) return false;
-        endpoint->retain();
-    }
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(os::MmOperation::Fault); request.length = 3;
     request.data[0] = address; request.data[1] = flags;
-    const uint64_t interruptFlags = interrupt::disable(); interrupt::enable();
-    const int result = endpoint->callFromKernel(&request, &reply, time::getMonotonicTime() + 5000000000ULL);
-    endpoint->release(); interrupt::restore(interruptFlags);
+    const int result = exchange(request, reply);
     if (result || static_cast<int64_t>(reply.data[0])) return false;
     PreemptionSpinLockGuard guard(caller->addressSpace().lock());
     const uint64_t root = caller->addressSpace().rootPhysicalAddress(); uint64_t actual = 0;
@@ -35,18 +50,10 @@ bool PagerBridge::resolve(uint64_t address, uint64_t flags) {
 }
 bool PagerBridge::clone(Task& parent, Task& child) {
     if (parent.serviceRole() == os::ServiceRole::Memory) return false;
-    Endpoint* endpoint;
-    {
-        InterruptSpinLockGuard guard(pagerLock); endpoint = pagerEndpoint;
-        if (!endpoint) return true;
-        if (endpoint->isClosed()) return false;
-        endpoint->retain();
-    }
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(os::MmOperation::Fork); request.length = 1;
     request.data[0] = child.id();
-    const int result = endpoint->callFromKernel(&request, &reply, time::getMonotonicTime() + 5000000000ULL);
-    endpoint->release();
+    const int result = exchange(request, reply, true);
     return !result && static_cast<int64_t>(reply.data[0]) == 0;
 }
 bool PagerBridge::ensureUserMemory(uint64_t address, uint64_t size, bool writable) {

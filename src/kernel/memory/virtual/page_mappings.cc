@@ -5,7 +5,7 @@
 namespace kernel::memory {
 namespace {
 struct alignas(16) Mapping {
-    Task* target; PageObject* object; uint64_t address, size, offset, protection; Mapping* next; bool cow = false;
+    Task* target; PageObject* object; uint64_t address, size, offset, protection; Mapping* next; bool cow = false, pagerManaged = false;
 };
 Mapping storage[2048];
 FixedPool pool;
@@ -34,7 +34,16 @@ bool PageMappings::map(Task& target, PageObject& object, uint64_t address, uint6
         while (mapped) { mapped -= 4096; memory::unmapPageInAddressSpace(root, address + mapped); }
         pool.release(record); return false;
     }
-    object.retain(); *record = {&target, &object, address, size, offset, maximumProtection, mappings}; mappings = record; return true;
+    object.retain(); *record = {&target, &object, address, size, offset, maximumProtection, mappings};
+    record->pagerManaged = task::getCurrent() && task::getCurrent() != &target && task::getCurrent()->serviceRole() == os::ServiceRole::Memory;
+    mappings = record; return true;
+}
+bool PageMappings::nextManagedMapping(Task& target, uint64_t cursor, uint64_t& address, uint64_t& size) {
+    PreemptionSpinLockGuard guard(lock); const Mapping* selected = nullptr;
+    for (const Mapping* r = mappings; r; r = r->next)
+        if (r->target == &target && r->pagerManaged && r->address >= cursor && (!selected || r->address < selected->address)) selected = r;
+    if (!selected) return false;
+    address = selected->address; size = selected->size; return true;
 }
 bool PageMappings::prepareUnmap(Task& target, uint64_t address, uint64_t size, void*& reservation) {
     reservation = nullptr;

@@ -3,14 +3,18 @@
 #include "os/terminal.h"
 class SessionSupervisor {
     os::SessionConfiguration config_;
-    struct Session { uint64_t handle = 0, started = 0, nextAttempt = 0; bool recovery = false, desired = true; uint32_t failures = 0; };
+    struct Session { uint64_t handle = 0, started = 0, nextAttempt = 0; bool desired = true; uint32_t failures = 0; };
     Session sessions_[os::textTerminalCount + 1]{};
     uint64_t windowInstance_ = 0;
     uint64_t consoleInstance_ = 0;
     bool configured_ = false;
-    static bool failed(Session& session) {
-        ++session.failures;
-        session.nextAttempt = os::Clock::getMonotonicTime() + (1ULL << (session.failures < 5 ? session.failures : 5)) * 1000000000ULL;
+    static uint64_t retryDelay(uint32_t index, uint32_t failures) {
+        const uint32_t maximum = index < os::textTerminalCount ? 3 : 5;
+        return (1ULL << (failures < maximum ? failures : maximum)) * 1000000000ULL;
+    }
+    static bool failed(Session& session, uint32_t index) {
+        if (session.failures < 5) ++session.failures;
+        session.nextAttempt = os::Clock::getMonotonicTime() + retryDelay(index, session.failures);
         return false;
     }
     bool start(uint32_t index) {
@@ -18,16 +22,16 @@ class SessionSupervisor {
         if (index == os::textTerminalCount) session.handle = os::Task::execute(config_.terminal, 1, terminalArguments_);
         else {
             const uint64_t console = os::ServiceRegistry::lookupService(os::ServiceRegistry::serviceRegistry(), os::terminalServiceName, 1000);
-            if (!console) return failed(session);
+            if (!console) return failed(session, index);
             os::IpcMessage request{}, reply{}; request.type = static_cast<uint64_t>(os::TerminalRequest::ResetSession);
             request.length = 1; request.data[0] = index;
             const int result = os::callService(console, request, reply); os::closeHandle(console);
-            if (result || reply.data[0]) return failed(session);
+            if (result || reply.data[0]) return failed(session, index);
             char terminal[] = "--os-terminal=1"; terminal[14] = '1' + index;
-            const char* arguments[] = {session.recovery ? config_.recoveryName : config_.shellName, terminal};
-            session.handle = os::Task::execute(session.recovery ? config_.recovery : config_.shell, 2, arguments);
+            const char* arguments[] = {config_.loginName, terminal};
+            session.handle = os::Task::execute(config_.login, 2, arguments);
         }
-        if (!session.handle) return failed(session);
+        if (!session.handle) return failed(session, index);
         session.started = os::Clock::getMonotonicTime(); return true;
     }
     const char* terminalArguments_[1]{};
@@ -40,7 +44,7 @@ class SessionSupervisor {
         if (ready && os::Terminal::switchTo(os::graphicalTerminalId)) os::System::log("[INIT] GUI terminal started through PTY\n");
         bool textReady = true;
         for (uint32_t i = 0; i < os::textTerminalCount; ++i) if (!start(i)) textReady = false;
-        if (textReady) os::System::log("[INIT] tty1-tty6 shells started\n");
+        if (textReady) os::System::log("[INIT] tty1-tty6 login sessions started\n");
         return ready && textReady;
     }
     void tick() {
@@ -65,13 +69,13 @@ class SessionSupervisor {
             if (session.handle && state != 0 && state != 2) {
                 os::TaskInfo previous{};
                 if (i < os::textTerminalCount && !os::Task::getInfo(session.handle, previous)) os::SessionCleanup::terminate(previous.sessionId);
-                os::closeHandle(session.handle); session.handle = 0; session.recovery = true;
-                if (os::Clock::getMonotonicTime() - session.started > 60000000000ULL) session.failures = 0;
-                ++session.failures;
-                session.nextAttempt = os::Clock::getMonotonicTime() + (1ULL << (session.failures < 5 ? session.failures : 5)) * 1000000000ULL;
+                os::closeHandle(session.handle); session.handle = 0;
+                if (code == 0 || os::Clock::getMonotonicTime() - session.started > 60000000000ULL) session.failures = 0;
+                if (code != 0 && session.failures < 5) ++session.failures;
+                session.nextAttempt = os::Clock::getMonotonicTime() + retryDelay(i, session.failures);
                 if (i == os::textTerminalCount && code == 0) session.desired = false;
             }
-            if (!session.handle && session.desired && session.failures < 5 && os::Clock::getMonotonicTime() >= session.nextAttempt &&
+            if (!session.handle && session.desired && (i < os::textTerminalCount || session.failures < 5) && os::Clock::getMonotonicTime() >= session.nextAttempt &&
                 (i < os::textTerminalCount || instance)) start(i);
         }
     }

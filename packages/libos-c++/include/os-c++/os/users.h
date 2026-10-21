@@ -4,7 +4,7 @@
 #include "service.h"
 
 namespace os {
-enum class UserOperation : uint64_t { Lookup = 1, Login, Sudo, Password, Who, Add, BeginSession };
+enum class UserOperation : uint64_t { Lookup = 1, Login, Sudo, Password, Who, Add, BeginSession, AutoLogin };
 struct UserProfile {
     uint32_t uid, gid;
     char name[32], home[96], shell[64];

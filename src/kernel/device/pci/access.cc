@@ -111,7 +111,7 @@ bool PciAccess::getMemoryBar(const os::PciFunctionInfo& function,
     const uint32_t originalHigh =
         is64Bit ? readConfigRaw(function, offset + 4) : 0;
     const uint32_t command = readConfigRaw(function, 4);
-    writeConfigRaw(function, 4, command & ~3U);
+    writeConfigRaw(function, 4, (command & 0xffff) & ~3U);
     writeConfigRaw(function, offset, 0xffffffffU);
     if (is64Bit) {
         writeConfigRaw(function, offset + 4, 0xffffffffU);
@@ -122,7 +122,7 @@ bool PciAccess::getMemoryBar(const os::PciFunctionInfo& function,
     if (is64Bit) {
         writeConfigRaw(function, offset + 4, originalHigh);
     }
-    writeConfigRaw(function, 4, command);
+    writeConfigRaw(function, 4, command & 0xffff);
 
     base =
         (static_cast<uint64_t>(originalHigh) << 32) | (originalLow & ~0xfULL);

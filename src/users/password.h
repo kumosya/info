@@ -58,6 +58,14 @@ class Sha256 {
 
 class Password {
    public:
+    static bool valid(const char* encoded) {
+        if (!*encoded || *encoded == '!' || *encoded == '*') return true;
+        constexpr char prefix[] = "$pbkdf2-sha256$10000$";
+        if (strncmp(encoded, prefix, sizeof(prefix) - 1)) return false;
+        encoded += sizeof(prefix) - 1;
+        uint8_t salt[16], hash[32];
+        return strlen(encoded) == 97 && encoded[32] == '$' && decode(encoded, salt, 16) && decode(encoded + 33, hash, 32);
+    }
     static void derive(const char* password, const uint8_t salt[16], uint8_t output[32], unsigned rounds = 10000) {
         uint8_t input[20], current[32];
         memcpy(input, salt, 16); input[16]=0; input[17]=0; input[18]=0; input[19]=1;
@@ -70,6 +78,7 @@ class Password {
         erase(current, sizeof(current));
     }
     static bool verify(const char* password, const char* encoded) {
+        if (!*encoded) return !*password;
         constexpr char prefix[] = "$pbkdf2-sha256$10000$";
         if (strncmp(encoded, prefix, sizeof(prefix)-1)) return false;
         encoded += sizeof(prefix)-1;

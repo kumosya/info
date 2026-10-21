@@ -109,7 +109,7 @@ class Thread {
 - 普通线程内核栈为 **64 KiB**（`kernelStackSize`）；固定 boot 服务的用户线程分配 256 KiB 内核栈；线程 ID 由全局原子计数器分配（从 1 起）。
 - `Thread::create(task, entryPoint, argument, type, makeRunnable)`：分配 Thread + 栈；构造初始栈帧（自栈顶向下：填充 0、`Thread::bootstrap` 返回地址、RFLAGS `0x202`、15 个零寄存器槽，与 `switchThreadContext` 弹出顺序匹配）；默认 `weight = schedule::getSchedulerWeight(0)`（1024）、`timeSlice = 4 ms`；`task->attachThread`；`makeRunnable` 且调度器已初始化则入队。
 - `Thread::createUser(task, entryPoint, userStackPointer, argument, initialStackSize)`：校验入口与栈指针在用户半区；复用 `create`（User 或 SystemService 类型），记录 `userStack`/`userArgument`。SystemService 类型时从用户空间复制初始栈到内核侧。
-- `Thread::createForkedUser(task, context, signalMask)`：fork 用；堆上复制 `SyscallContext` 并置 `rax = 0`（子进程返回 0）；以 Kernel 类型、入口 `forkedUserEntry` 创建，随后显式入队；`forkedUserEntry` 将线程类型置 User 后 `resumeUserContext` 直接进入用户态。
+- `Thread::createForkedUser(task, context, signalMask)`：fork 用；堆上复制 `SyscallContext` 并置 `rax = 0`（子进程返回 0）；以 Kernel 类型、入口 `forkedUserEntry` 创建，随后入队；`forkedUserEntry` 将线程类型置 User 后 `resumeUserContext` 直接进入用户态。
 
 ### 生命周期
 

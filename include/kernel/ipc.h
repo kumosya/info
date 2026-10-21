@@ -44,6 +44,9 @@ class Endpoint {
     int cancel(uint64_t threadId);
     bool requestActive(uint64_t token);
     bool grantAccess(Task* task, uint32_t rights);
+    bool protectRecovery(Task& owner);
+    bool adoptRecovery(Task& owner);
+    void releaseRecovery(Task& owner);
     void destroy();
 
     uint64_t getId() const { return id; }
@@ -68,6 +71,7 @@ class Endpoint {
     Task* owner;
     EndpointImplementation* implementation;
     uint32_t references = 1;
+    uint32_t recoveryRole = 0;
 };
 
 }  // namespace kernel

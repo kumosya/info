@@ -89,7 +89,10 @@ enum class FsRequest : uint64_t {
     WriteAt,
     DelegateMapping,
     ClaimMapping,
-    Sync
+    Sync,
+    ReleaseMapping,
+    ListMappings,
+    CancelMapping
 };
 constexpr uint64_t fsCompletionNotification = 0x4653434f4d504cULL;
 

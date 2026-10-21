@@ -41,7 +41,7 @@ class Services {
     static int pciRequest(os::PciRequest& request);
     static int queryTask(uint64_t id, os::TaskInfo& info);
     static uint64_t mapMmio(const os::PciFunctionInfo& function, uint8_t bar, uint64_t address, uint64_t size);
-    static int allocateDma(uint64_t address, os::DmaBufferInfo& info);
+    static int allocateDma(uint64_t device, uint64_t address, os::DmaBufferInfo& info);
     static uint64_t bindIrq(uint8_t irq, uint64_t endpoint, bool levelTriggered);
     static int acknowledgeIrq(uint64_t handle);
 };

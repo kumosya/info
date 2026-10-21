@@ -16,6 +16,6 @@ Users 能力用于受控修改任务凭据；同名普通程序、root 自行加
 
 请求主循环串行使用账户缓存和有界缓冲，写 shadow 采用临时文件替换；所有 FILE、端点和接收能力按所有权释放。停止需先停止依赖的 tty/console/guiw，systemctl 默认拒绝仍有活动依赖的 stop。
 
-退出后账户内存缓存丢失，下次实例从文件重读；登录中的内核凭据不会因为重启自动回退或提权。普通 kill/terminate 受服务标记保护，配置管理走 systemctl。排查顺序为文件权限、账号格式、服务角色、`[USERS]` 启动日志、`systemctl status users`。
+退出后账户缓存从文件严格重读，活跃会话从内核认证标记与 `/proc` 恢复。服务不在启动时清空 `/run`，保留仍有认证任务的 runtime 目录与文件；扫描未完成时不执行清理。登录中的凭据不会因重启回退或提权，普通进程不能建立内核认证标记。现在允许受控 `systemctl restart users` 保留会话，永久停止仍受依赖检查；普通 kill/terminate 保护保持。排查顺序为文件权限、账号格式、服务角色、`[USERS]` 日志和 `systemctl status users`。登录与开发账户规则见 [登录](../login.md)。
 
 会话入口见 [init](../init/README.md)，任务凭据机制见 [task.kernel](../task/task.kernel/README.md)。

@@ -23,11 +23,13 @@ make check sdk
 
 `make install` 先编译再安装到 build/osinfo.img，run/debug 也通过该目标更新镜像，默认 INSTALL_GRUB=0，也就是不安装 GRUB。
 
-`make install DESTDIR=/已挂载目录` 改为安装到指定目录；需要重新安装引导时显式设置 INSTALL_GRUB=1，目录模式还需 GRUB_DISK=/dev/设备。
+`make install DESTDIR=/已挂载目录` 改为安装到指定目录；需要重新安装引导时设置 INSTALL_GRUB=1，目录模式还需 GRUB_DISK=/dev/设备。
 
 ## 测试镜像与 SDK
 
- `make export-images sdk` 可生成测试镜像 build/export/osinfo.img、build/export/osinfo.iso 与 SDK 目录 build/sdk/。
+`make export-images sdk` 可生成测试镜像 build/export/osinfo.img、build/export/osinfo.iso 与 SDK 目录 build/sdk/。
+
+IMG/ISO 默认 development profile，提供空密码 root 账户。可加入参数 `EXPORT_ACCOUNT_PROFILE=system` 导出普通账户模板。
 
 InfoIDE 的安装与发行包生成全部在 InfoIDE 项目中执行：将资源放入它自己的 resources/，执行 `make installer` 或 `make install`，发行包位于 InfoIDE 项目的 build/infoide-linux.tar.gz。详见 [InfoIDE](docs/app/infoide.md)。
 
@@ -37,3 +39,7 @@ InfoIDE 的安装与发行包生成全部在 InfoIDE 项目中执行：将资源
 make mkimg
 make run
 ```
+
+## 更新日志
+
+- [v0.1-beta](docs/update/v0.1-beta.md)

@@ -20,7 +20,7 @@ Memory::mapPages、mapSharedMemory、unmapTarget、protectTarget 是 syscall 客
 
 ## 3. 文件客户端（os::File，fs 服务）
 
-`include/os-c++/os/file.h` 提供可移动、不可复制的 RAII File 类。服务端点属于对象状态，方法不再重复接受 fs 参数。
+`include/os-c++/os/file.h` 提供可移动、不可复制的 RAII File 类。服务端点属于对象状态，方法不重复接受 fs 参数。
 
 ```cpp
 os::File file;
@@ -34,7 +34,7 @@ if (file.open("/tmp/example", O_RDWR | O_CREAT, 0640) == 0) {
 
 open 接受 POSIX flags/mode，read/write/pread/pwrite 使用字节数和 off_t 偏移，lseek 接受 SEEK_SET/CUR/END。失败返回负 errno。pread/pwrite 使用定位读写 RPC，保持共享文件偏移不变。
 
-元数据保存在私有成员中，通过 getType/getSize/getMode/getInode/getLinks/getUid/getGid/getAccessTime/getModificationTime/getChangeTime/getDevice/getSpecialDevice 查询；refresh 显式更新缓存。没有公开的 FileStat 结构。
+元数据保存在私有成员中，通过 getType/getSize/getMode/getInode/getLinks/getUid/getGid/getAccessTime/getModificationTime/getChangeTime/getDevice/getSpecialDevice 查询；refresh 更新缓存。没有公开的 FileStat 结构。
 
 目录、挂载、权限、所有权和异步请求也由 File 方法承载。borrow 创建不拥有句柄的临时视图；adopt 接管所有权；releaseNativeHandle 释放对象的所有权。File 为 pipe、终端、共享内存描述符提供后端视图。toDescriptor 移交所有权，fromDescriptor 访问 fd 引用的对象。
 

@@ -20,7 +20,6 @@ constexpr uint8_t statusAcknowledge        = 1;
 constexpr uint8_t statusDriver             = 2;
 constexpr uint8_t statusDriverOk           = 4;
 constexpr uint8_t statusFeaturesOk         = 8;
-constexpr uint8_t statusFailed             = 128;
 constexpr uint64_t featureReadOnly         = 1ULL << 5;
 constexpr uint64_t featureFlush            = 1ULL << 9;
 constexpr uint64_t featureVersionOne       = 1ULL << 32;
@@ -93,7 +92,7 @@ class PciConfiguration {
     bool writeCommand(uint16_t flags) const {
         uint32_t command;
         return read32(4, command) &&
-               os::Pci::writePciConfig(function_, 4, command | flags) == 0;
+               os::Pci::writePciConfig(function_, 4, (command | flags) & 0xffff) == 0;
     }
 
    private:
@@ -300,13 +299,25 @@ class VirtioBlockDriver {
               uint64_t irqEndpoint, uint64_t (&boundIrqs)[16]) {
         function_    = function;
         deviceIndex_ = deviceIndex;
+        const uint64_t claimDeadline = os::Clock::getMonotonicTime() + 2000000000ULL;
+        do {
+            domain_ = os::Device::claimDevice(function_);
+            if (!domain_) os::sleep(10);
+        } while (!domain_ && os::Clock::getMonotonicTime() < claimDeadline);
+        if (!domain_) return false;
         if (!transport_.init(function_,
                              mmioBaseAddress + deviceIndex * 0x100000ULL)) {
             os::System::log("[STORAGE] VirtIO PCI capability/BAR setup failed\n");
+            fail();
             return false;
         }
         volatile uint8_t* common = transport_.common();
         MmioAccess::writeMmio<uint8_t>(common, 20, 0);
+        const uint64_t resetDeadline = os::Clock::getMonotonicTime() + ioTimeoutNanoseconds;
+        while (MmioAccess::readMmio<uint8_t>(common, 20) != 0) {
+            if (os::Clock::getMonotonicTime() >= resetDeadline) { fail(); return false; }
+            os::yield();
+        }
         MmioAccess::writeMmio<uint8_t>(common, 20, statusAcknowledge | statusDriver);
         MmioAccess::writeMmio<uint32_t>(common, 0, 0);
         const uint64_t lowFeatures = MmioAccess::readMmio<uint32_t>(common, 4);
@@ -394,8 +405,9 @@ class VirtioBlockDriver {
     }
 
     void handleInterrupt() {
-        transport_.acknowledgeInterrupt();
         os::SpinLockGuard guard(requestLock_);
+        if (!online_) return;
+        transport_.acknowledgeInterrupt();
         taskUsedLocked();
     }
 
@@ -406,7 +418,7 @@ class VirtioBlockDriver {
     bool initializeQueue() {
         os::DmaBufferInfo queueInfo{};
         const uint64_t dmaOffset = deviceIndex_ * 0x10000ULL;
-        if (os::Device::allocateDma(queueDmaAddress + dmaOffset, queueInfo) != 0 ||
+        if (os::Device::allocateDma(domain_, queueDmaAddress + dmaOffset, queueInfo) != 0 ||
             queueInfo.size < 4096) {
             return false;
         }
@@ -415,7 +427,7 @@ class VirtioBlockDriver {
         os::Runtime::clearMemory(queueMemory_, 4096);
         for (uint32_t slot = 0; slot < requestSlotCount; ++slot) {
             os::DmaBufferInfo info{};
-            if (os::Device::allocateDma(queueDmaAddress + dmaOffset + (slot + 1) * 4096,
+            if (os::Device::allocateDma(domain_, queueDmaAddress + dmaOffset + (slot + 1) * 4096,
                                 info) != 0 || info.size < 4096) return false;
             requestPhysical_[slot] = info.deviceAddress;
             requestMemory_[slot] = reinterpret_cast<uint8_t*>(info.virtualAddress);
@@ -576,13 +588,13 @@ class VirtioBlockDriver {
     }
 
     void fail() {
-        volatile uint8_t* common = transport_.common();
-        MmioAccess::writeMmio<uint8_t>(common, 20,
-                           MmioAccess::readMmio<uint8_t>(common, 20) | statusFailed);
+        online_ = false;
+        if (domain_) os::Device::stopDevice(domain_);
     }
 
     os::PciFunctionInfo function_{};
     VirtioPciTransport transport_;
+    uint64_t domain_ = 0;
     struct RequestSlot {
         bool active;
         bool completed;

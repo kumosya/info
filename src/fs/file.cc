@@ -35,9 +35,45 @@ void FsServer::claimMapping(const os::IpcMessage& request, os::IpcMessage& reply
         auto& entry = descriptors_[i];
         if (!entry.description || !entry.mappingToken || entry.mappingToken != request.data[0] ||
             entry.mappingIssuer != request.data[1] || entry.ownerPid != entry.mappingIssuer) continue;
-        entry.ownerPid = request.senderPid;
-        entry.mappingToken = 0;
+        entry.ownerPid = 0;
+        entry.mappingClaimed = true;
         reply.data[0] = 0; reply.data[1] = i + 1; reply.data[2] = entry.flags;
+        reply.data[3] = entry.mappingToken; reply.length = 4;
+        return;
+    }
+}
+
+void FsServer::releaseMapping(const os::IpcMessage& request, os::IpcMessage& reply) {
+    reply.data[0] = 0; reply.length = 1;
+    if (request.length != 1 || !request.data[0]) { reply.data[0] = static_cast<uint64_t>(-1LL); return; }
+    std::lock_guard<std::mutex> guard(descriptorLock_);
+    for (auto& entry : descriptors_) if (entry.description && entry.mappingClaimed && entry.mappingToken == request.data[0]) {
+        auto* description = entry.description; entry = {};
+        if (description->referenceCount) --description->referenceCount;
+        if (!description->referenceCount && !description->filesystem) *description = {};
+        return;
+    }
+}
+void FsServer::listMappings(const os::IpcMessage& request, os::IpcMessage& reply) {
+    reply.data[0] = 0; reply.length = 5;
+    if (request.length != 1 || request.data[0] > descriptorCapacity) { reply.data[0] = static_cast<uint64_t>(-1LL); return; }
+    std::lock_guard<std::mutex> guard(descriptorLock_);
+    for (uint32_t i = request.data[0]; i < descriptorCapacity; ++i) {
+        const auto& entry = descriptors_[i];
+        if (!entry.description || !entry.mappingClaimed) continue;
+        reply.data[1] = entry.mappingToken; reply.data[2] = i + 1;
+        reply.data[3] = entry.mappingIssuer; reply.data[4] = i + 1; return;
+    }
+    reply.data[1] = 0;
+}
+void FsServer::cancelMapping(const os::IpcMessage& request, os::IpcMessage& reply) {
+    reply.data[0] = 0; reply.length = 1;
+    if (request.length != 1 || !request.data[0]) { reply.data[0] = static_cast<uint64_t>(-1LL); return; }
+    std::lock_guard<std::mutex> guard(descriptorLock_);
+    for (auto& entry : descriptors_) if (entry.description && !entry.mappingClaimed && entry.mappingIssuer == request.senderPid && entry.mappingToken == request.data[0]) {
+        auto* description = entry.description; entry = {};
+        if (description->referenceCount) --description->referenceCount;
+        if (!description->referenceCount && !description->filesystem) *description = {};
         return;
     }
 }
@@ -183,6 +219,7 @@ uint64_t FsServer::open(uint64_t ownerPid, const char* path, int flags) {
             descriptionIndex == descriptorCapacity) {
             return 0;
         }
+        if (!filesystem->retainOpenFile(inode)) return 0;
         OpenFileDescription& description = openDescriptions_[descriptionIndex];
         description.inode                = inode;
         description.mode                 = status.mode;
@@ -245,28 +282,47 @@ uint64_t FsServer::close(uint64_t ownerPid, uint64_t descriptor) {
     std::lock_guard<std::mutex> guard(descriptorLock_);
     FileDescriptor* entry = getDescriptorRecord(ownerPid, descriptor);
     if (entry == nullptr || entry->description == nullptr) return 1;
+    // Mapping leases outlive an MM process and are released after its checkpoint commits.
+    if (entry->mappingClaimed) return 0;
     OpenFileDescription* description = entry->description;
     *entry                           = {};
     if (description->referenceCount != 0) {
         --description->referenceCount;
     }
-    if (description->referenceCount == 0) {
+    if (description->referenceCount == 0 && !description->filesystem) {
         *description = {};
     }
     return 0;
 }
 
 void FsServer::reapDescriptors() {
-    std::lock_guard<std::mutex> guard(descriptorLock_);
-    for (auto& entry : descriptors_) {
-        if (!entry.description) continue;
-        os::TaskInfo info{};
-        const int64_t result = os::Task::query(entry.ownerPid, info);
-        if (result == 0 && info.state != 2) continue;
-        OpenFileDescription* description = entry.description;
-        entry = {};
-        if (description->referenceCount) --description->referenceCount;
-        if (!description->referenceCount) *description = {};
+    {
+        std::lock_guard<std::mutex> guard(descriptorLock_);
+        for (auto& entry : descriptors_) {
+            if (!entry.description) continue;
+            if (entry.mappingClaimed) continue;
+            os::TaskInfo info{};
+            const int64_t result = os::Task::query(entry.ownerPid, info);
+            if (result ? result != static_cast<int>(os::ErrorCode::NotFound) : info.state != 2) continue;
+            OpenFileDescription* description = entry.description;
+            entry = {};
+            if (description->referenceCount) --description->referenceCount;
+            if (!description->referenceCount && !description->filesystem) *description = {};
+        }
+    }
+    collectClosedDescriptions();
+}
+
+void FsServer::collectClosedDescriptions() {
+    // Never acquire a filesystem lock while holding descriptorLock_.
+    for (uint32_t index = 0; index < mountCapacity; ++index) {
+        const auto backend = static_cast<PathBackend>(index);
+        std::lock_guard<std::mutex> filesystem(fileSystemLock(backend));
+        std::lock_guard<std::mutex> descriptors(descriptorLock_);
+        for (auto& description : openDescriptions_) {
+            if (!description.filesystem || description.referenceCount || description.mountIndex != backend) continue;
+            if (description.filesystem->releaseOpenFile(description.inode)) description = {};
+        }
     }
 }
 
@@ -277,7 +333,8 @@ void FsServer::descriptorStat(uint64_t ownerPid, uint64_t descriptor, os::IpcMes
     if (entry->filesystem && entry->path[0]) {
         std::lock_guard<std::mutex> filesystem(fileSystemLock(entry->mountIndex));
         vfs::FileStatus status{};
-        if (entry->filesystem->lookup(relativePath(entry->path,entry->mountIndex),status) && status.inode==entry->inode) {
+        if (entry->filesystem->statInode(entry->inode, status) ||
+            (entry->filesystem->lookup(relativePath(entry->path,entry->mountIndex),status) && status.inode==entry->inode)) {
             entry->mode=status.mode; entry->uid=status.uid; entry->gid=status.gid;
             entry->size=status.size; entry->links=status.links;
             entry->accessTime=status.accessTime; entry->modificationTime=status.modificationTime; entry->changeTime=status.changeTime;
@@ -288,7 +345,7 @@ void FsServer::descriptorStat(uint64_t ownerPid, uint64_t descriptor, os::IpcMes
                       entry->backend == DescriptorBackend::SystemFile ? 0100444 : 0020666;
     setStat(reply, (mode & 0170000) == 0040000 ? os::FileType::Directory : os::FileType::File, entry->size, mode);
     reply.data[4] = entry->inode; reply.data[6] = entry->uid; reply.data[7] = entry->gid;
-    reply.data[5] = entry->links ? entry->links : 1;
+    reply.data[5] = entry->filesystem ? entry->links : entry->links ? entry->links : 1;
     reply.data[8] = entry->accessTime; reply.data[9] = entry->modificationTime; reply.data[10] = entry->changeTime;
     if (entry->mountIndex != PathBackend::Invalid) {
         const auto* device = catalog_.get(mountTable_[static_cast<uint32_t>(entry->mountIndex)].deviceIndex);
@@ -619,6 +676,11 @@ FileDescriptor* FsServer::getDescriptorRecord(uint64_t ownerPid,
                                               uint64_t descriptor) {
     if (descriptor == 0 || descriptor > descriptorCapacity) return nullptr;
     FileDescriptor& entry = descriptors_[descriptor - 1];
+    if (entry.description && entry.mappingClaimed) {
+        os::TaskInfo caller{};
+        return !os::Task::query(ownerPid, caller) && caller.managedService &&
+            caller.serviceRole == static_cast<uint32_t>(os::ServiceRole::Memory) ? &entry : nullptr;
+    }
     return entry.description != nullptr && entry.ownerPid == ownerPid ? &entry
                                                                       : nullptr;
 }
@@ -635,7 +697,7 @@ OpenFileDescription* FsServer::acquireDescription(uint64_t ownerPid,
 void FsServer::releaseDescription(OpenFileDescription* description) {
     std::lock_guard<std::mutex> guard(descriptorLock_);
     if (description->referenceCount != 0) --description->referenceCount;
-    if (description->referenceCount == 0) *description = {};
+    if (description->referenceCount == 0 && !description->filesystem) *description = {};
 }
 
 std::mutex& FsServer::descriptionMutex(const OpenFileDescription* description) {

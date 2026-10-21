@@ -28,7 +28,7 @@ uint32_t Filesystem::allocateInode(bool directory, uint32_t preferredGroup) {
         }
         for (uint32_t local = 0; local < limit; ++local) {
             const uint32_t number = group * inodesPerGroup_ + local + 1;
-            if (number < DiskEncoding::read32(superblock_ + 84) ||
+            if (number < DiskEncoding::read32(superblock_ + 84) || inodeRetained(number) ||
                 (blockBuffer_[local / 8] & (1U << (local % 8))) != 0) {
                 continue;
             }

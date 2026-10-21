@@ -16,16 +16,16 @@
 | object/page_object.cc | PageObject 构造、有效性、引用及最终物理块释放 |
 | virtual.cc | 四级页表、保护、地址翻译、地址空间复制与销毁 |
 | virtual/page_mappings.cc | 页面对象映射引用、拆分、fork 登记和 COW 写权限限制 |
-| virtual/operations.cc | 显式 Task 参数的 map/unmap/protect 机制 |
+| virtual/operations.cc |  Task 参数的 map/unmap/protect 机制 |
 | shared.cc | 命名共享对象、映射引用及最后释放 |
 | service/service.cc | memory 驻留服务与跨任务授权 |
 | service/pager.cc | Ring 3 pager 绑定、缺页 RPC、fork 元数据交接及缓冲区 fault-in |
 
-Buddy 使用实际 RAM 对应的 PageFrame 元数据，不再线性扫描位图。小块堆走 Slab/Per-CPU Cache，大块堆走 Buddy；FixedPool 用于有明确容量的映射记录。NUMA 最多 16 节点，当前按 SRAT 首选与回退分配，未实现 SLIT 距离排序。
+Buddy 使用实际 RAM 对应的 PageFrame 元数据，不线性扫描位图。小块堆走 Slab/Per-CPU Cache，大块堆走 Buddy；FixedPool 用于有明确容量的映射记录。NUMA 最多 16 节点，当前按 SRAT 首选与回退分配，未实现 SLIT 距离排序。
 
 PageObject(order, owner, node) 直接构造并清零物理块。调用者先分配对象存储，再 placement-new；必须检查 valid()。order 超限或分配失败得到无效对象，release() 仍能安全释放元数据。最后一个对象引用消失才析构并释放物理块；没有静态 create 工厂。
 
-memory 服务提供页对象分配、共享对象管理、usage、cache reclaim、pager 绑定和页状态查询。map/unmap/protect 全部使用 syscall 8–10，不再提供同类服务 RPC；页对象和共享对象映射也走 MapMemory。跨任务操作要求同时具有固定 boot MM 角色和 Memory 能力；客户端传入 PID 不能自行获得权限。内核内部复用具名机制方法，参数见 [syscall ABI](../task/syscall.md)。
+memory 服务提供页对象分配、共享对象管理、usage、cache reclaim、pager 绑定和页状态查询。map/unmap/protect 全部使用 syscall 8–10，不提供同类服务 RPC；页对象和共享对象映射也走 MapMemory。跨任务操作要求同时具有固定 boot MM 角色和 Memory 能力；客户端传入 PID 不能自行获得权限。内核内部复用具名机制方法，参数见 [syscall ABI](../task/syscall.md)。
 
 用户地址范围为 [0x10000, 2^47)，页大小 4096。内核直接映射从 0xffff800000000000 开始，NX 堆别名从 0xffff804000000000 开始。所有用户写入与执行权限遵守 W^X。
 

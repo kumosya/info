@@ -34,7 +34,7 @@
 | [`<arpa/inet.h>`](#header-arpa-inet-h) | 8 | IPv4/IPv6 地址文本转换及网络字节序转换。 |
 | [`<assert.h>`](#header-assert-h) | 1 | 运行期断言；assert 为函数式宏。 |
 | [`<complex.h>`](#header-complex-h) | 69 | 复数运算、复数初等函数及复数构造宏。 |
-| [`<ctype.h>`](#header-ctype-h) | 28 | 字符分类、大小写转换及显式 locale 版本。 |
+| [`<ctype.h>`](#header-ctype-h) | 28 | 字符分类、大小写转换及 locale 版本。 |
 | [`<devctl.h>`](#header-devctl-h) | 1 | 设备控制接口；受 Device Control（DC）选项约束。 |
 | [`<dirent.h>`](#header-dirent-h) | 12 | 目录流、目录遍历、排序及批量获取目录项。 |
 | [`<dlfcn.h>`](#header-dlfcn-h) | 5 | 动态加载对象、符号查找和地址信息查询。 |
@@ -98,7 +98,7 @@
 | [`<unistd.h>`](#header-unistd-h) | 90 | 文件描述符、进程、身份、路径、管道和系统配置。 |
 | [`<utmpx.h>`](#header-utmpx-h) | 6 | 用户会话记录的查询、遍历和更新。 |
 | [`<wchar.h>`](#header-wchar-h) | 76 | 宽字符字符串、宽字符 I/O 和多字节编码转换。 |
-| [`<wctype.h>`](#header-wctype-h) | 36 | 宽字符分类、大小写转换及显式 locale 版本。 |
+| [`<wctype.h>`](#header-wctype-h) | 36 | 宽字符分类、大小写转换及 locale 版本。 |
 | [`<wordexp.h>`](#header-wordexp-h) | 2 | 按 shell 规则展开单词及释放结果。 |
 
 ## 3. 按头文件列出的全部当前接口
@@ -237,7 +237,7 @@ IPv4/IPv6 地址文本转换及网络字节序转换。
 
 ### `<ctype.h>`
 
-字符分类、大小写转换及显式 locale 版本。
+字符分类、大小写转换及 locale 版本。
 
 [官方头文件定义](https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/ctype.h.html)，本节共 28 个接口。
 
@@ -2046,7 +2046,7 @@ ISO C 线程、互斥量、条件变量及线程专用存储。
 
 ### `<wctype.h>`
 
-宽字符分类、大小写转换及显式 locale 版本。
+宽字符分类、大小写转换及 locale 版本。
 
 [官方头文件定义](https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/wctype.h.html)，本节共 36 个接口。
 
@@ -2160,7 +2160,7 @@ ISO C 线程、互斥量、条件变量及线程专用存储。
 
 ### 已移除的接口与历史索引项
 
-官方字母索引仍保留 `asctime_r`、`ctime_r` 两个名称对应的链接，但链接后的当前接口页已不再声明这两个函数；其 Issue 8 CHANGE HISTORY 明确记录 Austin Group Defect 1410 将它们移除。因此这两个名称不计入本版当前接口总数。
+官方字母索引仍保留 `asctime_r`、`ctime_r` 两个名称对应的链接，但链接后的当前接口页已不声明这两个函数；其 Issue 8 CHANGE HISTORY 明确记录 Austin Group Defect 1410 将它们移除。因此这两个名称不计入本版当前接口总数。
 
 | 历史接口 | 当前依据 | 可采用的当前接口 |
 |---|---|---|

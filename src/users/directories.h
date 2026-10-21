@@ -12,7 +12,6 @@ namespace users {
 class DirectoryManager {
    public:
     bool initialize() {
-        if (!removeTree("/run", 0)) return false;
         const char* directories[] = {"/media", "/run", "/run/lock", "/run/user",
             "/lib", "/var", "/var/log", "/var/lib", "/var/lib/inpkg", "/var/cache", "/var/tmp",
             "/etc/xdg", "/usr/share", "/usr/local", "/usr/local/share"};

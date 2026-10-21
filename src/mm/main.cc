@@ -3,24 +3,61 @@
 #include "os/service.h"
 #include "os/protocol.h"
 #include "os/file.h"
+#ifdef OS_MM_TRANSACTION_TEST
+#include "../../tests/mm-phase.h"
+#endif
 namespace mm {
 class MemoryManager {
    public:
     int run() {
-        endpoint_ = os::Endpoint::create();
+#ifdef OS_MM_TRANSACTION_TEST
+        if (!TestPhase::initialize()) return 1;
+#endif
         const auto registry = os::getBootstrapHandle();
-        if (!endpoint_ || !registry || KernelMemory::bindPager(endpoint_) ||
-            !os::ServiceRegistry::registerService(registry, "mm", endpoint_)) return 1;
+        if (!registry || !recovery_.open(endpoint_) || KernelMemory::bindPager(endpoint_) ||
+            !os::ServiceRegistry::registerService(registry, "mm", endpoint_) || !recovery_.activate()) return 1;
         os::System::log("[MM] Ring 3 memory policy and pager service ready\n");
         uint64_t nextSweep = 0;
+        bool dirty = false;
         for (;;) {
             const uint64_t now = os::Clock::getMonotonicTime();
-            if (now >= nextSweep) { state_.sweep(); nextSweep = now + 50000000; }
+            if (now >= nextSweep) {
+                dirty = state_.sweep() || dirty;
+                if (dirty && recovery_.flush()) dirty = false;
+                nextSweep = now + 50000000;
+            }
             os::IpcMessage request{}, reply{};
             const int received = os::receiveMessage(endpoint_, request, nextSweep);
             if (received == static_cast<int>(os::ErrorCode::Timeout)) continue;
             if (received) return 2;
-            handle(request, reply);
+            uint64_t id = 0; bool resumeOnly = false;
+            if (request.length >= 3 && request.data[request.length - 3] == recoveryRpcMarker) {
+                id = request.data[request.length - 2]; resumeOnly = request.data[request.length - 1] != 0; request.length -= 3;
+            } else if (request.type == static_cast<uint64_t>(os::MmOperation::Fork) && request.length == 1) id = request.data[0] | (1ULL << 63);
+            if (!recovery_.lookup(request, id, reply)) {
+                if (resumeOnly) reply.data[0] = static_cast<uint64_t>(os::ErrorCode::PeerDied);
+                else if (!recovery_.prepare(request, id)) {
+                    if (!recovery_.activate()) return 2;
+                    reply.data[0] = static_cast<uint64_t>(os::ErrorCode::OutOfMemory);
+                } else {
+#ifdef OS_MM_TRANSACTION_TEST
+                    TestPhase::pause(request, 1);
+#endif
+                    handle(request, reply);
+#ifdef OS_MM_TRANSACTION_TEST
+                    TestPhase::pause(request, 2);
+#endif
+                    if (!recovery_.remember(request, id, reply) || !recovery_.save()) return 2;
+#ifdef OS_MM_TRANSACTION_TEST
+                    TestPhase::pause(request, 3);
+#endif
+                    if (!recovery_.activate()) return 2;
+#ifdef OS_MM_TRANSACTION_TEST
+                    TestPhase::pause(request, 4);
+#endif
+                    dirty = false;
+                }
+            }
             reply.length = os::ipcDataWordCount;
             os::replyMessage(endpoint_, request.replyToken, reply);
             for (uint32_t i = 0; i < request.handleCount; ++i) os::closeHandle(request.handles[i]);
@@ -29,6 +66,7 @@ class MemoryManager {
     }
    private:
     MemoryState state_;
+    Recovery recovery_{state_};
     ReclaimManager reclaim_{state_};
     Pager pager_{state_, reclaim_};
     SharedMemoryManager shared_;
@@ -111,7 +149,7 @@ class MemoryManager {
                 if (fs) os::closeHandle(fs);
                 state_.collectBackings(); return result ? result : static_cast<int64_t>(reply.data[0]);
             }
-            backing->fs = fs; backing->descriptor = reply.data[1]; region.offset = args[3];
+            backing->fs = fs; backing->descriptor = reply.data[1]; backing->lease = reply.length >= 4 ? reply.data[3] : 0; region.offset = args[3];
         }
         uint64_t candidate = hint ? hint : 0x50000000;
         for (unsigned attempt = 0; attempt < 16; ++attempt) {

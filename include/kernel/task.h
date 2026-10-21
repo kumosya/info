@@ -59,7 +59,8 @@ enum class HandleType : uint16_t {
     DmaBuffer,
     InterruptBinding,
     SharedMemory,
-    PageObject
+    PageObject,
+    DeviceDomain
 };
 
 constexpr uint32_t handleRightRead   = 1U << 0;
@@ -71,7 +72,7 @@ class HandleTable {
     class Transfer;
     class Pin;
     uint32_t capacity();
-    bool init(uint32_t capacity, Task* owner = nullptr);
+    bool init(uint32_t capacity, Task* owner = nullptr, bool escrow = false);
     uint64_t add(void* object, HandleType type, uint32_t rights);
     bool addAt(uint64_t handle, void* object, HandleType type, uint32_t rights);
     void* get(uint64_t handle, HandleType type, uint32_t requiredRights);
@@ -97,6 +98,7 @@ class HandleTable {
         void* object;
         HandleType type;
         uint32_t count;
+        uint32_t escrow = 0;
         static void retain(Reference* reference);
         static void release(Reference* reference);
     };
@@ -147,6 +149,7 @@ class HandleTable {
     SpinLock lock_;
     Task* owner_ = nullptr;
     bool disposed_ = false;
+    bool escrow_ = false;
 };
 
 class HandleTable::Pin {
@@ -202,6 +205,12 @@ class Task {
     uint64_t parentId();
     TaskReference parentReference();
     bool isTerminated();
+    bool resourcesReclaimed() const { return __atomic_load_n(&resourceState_, __ATOMIC_ACQUIRE) == 2U; }
+    bool setMemoryFrozen(bool frozen);
+    bool memoryFrozen() const { return __atomic_load_n(&memoryFrozen_, __ATOMIC_ACQUIRE); }
+    bool claimMemoryFreezeExpiry(uint64_t now);
+    void authentication(uint64_t& session, uint32_t& uid, uint32_t& gid);
+    bool authenticate(uint32_t uid, uint32_t gid, bool preserveCredentials);
     int exitCode();
     bool inheritForFork(Task& parent);
     bool commitExec(uint64_t newRootPhysicalAddress, const char* name,
@@ -300,7 +309,11 @@ class Task {
     uint64_t standardHandles_[3];
     uint64_t taskGroupId_;
     uint64_t sessionId_;
+    uint64_t authenticationSession_ = 0;
+    uint32_t authenticationUid_ = 0, authenticationGid_ = 0;
     bool stopped_;
+    bool memoryFrozen_ = false;
+    uint64_t memoryFreezeDeadline_ = 0;
     uint32_t stopSignal_;
     bool stopReported_;
     bool continuedPending_;

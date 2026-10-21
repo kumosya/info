@@ -127,6 +127,12 @@ class Lifecycle {
         os::System::log("[SERVICE] startup/exit failure: "); os::System::log(unit.status.name); os::System::log("\n");
         return false;
     }
+    bool restoresState(Unit& unit) {
+        if (unit.status.builtin) return unit.program == os::ProgramId::MemoryManager || unit.program == os::ProgramId::PipeServer;
+        if (!unit.task) return equal(unit.status.executable, "/sbin/sys/users.elf");
+        os::TaskInfo info{};
+        return !os::Task::getInfo(unit.task, info) && info.managedService && info.serviceRole == static_cast<uint32_t>(os::ServiceRole::Users);
+    }
     bool terminate(Unit& unit, bool force = false) {
         if (!unit.task) return true;
         os::IpcMessage request{}, reply{}; request.length = 4; request.data[0] = unit.task;
@@ -196,9 +202,10 @@ class Lifecycle {
                 unit->status.desired = 1; unit->failures = 0;
                 if (!start(*unit)) return static_cast<int>(os::ErrorCode::IoError);
                 break;
-            case os::ServiceOperation::Stop: case os::ServiceOperation::Restart:
-                if (unit->status.builtin) return static_cast<int>(os::ErrorCode::PermissionDenied);
-                for (uint32_t i = 0; i < count_; ++i) if (&units_[i] != unit && units_[i].status.desired) {
+            case os::ServiceOperation::Stop: case os::ServiceOperation::Restart: {
+                const bool restoring = operation == os::ServiceOperation::Restart && restoresState(*unit);
+                if (unit->status.builtin && !restoring) return static_cast<int>(os::ErrorCode::PermissionDenied);
+                for (uint32_t i = 0; !restoring && i < count_; ++i) if (&units_[i] != unit && units_[i].status.desired) {
                     char dependencies[128]; copy(dependencies, sizeof(dependencies), units_[i].dependenciesText);
                     char* token = dependencies;
                     for (char* p = token;; ++p) if (*p == ',' || !*p) { bool end = !*p; *p = 0;
@@ -215,6 +222,7 @@ class Lifecycle {
                 if (!terminate(*unit)) return static_cast<int>(os::ErrorCode::PermissionDenied);
                 if (operation == os::ServiceOperation::Restart) { unit->status.desired = 1; unit->failures = 0; ++unit->status.restarts; if (!start(*unit)) return static_cast<int>(os::ErrorCode::IoError); }
                 break;
+            }
             default: return static_cast<int>(os::ErrorCode::InvalidArgument);
         }
         status = unit->status; return 0;

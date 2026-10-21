@@ -47,6 +47,7 @@ class SharedMemory {
     static void releaseTaskMappings(Task& task);
     static bool cloneTaskMappings(Task& source, Task& destination);
     static void closeHandleObject(void* object);
+    static bool nextManagedMapping(Task& task, uint64_t cursor, uint64_t& address, uint64_t& size);
 };
 
 }  // namespace kernel

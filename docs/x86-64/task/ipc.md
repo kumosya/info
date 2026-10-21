@@ -16,7 +16,7 @@ SendMessage、ReceiveMessage、CallService 接受绝对单调纳秒 deadline：U
 |---|---|
 | 非阻塞但不能完成 | WouldBlock |
 | 截止时间到达 | Timeout |
-| 显式取消 | Cancelled |
+| 取消 | Cancelled |
 | 信号打断 | Interrupted |
 | Endpoint 关闭/销毁 | EndpointClosed |
 | 服务领取线程死亡 | PeerDied |
@@ -25,7 +25,7 @@ SendMessage、ReceiveMessage、CallService 接受绝对单调纳秒 deadline：U
 
 ## 请求关联
 
-每个 RPC 分配唯一 Reply Token，关联原 Endpoint、调用者、状态和领取进程；同时记录领取线程用于死亡通知。ReplyMessage 必须显式提供 Token 并属于领取进程；重复、过期、取消后的回复以及错误服务方回复失败。同一服务进程可以跨线程回复或保存多个待回复 Token，不依赖“当前线程最近一次请求”的隐含关联。
+每个 RPC 分配唯一 Reply Token，关联原 Endpoint、调用者、状态和领取进程；同时记录领取线程用于死亡通知。ReplyMessage 必须提供 Token 并属于领取进程；重复、过期、取消后的回复以及错误服务方回复失败。同一服务进程可以跨线程回复或保存多个待回复 Token，不依赖“当前线程最近一次请求”的隐含关联。
 
 ## 句柄事务
 
@@ -33,6 +33,6 @@ SendMessage、ReceiveMessage、CallService 接受绝对单调纳秒 deadline：U
 
 复制共享 HandleTable::Reference。Send/Call 的 move 在成功入队时关闭源句柄，队列引用接管所有权；入队失败保留源句柄。Reply 的 move 先验证接收表容量，提交全部接收句柄时才关闭源句柄。rights 只能取原 rights 的子集。DuplicateHandle、RestrictHandleRights、NoInherit、CloseOnExec 通过现有句柄子操作实现，不新增 syscall。
 
-task.kernel 等机制对象的 EndpointService::call 在调用线程内联执行，使用显式 Task 参数。pipe/msgq 在 Ring3 保存 Reply Token 和能力引用，定期查询请求有效性，取消后释放所持引用。
+task.kernel 等机制对象的 EndpointService::call 在调用线程内联执行，使用 Task 参数。pipe/msgq 在 Ring3 保存 Reply Token 和能力引用，定期查询请求有效性，取消后释放所持引用。
 
 运行验证见 tests/check-kernel-ipc.sh；RPC 状态图和 SMP 回收时序见[混合内核架构](../../architecture.md)。

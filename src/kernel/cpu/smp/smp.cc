@@ -316,6 +316,9 @@ void requestTlbShootdown(uint64_t virtualAddress) {
     if (smp::getOnlineCpuCount() <= 1) {
         return;
     }
+    // A killed/preempted caller must not strand the global shootdown lock.
+    // Do not mask interrupts before acquiring: contenders must service IPIs.
+    cpu::disablePreemption();
     tlbShootdownLock.lock();
     const uint64_t flags = interrupt::disable();
     tlbShootdownAddress.store(virtualAddress, MemoryOrder::Release);
@@ -334,8 +337,9 @@ void requestTlbShootdown(uint64_t virtualAddress) {
     while (tlbShootdownAcknowledgements.load(MemoryOrder::Acquire) < targets) {
         asm volatile("pause");
     }
-    interrupt::restore(flags);
     tlbShootdownLock.unlock();
+    interrupt::restore(flags);
+    cpu::enablePreemption();
 }
 
 extern "C" [[noreturn]] void applicationTaskorEntry(CpuLocalData* cpu) {

@@ -1,4 +1,5 @@
 #include "kernel/task.h"
+#include "kernel/recovery.h"
 #include "kernel/time.h"
 
 #include "kernel/atomic.h"
@@ -161,8 +162,9 @@ uint64_t AddressSpace::rootPhysicalAddress() const {
 
 SpinLock& AddressSpace::lock() { return lock_; }
 
-bool HandleTable::init(uint32_t capacity, Task* owner) {
+bool HandleTable::init(uint32_t capacity, Task* owner, bool escrow) {
     owner_ = owner;
+    escrow_ = escrow;
     disposed_ = false;
     capacity_ = 0;
     lock_.init();
@@ -339,6 +341,7 @@ bool HandleTable::close(uint64_t handle) {
             return false;
         }
         reference = entry.reference;
+        if (escrow_) __atomic_sub_fetch(&reference->escrow, 1U, __ATOMIC_ACQ_REL);
         entry.reference = nullptr;
         entry.flags = 0;
         entry.setObject(nullptr);
@@ -381,8 +384,12 @@ void HandleTable::Reference::release(Reference* reference) {
         static_cast<Endpoint*>(object)->release();
     } else if (type == HandleType::InterruptBinding) {
         static_cast<device::InterruptBinding*>(object)->destroy();
-    } else if (type == HandleType::DmaBuffer || type == HandleType::MmioRegion) {
-        heap::kernelFree(object);
+    } else if (type == HandleType::DmaBuffer) {
+        static_cast<device::DmaBuffer*>(object)->destroy();
+    } else if (type == HandleType::MmioRegion) {
+        static_cast<device::MmioRegion*>(object)->destroy();
+    } else if (type == HandleType::DeviceDomain) {
+        static_cast<device::ResourceDomain*>(object)->closeLease();
     }
     heap::kernelFree(reference);
 }
@@ -439,10 +446,12 @@ uint64_t HandleTable::copyTo(HandleTable& destination, uint64_t handle,
         entry = source;
         entry.setGeneration(static_cast<uint16_t>(generation));
         Reference::retain(entry.reference);
+        if (destination.escrow_) __atomic_add_fetch(&entry.reference->escrow, 1U, __ATOMIC_RELAXED);
         return destinationHandle;
     }
     Reference::retain(source.reference);
     const uint64_t result = destination.installLocked(source.reference, source.getRights(), source.flags);
+    if (result && destination.escrow_) __atomic_add_fetch(&source.reference->escrow, 1U, __ATOMIC_RELAXED);
     if (!result) Reference::release(source.reference);
     return result;
 }
@@ -472,7 +481,10 @@ bool HandleTable::hasObjectRights(void* object, HandleType type, uint32_t rights
 }
 int64_t HandleTable::references(uint64_t handle) {
     InterruptSpinLockGuard guard(lock_);
-    return validLocked(handle) ? static_cast<int64_t>(__atomic_load_n(&entries_[static_cast<uint32_t>(handle) - 1].reference->count, __ATOMIC_ACQUIRE)) : -2;
+    if (!validLocked(handle)) return -2;
+    const auto* reference = entries_[static_cast<uint32_t>(handle) - 1].reference;
+    return static_cast<int64_t>(__atomic_load_n(&reference->count, __ATOMIC_ACQUIRE)) -
+        __atomic_load_n(&reference->escrow, __ATOMIC_ACQUIRE);
 }
 
 bool HandleTable::Transfer::capture(HandleTable& source, const os::IpcMessage& message,
@@ -484,7 +496,7 @@ bool HandleTable::Transfer::capture(HandleTable& source, const os::IpcMessage& m
         const auto& entry = source.entries_[static_cast<uint32_t>(message.handles[i]) - 1];
         const auto type = entry.reference->type;
         if (type == HandleType::MmioRegion || type == HandleType::DmaBuffer ||
-            type == HandleType::InterruptBinding) return false;
+            type == HandleType::InterruptBinding || type == HandleType::DeviceDomain) return false;
         if (message.handleOptions[i] & ~(os::ipcHandleRestrictRights | os::ipcHandleMove)) return false;
         if ((message.handleOptions[i] & os::ipcHandleRestrictRights) &&
             (message.handleRights[i] & entry.getRights()) != message.handleRights[i]) return false;
@@ -638,6 +650,7 @@ bool Task::init(const char* name, uint64_t rootPhysicalAddress, Task* parent) {
     startedNanoseconds_ = time::getMonotonicTime();
     uid_ = effectiveUid_ = parent ? parent->effectiveUid() : 0;
     gid_ = effectiveGid_ = parent ? parent->effectiveGid() : 0;
+    if (parent) parent->authentication(authenticationSession_, authenticationUid_, authenticationGid_);
     firstChild_      = nullptr;
     nextSibling_     = nullptr;
     childWaiters_    = nullptr;
@@ -758,6 +771,8 @@ bool Task::inheritForFork(Task& parent) {
         }
         taskGroupId_ = parent.taskGroupId_;
         sessionId_   = parent.sessionId_;
+          authenticationSession_ = parent.authenticationSession_;
+          authenticationUid_ = parent.authenticationUid_; authenticationGid_ = parent.authenticationGid_;
         commandLineSize_ = parent.commandLineSize_;
         for (size_t i = 0; i < sizeof(commandLine_); ++i) commandLine_[i] = parent.commandLine_[i];
         for (uint32_t signal = 0; signal <= maximumSignal; ++signal) {
@@ -788,7 +803,8 @@ bool Task::inheritForFork(Task& parent) {
                 SharedMemory::duplicateHandle(parent, *this, handle, handle);
         } else inherited = parent.handles_.copyTo(handles_, handle, handle);
         if (inherited != handle) {
-            handles_.closeAll();
+            // The reclaimer closes endpoints before disposing handles, including
+            // recoverable receivers whose identity must survive this instance.
             return false;
         }
         handles_.setFlags(inherited, flags);
@@ -853,6 +869,7 @@ bool Task::commitExec(uint64_t newRootPhysicalAddress, const char* name,
         copyName(name_, name);
     }
     schedule::quiesceTask(this);
+    device::ResourceDomain::ownerExiting(*this);
     for (Thread* thread = retiredThreads; thread; thread = thread->getTaskNext()) {
         Endpoint::cancelThread(thread);
         thread->cancelWait();
@@ -873,6 +890,7 @@ bool Task::commitExec(uint64_t newRootPhysicalAddress, const char* name,
     }
     handles_.closeOnExec();
     memory::destroyAddressSpaceRoot(oldRoot);
+    device::ResourceDomain::addressSpaceReleased(*this);
     {
         InterruptSpinLockGuard guard(lock_);
         acceptsThreads_ = state_ != TaskState::Terminated;
@@ -1070,7 +1088,7 @@ void Task::notifyThreadExit(Thread* thread) {
             state_          = TaskState::Terminated;
             acceptsThreads_ = false;
             exitCode_       = thread->getExitCode();
-            handles_.closeAll();
+            // The reclaimer detaches endpoint ownership before closing handles.
             taskTerminated = true;
         }
     }
@@ -1084,7 +1102,6 @@ void Task::notifyThreadExit(Thread* thread) {
     if (taskTerminated) {
         TaskReclaimer::submit(*this);
     }
-    if (taskTerminated) Endpoint::closeOwner(this);
 }
 
 void Task::terminateOtherThreads(int exitCode) {
@@ -1142,6 +1159,7 @@ bool Task::destroyResources() {
         state_       = TaskState::Terminated;
     }
     schedule::quiesceTask(this);
+    device::ResourceDomain::ownerExiting(*this);
     {
         PreemptionSpinLockGuard guard(addressSpace_.lock());
         root = addressSpace_.replaceRoot(0);
@@ -1165,6 +1183,7 @@ bool Task::destroyResources() {
     memory::PageMappings::releaseTask(*this);
     SharedMemory::releaseTaskMappings(*this);
     if (root != 0) memory::destroyAddressSpaceRoot(root);
+    device::ResourceDomain::addressSpaceReleased(*this);
     if (discard) {
         if (parent_ != nullptr) {
             InterruptSpinLockGuard parentGuard(parent_->lock_);
@@ -1245,8 +1264,53 @@ bool Task::createSession() {
         return false;
     }
     sessionId_   = id_;
+    if (authenticationSession_) authenticationSession_ = id_;
     taskGroupId_ = id_;
     terminalKind_ = terminalId_ = 0;
+    return true;
+}
+
+bool Task::setMemoryFrozen(bool frozen) {
+    if (managedService_ || this == kernelTask || this == task::getCurrent()) return false;
+    {
+        InterruptSpinLockGuard guard(lock_);
+        if (state_ == TaskState::Terminated) return false;
+        if (frozen && !memoryFrozen_) memoryFreezeDeadline_ = time::getMonotonicTime() + 20000000000ULL;
+        if (!frozen) memoryFreezeDeadline_ = 0;
+        __atomic_store_n(&memoryFrozen_, frozen, __ATOMIC_RELEASE);
+        for (Thread* thread = threads_; thread; thread = thread->getTaskNext()) {
+            if (frozen) {
+                if (thread->getState() == ThreadState::Stopped || thread->getState() == ThreadState::Terminated) continue;
+                thread->setStateBeforeStop(thread->getState());
+                schedule::dequeueThread(thread); thread->setState(ThreadState::Stopped);
+                smp::requestRemoteReschedule(static_cast<uint32_t>(thread->getCpuId()));
+            } else if (!stopped_ && thread->getState() == ThreadState::Stopped) {
+                thread->setState(thread->getStateBeforeStop());
+                if (thread->getState() == ThreadState::Ready || thread->getState() == ThreadState::Running) {
+                    thread->setState(ThreadState::Ready); schedule::enqueueThread(thread);
+                }
+            }
+        }
+    }
+    if (frozen) schedule::quiesceTask(this);
+    return true;
+}
+
+bool Task::claimMemoryFreezeExpiry(uint64_t now) {
+    InterruptSpinLockGuard guard(lock_);
+    if (!memoryFrozen_ || !memoryFreezeDeadline_ || now < memoryFreezeDeadline_ || state_ == TaskState::Terminated) return false;
+    memoryFreezeDeadline_ = 0; return true;
+}
+void Task::authentication(uint64_t& session, uint32_t& uid, uint32_t& gid) {
+    InterruptSpinLockGuard guard(lock_);
+    session = authenticationSession_; uid = authenticationUid_; gid = authenticationGid_;
+}
+bool Task::authenticate(uint32_t uid, uint32_t gid, bool preserveCredentials) {
+    InterruptSpinLockGuard guard(lock_);
+    if (state_ == TaskState::Terminated || managedService_ || uid >= 65535 || gid >= 65535 ||
+        (preserveCredentials && (effectiveUid_ != uid || effectiveGid_ != gid))) return false;
+    if (!preserveCredentials) { uid_ = effectiveUid_ = uid; gid_ = effectiveGid_ = gid; }
+    authenticationSession_ = sessionId_; authenticationUid_ = uid; authenticationGid_ = gid;
     return true;
 }
 
@@ -1374,6 +1438,7 @@ bool Task::deliverSignal(uint32_t signal) {
             continuedPending_ = true;
             for (Thread* thread = threads_; thread != nullptr;
                  thread         = thread->getTaskNext()) {
+                if (memoryFrozen()) continue;
                 if (thread->getState() != ThreadState::Stopped) continue;
                 thread->setState(thread->getStateBeforeStop());
                 if (thread->getState() == ThreadState::Ready ||
@@ -1446,6 +1511,8 @@ void task::init() {
     kernelTask->attachThread(Thread::getCurrent());
     cpu::getCurrent()->setCurrentTask(kernelTask);
     TaskReclaimer::init();
+    device::ResourceDomain::initialize();
+    ServiceRecovery::initialize();
     serial::serialWrite("[TASK] kernel task initialized\n");
 }
 
@@ -1455,7 +1522,10 @@ void Task::setCredentials(uint32_t uid, uint32_t gid, bool effectiveOnly) {
     InterruptSpinLockGuard guard(lock_);
     effectiveUid_ = uid;
     effectiveGid_ = gid;
-    if (!effectiveOnly) { uid_ = uid; gid_ = gid; }
+    if (!effectiveOnly) {
+        if (uid_ != uid || gid_ != gid) authenticationSession_ = 0;
+        uid_ = uid; gid_ = gid;
+    }
 }
 
 Task* task::getIdle() { return kernelTask; }

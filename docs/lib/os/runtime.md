@@ -18,10 +18,10 @@ lib/os/runtime.cc 提供 Ring 3 syscall 封装及对象化客户端。所有服�
 
 Terminal::id_ 保存进程运行时终端身份，不新增 TerminalId syscall；exec 参数和运行时状态传递终端选择。Task::getThreadId 走 task.kernel；Task::signalReturn 使用调用线程绑定的完整 syscall 上下文，借用当前 syscall 入口绑定到 Thread 的 SyscallContext，恢复后设置 contextRestored，分发器不覆盖恢复的 rax。
 
-Memory::allocateMemory 的基础堆用于引导及服务内部 eager 分配。libc mmap 的区域、拆分、权限和 backing 由 Ring 3 MM 管理；不能混用低层 map/unmap 与 MM 区域接口后期待元数据自动修复。
+Memory::allocateMemory 的基础堆用于引导及服务内部 eager 分配。libc mmap 的区域、拆分、权限和 backing 由 Ring 3 MM 管理。
 
 IpcMessage 含 senderPid、senderTid、replyToken、515 个内联字、最多 4 个句柄及逐句柄 rights/options。同步回复必须传入领取请求的 Token。deadline 为绝对单调纳秒；取消复用现有入口。
 
-普通程序 start.S 调用 Runtime 初始化及 C++ 构造，main 返回后由 libc exit 执行退出回调、析构和描述符关闭。内部服务入口为 `src/service/start.S`（SDK 输出仍叫 service_start.o），在此检查 CS=3；公共头文件与通用 syscall 包装不再判断 CS 或尝试 Ring0 旁路。生命周期逻辑位于应用对象中；C ABI 入口桥是链接约定。
+普通程序 start.S 调用 Runtime 初始化及 C++ 构造，main 返回后由 libc exit 执行退出回调、析构和描述符关闭。内部服务入口为 `src/service/start.S`（SDK 输出仍叫 service_start.o），在此检查 CS=3；公共头文件与通用 syscall 包装不判断 CS 或尝试 Ring0 旁路。生命周期逻辑位于应用对象中；C ABI 入口桥是链接约定。
 
-启动栈使用 argc/argv/envp 与 ELF 辅助向量。Runtime 从辅助向量取得共享库析构入口，在主程序析构之后执行；libc 从自定义辅助项取得 exec 描述符和工作目录状态。普通动态程序由独立 [Ring3 链接器](../../x86-64/dynamic-linker.md) 加载，依赖不再固定为四个库。[Directories](directories.md) 提供数据、状态、配置、缓存、日志和运行目录的类方法。
+启动栈使用 argc/argv/envp 与 ELF 辅助向量。Runtime 从辅助向量取得共享库析构入口，在主程序析构之后执行；libc 从自定义辅助项取得 exec 描述符和工作目录状态。普通动态程序由独立 [Ring3 链接器](../../x86-64/dynamic-linker.md) 加载，依赖不固定为四个库。[Directories](directories.md) 提供数据、状态、配置、缓存、日志和运行目录的类方法。

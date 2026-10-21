@@ -217,6 +217,7 @@ struct FileDescriptor {
     int flags = O_RDONLY;
     uint64_t mappingIssuer = 0;
     uint64_t mappingToken = 0;
+    bool mappingClaimed = false;
 };
 
 class FsServer {
@@ -224,6 +225,8 @@ class FsServer {
     bool init(uint64_t storageEndpoint, uint64_t deviceEndpoint);
 
     bool handle(const os::IpcMessage& request, os::IpcMessage& reply);
+    void collectClosedDescriptions();
+    void reapDescriptors();
 
    private:
     using FileSystemPtr = vfs::FileSystem*;
@@ -233,7 +236,6 @@ class FsServer {
     void handleAsync(const os::IpcMessage& request, bool writeOperation);
 
     uint64_t open(uint64_t ownerPid, const char* path, int flags);
-    void reapDescriptors();
 
     uint64_t close(uint64_t ownerPid, uint64_t descriptor);
 
@@ -274,6 +276,9 @@ class FsServer {
     bool format(const os::IpcMessage& request) const;
 
     FileDescriptor* getDescriptorRecord(uint64_t ownerPid, uint64_t descriptor);
+    void releaseMapping(const os::IpcMessage& request, os::IpcMessage& reply);
+    void listMappings(const os::IpcMessage& request, os::IpcMessage& reply);
+    void cancelMapping(const os::IpcMessage& request, os::IpcMessage& reply);
 
     OpenFileDescription* getDescriptor(uint64_t ownerPid, uint64_t descriptor);
 

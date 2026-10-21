@@ -7,9 +7,13 @@ namespace fs::ext3 {
 using namespace detail;
 
 bool Filesystem::lookup(const char* path, FileStatus& status) {
-    Inode inode{};
     uint32_t number = 0;
-    if (!resolve(path, number, &inode)) return false;
+    return resolve(path, number) && statInode(number, status);
+}
+
+bool Filesystem::statInode(uint32_t number, FileStatus& status) {
+    Inode inode{};
+    if (!readInode(number, inode) || !inode.mode) return false;
     status = {number, inode.mode, inode.size, inode.uid, inode.gid,
               inode.linksCount, inode.accessTime, inode.modificationTime,
               inode.changeTime};
@@ -189,12 +193,30 @@ bool Filesystem::remove(const char* path) {
             os::Clock::getWallClockTime() / 1000000000ULL);
         return writeInode(number, inode) && sync();
     }
-    clearInodeBlocks(inode);
+    if (preserveUnlinked(number)) {
+        inode.linksCount = 0;
+        inode.changeTime = static_cast<uint32_t>(os::Clock::getWallClockTime() / 1000000000ULL);
+        return writeInode(number, inode) && sync();
+    }
+    if (!clearInodeBlocks(inode)) return false;
     inode = {};
     inode.deletionTime = static_cast<uint32_t>(
         os::Clock::getWallClockTime() / 1000000000ULL);
     if (!writeInode(number, inode)) return false;
     freeInode(number, directory);
+    return sync();
+}
+
+bool Filesystem::reclaimUnlinked(uint32_t number) {
+    Inode inode{};
+    if (!readInode(number, inode) || inode.linksCount) return false;
+    const auto type = inode.mode & 0xf000U;
+    if (type != modeRegular && type != modeDirectory) return false;
+    if (!clearInodeBlocks(inode)) return false;
+    inode = {};
+    inode.deletionTime = static_cast<uint32_t>(os::Clock::getWallClockTime() / 1000000000ULL);
+    if (!writeInode(number, inode)) return false;
+    freeInode(number, type == modeDirectory);
     return sync();
 }
 

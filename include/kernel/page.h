@@ -130,6 +130,7 @@ class PageObject {
     uint64_t physical() const { return physical_; }
     uint64_t owner() const { return owner_; }
     uint32_t order() const { return order_; }
+    uint32_t references() const { return __atomic_load_n(&references_, __ATOMIC_ACQUIRE); }
    private:
     ~PageObject();
     uint64_t physical_ = 0, owner_ = 0;
@@ -147,6 +148,7 @@ class PageMappings {
     static bool cloneTask(Task& source, Task& target);
     static bool protectionAllowed(Task& target, uint64_t address, uint64_t size, uint64_t protection);
     static bool markCopyOnWrite(Task& target, uint64_t address, uint64_t size);
+    static bool nextManagedMapping(Task& target, uint64_t cursor, uint64_t& address, uint64_t& size);
 };
 }  // namespace kernel::memory
 

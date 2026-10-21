@@ -8,8 +8,13 @@ using namespace detail;
 
 bool Filesystem::lookup(const char* path, FileStatus& status) {
     uint32_t number = 0;
-    if (!resolve(path, number, inodeBuffer_)) return false;
+    return resolve(path, number, inodeBuffer_) && statInode(number, status);
+}
+
+bool Filesystem::statInode(uint32_t number, FileStatus& status) {
+    if (!readInode(number, inodeBuffer_)) return false;
     const uint16_t mode = DiskEncoding::read16(inodeBuffer_);
+    if (!mode) return false;
     uint64_t size       = DiskEncoding::read32(inodeBuffer_ + 4);
     if ((mode & 0xf000U) == modeRegular) {
         size |= static_cast<uint64_t>(DiskEncoding::read32(inodeBuffer_ + 108)) << 32;
@@ -216,11 +221,28 @@ bool Filesystem::remove(const char* path) {
         DiskEncoding::write16(inode + 26, DiskEncoding::read16(inode + 26) - 1);
         return writeInode(number, inode) && sync();
     }
+    if (preserveUnlinked(number)) {
+        DiskEncoding::write16(inode + 26, 0);
+        DiskEncoding::write32(inode + 12, static_cast<uint32_t>(os::Clock::getWallClockTime() / 1000000000ULL));
+        return writeInode(number, inode) && sync();
+    }
     if (!clearInodeBlocks(inode)) return false;
     os::Runtime::clearMemory(inode, inodeSize_);
     DiskEncoding::write32(inode + 20, static_cast<uint32_t>(os::Clock::getWallClockTime() / 1000000000ULL));
     if (!writeInode(number, inode)) return false;
     freeInode(number, directory);
+    return sync();
+}
+
+bool Filesystem::reclaimUnlinked(uint32_t number) {
+    uint8_t* inode = inodeBuffer_;
+    if (!readInode(number, inode) || DiskEncoding::read16(inode + 26)) return false;
+    const auto type = DiskEncoding::read16(inode) & 0xf000U;
+    if ((type != modeRegular && type != modeDirectory) || !clearInodeBlocks(inode)) return false;
+    os::Runtime::clearMemory(inode, inodeSize_);
+    DiskEncoding::write32(inode + 20, static_cast<uint32_t>(os::Clock::getWallClockTime() / 1000000000ULL));
+    if (!writeInode(number, inode)) return false;
+    freeInode(number, type == modeDirectory);
     return sync();
 }
 

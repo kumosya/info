@@ -27,6 +27,6 @@
 
 ## 会话与重启
 
-GUI 终端是普通应用，读取 `/etc/sessions`。shell 异常退出后终端关闭旧 PTY，回收子任务，再使用 recovery 登录入口创建新 PTY；正常 exit 保留结束标签。窗口主动关闭不会由 shell 监护当成故障。认证完成前不能恢复为原先的高权限 shell。
+GUI 终端是普通应用，读取 `/etc/sessions`。首次和新标签均通过 login 入口建立会话；shell 异常退出后关闭旧 PTY、回收子任务，再通过同一登录入口创建新 PTY。旧配置使用 recovery 兼容；正常 exit 保留结束标签。窗口主动关闭不会由 shell 监护当成故障。认证完成前不能恢复为原先的高权限 shell。单账户自动登录和会话身份见 [登录](../login.md)。
 
 停止 tty 前需先停 console/guiw 等依赖服务；systemctl 检查依赖。tty 进程重启会丢失原有行规程、PTY 和队列，旧客户端必须重新建立会话；不能把重新注册当作通道恢复。诊断看 `[TTY]`、`/proc/<pid>/status` 的 TtyKind/TtyIndex、systemctl status tty。

@@ -4,11 +4,14 @@ cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 build=${1:-build}
 packages=${2:-packages}
 output=${3:-$build/export/osinfo.iso}
+profile=${4:-development}
+case "$profile" in development|system) ;; *) echo 'unknown account profile' >&2; exit 2;; esac
 mkdir -p "$build" "$(dirname -- "$output")"
 stage=$(mktemp -d "${TMPDIR:-/tmp}/osinfo-iso.XXXXXX")
 temporary="$output.tmp.$$"
 trap 'rm -rf -- "$stage"; rm -f -- "$temporary"' EXIT HUP INT TERM
 sh script/install.sh "$stage/root" "$build" "$packages" 0
+if [ "$profile" = development ]; then tools/osinfo-host accounts --root "$stage/root" --argument development; fi
 # The entire runtime comes from the CD. Writes stay in the boot module in RAM.
 printf 'LABEL=OSINFO_ROOT / ext3 defaults 0 1\n' >"$stage/root/etc/fstab"
 mkdir -p "$stage/cd/boot"

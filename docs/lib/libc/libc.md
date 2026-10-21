@@ -8,7 +8,7 @@ SDK 分别安装到 `/usr/include/stdc`、`/usr/include/stdc++`、`/usr/include/
 
 目录流使用真实 fd，支持 dirfd、fdopendir、scandir、readdir_r 和 posix_getdents。glob/fnmatch 按路径分量展开、排序并遵守隐藏文件规则，递归缓冲位于堆上。
 
-目录记录包含 inode 与不透明 nextOffset，readdir/telldir/getdents 不再对 /proc 做路径特判。C++ 的 os::File::fsync 与 C 的 fsync/fdatasync 经 FS Sync 请求调用实际文件系统同步；非法描述符和非文件后端明确失败。服务配置持久化使用该同步路径后替换临时文件，接口存在不再等同于返回 ENOSYS。
+目录记录包含 inode 与不透明 nextOffset，readdir/telldir/getdents 不对 /proc 做路径特判。C++ 的 os::File::fsync 与 C 的 fsync/fdatasync 经 FS Sync 请求调用实际文件系统同步；非法描述符和非文件后端明确失败。服务配置持久化使用该同步路径后替换临时文件，接口存在不等同于返回 ENOSYS。
 
 公共 C++ 任务类为 os::Task；libc 保持 POSIX C 函数名，OsTaskInfo 与 SDK TaskInfo 同步布局。进程工具从 /proc 获取列表，C 适配不保留旧 TaskListEntry 列表包装。C++ 源和专用头采用 cstdio/cstdint/cstring 等包装头；C 源、C/C++ 共用头及包装头自身保留正确 C 头。
 

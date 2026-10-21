@@ -9,22 +9,24 @@
 #include "os/service.h"
 #include "os/users.h"
 #include "password.h"
+#include "accounts.h"
 #include "sessions.h"
 
 namespace users {
 class UserService {
    public:
     bool init() {
-        if (!load()) { os::System::log("[USERS] cannot load account database\n"); return false; }
+        if (!accounts_.load()) { os::System::log("[USERS] cannot load account database\n"); return false; }
         if (!directories_.initialize()) { os::System::log("[USERS] cannot initialize system directories\n"); return false; }
-        for (uint32_t i = 0; i < count_; ++i) {
-            if (!directories_.prepare(accounts_[i].profile)) {
+        for (uint32_t i = 0; i < accounts_.count(); ++i) {
+            if (!directories_.prepare(accounts_.at(i).profile)) {
                 os::System::log("[USERS] cannot prepare home: ");
-                os::System::log(accounts_[i].profile.home);
+                os::System::log(accounts_.at(i).profile.home);
                 os::System::log("\n");
                 return false;
             }
         }
+        if (!sessions_.initialize()) { os::System::log("[USERS] cannot recover authenticated sessions\n"); return false; }
         endpoint_ = os::Endpoint::create();
         return endpoint_ && os::ServiceRegistry::registerService(os::ServiceRegistry::serviceRegistry(), "users", endpoint_);
     }
@@ -41,65 +43,15 @@ class UserService {
         }
     }
    private:
-    class Account {
-        friend class UserService;
-       private:
-        os::UserProfile profile{};
-        char hash[128]{};
-    };
-    static bool validName(const char* name) {
-        if (!*name || strlen(name) > 31 || (name[0] >= '0' && name[0] <= '9')) return false;
-        for (const char* p = name; *p; ++p)
-            if (!(*p >= 'a' && *p <= 'z') && !(*p >= 'A' && *p <= 'Z') &&
-                !(*p >= '0' && *p <= '9') && *p != '_' && *p != '-') return false;
-        return true;
-    }
     Account* find(const char* name, uint32_t uid) {
-        for (uint32_t i = 0; i < count_; ++i)
-            if (*name ? !strcmp(accounts_[i].profile.name, name) : accounts_[i].profile.uid == uid) return &accounts_[i];
-        return nullptr;
-    }
-    bool load() {
-        FILE* input = std::fopen("/etc/passwd", "r");
-        if (!input) return false;
-        char line[512]; count_ = 0;
-        while (count_ < 32 && std::fgets(line, sizeof(line), input)) {
-            if (line[0] == '#' || !std::strchr(line, ':')) continue;
-            char* fields[7]{line}; unsigned columns = 1;
-            for (char* p = line; *p; ++p) {
-                if (*p == ':' && columns < 7) { *p = 0; fields[columns++] = p + 1; }
-                else if (*p == '\n' || *p == '\r') *p = 0;
-            }
-            if (columns != 7 || !validName(fields[0])) continue;
-            Account& account = accounts_[count_++];
-            account = {};
-            account.profile.uid = strtoul(fields[2], nullptr, 10);
-            account.profile.gid = strtoul(fields[3], nullptr, 10);
-            if (account.profile.uid >= 65535 || account.profile.gid >= 65535) { --count_; continue; }
-            os::Runtime::copyString(account.profile.name, fields[0], sizeof(account.profile.name));
-            os::Runtime::copyString(account.profile.home, fields[5], sizeof(account.profile.home));
-            os::Runtime::copyString(account.profile.shell, fields[6], sizeof(account.profile.shell));
-            std::strcpy(account.hash, "!");
-        }
-        std::fclose(input);
-        input = std::fopen("/etc/shadow", "r");
-        if (!input) return false;
-        while (std::fgets(line, sizeof(line), input)) {
-            char* separator = std::strchr(line, ':'); if (!separator) continue;
-            *separator++ = 0;
-            char* end = separator; while (*end && *end != ':' && *end != '\n' && *end != '\r') ++end; *end = 0;
-            Account* account = find(line, 0);
-            if (account) os::Runtime::copyString(account->hash, separator, sizeof(account->hash));
-        }
-        std::fclose(input);
-        return find("root", 0) != nullptr;
+        return accounts_.find(name, uid);
     }
     bool saveShadow() {
         FILE* output = std::fopen("/etc/.shadow.tmp", "w");
         if (!output) return false;
         bool ok = chmod("/etc/.shadow.tmp", 0600) == 0;
-        for (uint32_t i = 0; i < count_; ++i)
-            ok = std::fprintf(output, "%s:%s:0:0:99999:7:::\n", accounts_[i].profile.name, accounts_[i].hash) >= 0 && ok;
+        for (uint32_t i = 0; i < accounts_.count(); ++i)
+            ok = std::fprintf(output, "%s:%s:0:0:99999:7:::\n", accounts_.at(i).profile.name, accounts_.at(i).hash) >= 0 && ok;
         ok = std::fclose(output) == 0 && ok;
         return ok && std::rename("/etc/.shadow.tmp", "/etc/shadow") == 0;
     }
@@ -123,6 +75,7 @@ class UserService {
     }
     void handle(const os::IpcMessage& request, os::IpcMessage& reply) {
         os::UserCredentials input{};
+        struct Erase { os::UserCredentials& value; ~Erase() { Password::erase(&value, sizeof(value)); } } erase{input};
         std::memcpy(&input, request.data, sizeof(input));
         if (!std::memchr(input.name, 0, sizeof(input.name)) || !std::memchr(input.password, 0, sizeof(input.password)) ||
             !std::memchr(input.replacement, 0, sizeof(input.replacement))) return;
@@ -130,6 +83,11 @@ class UserService {
         if (os::Task::query(request.senderPid, caller)) return;
         const auto operation = static_cast<os::UserOperation>(request.type);
         Account* account = find(input.name, input.id);
+        if (operation == os::UserOperation::AutoLogin) {
+            account = accounts_.automatic();
+            if (!account || caller.effectiveUid || caller.managedService || !caller.terminalKind ||
+                caller.sessionId != caller.id || caller.taskGroupId != caller.id) return;
+        }
         if (operation == os::UserOperation::Who) {
             os::TaskInfo task{};
             if (os::Task::query(input.id, task) || task.state == 2) return;
@@ -139,11 +97,14 @@ class UserService {
             reply.data[40] = task.id;
         }
         if (!account) return;
-        if (operation == os::UserOperation::Login) {
-            if (!Password::verify(input.password, account->hash) ||
-                os::Task::setCredentials( request.senderPid,
-                                 account->profile.uid, account->profile.gid)) return;
-            if (!sessions_.begin(request.senderPid, account->profile)) return;
+        if (operation == os::UserOperation::Login || operation == os::UserOperation::AutoLogin) {
+            if (operation == os::UserOperation::Login && !Password::verify(input.password, account->hash)) return;
+            // Reserve all fallible session resources before changing credentials.
+            if (!sessions_.prepare(request.senderPid, account->profile)) return;
+            if (os::SessionIdentity::establish(request.senderPid, account->profile.uid, account->profile.gid)) {
+                sessions_.cancel(account->profile); return;
+            }
+            sessions_.commit(request.senderPid, account->profile);
         } else if (operation == os::UserOperation::BeginSession) {
             if (caller.effectiveUid != account->profile.uid ||
                 !sessions_.begin(request.senderPid, account->profile)) return;
@@ -167,10 +128,9 @@ class UserService {
         reply.length = operation == os::UserOperation::Who ? 41 : 1 + (sizeof(account->profile) + 7) / 8;
         Password::erase(&input, sizeof(input));
     }
-    Account accounts_[32]{};
+    Accounts accounts_;
     DirectoryManager directories_;
-    SessionManager sessions_{directories_};
-    uint32_t count_ = 0;
+    SessionManager sessions_{directories_, accounts_};
     uint64_t endpoint_ = 0, saltCounter_ = 0;
 };
 }

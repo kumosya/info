@@ -105,6 +105,9 @@ class Filesystem final : public vfs::FileSystem {
    public:
     bool mount(vfs::SectorDevice& device) override;
     bool lookup(const char* path, FileStatus& status) override;
+    bool statInode(uint32_t inode, FileStatus& status) override;
+    bool retainOpenFile(uint32_t inode) override { return retainInode(inode); }
+    bool releaseOpenFile(uint32_t inode) override { return releaseInode(inode); }
     int64_t read(const FileStatus& status, uint64_t offset, void* buffer,
                  size_t size) override;
     int64_t read(uint32_t inode, uint64_t offset, void* buffer, size_t size);
@@ -129,6 +132,7 @@ class Filesystem final : public vfs::FileSystem {
     bool readOnly() const override;
 
    private:
+    bool reclaimUnlinked(uint32_t inode) override;
     bool readBlock(uint32_t block, void* buffer);
     bool fetchBlock(uint32_t block, void* buffer);
     bool writeBlock(uint32_t block, const void* buffer);
