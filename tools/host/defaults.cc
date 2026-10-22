@@ -9,10 +9,10 @@ fs|3|fs|FsServer|2|Fs|3|0|local|fs|storage|7|fs-server|-|recursive|boot|init
 pci|3|device/pci|PciServer|3|Pci|4|taskCapabilityPci|local|pci|device|5|pci-server|-|flat|boot|device
 device|3|device|DeviceServer|4|Device|5|taskCapabilityDevice|local|device|task|4|device-server|-|flat|boot|init
 storage|3|device/storage|StorageServer|5|Storage|6|taskCapabilityDevice|local|storage|pci,task|6|storage-server|-|flat|boot|device
-tty|3|tty|TtyServer|6|Tty|7|0|disk|tty|users,fs,mm|10|tty-server|osgui-c++|flat|file|init
-console|3|console|ConsoleServer|7|Console|8|taskCapabilityDisplay|disk|console|tty|11|console-server|osgui-c++|flat|file|init
+tty|3|tty|TtyServer|6|Tty|7|0|disk|tty|users,fs,mm|10|tty-server|-|flat|file|init
+console|3|console|ConsoleServer|7|Console|8|taskCapabilityDisplay|disk|console|tty|11|console-server|graphic|flat|file|init
 guiw|3|-|WindowServer|8|Window|9|taskCapabilityDisplay|external|guiw|console|12|window-server|-|flat|file|init
-users|3|users|UsersServer|9|Users|10|taskCapabilityUsers|disk|users|fs,mm|9|users-server|osgui-c++,c|flat|file|init
+users|3|users|UsersServer|9|Users|10|taskCapabilityUsers|disk|users|fs,mm|9|users-server|c|flat|file|init
 mm|3|mm|MemoryManager|10|Memory|11|taskCapabilityMemory|local|mm|fs|8|memory-manager|-|flat|boot|init
 pipe|3|task/pipe|PipeServer|11|Pipe|12|0|local|pipe|task|2|pipe-server|-|flat|boot|task
 msgq|3|task/msgq|MessageQueueServer|12|MessageQueue|13|0|local|msgq|task|3|message-queue-server|-|flat|boot|task
@@ -68,12 +68,11 @@ mode|etc/sudoers|0440
 runtime|libos-c++|libos-c++.so
 runtime|libc++|libc.so
 runtime|libc++|libc++.so
-runtime|libosgui-c++|libosgui-c++.so
+external-runtime|libosgui-c++|libosgui-c++.so
 sdk-tree|include/stdc|stdc
 sdk-tree|include/stdc++|stdc++
 sdk-tree|include/posix|posix
 sdk-tree|include/os-c++|os-c++
-sdk-tree|include/osgui-c++|osgui-c++
 sdk-file|{objects}/user/runtime/start.o|lib/start.o
 sdk-file|{objects}/user/runtime/service_start.o|lib/service_start.o
 sdk-file|{build}/lib/ld-osinfo-x86-64.so|lib/ld-osinfo-x86-64.so
@@ -82,6 +81,17 @@ sdk-file|script/boot-service.lds|lib/boot-service.lds
 legacy-database|etc/inpkg/system|var/lib/inpkg
 legacy-home|app|.local
 )OSINFO_CONFIG");
+    // Existing generated layouts survive configure; migrate only the old GUI row.
+    auto layout = read("config/layout.conf");
+    const std::string legacy = "external-runtime|libosgui|libosgui.so";
+    const auto offset = layout.find(legacy);
+    if (offset != std::string::npos && (offset == 0 || layout[offset - 1] == '\n')) {
+        const auto end = offset + legacy.size();
+        if (end == layout.size() || layout[end] == '\n' || layout[end] == '\r') {
+            layout.replace(offset, legacy.size(), "external-runtime|libosgui-c++|libosgui-c++.so");
+            write("config/layout.conf", layout);
+        }
+    }
     if (!fs::exists("config/checks.conf")) write("config/checks.conf", R"OSINFO_CONFIG(
 # Source audit policy, not a second service catalog.
 project|.
@@ -99,9 +109,7 @@ forbidden-memory-header|page_object.h
 forbidden-memory-header|numa.h
 audit-root|user/ld
 audit-root|lib/os
-audit-root|lib/osgui
 audit-root|include/os-c++
-audit-root|include/osgui-c++
 syscall|invokeSyscall
 syscall|exitTask
 syscall|exitThread

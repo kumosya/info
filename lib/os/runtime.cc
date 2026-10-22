@@ -200,12 +200,17 @@ int64_t CoreServiceClient::result(CoreServiceKind kind, IpcMessage& request, Ipc
 }
 
 uint64_t createThread(void (*entry)(), uint64_t stackPointer) {
+    if (stackPointer < 16) return 0;
+    // The kernel jumps into a C function; reserve its ABI return-address slot.
+    stackPointer = (stackPointer & ~15ULL) - sizeof(uint64_t);
     return invokeSyscall(SyscallNumber::CreateThread,
                          reinterpret_cast<uint64_t>(entry), stackPointer);
 }
 
 uint64_t createThread(void (*entry)(void*), uint64_t stackPointer,
                       void* argument) {
+    if (stackPointer < 16) return 0;
+    stackPointer = (stackPointer & ~15ULL) - sizeof(uint64_t);
     return invokeSyscall(SyscallNumber::CreateThread,
                          reinterpret_cast<uint64_t>(entry), stackPointer,
                          reinterpret_cast<uint64_t>(argument));

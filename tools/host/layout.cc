@@ -163,6 +163,12 @@ void deploy(const Context& context) {
                     const auto target = inside(root, fs::path(row.at(2)) / entry.path().lexically_relative(row[1]));
                     if (row[2] != "etc" || !fs::exists(target)) host::copy(entry.path(), target);
                 }
+        } else if (row[0] == "external-runtime") {
+            const auto installed = inside(root, fs::path("usr/lib") / row.at(2));
+            // deploy runs before and after the package installation. Only the
+            // latter pass has external runtime payloads available to stage.
+            if (fs::exists(installed))
+                host::copy(installed, inside(root, fs::path("boot") / row.at(2)));
         } else if (row[0] == "runtime") {
             auto name = row.at(2);
             host::copy(context.packages / row.at(1) / name,

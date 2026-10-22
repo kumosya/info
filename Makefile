@@ -21,7 +21,7 @@ HOST_TOOL := tools/osinfo-host
 INPKG_HOST := tools/inpkg
 CONFIG_FILES := $(wildcard config/*.conf)
 
-CPPFLAGS := -I$(INCLUDE_DIR) -I$(INCLUDE_DIR)/stdc -I$(INCLUDE_DIR)/stdc++ -I$(INCLUDE_DIR)/posix -I$(INCLUDE_DIR)/os-c++ -I$(INCLUDE_DIR)/osgui-c++ -I$(BUILD_DIR)/generated
+CPPFLAGS := -I$(INCLUDE_DIR) -I$(INCLUDE_DIR)/stdc -I$(INCLUDE_DIR)/stdc++ -I$(INCLUDE_DIR)/posix -I$(INCLUDE_DIR)/os-c++ -I$(BUILD_DIR)/gui-sdk/include/osgui-c++ -I$(BUILD_DIR)/generated
 DEPENDENCY_FLAGS := -MMD -MP
 CFLAGS := -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -nostdinc -m32 -O2 -Wall -Wextra
 CXXFLAGS := -std=c++20 -ffreestanding -fno-builtin -fno-stack-protector -fno-exceptions -fno-rtti \
@@ -75,10 +75,11 @@ LIBC := $(BUILD_DIR)/lib/libc.a
 LIBCXX := $(BUILD_DIR)/lib/libc++.a
 LIBCXXABI := $(BUILD_DIR)/lib/libc++abi.a
 LIBOS_CXX_SO := $(PACKAGE_DIR)/libos-c++/libos-c++.so
-LIBOSGUI_CXX_SO := $(PACKAGE_DIR)/libosgui-c++/libosgui-c++.so
+GRAPHIC_A := $(BUILD_DIR)/lib/graphic.a
+GRAPHIC_OBJECTS := $(OBJECT_DIR)/lib/graphic/font.o $(OBJECT_DIR)/lib/graphic/font/console8x16.o $(OBJECT_DIR)/lib/graphic/surface.o
 LIBC_SO := $(PACKAGE_DIR)/libc++/libc.so
 LIBCXX_SO := $(PACKAGE_DIR)/libc++/libc++.so
-USER_SHARED_LIBRARIES := $(LIBOS_CXX_SO) $(LIBC_SO) $(LIBCXX_SO) $(LIBOSGUI_CXX_SO)
+USER_SHARED_LIBRARIES := $(LIBOS_CXX_SO) $(LIBC_SO) $(LIBCXX_SO)
 INTERPRETER := $(BUILD_DIR)/lib/ld-osinfo-x86-64.so
 IMAGE_INPUTS := $(KERNEL) $(APPLICATION_PROGRAMS) $(SERVICE_PROGRAMS) \
 	$(USER_SHARED_LIBRARIES) $(INTERPRETER) script/lib/version.1 script/etc/hostname
@@ -100,7 +101,7 @@ LIBCXX_OBJECTS := $(OBJECT_DIR)/lib/libc++/new.o \
 	$(OBJECT_DIR)/lib/libc++/thread.o
 LIBCXXABI_OBJECTS := $(OBJECT_DIR)/lib/libc++/abi.o
 GENERATED_OBJECTS := $(KERNEL_OBJECTS) $(SERVICE_OBJECTS) $(APPLICATION_MAIN_OBJECTS) \
-	$(USER_RUNTIME_OBJECTS) $(OBJECT_DIR)/lib/osgui/gui.o $(OBJECT_DIR)/user/runtime/start.o \
+	$(USER_RUNTIME_OBJECTS) $(GRAPHIC_OBJECTS) $(OBJECT_DIR)/user/runtime/start.o \
 	$(OBJECT_DIR)/user/runtime/service_start.o $(LIBC_OBJECTS) \
 	$(LIBCXX_OBJECTS) $(LIBCXXABI_OBJECTS)
 DEPENDENCY_FILES := $(sort $(GENERATED_OBJECTS:.o=.d))
@@ -113,9 +114,10 @@ DEPENDENCY_FILES := $(sort $(GENERATED_OBJECTS:.o=.d))
 .DEFAULT_GOAL := all
 all: build package-archives
 
-.PHONY: sdk
-sdk: libraries $(OBJECT_DIR)/user/runtime/start.o $(OBJECT_DIR)/user/runtime/service_start.o
-	@$(HOST_TOOL) sdk --build "$(BUILD_DIR)" --packages "$(PACKAGE_DIR)" --objects "$(OBJECT_DIR)" --output "$(BUILD_DIR)/sdk"
+.PHONY: sdk sdk-base
+SDK_OUTPUT ?= $(BUILD_DIR)/$(if $(filter sdk-base,$(MAKECMDGOALS)),sdk-base,sdk)
+sdk sdk-base: libraries $(OBJECT_DIR)/user/runtime/start.o $(OBJECT_DIR)/user/runtime/service_start.o
+	@$(HOST_TOOL) sdk $(if $(filter sdk-base,$@),--argument base) --build "$(BUILD_DIR)" --packages "$(PACKAGE_DIR)" --objects "$(OBJECT_DIR)" --output "$(SDK_OUTPUT)"
 
 .PHONY: host-tools
 host-tools: $(HOST_TOOL) $(INPKG_HOST) tools/infoide
@@ -310,11 +312,14 @@ $(LIBOS_CXX_SO): $(USER_RUNTIME_OBJECTS) Makefile
 	@$(CXX) $(USER_CXXFLAGS) $(USER_SHARED_LDFLAGS) \
 		-Wl,-soname,libos-c++.so -o $@ $(USER_RUNTIME_OBJECTS) -lgcc
 
-$(LIBOSGUI_CXX_SO): $(OBJECT_DIR)/lib/osgui/gui.o $(LIBOS_CXX_SO) Makefile
-	@mkdir -p $(@D)
-	@echo "[SO] $@"
-	@$(CXX) $(USER_CXXFLAGS) $(USER_SHARED_LDFLAGS) \
-		-Wl,-soname,libosgui-c++.so -o $@ $< -Wl,--no-as-needed $(LIBOS_CXX_SO) -lgcc
+$(GRAPHIC_A): $(GRAPHIC_OBJECTS)
+	@mkdir -p "$(@D)"
+	@$(AR) rcs "$@" $^
+
+$(BUILD_DIR)/gui-sdk/include/osgui-c++/osgui/session.h: $(PACKAGE_DIR)/libosgui-c++.inpk $(HOST_TOOL)
+	@$(HOST_TOOL) sdk --argument gui-only --packages "$(PACKAGE_DIR)" --output "$(BUILD_DIR)/gui-sdk"
+
+$(OBJECT_DIR)/console/main.o: $(BUILD_DIR)/gui-sdk/include/osgui-c++/osgui/session.h
 
 $(LIBC_SO): $(LIBC_OBJECTS) $(LIBOS_CXX_SO) Makefile
 	@mkdir -p $(@D)
@@ -354,7 +359,7 @@ $(OBJECT_DIR)/tests/%.o: tests/%.cc
 $(BUILD_DIR)/tests/%: $(OBJECT_DIR)/tests/%.o $(OBJECT_DIR)/user/runtime/start.o $(USER_SHARED_LIBRARIES) script/user.lds Makefile
 	@mkdir -p $(@D)
 	@$(CXX) $(USER_CXXFLAGS) $(USER_LDFLAGS) -o $@ $< $(OBJECT_DIR)/user/runtime/start.o -Wl,-E,--dynamic-linker=/lib/ld-osinfo-x86-64.so \
-		-Wl,--no-as-needed $(LIBCXX_SO) $(LIBC_SO) $(LIBOS_CXX_SO) $(LIBOSGUI_CXX_SO) -lgcc
+		-Wl,--no-as-needed $(LIBCXX_SO) $(LIBC_SO) $(LIBOS_CXX_SO) -lgcc
 
 $(BUILD_DIR)/tests/linker/libprobe-base.so: tests/linker/base.cc $(LIBC_SO) $(LIBOS_CXX_SO)
 	@mkdir -p $(@D)

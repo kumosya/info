@@ -5,8 +5,8 @@
 #include "os/abi.h"
 #include "os/ansi.h"
 #include "os/file.h"
-#include "osgui/font.h"
-#include "osgui/gui.h"
+#include "kernel/graphic/font.h"
+#include "osgui/session.h"
 #include "os/input.h"
 #include "os/protocol.h"
 #include "os/service.h"
@@ -36,10 +36,11 @@ struct Cell {
 class DisplayConsole {
    public:
     bool init() {
-        return os::Device::mapFramebuffer(framebufferAddress, info_) == 0 &&
-               info_.address != 0 && info_.width >= cellWidth &&
-               info_.height >= cellHeight &&
-               (info_.bitsPerPixel == 24 || info_.bitsPerPixel == 32);
+        if(os::Device::mapFramebuffer(framebufferAddress,info_) || !info_.address ||
+           info_.width<cellWidth || info_.height<cellHeight) return false;
+        surface_={reinterpret_cast<uint8_t*>(info_.address),info_.width,info_.height,info_.pitch,
+            uint8_t(info_.bitsPerPixel),info_.redPosition,info_.greenPosition,info_.bluePosition};
+        return graphic::valid(surface_);
     }
 
     uint32_t columns() const {
@@ -90,35 +91,11 @@ class DisplayConsole {
             foreground               = background;
             background               = temporary;
         }
-        for (uint32_t pixelY = 0; pixelY < cellHeight; ++pixelY) {
-            const uint8_t bits =
-                os::consoleFont[static_cast<uint8_t>(cell.character)][pixelY];
-            for (uint32_t pixelX = 0; pixelX < cellWidth; ++pixelX) {
-                const bool set = (bits & (1U << (7 - pixelX))) != 0;
-                const bool underline =
-                    (cell.attributes & 2U) != 0 && pixelY == cellHeight - 2;
-                drawPixel(column * cellWidth + pixelX,
-                          row * cellHeight + pixelY,
-                          set || underline ? foreground : background);
-            }
-        }
+        graphic::drawGlyph(surface_,column*cellWidth,row*cellHeight,uint8_t(cell.character),
+            foreground,background,(cell.attributes&2U)!=0);
     }
 
-    void drawPixel(uint32_t x, uint32_t y, uint32_t colorValue) {
-        uint32_t packed = (((colorValue >> 16) & 0xffU) << info_.redPosition) |
-                          (((colorValue >> 8) & 0xffU) << info_.greenPosition) |
-                          ((colorValue & 0xffU) << info_.bluePosition);
-        uint8_t* pixel = reinterpret_cast<uint8_t*>(info_.address) +
-                         static_cast<uint64_t>(y) * info_.pitch +
-                         static_cast<uint64_t>(x) * (info_.bitsPerPixel / 8);
-        pixel[0] = static_cast<uint8_t>(packed);
-        pixel[1] = static_cast<uint8_t>(packed >> 8);
-        pixel[2] = static_cast<uint8_t>(packed >> 16);
-        if (info_.bitsPerPixel == 32) {
-            pixel[3] = static_cast<uint8_t>(packed >> 24);
-        }
-    }
-
+    graphic::Surface surface_{};
     os::DisplayInfo info_{};
     Cell previousCells_[maximumColumns * maximumRows]{};
     uint32_t previousCursorX_ = 0;
@@ -844,10 +821,10 @@ class ConsoleService {
             return false;
         }
         const uint64_t window =
-            os::ServiceRegistry::lookupService(registry_, os::guiwServiceName,
+            os::ServiceRegistry::lookupService(registry_, osgui::guiwServiceName,
                               terminal == os::graphicalTerminalId ? 100 : 1);
         if (window != 0) {
-            os::Window::setWindowSessionActive(window,
+            osgui::setSessionActive(window,
                                        terminal == os::graphicalTerminalId);
             os::closeHandle(window);
         }

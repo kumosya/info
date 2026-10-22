@@ -88,8 +88,8 @@ void generate(const Context& context) {
         if (service[13] != "-") {
             make << "SERVICE_LIBS_" << service[0] << " =";
             for (const auto& library : split(service[13], ',')) {
-                if (library == "osgui-c++")
-                    make << " $(LIBOSGUI_CXX_SO)";
+                if (library == "graphic")
+                    make << " $(GRAPHIC_A)";
                 else if (library == "c")
                     make << " $(LIBC_SO)";
                 else
@@ -103,7 +103,7 @@ void generate(const Context& context) {
     images << "};\n";
     images << "static constexpr const char* configuredRuntimeLibraries[] = {\n";
     for (const auto& row : table("config/layout.conf"))
-        if (row[0] == "runtime") images << "    " << quote(row.at(2)) << ",\n";
+        if ((row[0] == "runtime" || row[0] == "external-runtime")) images << "    " << quote(row.at(2)) << ",\n";
     images << "};\nstatic constexpr uint32_t configuredRuntimeCount = sizeof(configuredRuntimeLibraries) / sizeof(configuredRuntimeLibraries[0]);\n";
     std::sort(boot.begin(), boot.end(), [](const Row& a, const Row& b) {
         return std::stoi(a[11]) < std::stoi(b[11]);
@@ -118,7 +118,7 @@ void generate(const Context& context) {
                     << quote(service[16]) << "},\n";
     startup << "};\n";
     for (const auto& row : table("config/layout.conf"))
-        if (row[0] == "runtime") {
+        if ((row[0] == "runtime" || row[0] == "external-runtime")) {
             grub << "    module2 /boot/" << row.at(2) << ' ' << row[2] << '\n';
         }
     grub << "    boot\n}\n";

@@ -117,6 +117,7 @@ void prepare(const Context& context) {
         makePath(input);
         const auto package = packageMetadata(input);
         std::string name = package.name;
+        
         if (!identities.insert(name).second) throw std::runtime_error("duplicate package: " + name);
         if (runtime.count(name)) continue;
         catalog << "archive|" << input.generic_string() << '\n';
@@ -128,18 +129,24 @@ void prepare(const Context& context) {
             provided.insert(target);
         }
     }
-    for (const auto& service : table("config/services.conf"))
-        if (service[8] == "external" && !provided.count("/sbin/sys/" + service[0] + ".elf"))
-            throw std::runtime_error("missing service package: " + service[0]);
-    std::set<std::string> sessions;
-    for (const auto& app : table("script/etc/sessions")) {
-        if (app.size() != 3 || (app[0] != "terminal" && app[0] != "login") ||
-            !sessions.insert(app[0]).second)
-            throw std::runtime_error("invalid session defaults");
-        if (!provided.count(app[1]))
-            throw std::runtime_error("missing session application package: " + app[1]);
+    if (context.argument != "base") {
+        for (const auto& row : table("config/layout.conf"))
+            if (row[0] == "external-runtime" &&
+                !provided.count("/usr/lib/" + row.at(2)))
+                throw std::runtime_error("missing external runtime package: " + row.at(1) + ".inpk (use --bootstrap-sdk to build a base SDK first)");
+        for (const auto& service : table("config/services.conf"))
+            if (service[8] == "external" && !provided.count("/sbin/sys/" + service[0] + ".elf"))
+                throw std::runtime_error("missing service package: " + service[0]);
+        std::set<std::string> sessions;
+        for (const auto& app : table("script/etc/sessions")) {
+            if (app.size() != 3 || (app[0] != "terminal" && app[0] != "login") ||
+                !sessions.insert(app[0]).second)
+                throw std::runtime_error("invalid session defaults");
+            if (!provided.count(app[1]))
+                throw std::runtime_error("missing session application package: " + app[1]);
+        }
+        if (sessions.size() != 2) throw std::runtime_error("incomplete session defaults");
     }
-    if (sessions.size() != 2) throw std::runtime_error("incomplete session defaults");
     dependencies << '\n';
     write(context.build / "packages.conf", catalog.str());
     write(context.build / "package-inputs.mk", dependencies.str());
