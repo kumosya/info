@@ -41,7 +41,9 @@ void maskIrq(uint8_t irq);
 bool registerHandler(uint8_t vector, Handler handler);
 void unregisterHandler(uint8_t vector);
 void handleException(Context* context);
+bool dispatchUserException(Context* context);
 void handlePageFault(Context* context);
+[[noreturn]] void panic(Context* context);
 
 }  // namespace interrupt
 }  // namespace kernel

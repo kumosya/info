@@ -11,7 +11,7 @@ struct alignas(16) ObjectCache::Slab {
     uint64_t used[4];
     uint32_t capacity, live;
 };
-void ObjectCache::initialize(size_t size) {
+void ObjectCache::init(size_t size) {
     lock_.init(); slabs_ = nullptr; empty_ = 0;
     stride_ = size && size <= 2048 ? (size + 15) & ~15ULL : 0;
 }

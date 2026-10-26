@@ -1,4 +1,4 @@
-#include "kernel/thread.h"
+#include "kernel/task.h"
 #include "kernel/cpu.h"
 #include "kernel/spinlock.h"
 

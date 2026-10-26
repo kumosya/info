@@ -1,6 +1,6 @@
 #include "kernel/mm.h"
 namespace kernel::memory {
-bool FixedPool::initialize(void* storage, size_t bytes, size_t size) {
+bool FixedPool::init(void* storage, size_t bytes, size_t size) {
     if (!storage || (reinterpret_cast<uint64_t>(storage) & 15) || !size || size > SIZE_MAX - 15) return false;
     const size_t stride = (size + 15) & ~15ULL, capacity = bytes / stride;
     if (!capacity || capacity > 4096 || stride > UINT32_MAX) return false;

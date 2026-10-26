@@ -4,6 +4,3 @@
 #include <errno.h>
 #include <unistd.h>
 
-__attribute__((weak)) int ffs(int arg0) { (void)arg0; errno = ENOSYS; return (int)-1; }
-__attribute__((weak)) int ffsl(long arg0) { (void)arg0; errno = ENOSYS; return (int)-1; }
-__attribute__((weak)) int ffsll(long long arg0) { (void)arg0; errno = ENOSYS; return (int)-1; }

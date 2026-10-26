@@ -4,7 +4,6 @@
 #include "kernel/sync.h"
 #include "kernel/syscall.h"
 #include "kernel/task.h"
-#include "kernel/thread.h"
 
 namespace {
 

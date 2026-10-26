@@ -158,11 +158,19 @@ ssize_t readlink(const char* path, char* buffer, size_t size) {
 int chdir(const char* path) {
     char absolute[LIBC_PATH_CAPACITY];
     struct stat status;
-    libcCopyPath(absolute, path);
-    if (stat(absolute, &status) != 0 || !S_ISDIR(status.st_mode)) {
+    if (libcPathAt(AT_FDCWD, path, absolute)) return -1;
+    if (stat(absolute, &status) != 0) return -1;
+    if (!S_ISDIR(status.st_mode)) {
         errno = ENOTDIR;
         return -1;
     }
+    OsCredentialInfo credentials;
+    int error = __libc_os_credentials(0, 0, 0, 0, NULL, &credentials);
+    if (error) { errno = error; return -1; }
+    int member = credentials.effectiveGid == status.st_gid;
+    for (uint32_t i = 0; i < credentials.groupCount; ++i) if (credentials.groups[i] == status.st_gid) member = 1;
+    unsigned shift = credentials.effectiveUid == status.st_uid ? 6 : member ? 3 : 0;
+    if (credentials.effectiveUid && !((status.st_mode >> shift) & 1)) { errno = EACCES; return -1; }
     libcSetCurrentDirectory(absolute);
     return 0;
 }
@@ -364,6 +372,7 @@ long sysconf(int name) {
         case _SC_VERSION: return _POSIX_VERSION;
         case _SC_2_VERSION: return _POSIX2_VERSION;
         case _SC_OPEN_MAX: return OPEN_MAX;
+        case _SC_NGROUPS_MAX: return NGROUPS_MAX;
         case _SC_PAGESIZE: return 4096;
         case _SC_CLK_TCK: return 100;
         case _SC_NPROCESSORS_CONF:

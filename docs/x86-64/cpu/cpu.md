@@ -256,10 +256,12 @@ extern "C" void interruptDispatch(interrupt::Context* context);
 #### 异常处理 `handleException`
 
 - 向量 14 → 转 `handlePageFault`（见 [memory.md](../memory/memory.md)）。
-- 其余先打印 vector/error/rip。
-- **向量 3 且来自内核态**：直接返回（内核断点可恢复）。
-- 用户态异常 → `Thread::terminateCurrentFromException(-vector)`。
+- 其余由 `exceptions.cc` 按来源、向量、DR6 或 FP 未屏蔽状态分类。
+- 用户异常定向投递到故障线程的处理器；默认致命动作结束整个进程，退出原因使用信号号。
+- 未注册的内核断点以及 NMI、双重故障、机器检查、未启用的平台异常均诊断停机。
 - 内核态不可恢复异常 → 打印后 `cpu::halt()`。
+
+信号帧、替代栈、IRET 返回与 ELF core 的完整说明见[用户态异常与 core](../task/exceptions-and-core.md)。
 
 ### 7.5 I/O APIC（ioapic.cc）
 

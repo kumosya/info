@@ -1,7 +1,7 @@
 #include "kernel/page.h"
 
 namespace kernel::memory {
-void BuddyAllocator::initialize(PageFrame* frames, uint32_t count) {
+void BuddyAllocator::init(PageFrame* frames, uint32_t count) {
     frames_ = frames; count_ = count; free_ = 0; lock_.init();
     for (auto& node : heads_) for (auto& head : node) head = noFrame;
     for (uint32_t i = 0; i < count; ++i) {

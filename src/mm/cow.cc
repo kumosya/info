@@ -1,9 +1,14 @@
-#include "mm.h"
-#include "os/task.h"
+#include "service/common/queries.h"
+#include "service/common/records.h"
+#include "service/common/runtime.h"
+#include "service/common/kernel-requests.h"
+#include "service/common/requests.h"
+#include "service/mm/mm.h"
+#include <os/task.h>
 namespace mm {
 int Pager::clone(uint64_t parent, uint64_t child) {
-    os::TaskInfo info{};
-    if (os::Task::query(child, info) || info.parentId != parent || info.state != 0 || child == parent) return -3;
+    os::wire::TaskInfo info{};
+    if (os::detail::TaskQuery().query(child, info) || info.parentId != parent || info.state != 0 || child == parent) return -3;
     if (state_.synchronize(child) < 0) return -5;
     RegionTable staged = state_.regions;
     for (size_t i = 0; i < RegionTable::capacity; ++i) {
@@ -25,15 +30,17 @@ int Pager::clone(uint64_t parent, uint64_t child) {
         auto* copy = state_.vacantPage();
         *copy = source; copy->task = child;
         if (source.handle) {
-            const int64_t handle = os::Handle::duplicate(source.handle, 7);
+            os::Ipc::Handle handleOwner;
+    const int handleStatus = os::Ipc::Handle(source.handle, false).duplicate(7, 0, handleOwner);
+    const int64_t handle = handleStatus ? handleStatus : static_cast<int64_t>(handleOwner.release());
             if (handle <= 0) { *copy = {}; state_.releaseTask(child); return -5; }
             copy->handle = handle;
         }
         if (!region->shared && source.handle) {
             source.dirty = source.dirty || (KernelMemory::pageState(parent, source.address) & (1ULL << 6));
             copy->dirty = source.dirty; copy->cow = source.cow = true;
-            if ((source.mapped && os::Memory::protectTarget(source.address, 4096, 4, parent)) ||
-                (copy->mapped && os::Memory::protectTarget(copy->address, 4096, 4, child))) {
+            if ((source.mapped && os::detail::MemoryControl().protectTarget(source.address, 4096, 4, parent)) ||
+                (copy->mapped && os::detail::MemoryControl().protectTarget(copy->address, 4096, 4, child))) {
                 state_.releaseTask(child); return -11;
             }
         }
@@ -46,18 +53,18 @@ int Pager::copyPrivate(ResidentPage& page, const Region& region) {
     constexpr uint64_t source = 0x60000000, destination = source + 4096;
     const int64_t handle = allocator_.allocate(page.task);
     if (handle <= 0) return handle;
-    if (os::Memory::mapPages(page.handle, source, 4096, 0, 0) != source) { os::closeHandle(handle); return -5; }
-    if (os::Memory::mapPages(handle, destination, 4096, 0, 1) != destination) {
-        os::Memory::unmapTarget(source, 4096); os::closeHandle(handle); return -5;
+    if (os::detail::MemoryControl().mapPages(page.handle, source, 4096, 0, 0) != source) { os::closeHandle(handle); return -5; }
+    if (os::detail::MemoryControl().mapPages(handle, destination, 4096, 0, 1) != destination) {
+        os::detail::MemoryControl().unmapTarget(source, 4096); os::closeHandle(handle); return -5;
     }
     os::Runtime::copyBytes(reinterpret_cast<void*>(destination), reinterpret_cast<void*>(source), 4096);
-    os::Memory::unmapTarget(destination, 4096); os::Memory::unmapTarget(source, 4096);
+    os::detail::MemoryControl().unmapTarget(destination, 4096); os::detail::MemoryControl().unmapTarget(source, 4096);
     const uint64_t protection = KernelMemory::nativeProtection(region.protection);
-    if (page.mapped && os::Memory::unmapTarget(page.address, 4096, page.task)) { os::closeHandle(handle); return -11; }
+    if (page.mapped && os::detail::MemoryControl().unmapTarget(page.address, 4096, page.task)) { os::closeHandle(handle); return -11; }
     page.mapped = false;
-    if (os::Memory::mapPages(handle, page.address, 4096, 0, protection, page.task) != page.address) {
-        if (os::Memory::mapPages(page.handle, page.address, 4096, 0, protection & ~1ULL, page.task) == page.address) {
-            page.mapped = true; os::Memory::protectTarget(page.address, 4096, 4, page.task);
+    if (os::detail::MemoryControl().mapPages(handle, page.address, 4096, 0, protection, page.task) != page.address) {
+        if (os::detail::MemoryControl().mapPages(page.handle, page.address, 4096, 0, protection & ~1ULL, page.task) == page.address) {
+            page.mapped = true; os::detail::MemoryControl().protectTarget(page.address, 4096, 4, page.task);
         }
         os::closeHandle(handle); return -5;
     }

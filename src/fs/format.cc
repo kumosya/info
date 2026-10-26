@@ -1,4 +1,9 @@
-#include "format.h"
+#include "service/fs/ext3/filesystem.h"
+#include "service/fs/ext4/filesystem.h"
+#include "service/fs/fat/filesystem.h"
+#include "service/fs/exfat/filesystem.h"
+#include "service/fs/iso/filesystem.h"
+#include "service/fs/format.h"
 
 namespace vfs {
 
@@ -21,11 +26,11 @@ const char* FormatProbe::formatName(Format format) {
 
 Format FormatProbe::detectFormat(const uint8_t* bootData, size_t bootSize,
                     const uint8_t* isoDescriptor, size_t isoSize) {
-    if (FormatProbe::probeExt4(bootData, bootSize)) return Format::Ext4;
-    if (FormatProbe::probeExt3(bootData, bootSize)) return Format::Ext3;
-    if (FormatProbe::probeFat32(bootData, bootSize)) return Format::Fat32;
-    if (FormatProbe::probeExFat(bootData, bootSize)) return Format::ExFat;
-    if (FormatProbe::probeIso9660(isoDescriptor, isoSize)) return Format::Iso9660;
+    if (ext4::Probe().detect(bootData, bootSize)) return Format::Ext4;
+    if (ext3::Probe().detect(bootData, bootSize)) return Format::Ext3;
+    if (fat::Probe().detect(bootData, bootSize)) return Format::Fat32;
+    if (exfat::Probe().detect(bootData, bootSize)) return Format::ExFat;
+    if (iso::Probe().detect(isoDescriptor, isoSize)) return Format::Iso9660;
     return Format::Unknown;
 }
 

@@ -38,7 +38,8 @@ apProtectedEntry:
     orl $((1 << 8) | (1 << 11)), %eax
     wrmsr
     movl %cr0, %eax
-    orl $((1 << 31) | 1), %eax
+    andl $~((1 << 2) | (1 << 3)), %eax
+    orl $((1 << 31) | (1 << 18) | (1 << 5) | (1 << 1) | 1), %eax
     movl %eax, %cr0
     ljmpl $0x18, $apPhysicalBase + (apLongModeEntry - apTrampolineStart)
 

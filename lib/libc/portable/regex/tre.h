@@ -1,3 +1,4 @@
+#pragma once
 /*
   tre-internal.h - TRE internal definitions
 

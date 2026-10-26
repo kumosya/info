@@ -12,7 +12,7 @@ typedef struct { void *ss_sp; int ss_flags; size_t ss_size; } stack_t;
 #define SS_ONSTACK 1
 #define SS_DISABLE 2
 #define MINSIGSTKSZ 2048
-#define SIGSTKSZ 8192
+#define SIGSTKSZ 65536
 typedef void (*sighandler_t)(int);
 
 typedef struct {
@@ -79,6 +79,13 @@ struct sigaction {
 #define SIGVTALRM 26
 #define SIGPROF 27
 #define SIGWINCH 28
+#define SIGPOLL 29
+#define SIGIO 29
+#define SIGPWR 30
+#define SIGSYS 31
+#define SIGIOT SIGABRT
+#define SIGCLD 17
+#define SIG2STR_MAX 32
 #define SIGRTMIN 32
 #define SIGRTMAX 64
 #define NSIG 65
@@ -92,9 +99,41 @@ struct sigaction {
 #define SIG_SETMASK 2
 
 #define SA_SIGINFO 0x00000004
+#define SA_ONSTACK 0x08000000
 #define SA_RESTART 0x10000000
 #define SA_NODEFER 0x40000000
 #define SA_RESETHAND ((int)0x80000000U)
+
+#define SI_USER 0
+#define SI_KERNEL 128
+#define SEGV_MAPERR 1
+#define SEGV_ACCERR 2
+#define SEGV_BNDERR 3
+#define SEGV_CPERR 10
+#define BUS_ADRALN 1
+#define BUS_ADRERR 2
+#define BUS_OBJERR 3
+#define ILL_ILLOPC 1
+#define ILL_PRVOPC 5
+#define FPE_INTDIV 1
+#define FPE_INTOVF 2
+#define FPE_FLTDIV 3
+#define FPE_FLTOVF 4
+#define FPE_FLTUND 5
+#define FPE_FLTRES 6
+#define FPE_FLTINV 7
+#define FPE_FLTSUB 8
+#define TRAP_BRKPT 1
+#define TRAP_TRACE 2
+#define TRAP_HWBKPT 4
+#define CLD_EXITED 1
+#define CLD_KILLED 2
+#define CLD_DUMPED 3
+#define CLD_STOPPED 5
+#define CLD_CONTINUED 6
+
+#include <features.h>
+#include <bits/signal.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -135,7 +174,6 @@ pid_t setsid(void);
 union sigval { int sival_int; void *sival_ptr; };
 
 /* POSIX.1-2024 declarations. */
-#include <features.h>
 #ifdef __cplusplus
 extern "C" {
 #endif

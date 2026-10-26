@@ -1,6 +1,13 @@
-#include "../ext4.h"
-#include "internal.h"
-#include "os/abi.h"
+#include "service/common/runtime.h"
+#include "service/common/kernel-requests.h"
+#include "service/common/requests.h"
+#include "service/fs/ext4/filesystem.h"
+#include "service/fs/ext4/internal.h"
+#include <os/ipc.h>
+#include <os/task.h>
+#include <os/mm.h>
+#include <os/device.h>
+#include <os/service.h>
 
 namespace fs::ext4 {
 
@@ -223,12 +230,12 @@ bool Filesystem::remove(const char* path) {
     }
     if (preserveUnlinked(number)) {
         DiskEncoding::write16(inode + 26, 0);
-        DiskEncoding::write32(inode + 12, static_cast<uint32_t>(os::Clock::getWallClockTime() / 1000000000ULL));
+        DiskEncoding::write32(inode + 12, static_cast<uint32_t>(os::Sys().readWallClockTime() / 1000000000ULL));
         return writeInode(number, inode) && sync();
     }
     if (!clearInodeBlocks(inode)) return false;
     os::Runtime::clearMemory(inode, inodeSize_);
-    DiskEncoding::write32(inode + 20, static_cast<uint32_t>(os::Clock::getWallClockTime() / 1000000000ULL));
+    DiskEncoding::write32(inode + 20, static_cast<uint32_t>(os::Sys().readWallClockTime() / 1000000000ULL));
     if (!writeInode(number, inode)) return false;
     freeInode(number, directory);
     return sync();
@@ -240,7 +247,7 @@ bool Filesystem::reclaimUnlinked(uint32_t number) {
     const auto type = DiskEncoding::read16(inode) & 0xf000U;
     if ((type != modeRegular && type != modeDirectory) || !clearInodeBlocks(inode)) return false;
     os::Runtime::clearMemory(inode, inodeSize_);
-    DiskEncoding::write32(inode + 20, static_cast<uint32_t>(os::Clock::getWallClockTime() / 1000000000ULL));
+    DiskEncoding::write32(inode + 20, static_cast<uint32_t>(os::Sys().readWallClockTime() / 1000000000ULL));
     if (!writeInode(number, inode)) return false;
     freeInode(number, type == modeDirectory);
     return sync();
@@ -259,7 +266,7 @@ bool Filesystem::changeTimes(const char* path, uint32_t accessTime, uint32_t mod
     if (readOnly() || !resolve(path, number, inodeBuffer_)) return false;
     DiskEncoding::write32(inodeBuffer_ + 8, accessTime);
     DiskEncoding::write32(inodeBuffer_ + 16, modificationTime);
-    DiskEncoding::write32(inodeBuffer_ + 12, static_cast<uint32_t>(os::Clock::getWallClockTime() / 1000000000ULL));
+    DiskEncoding::write32(inodeBuffer_ + 12, static_cast<uint32_t>(os::Sys().readWallClockTime() / 1000000000ULL));
     return writeInode(number, inodeBuffer_) && sync();
 }
 

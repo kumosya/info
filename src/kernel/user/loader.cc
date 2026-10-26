@@ -1,9 +1,11 @@
+#include "service/common/identity.h"
+#include "service/common/kernel-requests.h"
 #include "kernel/boot.h"
+#include "service/common/entry.h"
 #include "kernel/ipc.h"
 #include "kernel/page.h"
 #include "kernel/serial.h"
 #include "kernel/task.h"
-#include "kernel/thread.h"
 
 namespace {
 
@@ -87,12 +89,21 @@ uint32_t stringLength(const char* value) {
 }  // namespace
 
 namespace kernel {
+bool UserProgramLoader::serviceCapabilities(os::ServiceRole role, uint64_t& capabilities) {
+    for (const ProgramImage& image : PROGRAM_IMAGES) {
+        if (image.role == role && !image.builtin) {
+            capabilities = image.capabilities;
+            return true;
+        }
+    }
+    return false;
+}
 
 ElfLoadError UserProgramLoader::buildStack(
     uint64_t root, const char* programName, uint32_t argumentCount,
     const char* const* arguments, uint32_t environmentCount,
     const char* const* environment, uint64_t runtimeStateAddress,
-    uint64_t& stackPointer, const ElfLoadResult* image) {
+    uint64_t& stackPointer, const ElfLoadResult* image, Task* owner) {
     const uint64_t stackBottom = USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE;
     for (uint64_t address = stackBottom; address < USER_STACK_TOP;
          address += PAGE_SIZE) {
@@ -157,7 +168,9 @@ ElfLoadError UserProgramLoader::buildStack(
     if (!memory::copyToAddressSpace(root, cursor, programName, executableNameLength + 1))
         return ElfLoadError::MappingFailed;
     cursor                          = alignDown(cursor, 16);
-    constexpr uint32_t auxiliaryWords = 20;
+    constexpr uint32_t auxiliaryWords = 24;
+    const uint64_t kernelHandle = owner ? CoreServices::bootstrap(*owner) : 0;
+    if (owner && !kernelHandle) return ElfLoadError::OutOfMemory;
     const uint64_t startupWordCount = argumentCount + environmentCount + 3 + auxiliaryWords;
     cursor = alignDown(cursor - startupWordCount * sizeof(uint64_t), 16);
     uint64_t
@@ -177,7 +190,8 @@ ElfLoadError UserProgramLoader::buildStack(
         9, image ? image->applicationEntry : 0,
         31, executableNameAddress,
         0x60000001, runtimeStateAddress,
-        0x60000002, image ? image->applicationBias : 0, 0, 0};
+        0x60000002, image ? image->applicationBias : 0,
+        OS_AUX_KERNEL_HANDLE, kernelHandle, OS_AUX_REGISTRY_HANDLE, owner ? owner->bootstrapHandle() : 0, 0, 0};
     for (uint32_t index = 0; index < auxiliaryWords; ++index)
         startupWords[environmentStart + environmentCount + 1 + index] = auxiliary[index];
     if (cursor < stackBottom ||
@@ -244,7 +258,7 @@ TaskReference UserProgramLoader::load(os::ProgramId program, Task* parent,
     if (error == ElfLoadError::None) {
         error = UserProgramLoader::buildStack(
             task->addressSpace().rootPhysicalAddress(), image.name,
-            argumentCount, arguments, 0, nullptr, 0, stackPointer, &result);
+            argumentCount, arguments, 0, nullptr, 0, stackPointer, &result, task);
     }
     if (error != ElfLoadError::None ||
         Thread::createUser(task, result.entryPoint, stackPointer, 0,
@@ -352,7 +366,7 @@ TaskReference UserProgramLoader::loadImage(
     if (error == ElfLoadError::None) {
         error = UserProgramLoader::buildStack(
             task->addressSpace().rootPhysicalAddress(), name, argumentCount,
-            arguments, 0, nullptr, 0, stackPointer, &result);
+            arguments, 0, nullptr, 0, stackPointer, &result, task);
     }
     if (error != ElfLoadError::None ||
         Thread::createUser(task, result.entryPoint, stackPointer) == nullptr) {

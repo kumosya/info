@@ -1,0 +1,7 @@
+#pragma once
+#include <locale.h>
+namespace std {
+using ::lconv;
+using ::localeconv;
+using ::setlocale;
+}

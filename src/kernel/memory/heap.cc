@@ -11,7 +11,7 @@ memory::PerCpuObjectCache caches[7];
 struct alignas(16) Header { uint64_t magic; uint32_t order; uint16_t bucket; uint16_t reserved; };
 }
 void init() {
-    for (uint32_t i = 0; i < 7; ++i) caches[i].initialize(sizes[i]);
+    for (uint32_t i = 0; i < 7; ++i) caches[i].init(sizes[i]);
     serial::serialWrite("[MEMORY] slab, per-CPU magazines and large-block buddy heap initialized\n");
 }
 void* kernelAllocate(size_t size) {

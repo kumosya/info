@@ -1,3 +1,5 @@
+#include "service/common/identity.h"
+#include "service/common/kernel-requests.h"
 #include "kernel/page.h"
 #include "kernel/mm.h"
 #include "kernel/task.h"
@@ -17,7 +19,13 @@ class Records {
     static bool overlaps(const Mapping& record, uint64_t address, uint64_t size) { return record.address < address + size && address < record.address + record.size; }
 };
 }
-bool PageMappings::initialize() { lock.init(); mappings = nullptr; return pool.initialize(storage, sizeof(storage), sizeof(Mapping)); }
+bool PageMappings::init() { lock.init(); mappings = nullptr; return pool.init(storage, sizeof(storage), sizeof(Mapping)); }
+bool PageMappings::dumpAllowed(Task& target, uint64_t address) {
+    PreemptionSpinLockGuard guard(lock);
+    for (const Mapping* r = mappings; r; r = r->next)
+        if (r->target == &target && r->pagerManaged && address >= r->address && address - r->address < r->size) return true;
+    return false;
+}
 bool PageMappings::map(Task& target, PageObject& object, uint64_t address, uint64_t size, uint64_t offset, uint64_t protection, uint64_t maximumProtection) {
     if (!size || ((address | size | offset) & 4095) || address < 0x10000 || address + size <= address ||
         address + size > 0x0000800000000000ULL || offset > object.size() || size > object.size() - offset || protection > 2 || maximumProtection > 3 || (protection & ~maximumProtection)) return false;

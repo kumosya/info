@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <threads.h>
 
-#include "os_adapter.h"
+#include "internal.h"
 
 typedef struct {
     thrd_start_t start;

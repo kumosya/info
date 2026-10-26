@@ -1,3 +1,4 @@
+#pragma once
 /*
  * Copyright (c) 2026, Kumosya
  * SPDX-License-Identifier: BSD-2-Clause

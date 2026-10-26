@@ -23,6 +23,7 @@
 #define _SC_CLK_TCK 5
 #define _SC_NPROCESSORS_CONF 6
 #define _SC_NPROCESSORS_ONLN 7
+#define _SC_NGROUPS_MAX 8
 
 #define _PC_LINK_MAX 1
 #define _PC_MAX_CANON 2

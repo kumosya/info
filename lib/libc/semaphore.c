@@ -6,7 +6,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include "os_adapter.h"
+#include "internal.h"
 
 #define NAMED_SEMAPHORE_CAPACITY 16
 #define NAMED_SEMAPHORE_PAGE_SIZE 4096

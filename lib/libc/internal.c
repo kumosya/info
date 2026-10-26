@@ -1,6 +1,7 @@
 #include "internal.h"
 
 #include <errno.h>
+#include "lock.h"
 
 static OpenDescription openDescriptions[LIBC_DESCRIPTOR_CAPACITY];
 FileDescriptor libcDescriptors[LIBC_DESCRIPTOR_CAPACITY];
@@ -10,14 +11,10 @@ static volatile uint32_t fileIoLock;
 static volatile uint32_t descriptorLock;
 
 static void lockWord(volatile uint32_t* lock) {
-    uint32_t expected = 0;
-    if (__atomic_compare_exchange_n(lock, &expected, 1, 0,
-                                    __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return;
-    while (__atomic_exchange_n(lock, 2, __ATOMIC_ACQUIRE) != 0)
-        __libc_os_wait_address(lock, 2);
+    libcWaitLock(lock);
 }
 static void unlockWord(volatile uint32_t* lock) {
-    if (__atomic_exchange_n(lock, 0, __ATOMIC_RELEASE) == 2) __libc_os_wake_address(lock, 1);
+    libcWaitUnlock(lock);
 }
 static char currentDirectory[LIBC_PATH_CAPACITY];
 static uint8_t standardClosed[3];
@@ -167,14 +164,17 @@ int libcReleaseDescriptor(int fileDescriptor) {
     slot = libcDescriptorSlot(fileDescriptor);
     if (slot == NULL) { unlockWord(&descriptorLock); return 0; }
     description = slot->description;
+    if (description->referenceCount == 1 && description->fileObject) {
+        result = __libc_file_close(description->fileObject);
+        if (!result) { unlockWord(&descriptorLock); return 0; }
+        description->fileObject = NULL;
+    }
     slot->description = NULL;
     slot->closeOnExec = 0;
-    if (fileDescriptor >= 0 && fileDescriptor < 3) {
-        standardClosed[fileDescriptor] = 1;
-    }
+    if (fileDescriptor >= 0 && fileDescriptor < 3) standardClosed[fileDescriptor] = 1;
     --description->referenceCount;
     if (description->referenceCount != 0) { unlockWord(&descriptorLock); return 1; }
-    result = description->fileObject ? __libc_file_close(description->fileObject) : 1;
+    result = 1;
     description->fileObject = NULL;
     description->handle = 0;
     description->offset = 0;
@@ -219,6 +219,9 @@ int libcDuplicateDescriptor(int fileDescriptor, int minimum, int closeOnExec) {
 void libcLockFileIo(void) {
     lockWord(&fileIoLock);
 }
+void __libc_descriptors_fork_prepare(void) { lockWord(&fileIoLock); lockWord(&descriptorLock); }
+void __libc_descriptors_fork_parent(void) { unlockWord(&descriptorLock); unlockWord(&fileIoLock); }
+void __libc_descriptors_fork_child(void) { descriptorLock = 0; fileIoLock = 0; }
 
 void libcUnlockFileIo(void) {
     unlockWord(&fileIoLock);

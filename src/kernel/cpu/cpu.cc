@@ -279,6 +279,17 @@ void sendEndOfInterrupt() {
         __atomic_load_n(&localApic, __ATOMIC_ACQUIRE);
     registers[0xb0 / 4] = 0;
 }
+void stopOtherCpus() {
+    auto* registers = __atomic_load_n(&localApic, __ATOMIC_ACQUIRE);
+    if (!registers) return;
+    for (uint32_t attempt = 0; attempt < 1000000; ++attempt) {
+        if (!(registers[0x300 / 4] & (1U << 12))) {
+            registers[0x300 / 4] = (3U << 18) | (4U << 8);
+            return;
+        }
+        asm volatile("pause");
+    }
+}
 
 void sendInterTaskorInterrupt(uint32_t apicId, uint8_t vector) {
     writeIcr(apicId, vector);

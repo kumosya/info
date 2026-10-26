@@ -13,6 +13,7 @@ syscallEntry:
     swapgs
     movq %rsp, %gs:cpuSyscallUserStackOffset
     movq %gs:cpuKernelStackOffset, %rsp
+    subq $16, %rsp
 
     pushq %gs:cpuSyscallUserStackOffset
     pushq %r11
@@ -38,6 +39,16 @@ syscallEntry:
     call syscallDispatchEntry
     cli
 
+.global userContextReturn
+userContextReturn:
+    # Convert the native three-word tail to an IRET frame before restoring GPRs.
+    # SYSRET cannot restore RCX/R11 or all signal-return flag combinations.
+    movq 128(%rsp), %rax
+    movq 136(%rsp), %rcx
+    movq $0x23, 128(%rsp)
+    movq %rax, 136(%rsp)
+    movq %rcx, 144(%rsp)
+    movq $0x1b, 152(%rsp)
     popq %r15
     popq %r14
     popq %r13
@@ -53,11 +64,8 @@ syscallEntry:
     popq %rcx
     popq %rbx
     popq %rax
-    popq %rcx
-    popq %r11
-    movq (%rsp), %rsp
     swapgs
-    sysretq
+    iretq
 .size syscallEntry, . - syscallEntry
 
 .section .note.GNU-stack,"",@progbits

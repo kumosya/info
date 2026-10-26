@@ -7,34 +7,60 @@ namespace os {
 
 class SpinLock {
    public:
-    void lock() {
-        while (__atomic_test_and_set(&locked_, __ATOMIC_ACQUIRE)) {
-            asm volatile("pause");
-        }
-    }
+    class Guard {
+       public:
+        explicit Guard(SpinLock& lock);
+        ~Guard();
 
-    bool tryLock() {
-        return !__atomic_test_and_set(&locked_, __ATOMIC_ACQUIRE);
-    }
+        Guard(const Guard&)            = delete;
+        Guard& operator=(const Guard&) = delete;
 
-    void unlock() { __atomic_clear(&locked_, __ATOMIC_RELEASE); }
+       private:
+        SpinLock& lock_;
+    };
+
+    void lock();
+
+    bool tryLock();
+
+    void unlock();
 
    private:
     uint8_t locked_ = 0;
 };
 
-class SpinLockGuard {
+class Mutex {
    public:
-    explicit SpinLockGuard(SpinLock& lock) : lock_(lock) { lock_.lock(); }
-    ~SpinLockGuard() { lock_.unlock(); }
+    class Guard {
+       public:
+        explicit Guard(Mutex& mutex);
+        ~Guard();
+        Guard(const Guard&)            = delete;
+        Guard& operator=(const Guard&) = delete;
 
-    SpinLockGuard(const SpinLockGuard&) = delete;
-    SpinLockGuard& operator=(const SpinLockGuard&) = delete;
+       private:
+        Mutex& mutex_;
+    };
+    Mutex();
+    Mutex(const Mutex&)            = delete;
+    Mutex& operator=(const Mutex&) = delete;
+    void lock();
+    bool tryLock();
+    void unlock();
 
    private:
-    SpinLock& lock_;
+    uint32_t locked_{};
 };
+class AddressWait {
+   public:
+    explicit AddressWait(volatile uint32_t& address);
+    int wait(uint32_t expected);
+    int wakeOne();
+    int wakeAll();
 
+   private:
+    volatile uint32_t& address_;
+};
 }  // namespace os
 
 #endif

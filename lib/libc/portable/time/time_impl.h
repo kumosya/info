@@ -1,3 +1,4 @@
+#pragma once
 #include <time.h>
 
 hidden int __days_in_month(int, int);

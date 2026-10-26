@@ -8,7 +8,7 @@ osinfo 运行在 x86-64 架构，采用混合内核架构：
 
 - 内核直接提供：内存管理、线程/进程管理、调度、中断、系统调用、Endpoint 传输与共享内存机制、信号、时间与设备访问控制。
 - 所有服务进程运行于 Ring3，包括文件系统、终端、窗口、设备、存储、MM、pipe 和 msgq；Ring0 保留 task.kernel、pci.kernel、device.kernel、memory.kernel 等底层机制对象，通过现有 IPC 访问。
-- 用户态程序通过 19 个系统调用（`SYSCALL`/`SYSRET`，编号从 1 起）进入内核。
+- 用户态程序通过六个基础系统调用进入内核，使用`SYSCALL`进入、`IRET`返回；其余机制通过内核服务端点调用。
 
 ## 2. 源码目录与文档对应
 
@@ -16,13 +16,13 @@ osinfo 运行在 x86-64 架构，采用混合内核架构：
 | -------------------------- | ------------------------------- | ---------------------------- |
 | `src/kernel/boot/`         | Multiboot2 引导、长模式进入             | [boot.md](boot.md)           |
 | `src/kernel/cpu/`          | CPU 初始化、GDT/TSS、Local APIC、ACPI | [cpu.md](cpu/cpu.md)             |
-| `src/kernel/cpu/smp/`      | 多核发现与 AP 启动                     | [smp.md](cpu/smp.md)             |
+| `src/kernel/cpu/smp/`      | 多核与 AP 启动                     | [smp.md](cpu/smp.md)             |
 | `src/kernel/cpu/interrupt/` | IDT、异常、I/O APIC                 | [cpu.md](cpu/cpu.md) §7          |
 | `src/kernel/memory/`       | 物理页、页表、内核堆、缺页、共享内存          | [memory.md](memory/memory.md) |
 | `src/kernel/task/`         | 线程、进程、调度器、信号                    | [task.md](task/task.md)       |
 | `src/kernel/task/ipc/`     | 端点、管道、双向通道、消息队列                  | [ipc.md](task/ipc.md)         |
 | `src/kernel/task/sync/`    | 同步原语、用户态等待（futex）               | [sync.md](task/sync.md)       |
-| `src/kernel/task/syscall/` | 系统调用入口与19 个基础调用               | [syscall.md](task/syscall.md) |
+| `src/kernel/task/syscall/` | 四个IPC入口及等待、唤醒地址               | [syscall.md](task/syscall.md) |
 | `src/kernel/device/`       | 串口、时间、PCI、端口、显存、中断绑定          | [time.md](device/time.md)、[device.md](device/device.md) |
 | `src/kernel/user/`         | ELF 加载、动态链接、用户态启动、POSIX 桩    | [user.md](user.md)           |
 

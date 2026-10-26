@@ -1,3 +1,4 @@
 # name|executable|argv0
 terminal|/usr/bin/terminal|terminal
 login|/bin/login|login
+graphical|/usr/bin/guiw-session|guiw-session

@@ -1,7 +1,7 @@
 #include "host.h"
 namespace host {
 void generate(const Context& context) {
-    auto services = table("config/services.conf");
+    auto services = table(context.build / "config/services.conf");
     std::set<std::string> names;
     std::map<std::string, Row> users;
     std::set<int> ids, orders;
@@ -12,7 +12,19 @@ void generate(const Context& context) {
                                           "taskCapabilityDevice",
                                           "taskCapabilityDisplay",
                                           "taskCapabilityUsers",
-                                          "taskCapabilityMemory"};
+                                          "taskCapabilityMemory",
+                                          "taskCapabilityReadIdentity"};
+    const auto capabilityExpression = [&](const std::string& value) {
+        std::string result;
+        for (const auto& token : split(value, '+')) {
+            if (!capabilities.count(token))
+                throw std::runtime_error("invalid service capability: " + token);
+            if (!result.empty()) result += " | ";
+            result += token == "0" ? "0" : "kernel::" + token;
+        }
+        if (result.empty()) throw std::runtime_error("empty service capabilities");
+        return result;
+    };
     for (const auto& service : services) {
         if (service.size() != 17 || !names.insert(service[0]).second)
             throw std::runtime_error("invalid or duplicate service");
@@ -33,7 +45,6 @@ void generate(const Context& context) {
             throw std::runtime_error("invalid service loading source or owner");
         if (!std::regex_match(service[3], symbol) ||
             !std::regex_match(service[5], symbol) ||
-            !capabilities.count(service[7]) ||
             !ids.insert(std::stoi(service[4])).second ||
             !orders.insert(std::stoi(service[11])).second)
             throw std::runtime_error("invalid fixed service identity");
@@ -57,7 +68,7 @@ void generate(const Context& context) {
         return std::stoi(a[4]) < std::stoi(b[4]);
     });
     std::ostringstream make, images, assertions, startup, grub, modules;
-    make << "# Generated; edit config/*.conf\nSERVICE_NAMES :=";
+    make << "# Generated; edit script/config/*.json\nSERVICE_NAMES :=";
     for (const auto& service : boot)
         if (service[8] != "external") make << ' ' << service[0];
     make << "\nDISK_SERVICE_NAMES :=";
@@ -76,7 +87,7 @@ void generate(const Context& context) {
             << service[5] << ") == " << service[6] << ");\n";
         images << "    {" << quote(service[0]) << ", " << quote(service[12])
                << ", 0, 0, "
-               << (service[7] == "0" ? "0" : "kernel::" + service[7])
+               << capabilityExpression(service[7])
                << ", os::ServiceRole::" << service[5] << ", " << (service[15] == "boot" ? "true" : "false") << "},\n";
         if (service[8] != "external")
             make << "SERVICE_DIR_" << service[0] << " := " << service[2]
@@ -102,7 +113,7 @@ void generate(const Context& context) {
     }
     images << "};\n";
     images << "static constexpr const char* configuredRuntimeLibraries[] = {\n";
-    for (const auto& row : table("config/layout.conf"))
+    for (const auto& row : table(context.build / "config/layout.conf"))
         if ((row[0] == "runtime" || row[0] == "external-runtime")) images << "    " << quote(row.at(2)) << ",\n";
     images << "};\nstatic constexpr uint32_t configuredRuntimeCount = sizeof(configuredRuntimeLibraries) / sizeof(configuredRuntimeLibraries[0]);\n";
     std::sort(boot.begin(), boot.end(), [](const Row& a, const Row& b) {
@@ -117,7 +128,7 @@ void generate(const Context& context) {
                     << quote(service[9]) << ", " << quote(service[0]) << ", "
                     << quote(service[16]) << "},\n";
     startup << "};\n";
-    for (const auto& row : table("config/layout.conf"))
+    for (const auto& row : table(context.build / "config/layout.conf"))
         if ((row[0] == "runtime" || row[0] == "external-runtime")) {
             grub << "    module2 /boot/" << row.at(2) << ' ' << row[2] << '\n';
         }

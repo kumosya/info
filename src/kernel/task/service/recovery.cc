@@ -1,12 +1,12 @@
-#include "kernel/recovery.h"
+#include "service/common/identity.h"
+#include "service/common/kernel-requests.h"
 #include "kernel/task.h"
 #include "kernel/page.h"
 #include "kernel/mm.h"
 #include "kernel/new.h"
-#include "kernel/service_message.h"
+#include "kernel/ipc.h"
 #include "kernel/time.h"
 #include "kernel/serial.h"
-#include "os/core_service.h"
 
 namespace kernel {
 namespace {
@@ -31,10 +31,10 @@ struct Domain {
 Domain domains[roles];
 SpinLock lock;
 void watchdog(void*) {
-    for (;;) {
+    while (true) {
         Thread::sleepCurrent(250);
         uint64_t cursor = 1;
-        for (;;) {
+        while (true) {
             auto target = task::next(cursor); if (!target) break;
             cursor = target->id() + 1;
             if (!target->claimMemoryFreezeExpiry(time::getMonotonicTime())) continue;
@@ -54,7 +54,7 @@ memory::PageObject* allocate(uint64_t bytes, uint32_t role) {
 }
 }
 
-void ServiceRecovery::initialize() {
+void ServiceRecovery::init() {
     if (!Thread::create(nullptr, watchdog, nullptr)) { serial::serialWrite("[RECOVERY] cannot create watchdog\n"); cpu::halt(); }
 }
 

@@ -1,6 +1,10 @@
-#include "../ext4.h"
-#include "internal.h"
-#include "os/abi.h"
+#include "service/fs/ext4/filesystem.h"
+#include "service/fs/ext4/internal.h"
+#include <os/ipc.h>
+#include <os/task.h>
+#include <os/mm.h>
+#include <os/device.h>
+#include <os/service.h>
 
 namespace fs::ext4 {
 

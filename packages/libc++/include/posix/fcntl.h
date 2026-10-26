@@ -17,6 +17,7 @@
 #define O_CLOEXEC 0x80000
 #define O_SYNC 0x101000
 #define O_DIRECTORY 0x10000
+#define O_NOFOLLOW 0x20000
 
 #define AT_FDCWD (-100)
 #define AT_SYMLINK_NOFOLLOW 0x100

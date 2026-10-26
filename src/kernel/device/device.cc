@@ -1,3 +1,4 @@
+#include "service/common/records.h"
 #include "kernel/device.h"
 
 #include "kernel/boot.h"
@@ -64,7 +65,8 @@ void init(const BootInfo* bootInfo) {
 }
 
 bool DisplayAccess::mapFramebuffer(Task& task, uint64_t userAddress,
-                                   os::DisplayInfo& info) {
+                                   os::wire::DisplayInfo& info,uint64_t* generation) {
+    if(!userAddress) userAddress=reserveAddress(64*1024*1024ULL);
     if (!task.hasCapability(taskCapabilityDisplay) ||
         bootFramebuffer.address == 0 || bootFramebuffer.width == 0 ||
         bootFramebuffer.height == 0 || bootFramebuffer.pitch == 0 ||
@@ -108,6 +110,15 @@ bool DisplayAccess::mapFramebuffer(Task& task, uint64_t userAddress,
             return false;
         }
     }
+    if(generation)*generation=task.addressSpace().generation();
+    return describe(userAddress,info);
+}
+
+bool DisplayAccess::describe(uint64_t userAddress,os::wire::DisplayInfo& info) {
+    if(!bootFramebuffer.address || !bootFramebuffer.pitch || !bootFramebuffer.height)return false;
+    const uint64_t offset=bootFramebuffer.address & 4095;
+    const uint64_t visibleSize=static_cast<uint64_t>(bootFramebuffer.pitch)*bootFramebuffer.height;
+    const uint64_t mappedSize=alignUp(offset+visibleSize);
     info.address       = userAddress + offset;
     info.size          = mappedSize;
     info.width         = bootFramebuffer.width;
@@ -121,21 +132,22 @@ bool DisplayAccess::mapFramebuffer(Task& task, uint64_t userAddress,
         bootFramebuffer.redPosition == 16 &&
         bootFramebuffer.greenPosition == 8 &&
         bootFramebuffer.bluePosition == 0) {
-        info.format = os::PixelFormat::Bgra;
+        info.format = os::wire::PixelFormat::Bgra;
     } else if (bootFramebuffer.bitsPerPixel == 32 &&
                bootFramebuffer.redPosition == 0 &&
                bootFramebuffer.greenPosition == 8 &&
                bootFramebuffer.bluePosition == 16) {
-        info.format = os::PixelFormat::Rgba;
+        info.format = os::wire::PixelFormat::Rgba;
     } else {
-        info.format = os::PixelFormat::Unknown;
+        info.format = os::wire::PixelFormat::Unknown;
     }
     return true;
 }
 
-MmioRegion* MmioRegion::map(Task& task, const os::PciFunctionInfo& function,
+MmioRegion* MmioRegion::map(Task& task, const os::wire::PciFunctionInfo& function,
                             uint8_t barIndex, uint64_t userAddress,
-                            uint64_t size) {
+                            uint64_t size,uint64_t offset) {
+    if(!userAddress)userAddress=DisplayAccess::reserveAddress(size);
     if (barIndex >= 6 || (userAddress & (pageSize - 1)) != 0 || userAddress < 0x10000 ||
         size == 0 || userAddress + size < userAddress ||
         userAddress + size >= 0x0000800000000000ULL ||
@@ -146,20 +158,20 @@ MmioRegion* MmioRegion::map(Task& task, const os::PciFunctionInfo& function,
     if (!domain) return nullptr;
     auto create = [&]() -> MmioRegion* {
     const uint64_t barBase = domain->barBases_[barIndex], barSize = domain->barSizes_[barIndex];
-    if (!barBase || size > barSize || (barBase & (pageSize - 1))) return nullptr;
+    if (!barBase || offset>barSize || size>barSize-offset || (offset&4095) || (barBase & (pageSize - 1))) return nullptr;
     PreemptionSpinLockGuard guard(task.addressSpace().lock());
     if (!task.addressSpace().rootPhysicalAddress()) return nullptr;
-    for (uint64_t offset = 0; offset < size; offset += pageSize) {
+    for (uint64_t pageOffset = 0; pageOffset < size; pageOffset += pageSize) {
         if (!memory::mapPageInAddressSpace(
-                task.addressSpace().rootPhysicalAddress(), userAddress + offset,
-                barBase + offset,
+                task.addressSpace().rootPhysicalAddress(), userAddress + pageOffset,
+                barBase + offset + pageOffset,
                 pageUser | pageWritable | pageNoExecute | pageCacheDisable |
                     pageExternal)) {
-            while (offset != 0) {
-                offset -= pageSize;
+            while (pageOffset != 0) {
+                pageOffset -= pageSize;
                 memory::unmapPageInAddressSpace(
                     task.addressSpace().rootPhysicalAddress(),
-                    userAddress + offset);
+                    userAddress + pageOffset);
             }
             return nullptr;
         }
@@ -168,17 +180,17 @@ MmioRegion* MmioRegion::map(Task& task, const os::PciFunctionInfo& function,
     MmioRegion* region =
         storage == nullptr ? nullptr : new (storage) MmioRegion;
     if (region == nullptr) {
-        for (uint64_t offset = 0; offset < size; offset += pageSize)
-            memory::unmapPageInAddressSpace(task.addressSpace().rootPhysicalAddress(), userAddress + offset);
+        for (uint64_t pageOffset = 0; pageOffset < size; pageOffset += pageSize)
+            memory::unmapPageInAddressSpace(task.addressSpace().rootPhysicalAddress(), userAddress + pageOffset);
         return nullptr;
     }
-    region->physicalAddress_ = barBase;
+    region->physicalAddress_ = barBase + offset;
     region->virtualAddress_  = userAddress;
     region->size_            = size;
     region->mapped_          = true;
     if (!domain->attach(*region)) {
-        for (uint64_t offset = 0; offset < size; offset += pageSize)
-            memory::unmapPageInAddressSpace(task.addressSpace().rootPhysicalAddress(), userAddress + offset);
+        for (uint64_t pageOffset = 0; pageOffset < size; pageOffset += pageSize)
+            memory::unmapPageInAddressSpace(task.addressSpace().rootPhysicalAddress(), userAddress + pageOffset);
         heap::kernelFree(region); return nullptr;
     }
     return region;
@@ -189,44 +201,25 @@ MmioRegion* MmioRegion::map(Task& task, const os::PciFunctionInfo& function,
 }
 
 DmaBuffer* DmaBuffer::create(Task& task, ResourceDomain& domain, uint64_t userAddress,
-                             os::DmaBufferInfo& info) {
-    if (!domain.active(task) || (userAddress & (pageSize - 1)) != 0 || userAddress < 0x10000 ||
-        userAddress + pageSize < userAddress ||
-        userAddress + pageSize >= 0x0000800000000000ULL) {
-        return nullptr;
-    }
+                             os::wire::DmaBufferInfo& info,uint64_t size,uint64_t alignment) {
+    if(!size || size>8*1024*1024ULL || !alignment || (alignment&(alignment-1)) || alignment>8*1024*1024ULL || !domain.active(task))return nullptr;
+    uint32_t order=0;
+    while((4096ULL<<order)<size || (4096ULL<<order)<alignment)++order;
+    const uint64_t bytes=4096ULL<<order;
+    if(!userAddress)userAddress=DisplayAccess::reserveAddress(bytes);
+    if((userAddress&4095) || userAddress<0x10000 || userAddress>0x800000000000ULL-bytes)return nullptr;
     PreemptionSpinLockGuard guard(task.addressSpace().lock());
-    if (!task.addressSpace().rootPhysicalAddress()) return nullptr;
-    const uint64_t physical = memory::allocatePhysicalPage();
-    if (physical == 0 ||
-        !memory::mapPageInAddressSpace(
-            task.addressSpace().rootPhysicalAddress(), userAddress, physical,
-            pageUser | pageWritable | pageNoExecute | pageExternal)) {
-        if (physical != 0) {
-            memory::freePhysicalPage(physical);
-        }
-        return nullptr;
-    }
-    void* storage     = heap::kernelAllocate(sizeof(DmaBuffer));
-    DmaBuffer* buffer = storage == nullptr ? nullptr : new (storage) DmaBuffer;
-    if (buffer == nullptr) {
-        memory::unmapPageInAddressSpace(task.addressSpace().rootPhysicalAddress(), userAddress);
-        memory::freePhysicalPage(physical);
-        return nullptr;
-    }
-    buffer->physicalAddress_ = physical;
-    buffer->virtualAddress_  = userAddress;
-    buffer->size_            = pageSize;
-    buffer->mapped_          = true;
-    memory::KernelMapping::clear(physical, pageSize);
-    if (!domain.attach(*buffer)) {
-        memory::unmapPageInAddressSpace(task.addressSpace().rootPhysicalAddress(), userAddress);
-        memory::freePhysicalPage(physical); heap::kernelFree(buffer); return nullptr;
-    }
-    info.virtualAddress      = userAddress;
-    info.deviceAddress       = physical;
-    info.size                = pageSize;
-    return buffer;
+    const uint64_t root=task.addressSpace().rootPhysicalAddress();if(!root)return nullptr;
+    const uint64_t physical=memory::allocatePhysicalBlock(order,task.id());if(!physical)return nullptr;
+    uint64_t mapped=0;
+    for(;mapped<bytes;mapped+=4096)if(!memory::mapPageInAddressSpace(root,userAddress+mapped,physical+mapped,pageUser|pageWritable|pageNoExecute|pageExternal))break;
+    if(mapped!=bytes){while(mapped){mapped-=4096;memory::unmapPageInAddressSpace(root,userAddress+mapped);}memory::releasePhysicalBlock(physical,order,task.id());return nullptr;}
+    void* storage=heap::kernelAllocate(sizeof(DmaBuffer));auto* buffer=storage?new(storage)DmaBuffer:nullptr;
+    if(!buffer){for(uint64_t i=0;i<bytes;i+=4096)memory::unmapPageInAddressSpace(root,userAddress+i);memory::releasePhysicalBlock(physical,order,task.id());return nullptr;}
+    buffer->physicalAddress_=physical;buffer->virtualAddress_=userAddress;buffer->size_=bytes;buffer->mapped_=true;
+    memory::KernelMapping::clear(physical,bytes);
+    if(!domain.attach(*buffer)){for(uint64_t i=0;i<bytes;i+=4096)memory::unmapPageInAddressSpace(root,userAddress+i);memory::releasePhysicalBlock(physical,order,task.id());heap::kernelFree(buffer);return nullptr;}
+    info.virtualAddress=userAddress;info.deviceAddress=physical;info.size=bytes;return buffer;
 }
 
 InterruptBinding* InterruptBinding::create(Task& task, uint8_t irq,
@@ -285,3 +278,42 @@ void InterruptBinding::destroy() {
 }
 
 }  // namespace kernel::device
+
+namespace kernel::device {
+uint64_t DisplayAccess::reserveAddress(uint64_t size) {
+    static uint64_t next=0x0000020000000000ULL;
+    if(!size || size>UINT64_MAX-8191)return 0;
+    const uint64_t bytes=((size+4095)&~4095ULL)+4096;
+    uint64_t start=__atomic_load_n(&next,__ATOMIC_RELAXED);
+    for(;;){if(start>0x0000700000000000ULL-bytes)return 0;const uint64_t end=start+bytes;
+        if(__atomic_compare_exchange_n(&next,&start,end,false,__ATOMIC_RELAXED,__ATOMIC_RELAXED))return start;}
+}
+uint64_t MmioRegion::address() const {return virtualAddress_;}
+uint64_t MmioRegion::size() const {return size_;}
+FrameMapping* FrameMapping::create(Task& task,uint64_t address,os::wire::DisplayInfo& info) {
+    void* storage=heap::kernelAllocate(sizeof(FrameMapping));if(!storage)return nullptr;
+    auto* mapping=new(storage)FrameMapping;
+    if(!address)address=DisplayAccess::reserveAddress(64*1024*1024ULL);
+    if(!DisplayAccess::mapFramebuffer(task,address,info,&mapping->generation_)){heap::kernelFree(mapping);return nullptr;}
+    mapping->owner_=&task;mapping->address_=address;mapping->size_=info.size;task.retain();return mapping;
+}
+bool FrameMapping::query(Task& task,os::wire::DisplayInfo& info) {
+    if(owner_!=&task)return false;
+    PreemptionSpinLockGuard guard(task.addressSpace().lock());
+    if(task.addressSpace().generation()!=generation_ || !task.addressSpace().rootPhysicalAddress())return false;
+    for(uint64_t offset=0;offset<size_;offset+=4096)
+        if(memory::getPhysicalAddressInAddressSpace(task.addressSpace().rootPhysicalAddress(),address_+offset)!=(bootFramebuffer.address&~4095ULL)+offset)return false;
+    return DisplayAccess::describe(address_,info);
+}
+void FrameMapping::destroy() {
+    Task* owner=owner_;
+    {
+        PreemptionSpinLockGuard guard(owner->addressSpace().lock());
+        if(owner->addressSpace().generation()==generation_ && owner->addressSpace().rootPhysicalAddress())
+            for(uint64_t offset=0;offset<size_;offset+=4096)
+                if(memory::getPhysicalAddressInAddressSpace(owner->addressSpace().rootPhysicalAddress(),address_+offset)==(bootFramebuffer.address&~4095ULL)+offset)
+                    memory::unmapPageInAddressSpace(owner->addressSpace().rootPhysicalAddress(),address_+offset);
+    }
+    heap::kernelFree(this);owner->release();
+}
+}

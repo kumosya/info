@@ -55,6 +55,7 @@ ssize_t read(int fileDescriptor, void* buffer, size_t count) {
         errno = EBADF;
         return -1;
     }
+    if (!__libc_os_accessible(buffer, count, 1)) { errno = EFAULT; return -1; }
     if (value->kind == DESCRIPTOR_FILE) libcLockFileIo();
     result = __libc_file_read(value->fileObject,buffer,count);
     if (result >= 0) value->offset += (uint64_t)result;
@@ -74,6 +75,7 @@ ssize_t write(int fileDescriptor, const void* buffer, size_t count) {
         errno = EBADF;
         return -1;
     }
+    if (!__libc_os_accessible(buffer, count, 0)) { errno = EFAULT; return -1; }
     if (value->kind==DESCRIPTOR_FILE) libcLockFileIo();
     result=__libc_file_write(value->fileObject,buffer,count);
     if (result >= 0) value->offset += (uint64_t)result;
@@ -230,6 +232,7 @@ ssize_t pread(int fd, void* buffer, size_t count, off_t offset) {
     if (!value || value->kind!=DESCRIPTOR_FILE || offset<0 || (!buffer && count)) {
         errno=!value?EBADF:offset<0?EINVAL:!buffer&&count?EFAULT:ESPIPE; return -1;
     }
+    if (!__libc_os_accessible(buffer, count, 1)) { errno = EFAULT; return -1; }
     result=__libc_file_pread(value->fileObject,buffer,count,offset);
     if (result<0) { errno=(int)-result; return -1; }
     return result;
@@ -241,6 +244,7 @@ ssize_t pwrite(int fd, const void* buffer, size_t count, off_t offset) {
     if (!value || value->kind!=DESCRIPTOR_FILE || offset<0 || (!buffer && count)) {
         errno=!value?EBADF:offset<0?EINVAL:!buffer&&count?EFAULT:ESPIPE; return -1;
     }
+    if (!__libc_os_accessible(buffer, count, 0)) { errno = EFAULT; return -1; }
     result=__libc_file_pwrite(value->fileObject,buffer,count,offset);
     if (result<0) { errno=(int)-result; return -1; }
     return result;

@@ -1,3 +1,4 @@
+#pragma once
 #include <search.h>
 #include <features.h>
 

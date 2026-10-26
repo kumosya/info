@@ -24,13 +24,17 @@ feclearexcept:
 .global feraiseexcept
 .type feraiseexcept,@function
 feraiseexcept:
-	sub $8,%rsp
+	sub $40,%rsp
 	and $0x3f,%edi
-	stmxcsr (%rsp)
-	or %edi,(%rsp)
-	ldmxcsr (%rsp)
+	fnstenv (%rsp)
+	or %di,4(%rsp)
+	fldenv (%rsp)
+	fwait
+	stmxcsr 32(%rsp)
+	or %edi,32(%rsp)
+	ldmxcsr 32(%rsp)
 	xor %eax,%eax
-	add $8,%rsp
+	add $40,%rsp
 	ret
 
 .global __fesetround
@@ -68,6 +72,7 @@ fegetenv:
 	xor %eax,%eax
 	fnstenv (%rdi)
 	stmxcsr 28(%rdi)
+	fldenv (%rdi)
 	ret
 
 .global fesetenv

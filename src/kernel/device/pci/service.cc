@@ -1,5 +1,8 @@
-#include "kernel/core_service.h"
-#include "os/pci.h"
+#include "service/common/records.h"
+#include "service/common/identity.h"
+#include "service/common/kernel-requests.h"
+#include "kernel/ipc.h"
+#include <os/device.h>
 
 #include "kernel/device.h"
 #include "kernel/mm.h"
@@ -10,10 +13,7 @@
 #include "kernel/task.h"
 #include "kernel/time.h"
 #include "kernel/new.h"
-#include "kernel/thread.h"
-#include "kernel/signal.h"
 
-#include "kernel/service_message.h"
 namespace kernel {
 namespace {
 class PciService final : public EndpointService {
@@ -21,11 +21,11 @@ class PciService final : public EndpointService {
     int call(Task& caller, const IpcMessage& request, IpcMessage& reply) override {
         if (!caller.hasCapability(taskCapabilityPci) || caller.serviceRole() != os::ServiceRole::Pci || request.length < 4) return -3;
         const auto operation = static_cast<os::PciOperation>(request.type);
-        os::PciFunctionInfo function{};
+        os::wire::PciFunctionInfo function{};
         MessageData::copy(&function, &request.data[1], sizeof(function));
         if (operation == os::PciOperation::Enumerate) {
             if (!request.data[0] || request.data[0] > 64) return -1;
-            const uint32_t count = device::PciAccess::enumerate(reinterpret_cast<os::PciFunctionInfo*>(&reply.data[1]), request.data[0]);
+            const uint32_t count = device::PciAccess::enumerate(reinterpret_cast<os::wire::PciFunctionInfo*>(&reply.data[1]), request.data[0]);
             reply.data[0] = count;
         } else if (operation == os::PciOperation::ReadConfig) {
             uint32_t value = 0;

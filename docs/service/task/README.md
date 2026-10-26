@@ -1,4 +1,4 @@
-# task：程序加载与派生服务监护
+# 任务管理服务
 
 Ring3 实现位于 `src/task/main.cc`，注册名 `task`、`control.task`，角色 Task，能力 Spawn。init 创建它；task 创建并监护 [pipe](pipe/README.md)、[msgq](msgq/README.md)，两个子服务就绪后才注册 task 的业务端点。服务源码使用 flat 遍历，子目录 main 不会被链接进父镜像。
 
@@ -16,7 +16,7 @@ Execute 的 data[0] 低 32 位是参数个数；40/41/42 位标识 stdin/stdout/
 
 ## 加载与资源
 
-文件必须是非空普通文件，最大 8 MiB。读取采用独立完成端点、深度 8 的异步窗口；确认大小后分配缓冲，全部失败路径应关闭文件、输入能力和映像缓冲。解析 ELF 的 PT_INTERP；普通动态程序只预载解释器，DT_NEEDED 由 Ring3 链接器处理。没有解释器的固定角色服务使用引导运行库完成重定位；运行库来源地址空间与主映像的任务地址空间分别记录。
+文件要求是非空普通文件，最大 8 MiB。读取采用独立完成端点、深度 8 的异步窗口；确认大小后分配缓冲，全部失败路径应关闭文件、输入能力和映像缓冲。解析 ELF 的 PT_INTERP；普通动态程序只预载解释器，DT_NEEDED 由 Ring3 链接器处理。没有解释器的固定角色服务使用引导运行库完成重定位；运行库来源地址空间与主映像的任务地址空间分别记录。
 
 SpawnImage 的逻辑父进程来自 request.senderPid。内核在调度前写入参数、会话、TTY、角色和受监护标记。返回句柄通过回复转移后关闭 task 本地副本；创建方或服务 owner 持有自己的句柄并负责回收。
 
@@ -30,5 +30,6 @@ SpawnImage 的逻辑父进程来自 request.senderPid。内核在调度前写入
 
 ## 故障与诊断
 
-加载失败看 `[TASK] executable stat/allocation/SpawnImage` 和 `[ELF]`。先确认 SDK、运行库和包为同一 ABI，再检查解释器及依赖库。task 重建不会恢复原有管道和消息队列字节内容；基础服务暂不开放 systemctl 重启。
+v0.1.3 增加独立 core writer 线程 `src/task/core_dump.cc`，从 `/etc/core` 读取策略，仅通过 task.kernel 票据读取已冻结复制的有界快照，复用 FS 服务写出 ELF core。它不占用程序加载请求端点；转储失败或超时不阻止进程回收。
 
+异常分类、信号 ABI、转储权限及实际验证记录见[用户态异常与 core](../../x86-64/task/exceptions-and-core.md)。

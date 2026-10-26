@@ -1,3 +1,4 @@
+#pragma once
 #include <features.h>
 
 /* shared by acosl, asinl and atan2l */

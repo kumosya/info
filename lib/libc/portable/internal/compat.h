@@ -1,3 +1,4 @@
+#pragma once
 #include <features.h>
 #define hidden __attribute__((visibility("hidden")))
 #define weak __attribute__((weak))

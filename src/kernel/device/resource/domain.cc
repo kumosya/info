@@ -1,8 +1,10 @@
+#include "service/common/records.h"
+#include "service/common/identity.h"
+#include "service/common/kernel-requests.h"
 #include "kernel/device.h"
 #include "kernel/mm.h"
 #include "kernel/page.h"
 #include "kernel/task.h"
-#include "kernel/thread.h"
 #include "kernel/time.h"
 #include "kernel/serial.h"
 
@@ -13,15 +15,13 @@ constexpr uint64_t controlBase = 0xffff807000000000ULL;
 ResourceDomain domains[capacity];
 SpinLock domainLock;
 Thread* worker;
-#ifdef OS_DEVICE_RESOURCE_TEST
-bool blockReset;
-#endif
-bool same(const os::PciFunctionInfo& a, const os::PciFunctionInfo& b) {
+
+bool same(const os::wire::PciFunctionInfo& a, const os::wire::PciFunctionInfo& b) {
     return a.segment == b.segment && a.bus == b.bus && a.device == b.device && a.function == b.function;
 }
 }
 
-void ResourceDomain::initialize() {
+void ResourceDomain::init() {
     worker = Thread::create(nullptr, work, nullptr);
     if (!worker) { serial::serialWrite("[DEVICE] cannot create resource reclaimer\n"); cpu::halt(); }
 }
@@ -42,23 +42,9 @@ ResourceDomain::Statistics ResourceDomain::statistics() {
     }
     return result;
 }
-#ifdef OS_DEVICE_RESOURCE_TEST
-void ResourceDomain::testResetFailure(bool enabled) { __atomic_store_n(&blockReset, enabled, __ATOMIC_RELEASE); }
-bool ResourceDomain::testQuarantinePinned() {
-    InterruptSpinLockGuard guard(domainLock);
-    bool found = false;
-    for (auto& domain : domains) if (domain.state_ == State::Quarantined) {
-        found = true;
-        for (DmaBuffer* buffer = domain.dma_; buffer; buffer = buffer->next_) {
-            memory::PhysicalPageInfo info{};
-            if (!memory::queryPhysicalPage(buffer->physicalAddress_, info) || info.state != memory::FrameState::Allocated || !info.references) return false;
-        }
-    }
-    return found;
-}
-#endif
 
-ResourceDomain* ResourceDomain::claim(Task& owner, const os::PciFunctionInfo& function) {
+
+ResourceDomain* ResourceDomain::claim(Task& owner, const os::wire::PciFunctionInfo& function) {
     if (owner.serviceRole() != os::ServiceRole::Storage || !owner.hasCapability(taskCapabilityDevice)) return nullptr;
     PreemptionSpinLockGuard guard(domainLock);
     ResourceDomain* domain = nullptr;
@@ -112,7 +98,7 @@ ResourceDomain* ResourceDomain::claim(Task& owner, const os::PciFunctionInfo& fu
     return domain;
 }
 
-ResourceDomain* ResourceDomain::find(Task& owner, const os::PciFunctionInfo& function) {
+ResourceDomain* ResourceDomain::find(Task& owner, const os::wire::PciFunctionInfo& function) {
     InterruptSpinLockGuard guard(domainLock);
     for (auto& domain : domains) if (domain.owner_ == &owner && domain.state_ == State::Active && same(domain.function_, function)) { ++domain.references_; return &domain; }
     return nullptr;
@@ -121,7 +107,7 @@ bool ResourceDomain::active(Task& owner) {
     InterruptSpinLockGuard guard(domainLock);
     return owner_ == &owner && state_ == State::Active;
 }
-bool ResourceDomain::writeConfiguration(uint64_t owner, const os::PciFunctionInfo& function, uint16_t offset, uint32_t value) {
+bool ResourceDomain::writeConfiguration(uint64_t owner, const os::wire::PciFunctionInfo& function, uint16_t offset, uint32_t value) {
     InterruptSpinLockGuard guard(domainLock);
     for (auto& domain : domains) if (domain.state_ != State::Free && same(domain.function_, function)) {
         // Claimed BARs/capabilities are immutable. Command writes cannot restart an old domain.
@@ -139,9 +125,9 @@ bool ResourceDomain::attach(MmioRegion& region) {
 }
 bool ResourceDomain::attach(DmaBuffer& buffer) {
     InterruptSpinLockGuard guard(domainLock);
-    if (state_ != State::Active || dmaPages_ == maximumDmaPages) return false;
+    if (state_ != State::Active || buffer.size_/4096>maximumDmaPages-dmaPages_) return false;
     buffer.domain_ = this; buffer.next_ = dma_; dma_ = &buffer;
-    ++references_; ++dmaPages_; return true;
+    ++references_; dmaPages_+=buffer.size_/4096; return true;
 }
 void ResourceDomain::drop() {
     InterruptSpinLockGuard guard(domainLock);
@@ -167,20 +153,19 @@ void ResourceDomain::addressSpaceReleased(Task& owner) {
     for (auto& domain : domains) if (domain.owner_ == &owner) domain.addressSpaceGone_ = true;
     Thread::wake(worker);
 }
-void ResourceDomain::unmap(uint64_t address, uint64_t size, bool& mapped) {
+void ResourceDomain::unmap(uint64_t address, uint64_t size, bool& mapped,uint64_t physical) {
     PreemptionSpinLockGuard guard(owner_->addressSpace().lock());
     if (!__atomic_exchange_n(&mapped, false, __ATOMIC_ACQ_REL)) return;
     const uint64_t root = owner_->addressSpace().rootPhysicalAddress();
     if (root && owner_->addressSpace().generation() == addressGeneration_)
-        for (uint64_t offset = 0; offset < size; offset += 4096) memory::unmapPageInAddressSpace(root, address + offset);
+        for (uint64_t offset = 0; offset < size; offset += 4096)
+            if(memory::getPhysicalAddressInAddressSpace(root,address+offset)==physical+offset)memory::unmapPageInAddressSpace(root, address + offset);
 }
 bool ResourceDomain::reset() {
-    for (MmioRegion* region = mmio_; region; region = region->next_) unmap(region->virtualAddress_, region->size_, region->mapped_);
+    for (MmioRegion* region = mmio_; region; region = region->next_) unmap(region->virtualAddress_, region->size_, region->mapped_,region->physicalAddress_);
     uint32_t command = 0;
     if (!PciAccess::read(function_, 4, command) || !PciAccess::write(function_, 4, (command & 0xffff) & ~4U)) return false;
-#ifdef OS_DEVICE_RESOURCE_TEST
-    if (__atomic_load_n(&blockReset, __ATOMIC_ACQUIRE)) return false;
-#endif
+
     *status_ = 0;
     asm volatile("mfence" ::: "memory");
     const uint64_t deadline = time::getMonotonicTime() + 100000000ULL;
@@ -198,7 +183,7 @@ int ResourceDomain::stop(Task& owner) {
         Thread::wake(worker);
     }
     const uint64_t deadline = time::getMonotonicTime() + 2000000000ULL;
-    for (;;) {
+    while (true) {
         {
             InterruptSpinLockGuard guard(domainLock);
             if (state_ == State::Stopped) return 0;
@@ -209,7 +194,7 @@ int ResourceDomain::stop(Task& owner) {
     }
 }
 void ResourceDomain::work(void*) {
-    for (;;) {
+    while (true) {
         ResourceDomain* pending = nullptr;
         {
             InterruptSpinLockGuard guard(domainLock);
@@ -233,7 +218,8 @@ void ResourceDomain::work(void*) {
         Task* owner = pending->owner_;
         for (DmaBuffer* buffer = pending->dma_; buffer;) {
             DmaBuffer* next = buffer->next_;
-            memory::freePhysicalPage(buffer->physicalAddress_);
+            uint32_t order=0; while((4096ULL<<order)<buffer->size_)++order;
+            memory::releasePhysicalBlock(buffer->physicalAddress_,order,owner->id());
             heap::kernelFree(buffer); buffer = next;
         }
         for (MmioRegion* region = pending->mmio_; region;) { MmioRegion* next = region->next_; heap::kernelFree(region); region = next; }
@@ -249,10 +235,17 @@ void ResourceDomain::work(void*) {
 
 void MmioRegion::destroy() {
     if (__atomic_exchange_n(&closed_, true, __ATOMIC_ACQ_REL)) return;
-    domain_->unmap(virtualAddress_, size_, mapped_); domain_->drop();
+    domain_->unmap(virtualAddress_, size_, mapped_,physicalAddress_); domain_->drop();
 }
 void DmaBuffer::destroy() {
     if (__atomic_exchange_n(&closed_, true, __ATOMIC_ACQ_REL)) return;
-    domain_->unmap(virtualAddress_, size_, mapped_); domain_->drop();
+    domain_->unmap(virtualAddress_, size_, mapped_,physicalAddress_); domain_->drop();
 }
 }  // namespace kernel::device
+
+namespace kernel::device {
+bool ResourceDomain::allowsIrq(Task& owner,uint8_t irq) {
+    if(!active(owner))return false;
+    uint32_t value=0;return PciAccess::read(function_,0x3c,value) && (value&0xff)==irq;
+}
+}

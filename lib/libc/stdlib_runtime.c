@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#include "os_adapter.h"
+#include "internal.h"
 #include "internal.h"
 
 #define EXIT_HANDLER_CAPACITY 16

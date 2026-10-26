@@ -4,43 +4,24 @@
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
+#include <os/syscall.h>
+#include <sys/resource.h>
 
-#include "os_adapter.h"
+#include "internal.h"
 
-static struct sigaction actions[NSIG];
-static volatile uint64_t signal_generation;
-static volatile uint8_t action_lock;
+_Static_assert(sizeof(siginfo_t) == sizeof(OsSignalInfo), "signal info ABI");
+_Static_assert(sizeof(ucontext_t) == sizeof(OsUserContext), "signal context ABI");
+_Static_assert(offsetof(ucontext_t, uc_mcontext) == offsetof(OsUserContext, machine), "machine context ABI");
 
 static int valid_signal(int signal_number) {
     return signal_number > 0 && signal_number < NSIG;
 }
 
-static void lock_actions(void) {
-    while (__atomic_test_and_set(&action_lock, __ATOMIC_ACQUIRE)) __libc_os_yield();
-}
-
-static void unlock_actions(void) {
-    __atomic_clear(&action_lock, __ATOMIC_RELEASE);
-}
-
 __attribute__((naked, noreturn)) static void signal_restorer(void) {
     __asm__ volatile("movq %rsp, %rdi\n\t"
+                     "andq $-16, %rsp\n\t"
                      "call __libc_os_signal_return\n\t"
                      "ud2");
-}
-
-static void signal_trampoline(int signal_number, siginfo_t* info,
-                              void* context) {
-    struct sigaction action;
-    lock_actions();
-    action = actions[signal_number];
-    unlock_actions();
-    __atomic_add_fetch(&signal_generation, 1, __ATOMIC_RELEASE);
-    if ((action.sa_flags & SA_SIGINFO) != 0) {
-        action.sa_sigaction(signal_number, info, context);
-    } else {
-        action.sa_handler(signal_number);
-    }
 }
 
 int sigemptyset(sigset_t* set) {
@@ -101,14 +82,11 @@ int sigaction(int signal_number, const struct sigaction* action,
     memset(&kernel_old, 0, sizeof(kernel_old));
     if (action != NULL) {
         if ((action->sa_flags & ~(SA_SIGINFO | SA_RESTART | SA_NODEFER |
-                                 SA_RESETHAND)) != 0) {
+                                 SA_RESETHAND | SA_ONSTACK)) != 0) {
             errno = EINVAL;
             return -1;
         }
-        kernel_action.handler =
-            action->sa_handler == SIG_DFL || action->sa_handler == SIG_IGN
-                ? (uint64_t)(uintptr_t)action->sa_handler
-                : (uint64_t)(uintptr_t)signal_trampoline;
+        kernel_action.handler = (uint64_t)(uintptr_t)action->sa_handler;
         kernel_action.mask = action->sa_mask;
         kernel_action.flags = (uint64_t)(uint32_t)action->sa_flags;
         kernel_action.restorer = (uint64_t)(uintptr_t)signal_restorer;
@@ -119,10 +97,12 @@ int sigaction(int signal_number, const struct sigaction* action,
         errno = EINVAL;
         return -1;
     }
-    lock_actions();
-    if (old_action != NULL) *old_action = actions[signal_number];
-    if (action != NULL) actions[signal_number] = *action;
-    unlock_actions();
+    if (old_action != NULL) {
+        memset(old_action, 0, sizeof(*old_action));
+        old_action->sa_handler = (sighandler_t)(uintptr_t)kernel_old.handler;
+        old_action->sa_mask = kernel_old.mask; old_action->sa_flags = (int)kernel_old.flags;
+        old_action->sa_restorer = (void(*)(void))(uintptr_t)kernel_old.restorer;
+    }
     return 0;
 }
 
@@ -141,7 +121,7 @@ int raise(int signal_number) { return kill(getpid(), signal_number); }
 int pthread_sigmask(int how, const sigset_t* set, sigset_t* old_set) {
     uint64_t old_mask = 0;
     if (how < SIG_BLOCK || how > SIG_SETMASK) return EINVAL;
-    if (__libc_os_set_signal_mask(how, set == NULL ? 0 : *set, &old_mask) != 0) {
+    if (__libc_os_set_signal_mask(set == NULL ? SIG_BLOCK : how, set == NULL ? 0 : *set, &old_mask) != 0) {
         return EINVAL;
     }
     if (old_set != NULL) *old_set = old_mask;
@@ -221,9 +201,8 @@ int sigtimedwait(const sigset_t* set, siginfo_t* info,
 }
 
 int pause(void) {
-    uint64_t generation =
-        __atomic_load_n(&signal_generation, __ATOMIC_ACQUIRE);
-    while (__atomic_load_n(&signal_generation, __ATOMIC_ACQUIRE) == generation) {
+    uint64_t generation = __libc_os_signal_generation();
+    while (__libc_os_signal_generation() == generation) {
         __libc_os_sleep(1);
     }
     errno = EINTR;
@@ -232,13 +211,12 @@ int pause(void) {
 
 int sigsuspend(const sigset_t* mask) {
     sigset_t old_mask;
-    uint64_t generation;
+    uint64_t generation = __libc_os_signal_generation();
     if (mask == NULL || pthread_sigmask(SIG_SETMASK, mask, &old_mask) != 0) {
         errno = EINVAL;
         return -1;
     }
-    generation = __atomic_load_n(&signal_generation, __ATOMIC_ACQUIRE);
-    while (__atomic_load_n(&signal_generation, __ATOMIC_ACQUIRE) == generation) {
+    while (__libc_os_signal_generation() == generation) {
         __libc_os_sleep(1);
     }
     (void)pthread_sigmask(SIG_SETMASK, &old_mask, NULL);
@@ -251,4 +229,12 @@ int pthread_kill(uint64_t thread, int signal_number) {
     if (signal_number < 0 || signal_number >= NSIG) return EINVAL;
     result = __libc_os_send_thread_signal(thread, (uint32_t)signal_number);
     return result == 0 ? 0 : (result == -4 ? ESRCH : EINVAL);
+}
+
+int sigaltstack(const stack_t* stack, stack_t* old_stack) {
+    if (stack && stack->ss_flags != SS_DISABLE && stack->ss_flags != 0) { errno = EINVAL; return -1; }
+    if (stack && !stack->ss_flags && stack->ss_size < MINSIGSTKSZ) { errno = ENOMEM; return -1; }
+    int result = __libc_os_signal_stack(stack, old_stack);
+    if (result) { errno = result == -3 ? EPERM : EINVAL; return -1; }
+    return 0;
 }

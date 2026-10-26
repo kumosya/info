@@ -1,3 +1,4 @@
+#pragma once
 "iso88591\0"
 "latin1\0"
 "\0\100"

@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "os_adapter.h"
+#include "internal.h"
 
 typedef struct AllocationHeader {
     size_t size;

@@ -74,6 +74,66 @@ size_t wcsrtombs(char* restrict output,const wchar_t** restrict source,size_t si
         count += bytes; ++s;
     }
 }
+size_t mbsnrtowcs(wchar_t* restrict output, const char** restrict source, size_t available, size_t limit, mbstate_t* restrict state) {
+    static mbstate_t internal;
+    if (!state) state = &internal;
+    mbstate_t copy = *state;
+    mbstate_t* conversion = output ? state : &copy;
+    const char* cursor = *source; size_t count = 0;
+    while (available && (!output || count < limit)) {
+        wchar_t character;
+        size_t bytes = mbrtowc(&character, cursor, available, conversion);
+        if (bytes == (size_t)-1) { if (output) *source = cursor; return bytes; }
+        if (bytes == (size_t)-2) { cursor += available; break; }
+        if (output) output[count] = character;
+        if (!character) { if (output) *source = NULL; return count; }
+        cursor += bytes; available -= bytes; ++count;
+    }
+    if (output) *source = cursor;
+    return count;
+}
+size_t wcsnrtombs(char* restrict output, const wchar_t** restrict source, size_t available, size_t limit, mbstate_t* restrict state) {
+    static mbstate_t internal;
+    if (!state) state = &internal;
+    mbstate_t copy = *state;
+    mbstate_t* conversion = output ? state : &copy;
+    const wchar_t* cursor = *source; size_t count = 0;
+    while (available && (!output || count < limit)) {
+        char encoded[4]; mbstate_t nextState = *conversion;
+        size_t bytes = wcrtomb(encoded, *cursor, &nextState);
+        if (bytes == (size_t)-1) { if (output) *source = cursor; return bytes; }
+        if (output && bytes > limit - count) break;
+        *conversion = nextState;
+        if (output) memcpy(output + count, encoded, bytes);
+        if (!*cursor) { if (output) *source = NULL; return count; }
+        if (count > SIZE_MAX - bytes) { errno = EOVERFLOW; return (size_t)-1; }
+        count += bytes; ++cursor; --available;
+    }
+    if (output) *source = cursor;
+    return count;
+}
+wchar_t* wcpcpy(wchar_t* restrict output, const wchar_t* restrict input) {
+    while ((*output = *input)) { ++output; ++input; }
+    return output;
+}
+wchar_t* wcpncpy(wchar_t* restrict output, const wchar_t* restrict input, size_t count) {
+    size_t i = 0;
+    while (i < count && input[i]) { output[i] = input[i]; ++i; }
+    wchar_t* end = output + i;
+    while (i < count) output[i++] = 0;
+    return end;
+}
+size_t wcslcpy(wchar_t* restrict output, const wchar_t* restrict input, size_t size) {
+    const size_t length = wcslen(input);
+    if (size) { size_t copy = length < size - 1 ? length : size - 1; wmemcpy(output, input, copy); output[copy] = 0; }
+    return length;
+}
+size_t wcslcat(wchar_t* restrict output, const wchar_t* restrict input, size_t size) {
+    size_t used = 0; while (used < size && output[used]) ++used;
+    const size_t length = wcslen(input);
+    if (used < size) { size_t copy = length < size - used - 1 ? length : size - used - 1; wmemcpy(output + used, input, copy); output[used + copy] = 0; }
+    return used + length;
+}
 int mblen(const char* s,size_t n) { return mbtowc(NULL,s,n); }
 int mbtowc(wchar_t* restrict out,const char* restrict s,size_t n) {
     mbstate_t state = {0}; if (!s) return 0;

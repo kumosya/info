@@ -43,16 +43,28 @@ static std::string mask(std::string value) {
                 escape = false;
         }
     }
+    for (size_t at = 0; (at = value.find("__attribute__", at)) != std::string::npos;) {
+        size_t end = at + 13;
+        while (end < value.size() && (value[end] == ' ' || value[end] == '\t')) ++end;
+        if (end == value.size() || value[end] != '(') { at = end; continue; }
+        unsigned depth = 0;
+        do { if (value[end] == '(') ++depth; else if (value[end] == ')') --depth; ++end; } while (end < value.size() && depth);
+        for (size_t i = at; i < end; ++i) if (value[i] != '\n') value[i] = ' ';
+        at = end;
+    }
     return value;
 }
 void audit(const Context& context) {
-    std::set<std::string> roots, allowed, headers, forbidden, memory;
-    for (const auto& row : table("config/checks.conf")) {
+    std::set<std::string> roots, allowed, headers, forbidden, memory,
+        runtimeEntries;
+    for (const auto& row : table(context.build / "config/checks.conf")) {
         if (row.size() != 2) throw std::runtime_error("invalid audit policy");
         if (row[0] == "audit-root")
             roots.insert(row[1]);
         else if (row[0] == "syscall")
             allowed.insert(row[1]);
+        else if (row[0] == "runtime-entry")
+            runtimeEntries.insert(row[1]);
         else if (row[0] == "memory-root")
             memory.insert(row[1]);
         else if (row[0] == "memory-header")
@@ -62,7 +74,7 @@ void audit(const Context& context) {
         else if (row[0] != "project")
             throw std::runtime_error("unknown audit policy");
     }
-    for (const auto& row : table("config/services.conf"))
+    for (const auto& row : table(context.build / "config/services.conf"))
         if (row[1] == "3" && row[8] != "external")
             roots.insert("src/" + row[2]);
     std::vector<std::string> violations;
@@ -83,6 +95,10 @@ void audit(const Context& context) {
     std::regex functionPattern(
         R"(^[ \t]*(?:(?:inline|static|constexpr|\[\[[^\]]*\]\])\s+)*[A-Za-z_][\w:<>,*& \t]*?\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*(?:const\s*)?(?:noexcept\s*)?\{)",
         std::regex::ECMAScript | std::regex::multiline);
+    std::set<std::string> capiEntries;
+    const auto capiHeader = read("include/os-c++/os/capi.h");
+    const std::regex capiPattern(R"(\b(os[A-Z][A-Za-z_0-9]*)\s*\()");
+    for (std::sregex_iterator it(capiHeader.begin(), capiHeader.end(), capiPattern), end; it != end; ++it) capiEntries.insert((*it)[1]);
     std::set<fs::path> inspected;
     for (const auto& root : roots)
         for (const auto& entry : fs::recursive_directory_iterator(root))
@@ -109,6 +125,11 @@ void audit(const Context& context) {
                     if (ends.count(opening))
                         classes.emplace_back(opening, ends.at(opening));
                 }
+                const std::regex privateNamespace(R"(\bnamespace\s*\{)");
+                for (std::sregex_iterator it(value.begin(), value.end(), privateNamespace), end; it != end; ++it) {
+                    const auto opening = value.find('{', it->position());
+                    if (ends.count(opening)) classes.emplace_back(opening, ends.at(opening));
+                }
                 for (std::sregex_iterator
                          it(value.begin(), value.end(), functionPattern),
                      end;
@@ -127,8 +148,27 @@ void audit(const Context& context) {
                         if (begin < position && position < finish)
                             member = true;
                     if (member) continue;
-                    if (entry.path() == fs::path("lib/os/runtime.cc") &&
-                        allowed.count(name))
+                    if (entry.path() == fs::path("lib/os/capi.cc") && capiEntries.count(name)) continue;
+                    static const std::map<fs::path, std::set<std::string>>
+                        bridges{
+                            {"lib/os/syscall.cc",
+                             {"invokeSyscall", "waitAddress", "wakeAddress"}},
+                            {"lib/os/ipc.cc",
+                             {"sendMessage", "receiveMessage", "callService",
+                              "replyMessage", "closeHandle"}},
+                            {"lib/os/task.cc",
+                             {"exitTask", "exitThread", "createThread",
+                              "forkTask", "replaceTaskImage", "yield", "sleep",
+                              "getStandardHandle"}},
+                            {"lib/os/mm.cc",
+                             {"mapMemory", "unmapMemory", "protectMemory",
+                              "__osinfo_runtime_allocate",
+                              "__osinfo_runtime_free"}},
+                            {"lib/os/service/runtime.cc",
+                             {"getBootstrapHandle", "atexit"}}};
+                    const auto bridge = bridges.find(entry.path());
+                    if (bridge != bridges.end() && bridge->second.count(name) &&
+                        (allowed.count(name) || runtimeEntries.count(name)))
                         continue;
                     violations.push_back(
                         entry.path().string() + ":" +
@@ -140,8 +180,8 @@ void audit(const Context& context) {
             }
     auto symbols = context.build / "audit-symbols.txt";
     run({"nm", "-g", "--defined-only",
-         (context.objects / "user/runtime/runtime.o").string(),
-         (context.objects / "user/runtime/service.o").string()},
+         (context.objects / "lib/os/runtime.o").string(),
+         (context.objects / "lib/os/service.o").string()},
         symbols);
     auto defined = read(symbols);
     fs::remove(symbols);

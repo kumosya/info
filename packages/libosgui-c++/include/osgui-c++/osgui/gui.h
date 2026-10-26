@@ -3,7 +3,7 @@
 
 #include <cstdint>
 
-#include "os/input.h"
+#include <os/input.h>
 
 namespace os {
 

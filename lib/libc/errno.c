@@ -1,10 +1,19 @@
 #include <errno.h>
 #include <stdint.h>
-#include "os_adapter.h"
+#include "internal.h"
 
 /* Kernel thread ids provide TLS without an ELF TLS segment requirement. */
 static struct { uint64_t id; int value; } errors[128];
 static int bootstrap_error;
+void __libc_errno_fork_child(uint64_t previous) {
+    const uint64_t current = __libc_os_get_thread_id();
+    int value = bootstrap_error;
+    for (unsigned i = 0; i < 128; ++i) {
+        if (errors[i].id == previous) value = errors[i].value;
+        errors[i].id = 0; errors[i].value = 0;
+    }
+    errors[0].value = value; errors[0].id = current;
+}
 int* __errno_location(void) {
     long thread = __libc_os_get_thread_id();
     if (thread <= 0) return &bootstrap_error;

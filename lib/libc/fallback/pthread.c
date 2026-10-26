@@ -4,7 +4,6 @@
 #include <errno.h>
 #include <unistd.h>
 
-__attribute__((weak)) int pthread_atfork(void (* arg0)(void), void (* arg1)(void), void (* arg2)(void)) { (void)arg0; (void)arg1; (void)arg2; return ENOSYS; }
 __attribute__((weak)) int pthread_attr_getguardsize(const pthread_attr_t *restrict arg0, size_t *restrict arg1) { (void)arg0; (void)arg1; return ENOSYS; }
 __attribute__((weak)) int pthread_attr_getinheritsched(const pthread_attr_t *restrict arg0, int *restrict arg1) { (void)arg0; (void)arg1; return ENOSYS; }
 __attribute__((weak)) int pthread_attr_getschedparam(const pthread_attr_t *restrict arg0, struct sched_param *restrict arg1) { (void)arg0; (void)arg1; return ENOSYS; }

@@ -6,11 +6,13 @@
 
 #define WNOHANG 1
 #define WUNTRACED 2
+#define WSTOPPED WUNTRACED
 #define WCONTINUED 8
 
 #define WEXITSTATUS(status) (((status) >> 8) & 0xff)
 #define WIFEXITED(status) (((status) & 0x7f) == 0)
 #define WTERMSIG(status) ((status) & 0x7f)
+#define WCOREDUMP(status) (((status) & 0x80) != 0)
 #define WIFSIGNALED(status) (WTERMSIG(status) != 0 && WTERMSIG(status) != 0x7f)
 #define WSTOPSIG(status) WEXITSTATUS(status)
 #define WIFSTOPPED(status) (((status) & 0xff) == 0x7f)

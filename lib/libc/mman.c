@@ -3,7 +3,7 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <sys/mman.h>
-#include "os_adapter.h"
+#include "internal.h"
 
 static uint64_t page_align(size_t length) {
     return !length || length > UINT64_MAX - 4095 ? 0 : ((uint64_t)length + 4095) & ~4095ULL;

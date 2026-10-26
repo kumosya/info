@@ -23,7 +23,7 @@ class SratReader {
     }
 };
 }
-void MemoryTopology::initialize(const BootInfo* boot) {
+void MemoryTopology::init(const BootInfo* boot) {
     nodes = 1; domains[0] = 0; rangeCount = cpuCount = 0; cpuLocalReady = false;
     const auto* table = acpi::findAcpiTable(boot, "SRAT");
     if (!table || table->length < sizeof(AcpiSdtHeader) + 12) return;

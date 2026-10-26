@@ -47,7 +47,7 @@ MM 是固定 boot 模块，注册名 mm；驻留机制服务名称为 memory.ker
 
 RegionTable 容量 512，resident 记录 8192，backing 记录 256，domain 记录 128。容量耗尽明确返回错误。MM 单线程串行处理请求，重复缺页检查已有 PTE；不会重复分配同一已就绪页面。
 
-内核把用户缺页转为认证 senderPid 的 RPC，截止时间为 5 秒；MM 回复成功后再次校验实际 PTE。MM 自身缺页禁止递归。syscall 的用户缓冲区先 fault-in，再持地址空间锁校验并复制。
+内核把用户缺页转为认证 senderPid 的 RPC，恢复等待上限为 20 秒；MM 回复成功后再次校验实际 PTE。MM 自身缺页禁止递归。syscall 的用户缓冲区先 fault-in，再持地址空间锁校验并复制。
 
 匿名页延迟申请清零 PageObject。文件映射使用已打开描述符的 FS 委托：FS 保留原 OpenFileDescription，记录 issuer 和一次性 Token；只有可信 MM 能按原 senderPid 兑换。MM 不以自身权限重新按路径打开文件。关闭原 fd 后 backing 仍持引用。
 
@@ -57,11 +57,4 @@ PROT_NONE 撤销 PTE 并保留 backing；恢复权限后缺页重建。munmap/mp
 
 libc 的 mmap/munmap/mprotect/msync 调用 os::VirtualMemory，区域状态由 MM 统一管理。支持私有匿名、私有文件和共享内存对象映射，以及部分区域保护/解除。MAP_FIXED、文件 MAP_SHARED、匿名 MAP_SHARED 当前明确返回 ENOTSUP；私有 msync 和共享内存同步不写回源文件。没有 Swap Manager，不会丢弃不可重建的私有脏页；内存不足明确失败。
 
-服务重启不自动恢复旧 VMA。客户端收到端点失败后清缓存，下次重连；缺失 VMA 的旧请求明确失败，非法缺页终止用户线程。进程退出或 exec 后，MM 按 Task 状态及地址空间 generation 回收旧记录。
-
-## 验证
-
-- tests/check-kernel-memory.sh：Buddy、所有权与引用、NUMA、Slab、Pool、Per-CPU、PageObject 构造/失败与 VMA 原子性。
-- tests/mm-runtime.cc：用户态延迟分页、保护、部分解除、COW、共享对象、文件委托和信号返回。
-- sh tests/smoke-hybrid.sh --memory-test：用隔离光盘运行上述测试，再进入真实 GUI 终端。
-- SMP exec/kill 压力和设备 DMA 停止协议另见[架构文档](../../architecture.md)，不能用启动成功代替压力验证。
+MM 服务通过恢复域保存 VMA、resident/backing 元数据和能力托管；重启按检查点与页表对账恢复旧 VMA，详见 [MM 服务](../../service/mm/README.md)。进程退出或 exec 后，MM 按 Task 状态及地址空间 generation 回收旧记录。v0.1.3 中不可恢复缺页产生故障线程定向的 SIGSEGV/SIGBUS，默认动作终止整个进程；普通坏用户缓冲区返回 BadAddress/EFAULT，不按内核非法解引用处理。具体分类与 core 策略见[用户态异常与 core](../task/exceptions-and-core.md)。

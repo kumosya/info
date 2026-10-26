@@ -3,7 +3,11 @@
 #include <atomic>
 #include <mutex>
 
-#include "os/abi.h"
+#include <os/ipc.h>
+#include <os/task.h>
+#include <os/mm.h>
+#include <os/device.h>
+#include <os/service.h>
 
 namespace std {
 

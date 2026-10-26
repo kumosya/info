@@ -7,9 +7,7 @@
 #include "kernel/serial.h"
 #include "kernel/spinlock.h"
 #include "kernel/task.h"
-#include "kernel/thread.h"
 #include "kernel/time.h"
-#include "kernel/core_service.h"
 
 namespace kernel {
 namespace {
@@ -459,6 +457,24 @@ int Endpoint::reply(IpcMessage* message) {
     return 0;
 }
 
+bool Endpoint::handlesContext(uint64_t operation) const {
+    return implementation && implementation->service == &taskKernelService() &&
+        ((operation >= static_cast<uint64_t>(os::TaskOperation::ExitTask) && operation <= static_cast<uint64_t>(os::TaskOperation::StandardHandle)) ||
+         operation == static_cast<uint64_t>(os::TaskOperation::SignalReturn));
+}
+int Endpoint::callImmediate(IpcMessage& request,IpcMessage& reply,uint64_t deadline,bool kernelOrigin) {
+    Operation operation(this);
+    if (!validateMessage(&request) || request.handleCount || !handlesContext(request.type)) return failure(os::ErrorCode::InvalidArgument);
+    auto& state=*getImplementation();
+    {
+        InterruptSpinLockGuard guard(state.lock);
+        if (state.destroyed) return failure(os::ErrorCode::EndpointClosed);
+        if (!kernelOrigin && !hasRightLocked(this,task::getCurrent(),endpointRightSend)) return failure(os::ErrorCode::PermissionDenied);
+        if (deadline && deadlineError(deadline)) return deadlineError(deadline);
+    }
+    stampSender(request);reply={};
+    return state.service->call(*task::getCurrent(),request,reply);
+}
 int Endpoint::call(IpcMessage* request, IpcMessage* reply, uint64_t deadline) {
     return callImpl(request, reply, deadline, false);
 }
@@ -472,6 +488,7 @@ int Endpoint::callImpl(IpcMessage* request, IpcMessage* reply, uint64_t deadline
     if (auto* service = getImplementation()->service) {
         if (request->handleCount) return failure(os::ErrorCode::InvalidArgument);
         auto& state = *getImplementation();
+        if (handlesContext(request->type)) return callImmediate(*request,*reply,deadline,kernelOrigin);
         Waiter waiter{Thread::getCurrent(), nullptr, nullptr, deadline ? deadline : os::ipcInfiniteDeadline};
         IpcMessage copy = *request;
         stampSender(copy);
@@ -494,7 +511,10 @@ int Endpoint::callImpl(IpcMessage* request, IpcMessage* reply, uint64_t deadline
             disarmTimer(waiter);
             waiter.thread->setIpcWaitResult(nullptr);
             const int aborted = __atomic_load_n(&waiter.result, __ATOMIC_ACQUIRE);
-            if (aborted < 0) result = aborted;
+            // A successful native service call may already have committed a
+            // non-repeatable operation (for example reaping a child). Do not
+            // discard its reply when a signal races with that completion.
+            if (aborted < 0 && result != 0) result = aborted;
         }
         reply->replyToken = copy.replyToken;
         if (result) {

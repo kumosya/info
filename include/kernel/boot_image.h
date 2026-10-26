@@ -4,7 +4,7 @@
 namespace kernel::device {
 class BootImage {
  public:
-    static void initialize(const BootInfo& boot);
+    static void init(const BootInfo& boot);
     static int call(const IpcMessage& request, IpcMessage& reply);
 };
 }

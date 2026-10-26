@@ -1,176 +1,170 @@
-#ifndef _OS_INPUT_H
-#define _OS_INPUT_H
-
+#pragma once
 #include <cstdint>
-
 namespace os {
-
-enum class InputEventType : uint32_t {
-    None,
-    KeyDown,
-    KeyUp,
-    MouseMove,
-    MouseButtonDown,
-    MouseButtonUp,
-    MouseWheel
-};
-
-enum class KeyCode : uint32_t {
-    Unknown,
-    Escape,
-    Digit1,
-    Digit2,
-    Digit3,
-    Digit4,
-    Digit5,
-    Digit6,
-    Digit7,
-    Digit8,
-    Digit9,
-    Digit0,
-    Backspace,
-    Tab,
-    A,
-    B,
-    C,
-    D,
-    E,
-    F,
-    G,
-    H,
-    I,
-    J,
-    K,
-    L,
-    M,
-    N,
-    O,
-    P,
-    Q,
-    R,
-    S,
-    T,
-    U,
-    V,
-    W,
-    X,
-    Y,
-    Z,
-    Enter,
-    LeftControl,
-    RightControl,
-    LeftShift,
-    RightShift,
-    LeftAlt,
-    RightAlt,
-    Space,
-    CapsLock,
-    Minus,
-    Equal,
-    LeftBracket,
-    RightBracket,
-    Semicolon,
-    Apostrophe,
-    Grave,
-    Backslash,
-    Comma,
-    Period,
-    Slash,
-    Up,
-    Down,
-    Left,
-    Right,
-    F1,
-    F2,
-    F3,
-    F4,
-    F5,
-    F6,
-    F7,
-    F8,
-    F9,
-    F10,
-    F11,
-    F12,
-    NumLock,
-    ScrollLock,
-    Insert,
-    Delete,
-    Home,
-    End,
-    PageUp,
-    PageDown,
-    Keypad0,
-    Keypad1,
-    Keypad2,
-    Keypad3,
-    Keypad4,
-    Keypad5,
-    Keypad6,
-    Keypad7,
-    Keypad8,
-    Keypad9,
-    KeypadDecimal,
-    KeypadDivide,
-    KeypadMultiply,
-    KeypadMinus,
-    KeypadPlus,
-    KeypadEnter
-};
-
-constexpr uint32_t keyModifierShift      = 1U << 0;
-constexpr uint32_t keyModifierControl    = 1U << 1;
-constexpr uint32_t keyModifierAlt        = 1U << 2;
-constexpr uint32_t keyModifierCapsLock   = 1U << 3;
-constexpr uint32_t keyModifierNumLock    = 1U << 4;
-constexpr uint32_t keyModifierScrollLock = 1U << 5;
-
-struct KeyEvent {
-    KeyCode keyCode;
-    uint32_t modifiers;
-    bool pressed;
-    uint8_t reserved[3];
-};
-
-struct MouseEvent {
-    int32_t deltaX;
-    int32_t deltaY;
-    int32_t wheel;
-    uint32_t buttons;
-};
-
-struct InputEvent {
-    InputEventType type;
-    uint32_t reserved;
-    uint64_t timestamp;
-    union {
-        KeyEvent key;
-        MouseEvent mouse;
-    };
-};
-
-enum class InputRequest : uint64_t { GetEvent = 0x200, GetState, Subscribe };
-
-constexpr const char* inputServiceName    = "input";
-constexpr uint64_t inputEventNotification = 0x494e505554;
-
-class InputClient {
+class Input {
    public:
-    InputClient() = default;
-    ~InputClient();
+    enum class Key : uint32_t {
+        Unknown,
+        Escape,
+        Digit1,
+        Digit2,
+        Digit3,
+        Digit4,
+        Digit5,
+        Digit6,
+        Digit7,
+        Digit8,
+        Digit9,
+        Digit0,
+        Backspace,
+        Tab,
+        A,
+        B,
+        C,
+        D,
+        E,
+        F,
+        G,
+        H,
+        I,
+        J,
+        K,
+        L,
+        M,
+        N,
+        O,
+        P,
+        Q,
+        R,
+        S,
+        T,
+        U,
+        V,
+        W,
+        X,
+        Y,
+        Z,
+        Enter,
+        LeftControl,
+        RightControl,
+        LeftShift,
+        RightShift,
+        LeftAlt,
+        RightAlt,
+        Space,
+        CapsLock,
+        Minus,
+        Equal,
+        LeftBracket,
+        RightBracket,
+        Semicolon,
+        Apostrophe,
+        Grave,
+        Backslash,
+        Comma,
+        Period,
+        Slash,
+        Up,
+        Down,
+        Left,
+        Right,
+        F1,
+        F2,
+        F3,
+        F4,
+        F5,
+        F6,
+        F7,
+        F8,
+        F9,
+        F10,
+        F11,
+        F12,
+        NumLock,
+        ScrollLock,
+        Insert,
+        Delete,
+        Home,
+        End,
+        PageUp,
+        PageDown,
+        Keypad0,
+        Keypad1,
+        Keypad2,
+        Keypad3,
+        Keypad4,
+        Keypad5,
+        Keypad6,
+        Keypad7,
+        Keypad8,
+        Keypad9,
+        KeypadDecimal,
+        KeypadDivide,
+        KeypadMultiply,
+        KeypadMinus,
+        KeypadPlus,
+        KeypadEnter
+    };
+    enum Modifier : uint32_t {
+        Shift      = 1,
+        Control    = 2,
+        Alt        = 4,
+        CapsLock   = 8,
+        NumLock    = 16,
+        ScrollLock = 32
+    };
+    class Event {
+       public:
+        enum class Type : uint32_t {
+            None            = 0,
+            KeyDown         = 1,
+            KeyUp           = 2,
+            MouseMove       = 3,
+            MouseButtonDown = 4,
+            MouseButtonUp   = 5,
+            MouseWheel      = 6
+        };
+        Type getType() const;
+        uint64_t getTimestamp() const;
+        Key getKeyCode() const;
+        uint32_t getModifiers() const;
+        bool getPressed() const;
+        int32_t getDeltaX() const;
+        int32_t getDeltaY() const;
+        int32_t getWheel() const;
+        uint32_t getButtons() const;
 
-    InputClient(const InputClient&)            = delete;
-    InputClient& operator=(const InputClient&) = delete;
-
-    bool connect(uint64_t service);
-    bool wait();
-    bool receive(InputEvent& event);
+       private:
+        friend class Input;
+        Type type_{};
+        uint64_t timestamp_{};
+        Key key_{};
+        uint32_t modifiers_{};
+        bool pressed_{};
+        int32_t deltaX_{}, deltaY_{}, wheel_{};
+        uint32_t buttons_{};
+    };
+    Input();
+    ~Input();
+    Input(const Input&)            = delete;
+    Input& operator=(const Input&) = delete;
+    int open();
+    int close();
+    int wait(uint64_t deadline);
+    bool receive(Event& event);
+    int refresh();
+    bool getConnected() const;
+    bool getKeyPressed(Key key) const;
+    uint32_t getModifiers() const;
+    uint32_t getButtons() const;
+    bool getValid() const;
+    int getError() const;
 
    private:
-    uint64_t service_      = 0;
-    uint64_t wakeEndpoint_ = 0;
+    uint64_t service_{}, wakeEndpoint_{};
+    bool connected_{}, subscriptionPossible_{};
+    uint8_t keys_[128]{};
+    uint32_t modifiers_{}, buttons_{};
+    int error_{};
 };
-
 }  // namespace os
-
-#endif

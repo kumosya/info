@@ -1,0 +1,294 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "type": "directory",
+      "path": "bin",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "boot/grub",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "dev/pts",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "etc/xdg",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "home",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "lib",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "media",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "mnt/cdrom",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "mnt/ext4",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "mnt/fat32",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "proc",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "run/lock",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "run/user",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "sbin/sys",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "sys",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "tmp",
+      "mode": "1777"
+    },
+    {
+      "type": "directory",
+      "path": "usr/bin",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "usr/sbin",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "usr/lib",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "usr/include",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "usr/share",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "usr/local/share",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "var/cache",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "var/lib/inpkg",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "var/log",
+      "mode": "0755"
+    },
+    {
+      "type": "directory",
+      "path": "var/tmp",
+      "mode": "1777"
+    },
+    {
+      "type": "user-directory",
+      "path": ".local",
+      "mode": "0700"
+    },
+    {
+      "type": "user-directory",
+      "path": ".local/bin",
+      "mode": "0700"
+    },
+    {
+      "type": "user-directory",
+      "path": ".local/lib",
+      "mode": "0700"
+    },
+    {
+      "type": "user-directory",
+      "path": ".local/include",
+      "mode": "0700"
+    },
+    {
+      "type": "user-directory",
+      "path": ".local/share",
+      "mode": "0700"
+    },
+    {
+      "type": "user-directory",
+      "path": ".local/state/inpkg",
+      "mode": "0700"
+    },
+    {
+      "type": "user-directory",
+      "path": ".config",
+      "mode": "0700"
+    },
+    {
+      "type": "user-directory",
+      "path": ".cache",
+      "mode": "0700"
+    },
+    {
+      "type": "copy",
+      "source": "{build}/kernel.elf",
+      "target": "boot/kernel.elf",
+      "mode": "0755"
+    },
+    {
+      "type": "copy",
+      "source": "{build}/lib/ld-osinfo-x86-64.so",
+      "target": "lib/ld-osinfo-x86-64.so",
+      "mode": "0755"
+    },
+    {
+      "type": "copy",
+      "source": "script/lib/version.1",
+      "target": "lib/version.1",
+      "mode": "0644"
+    },
+    {
+      "type": "copy",
+      "source": "{build}/generated/grub.cfg",
+      "target": "boot/grub/grub.cfg",
+      "mode": "0644"
+    },
+    {
+      "type": "tree",
+      "source": "script/etc",
+      "target": "etc"
+    },
+    {
+      "type": "mode",
+      "path": "etc/shadow",
+      "mode": "0600"
+    },
+    {
+      "type": "mode",
+      "path": "etc/sudoers",
+      "mode": "0440"
+    },
+    {
+      "type": "runtime",
+      "package": "libos-c++",
+      "library": "libos-c++.so"
+    },
+    {
+      "type": "runtime",
+      "package": "libc++",
+      "library": "libc.so"
+    },
+    {
+      "type": "runtime",
+      "package": "libc++",
+      "library": "libc++.so"
+    },
+    {
+      "type": "external-runtime",
+      "package": "libosgui-c++",
+      "library": "libosgui-c++.so"
+    },
+    {
+      "type": "sdk-tree",
+      "source": "include/stdc",
+      "target": "stdc"
+    },
+    {
+      "type": "sdk-tree",
+      "source": "include/stdc++",
+      "target": "stdc++"
+    },
+    {
+      "type": "sdk-tree",
+      "source": "include/posix",
+      "target": "posix"
+    },
+    {
+      "type": "sdk-tree",
+      "source": "include/os-c++",
+      "target": "os-c++"
+    },
+    {
+      "type": "sdk-tree",
+      "source": "include/service",
+      "target": "service"
+    },
+    {
+      "type": "sdk-file",
+      "source": "{objects}/lib/os/start.o",
+      "target": "lib/start.o"
+    },
+    {
+      "type": "sdk-file",
+      "source": "{objects}/lib/os/service_start.o",
+      "target": "lib/service_start.o"
+    },
+    {
+      "type": "sdk-file",
+      "source": "{build}/lib/ld-osinfo-x86-64.so",
+      "target": "lib/ld-osinfo-x86-64.so"
+    },
+    {
+      "type": "sdk-file",
+      "source": "script/user.lds",
+      "target": "lib/user.lds"
+    },
+    {
+      "type": "sdk-file",
+      "source": "script/boot-service.lds",
+      "target": "lib/boot-service.lds"
+    },
+    {
+      "type": "legacy-database",
+      "source": "etc/inpkg/system",
+      "target": "var/lib/inpkg"
+    },
+    {
+      "type": "legacy-home",
+      "source": "app",
+      "target": ".local"
+    }
+  ]
+}

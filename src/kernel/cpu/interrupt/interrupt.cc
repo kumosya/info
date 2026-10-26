@@ -5,7 +5,6 @@
 #include "kernel/serial.h"
 #include "kernel/spinlock.h"
 #include "kernel/task.h"
-#include "kernel/thread.h"
 #include "kernel/syscall.h"
 
 namespace {
@@ -52,13 +51,23 @@ void setIdtEntry(uint8_t vector, void* entry, uint8_t ist, uint8_t privilege) {
 }
 
 void printException(const kernel::interrupt::Context* context) {
-    kernel::serial::serialWrite("[INTERRUPT] exception vector=");
-    kernel::serial::serialWriteDecimal(context->vector);
-    kernel::serial::serialWrite(" error=");
-    kernel::serial::serialWriteHex(context->errorCode);
-    kernel::serial::serialWrite(" rip=");
-    kernel::serial::serialWriteHex(context->rip);
-    kernel::serial::serialWrite("\n");
+    static constexpr const char* names[32] = {
+        "#DE", "#DB", "NMI", "#BP", "#OF", "#BR", "#UD", "#NM",
+        "#DF", "legacy coprocessor overrun", "#TS", "#NP", "#SS", "#GP", "#PF", "reserved 15",
+        "#MF", "#AC", "#MC", "#XM", "#VE", "#CP", "reserved 22", "reserved 23",
+        "reserved 24", "reserved 25", "reserved 26", "reserved 27", "#HV", "#VC", "#SX", "reserved 31"
+    };
+    kernel::serial::emergencyWrite("[INTERRUPT] ");
+    kernel::serial::emergencyWrite(context->vector < 32 ? names[context->vector] : "unexpected vector");
+    kernel::serial::emergencyWrite(" exception vector=");
+    kernel::serial::emergencyHex(context->vector);
+    kernel::serial::emergencyWrite(" error=");
+    kernel::serial::emergencyHex(context->errorCode);
+    kernel::serial::emergencyWrite(" rip=");
+    kernel::serial::emergencyHex(context->rip);
+    kernel::serial::emergencyWrite(" rsp=");
+    kernel::serial::emergencyHex(context->rsp);
+    kernel::serial::emergencyWrite("\n");
 }
 
 }  // namespace
@@ -120,21 +129,22 @@ void unregisterHandler(uint8_t vector) {
 }
 
 void handleException(Context* context) {
+    if (context->vector == 2 || context->vector == 8 || context->vector == 18) panic(context);
     if (context->vector == 14) {
         handlePageFault(context);
         return;
     }
+    if (dispatchUserException(context)) return;
+    panic(context);
+}
+
+[[noreturn]] void panic(Context* context) {
+    interrupt::disable();
+    static bool panicking = false;
+    if (__atomic_exchange_n(&panicking, true, __ATOMIC_ACQ_REL)) cpu::halt();
+    localapic::stopOtherCpus();
     printException(context);
-    if (context->vector == 3 && (context->cs & 3) == 0) {
-        return;
-    }
-    if ((context->cs & 3) != 0) {
-        serial::serialWrite(
-            "[INTERRUPT] terminating user thread after exception\n");
-        Thread::terminateCurrentFromException(
-            -static_cast<int>(context->vector));
-    }
-    serial::serialWrite("[INTERRUPT] unrecoverable kernel exception\n");
+    serial::emergencyWrite("[INTERRUPT] unrecoverable kernel exception\n");
     cpu::halt();
 }
 
@@ -144,12 +154,22 @@ namespace kernel::interrupt {
 extern "C" void interruptDispatch(Context* context) {
     if (context->vector < 32) {
         kernel::interrupt::handleException(context);
+        kernel::signal::returnToUser(context);
         return;
     }
+    kernel::signal::captureUserContext(context);
     kernel::interrupt::Handler handler =
         __atomic_load_n(&handlers[context->vector], __ATOMIC_ACQUIRE);
     if (handler != nullptr) {
         handler(context);
+    } else if (context->vector != 0xff) {
+        static uint64_t reported[4]{};
+        const auto index = context->vector / 64;
+        const auto bit = 1ULL << (context->vector % 64);
+        if (!(__atomic_fetch_or(&reported[index], bit, __ATOMIC_RELAXED) & bit)) {
+            serial::serialWrite("[INTERRUPT] unregistered vector acknowledged: ");
+            serial::serialWriteDecimal(context->vector); serial::serialWrite("\n");
+        }
     }
     if (context->vector != 0xff) {
         kernel::localapic::sendEndOfInterrupt();
@@ -159,6 +179,7 @@ extern "C" void interruptDispatch(Context* context) {
         kernel::cpu::getCurrent()->isRescheduleRequested()) {
         kernel::schedule::schedule();
     }
+    kernel::signal::returnToUser(context);
 }
 
 }  // namespace kernel::interrupt

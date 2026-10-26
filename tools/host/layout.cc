@@ -48,7 +48,7 @@ void layout(const Context& context) {
         fs::canonical(context.root) == "/")
         throw std::runtime_error("layout requires non-host --root");
     auto root = fs::canonical(context.root);
-    auto rows = table("config/layout.conf");
+    auto rows = table(context.build / "config/layout.conf");
     if (context.image.empty()) {
         for (const auto& row : rows)
             if (row[0] == "directory") {
@@ -94,7 +94,7 @@ void layout(const Context& context) {
         if (row[0] == "directory" || row[0] == "mode" || row[0] == "copy")
             modes[row[row[0] == "copy" ? 2 : 1]] =
                 std::stoul(row[row[0] == "copy" ? 3 : 2], nullptr, 8);
-    for (const auto& service : table("config/services.conf"))
+    for (const auto& service : table(context.build / "config/services.conf"))
         if (service[1] == "3") {
             modes["boot/" + service[0] + ".elf"] = 0755;
             modes["sbin/sys/" + service[0] + ".elf"] = 0755;
@@ -150,7 +150,7 @@ void deploy(const Context& context) {
     const auto legacyConsole = inside(root, "etc/console.conf");
     const auto console = inside(root, "etc/console");
     if (fs::exists(legacyConsole) && !fs::exists(console)) host::copy(legacyConsole, console);
-    for (const auto& row : table("config/layout.conf")) {
+    for (const auto& row : table(context.build / "config/layout.conf")) {
         if (row[0] == "copy") {
             auto destination = inside(root, row.at(2));
             host::copy(context.expand(row.at(1)), destination);
@@ -175,7 +175,7 @@ void deploy(const Context& context) {
                        inside(root, fs::path("boot") / name));
         }
     }
-    for (const auto& row : table("config/services.conf"))
+    for (const auto& row : table(context.build / "config/services.conf"))
         if (row.at(1) == "3") {
             auto name   = row[0] + ".elf";
             auto source = row[8] == "external"
@@ -191,7 +191,7 @@ void deploy(const Context& context) {
                 fs::permissions(inside(root, fs::path("sbin/sys") / name), static_cast<fs::perms>(0755));
             }
         }
-    for (const auto& row : table("config/layout.conf"))
+    for (const auto& row : table(context.build / "config/layout.conf"))
         if (row[0] == "mode")
             fs::permissions(
                 inside(root, row[1]),

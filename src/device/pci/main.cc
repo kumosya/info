@@ -1,7 +1,16 @@
-#include "os/abi.h"
-#include "os/pci.h"
-#include "os/protocol.h"
-#include "os/service.h"
+#include "service/common/queries.h"
+#include "service/common/records.h"
+#include "service/common/runtime.h"
+#include "service/common/kernel-requests.h"
+#include "service/common/requests.h"
+#include <os/ipc.h>
+#include <os/task.h>
+#include <os/mm.h>
+#include <os/device.h>
+#include <os/service.h>
+#include <os/device.h>
+#include <os/ipc.h>
+#include <os/service.h>
 
 namespace {
 class PciServer {
@@ -10,60 +19,41 @@ class PciServer {
 
 uint64_t endpoint;
 
-void respond(const os::IpcMessage& request, os::IpcMessage& reply) {
-    os::PciRequest command{};
-    reply.data[0] = 1;
-    reply.length = 1;
-    os::TaskInfo caller{};
-    if (request.senderPid == 0 ||
-        os::SystemService::queryTask(request.senderPid, caller) != 0 ||
-        caller.trustedDeviceService == 0) return;
-    command.requester = request.senderPid;
-    if (request.type == static_cast<uint64_t>(os::PciServiceRequest::Enumerate)) {
-        command.operation = os::PciOperation::Enumerate;
-        command.capacity = request.data[0] > 64 ? 64 :
-                           static_cast<uint32_t>(request.data[0]);
-        command.functions = reinterpret_cast<os::PciFunctionInfo*>(&reply.data[2]);
-        const int result = os::SystemService::pciRequest(command);
-        if (result >= 0) {
-            reply.data[0] = 0;
-            reply.data[1] = static_cast<uint64_t>(result);
-            reply.length = 2 + (static_cast<uint32_t>(result) *
-                                   sizeof(os::PciFunctionInfo) + 7) / 8;
-        }
-        return;
+void respond(const os::IpcMessage& request,os::IpcMessage& reply) {
+    os::detail::PciQuery service;
+    reply={};reply.data[0]=static_cast<int64_t>(os::ErrorCode::PermissionDenied);reply.length=1;
+    os::wire::TaskInfo caller{};
+    if(!request.senderPid || request.handleCount || os::detail::TaskQuery().query(request.senderPid,caller) || !caller.trustedDeviceService)return;
+    const auto operation=static_cast<os::PciServiceRequest>(request.type);
+    if(operation==os::PciServiceRequest::Enumerate) {
+        if(request.length!=1 || !request.data[0] || request.data[0]>64){reply.data[0]=static_cast<int64_t>(os::ErrorCode::InvalidArgument);return;}
+        os::wire::PciFunctionInfo functions[64]{};const int count=service.enumerate(functions,request.data[0]);
+        if(count<0){reply.data[0]=count;return;}
+        reply.data[0]=0;reply.data[1]=count;os::Runtime::copyBytes(&reply.data[2],functions,count*sizeof(*functions));reply.length=2+(count*sizeof(*functions)+7)/8;return;
     }
-    if (request.length < 3) return;
-    os::Runtime::copyBytes(&command.function, &request.data[1], sizeof(command.function));
-    command.offset = static_cast<uint16_t>(request.data[0]);
-    if (request.type == static_cast<uint64_t>(os::PciServiceRequest::ReadConfig)) {
-        command.operation = os::PciOperation::ReadConfig;
-    } else if (request.type ==
-               static_cast<uint64_t>(os::PciServiceRequest::WriteConfig)) {
-        if (request.length < 4) return;
-        command.operation = os::PciOperation::WriteConfig;
-        command.value = static_cast<uint32_t>(request.data[3]);
-    } else {
-        return;
+    if(operation==os::PciServiceRequest::Query) {
+        if(request.length!=4 || request.data[0]>UINT16_MAX || request.data[1]>255 || request.data[2]>=32 || request.data[3]>=8){reply.data[0]=static_cast<int64_t>(os::ErrorCode::InvalidArgument);return;}
+        os::wire::PciFunctionInfo function{};const int status=service.query(request.data[0],request.data[1],request.data[2],request.data[3],function);
+        reply.data[0]=status;if(!status){os::Runtime::copyBytes(&reply.data[1],&function,sizeof(function));reply.length=1+(sizeof(function)+7)/8;}return;
     }
-    const int result = os::SystemService::pciRequest(command);
-    if (result == 0) {
-        reply.data[0] = 0;
-        reply.data[1] = command.value;
-        reply.length = 2;
-    }
+    if((operation!=os::PciServiceRequest::ReadConfig && operation!=os::PciServiceRequest::WriteConfig) || request.length!=(operation==os::PciServiceRequest::ReadConfig?3U:4U) || request.data[0]>UINT16_MAX || (request.data[0]&3)){reply.data[0]=static_cast<int64_t>(os::ErrorCode::InvalidArgument);return;}
+    os::wire::PciFunctionInfo function{};os::Runtime::copyBytes(&function,&request.data[1],sizeof(function));
+    uint32_t value=0;int status;
+    if(operation==os::PciServiceRequest::ReadConfig)status=service.read(function,request.data[0],value);
+    else {if(request.data[3]>UINT32_MAX){reply.data[0]=static_cast<int64_t>(os::ErrorCode::InvalidArgument);return;}value=request.data[3];status=service.write(function,request.data[0],value,request.senderPid);}
+    reply.data[0]=status;if(!status){reply.data[1]=value;reply.length=2;}
 }
 
 
 int run() {
     const uint64_t registry = os::getBootstrapHandle();
-    endpoint = os::Endpoint::create();
+    endpoint = os::detail::EndpointControl().create();
     if (registry == 0 || endpoint == 0 ||
-        !os::ServiceRegistry::registerService(registry, os::pciServiceName, endpoint)) {
-        os::System::log("[PCI] service registration failed\n");
+        !os::detail::RegistryClient(registry).registerName(os::pciServiceName, endpoint)) {
+        os::Sys().log("[PCI] service registration failed\n");
         return 1;
     }
-    os::System::log("[PCI] service ready\n");
+    os::Sys().log("[PCI] service ready\n");
     while (true) {
         os::IpcMessage request{};
         if (os::receiveMessage(endpoint, request) != 0) continue;

@@ -15,6 +15,26 @@ struct PageTable {
     uint64_t entries[512];
 };
 
+bool findDumpPage(uint64_t tableAddress, unsigned level, uint64_t base,
+                  uint64_t cursor, uint64_t& address, uint64_t& flags) {
+    constexpr uint64_t physicalMask = 0x000ffffffffff000ULL;
+    const auto* entries = reinterpret_cast<const uint64_t*>(0xffff800000000000ULL + (tableAddress & physicalMask));
+    const unsigned shift = 12 + 9 * (level - 1);
+    const uint64_t span = 1ULL << shift;
+    for (unsigned index = 0; index < (level == 4 ? 256U : 512U); ++index) {
+        const uint64_t start = base + index * span;
+        if (start + span <= cursor) continue;
+        const uint64_t entry = entries[index];
+        if ((entry & (kernel::pagePresent | kernel::pageUser)) != (kernel::pagePresent | kernel::pageUser)) continue;
+        if (entry & (kernel::pageCacheDisable | kernel::pageWriteThrough)) continue;
+        if (level == 1) { address = start; flags = entry; return true; }
+        // OSInfo never allocates ordinary user huge pages. Device aliases are excluded.
+        if (entry & (1ULL << 7)) continue;
+        if (findDumpPage(entry, level - 1, start, cursor, address, flags)) return true;
+    }
+    return false;
+}
+
 uint64_t kernelAddressSpaceRoot;
 kernel::SpinLock virtualMemoryLock;
 
@@ -219,6 +239,10 @@ uint64_t translateLocked(uint64_t rootPhysicalAddress, uint64_t virtualAddress,
 }  // namespace
 
 namespace kernel::memory {
+
+bool nextDumpPage(uint64_t root, uint64_t cursor, uint64_t& address, uint64_t& flags) {
+    return root && cursor < 0x800000000000ULL && findDumpPage(root, 4, 0, cursor, address, flags);
+}
 
 void initVir(const BootInfo* bootInfo) {
     if (bootInfo == nullptr || bootInfo->pageTableRoot == 0) {

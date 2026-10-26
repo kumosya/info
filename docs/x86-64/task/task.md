@@ -54,7 +54,6 @@ class Thread {
     static void sleepCurrent(uint64_t milliseconds);
     void switchTo(Thread* next);
     static Thread* getCurrent();
-    static void terminateCurrentFromException(int exitCode);
     static void bootstrap();
 
     bool migrate(uint32_t cpuId);
@@ -117,7 +116,7 @@ class Thread {
 - `Thread::exitCurrent`：关中断 → 记录退出码、状态 Terminated → `task->notifyThreadExit` → 请求重调度并 `schedule()`。
 - `Thread::blockCurrent`：委托 `schedule::blockCurrentThread()`。
 - `Thread::wake`：委托 `schedule::wakeThread()`。
-- `Thread::terminateCurrentFromException`：仅允许 User 线程（否则 halt），随后走 `exitCurrent`。
+- 用户异常统一由 `signal::raiseException` 定向处理，默认致命动作调用 `signal::fatal` 结束整个 Task；不将异常向量作为负退出码。旧的线程级异常退出入口已删除，详见[异常、信号与 core](exceptions-and-core.md)。
 
 ### 浮点状态
 
@@ -354,5 +353,3 @@ class SignalAction {
 TaskReference 为跨锁、跨阻塞路径持引用；Task 的退出状态保留到 wait 回收。destroy 将清理提交给专用内核 TaskReclaimer，队列持有独立 Task 引用，以 resourceState 防止重复提交；请求线程被杀或取消不影响清理完成。内核工作线程释放线程栈、HandleTable entries、映射引用和地址空间。wait 摘除子进程时，在父进程锁内先提交回收并转移引用，再从全局表移除；等待线程中途死亡也不会遗失回收责任。
 
 exec 的不可逆提交区禁止抢占但保持中断可用，保证已摘除线程和新地址空间的所有权交接完成；同时拒绝重复 exec 提交和对已终止进程重新开放线程创建。exec 与 destroy 先调用 quiesceTask 等待远端 CPU 实际离开旧 Task，再释放页表。fork 在子线程可运行前同步 Ring 3 MM 的 VMA 和 COW 页面状态；地址空间 generation 在 exec 时递增。
-
-make build/tests/kernel-lifecycle.elf 构建独立测试内核，配合 sh tests/smoke-hybrid.sh --lifecycle-test --smp 4 运行。内存回归另用 --memory-test 模式运行，两种模式各自使用隔离镜像。生命周期测试把目标线程固定在 CPU 1、操作线程固定在 CPU 2；包含清理请求发起者被杀、远端持续访问旧页表，以及 exec 提交中并发 kill。生产内核不包含该测试代码。

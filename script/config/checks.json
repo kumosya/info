@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "project": ".",
+  "memoryRoots": [
+    "include/kernel/memory",
+    "src/kernel/memory",
+    "src/mm"
+  ],
+  "memoryHeaders": [
+    "mm.h",
+    "page.h"
+  ],
+  "forbiddenMemoryHeaders": [
+    "memory.h",
+    "heap.h",
+    "buddy.h",
+    "slab.h",
+    "pool.h",
+    "page_object.h",
+    "numa.h"
+  ],
+  "auditRoots": [
+    "lib/ld-x86-64",
+    "lib/os",
+    "include/os-c++"
+  ],
+  "syscalls": [
+    "invokeSyscall",
+    "waitAddress",
+    "wakeAddress",
+    "sendMessage",
+    "receiveMessage",
+    "callService",
+    "replyMessage"
+  ],
+  "runtimeEntries": [
+    "exitTask",
+    "exitThread",
+    "createThread",
+    "forkTask",
+    "replaceTaskImage",
+    "yield",
+    "sleep",
+    "mapMemory",
+    "getStandardHandle",
+    "getBootstrapHandle",
+    "closeHandle",
+    "unmapMemory",
+    "protectMemory",
+    "__osinfo_runtime_allocate",
+    "__osinfo_runtime_free",
+    "atexit"
+  ]
+}

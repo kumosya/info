@@ -30,7 +30,7 @@ class BootPages {
 void initPhy(const BootInfo* boot) {
     for (auto& byte : available) byte = 0;
     highestAddress = 0;
-    MemoryTopology::initialize(boot);
+    MemoryTopology::init(boot);
     for (uint32_t i = 0; i < boot->memoryMapCount; ++i) {
         const auto& region = boot->memoryMap[i];
         if (region.type != memoryAvailable || region.base >= limit) continue;
@@ -57,7 +57,7 @@ void initPhy(const BootInfo* boot) {
     }
     if (!metadata || !metadataPages) { serial::serialWrite("[MEMORY] insufficient page metadata storage\n"); cpu::halt(); }
     BootPages::range(metadata * 4096, metadataPages * 4096, false);
-    allocator.initialize(reinterpret_cast<PageFrame*>(directMap + metadata * 4096), count);
+    allocator.init(reinterpret_cast<PageFrame*>(directMap + metadata * 4096), count);
     for (uint32_t page = 256; page < count;) {
         if (!BootPages::test(page)) { ++page; continue; }
         const uint32_t first = page;

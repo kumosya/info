@@ -108,10 +108,10 @@ inline void yield() noexcept;
 
 }  // namespace std
 
-#include "os/abi.h"
+#include <os/capi.h>
 
 namespace std::this_thread {
 
-inline void yield() noexcept { os::yield(); }
+inline void yield() noexcept { osTaskYield(); }
 
 }  // namespace std::this_thread

@@ -1,5 +1,8 @@
-#include "server.h"
-#include "sysfs.h"
+#include "service/common/runtime.h"
+#include "service/common/kernel-requests.h"
+#include "service/common/requests.h"
+#include "service/fs/server.h"
+#include "service/fs/sysfs/filesystem.h"
 
 namespace vfs::server {
 namespace {
@@ -12,7 +15,7 @@ class MountPolicy {
 
 bool MountPolicy::typeMatches(const MountSpec& spec, const DeviceRecord& device) {
     return os::Runtime::stringsEqual(spec.type, "auto") ||
-           os::Runtime::stringsEqual(spec.type, FormatProbe::formatName(device.format));
+           os::Runtime::stringsEqual(spec.type, FormatProbe().formatName(device.format));
 }
 bool MountPolicy::bounded(const char* text, size_t length) {
     for (size_t i = 0; i < length; ++i)
@@ -20,11 +23,11 @@ bool MountPolicy::bounded(const char* text, size_t length) {
     return false;
 }
 void MountPolicy::failure(const char* text, const char* source) {
-    os::System::log("[FS] ");
-    os::System::log(text);
-    os::System::log(": ");
-    os::System::log(source);
-    os::System::log("\n");
+    os::Sys().log("[FS] ");
+    os::Sys().log(text);
+    os::Sys().log(": ");
+    os::Sys().log(source);
+    os::Sys().log("\n");
 }
 }  // namespace
 
@@ -43,17 +46,17 @@ bool FsServer::init(uint64_t storageEndpoint, uint64_t deviceEndpoint) {
             !catalog_.add(devices_[index].identity(), devices_[index]))
             return false;
         const DeviceRecord& record = *catalog_.get(index);
-        os::System::log("[FS] detected /dev/");
-        os::System::log(record.identity.name);
-        os::System::log(" type=");
-        os::System::log(FormatProbe::formatName(record.format));
-        os::System::log(" label=");
-        os::System::log(record.label);
-        os::System::log(" UUID=");
-        os::System::log(record.uuid);
-        os::System::log(" PARTUUID=");
-        os::System::log(record.identity.partitionUuid);
-        os::System::log("\n");
+        os::Sys().log("[FS] detected /dev/");
+        os::Sys().log(record.identity.name);
+        os::Sys().log(" type=");
+        os::Sys().log(FormatProbe().formatName(record.format));
+        os::Sys().log(" label=");
+        os::Sys().log(record.label);
+        os::Sys().log(" UUID=");
+        os::Sys().log(record.uuid);
+        os::Sys().log(" PARTUUID=");
+        os::Sys().log(record.identity.partitionUuid);
+        os::Sys().log("\n");
     }
 
     // /etc/fstab lives on the root volume: a candidate must select itself.
@@ -63,7 +66,7 @@ bool FsServer::init(uint64_t storageEndpoint, uint64_t deviceEndpoint) {
         const DeviceRecord& record = *catalog_.get(index);
         if (record.format == Format::Unknown || record.format == Format::ExFat)
             continue;
-        const char* type           = FormatProbe::formatName(record.format);
+        const char* type           = FormatProbe().formatName(record.format);
         vfs::FileSystem* candidate = FileSystemFactory::createFileSystem(type);
         if (!candidate) return false;
         vfs::FileStatus status{};
@@ -117,11 +120,11 @@ bool FsServer::init(uint64_t storageEndpoint, uint64_t deviceEndpoint) {
     }
     mountTable_[0].deviceIndex = selected;
     if (!loadMountTable()) return false;
-    if (!SystemFiles::initialize(*fileSystems_[0])) return false;
+    if (!SystemFiles::init(*fileSystems_[0])) return false;
     mounted_[0] = true;
-    os::System::log("[FS] root resolved to /dev/");
-    os::System::log(catalog_.get(selected)->identity.name);
-    os::System::log("\n");
+    os::Sys().log("[FS] root resolved to /dev/");
+    os::Sys().log(catalog_.get(selected)->identity.name);
+    os::Sys().log("\n");
     for (uint32_t index = 1; index < mountCapacity; ++index) {
         MountEntry& entry = mountTable_[index];
         if (!entry.configured || !entry.spec.automatic) continue;
@@ -190,17 +193,17 @@ bool FsServer::attachMount(uint32_t index) {
         entry.deviceIndex != static_cast<uint32_t>(device))
         return false;
     entry.deviceIndex = static_cast<uint32_t>(device);
-    const char* type  = FormatProbe::formatName(record.format);
+    const char* type  = FormatProbe().formatName(record.format);
     if (!fileSystems_[index]) fileSystems_[index] = FileSystemFactory::createFileSystem(type);
     if (!fileSystems_[index] || !fileSystems_[index]->mount(devices_[device]))
         return false;
     if (fileSystems_[index]->readOnly()) entry.spec.readOnly = true;
     mounted_[index] = true;
-    os::System::log("[FS] mounted /dev/");
-    os::System::log(record.identity.name);
-    os::System::log(" on ");
-    os::System::log(entry.spec.target);
-    os::System::log("\n");
+    os::Sys().log("[FS] mounted /dev/");
+    os::Sys().log(record.identity.name);
+    os::Sys().log(" on ");
+    os::Sys().log(entry.spec.target);
+    os::Sys().log("\n");
     return true;
 }
 
@@ -269,7 +272,7 @@ bool FsServer::mount(const os::IpcMessage& request) {
     }
     const bool attached = attachMount(slot);
     if (!attached && fresh) {
-        const char* actualType = FormatProbe::formatName(catalog_.get(device)->format);
+        const char* actualType = FormatProbe().formatName(catalog_.get(device)->format);
         FileSystemFactory::destroyFileSystem(fileSystems_[slot], actualType);
         fileSystems_[slot] = nullptr;
         entry              = {};
@@ -325,7 +328,7 @@ void FsServer::listMount(uint32_t requested, os::IpcMessage& reply) const {
         os::Runtime::copyString(reinterpret_cast<char*>(&reply.data[9]),
                        entry.spec.target, 64);
         os::Runtime::copyString(reinterpret_cast<char*>(&reply.data[17]),
-                       FormatProbe::formatName(device.format), 16);
+                       FormatProbe().formatName(device.format), 16);
         reply.data[19] = readOnly(static_cast<PathBackend>(index));
         reply.length   = 20;
         return;

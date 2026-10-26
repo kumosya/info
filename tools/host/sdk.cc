@@ -71,7 +71,7 @@ void sdk(const Context& context) {
         const auto retired = inside(destination, name);
         if (fs::is_regular_file(retired)) fs::remove(retired);
     }
-    auto definitions = table("config/layout.conf");
+    auto definitions = table(context.build / "config/layout.conf");
     for (const auto& row : definitions) {
         if (row[0] == "sdk-tree") {
             auto target = destination / "include" / row.at(2);

@@ -8,7 +8,7 @@ IpcMessage 由 os/abi.h 定义：type、内核认证 senderPid/senderTid、reply
 
 Endpoint 有 8 个 FIFO 普通消息槽。队列满时发送等待，空时接收等待；等待者按队列登记顺序唤醒，但唤醒后的 CPU 执行顺序由调度器决定。IRQ 通知独立累计并合并，不占普通消息槽；领取时优先取通知。
 
-SendMessage、ReceiveMessage、CallService 接受绝对单调纳秒 deadline：UINT64_MAX 无限，0 非阻塞。线程在持队列锁时 prepareWait 并加入等待队列，随后释放锁与阻塞；调度阻塞检查预先登记的状态，避免丢失唤醒。
+SendMessage、ReceiveMessage、CallService 接受绝对单调 deadline。线程在持队列锁时 prepareWait 并加入等待队列，随后释放锁与阻塞；调度阻塞检查预先登记的状态，避免丢失唤醒。
 
 取消仅允许同进程线程，通过 SendMessage 的明确取消子操作实现，无新增 syscall。未处理请求移出队列；已被领取的请求使 Token 失效，不回滚服务已完成的业务操作。
 
@@ -35,4 +35,39 @@ SendMessage、ReceiveMessage、CallService 接受绝对单调纳秒 deadline：U
 
 task.kernel 等机制对象的 EndpointService::call 在调用线程内联执行，使用 Task 参数。pipe/msgq 在 Ring3 保存 Reply Token 和能力引用，定期查询请求有效性，取消后释放所持引用。
 
-运行验证见 tests/check-kernel-ipc.sh；RPC 状态图和 SMP 回收时序见[混合内核架构](../../architecture.md)。
+
+## RPC 请求状态
+
+~~~mermaid
+stateDiagram-v2
+  [*] --> Queued: 校验权限及容量，捕获句柄引用
+  Queued --> Claimed: 实际接收 Task 原子安装句柄
+  Claimed --> Replied: 验证 Endpoint、Token 和领取进程
+  Queued --> Cancelled: 超时、取消、信号或关闭
+  Claimed --> Cancelled: 超时、取消或服务死亡
+  Replied --> [*]
+  Cancelled --> [*]: 唤醒调用者，拒绝迟到回复
+~~~
+
+pipe/msgq 延迟回复时查询请求是否仍有效，取消后释放所持能力引用。服务状态不放在内核。消息已领取后取消不回滚此前已完成的业务副作用；服务重启不自动重放原请求。
+
+## SMP 旧地址空间回收
+
+终止清理由专用内核 TaskReclaimer 执行，队列持有 Task 引用，请求者死亡不丢失回收责任。exec 的不可逆提交区禁止抢占，保持中断可用；并发 kill 必须等待提交线程实际切走后才能回收其地址空间。
+
+~~~mermaid
+sequenceDiagram
+  participant A as exec CPU / 内核回收线程
+  participant S as 调度器
+  participant B as 远端 CPU
+  participant M as 地址空间
+  A->>S: 禁止新线程，终止其他线程并摘运行队列
+  S->>B: 请求重新调度
+  B->>B: 完成上下文及 CR3 切换
+  B->>S: 更新 executingTasks 和已选中线程
+  A->>S: quiesceTask 等待所有 CPU 离开
+  S-->>A: 已停稳
+  A->>M: 替换根并回收旧页表
+~~~
+
+Task 退出状态保留至 wait 回收。独立生命周期测试内核覆盖清理请求者被杀和跨 CPU exec/kill 交错。CPU 停稳不能替代 DMA 设备停止；设备死亡后的硬件停机与安全重启协议仍需完善。

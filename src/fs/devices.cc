@@ -1,6 +1,15 @@
-#include "devices.h"
+#include "service/fs/iso/filesystem.h"
+#include "service/common/records.h"
+#include "service/common/runtime.h"
+#include "service/common/kernel-requests.h"
+#include "service/common/requests.h"
+#include "service/fs/devices.h"
 
-#include "os/abi.h"
+#include <os/ipc.h>
+#include <os/task.h>
+#include <os/mm.h>
+#include <os/device.h>
+#include <os/service.h>
 
 namespace vfs::server {
 namespace {
@@ -58,15 +67,15 @@ const char* DeviceNames::selector(const DeviceRecord& record, const char* direct
 }
 }  // namespace
 
-bool DeviceCatalog::add(const os::StorageDeviceIdentity& identity,
+bool DeviceCatalog::add(const os::wire::StorageDeviceIdentity& identity,
                         SectorDevice& device) {
     if (count_ == os::maximumStorageDevices || identity.id != count_ ||
         identity.name[0] == '\0')
         return false;
     for (uint32_t index = 0; index < count_; ++index) {
         const auto& prior = records_[index].identity;
-        if (os::DeviceNumber::deviceNumber(prior.major, prior.minor) ==
-                os::DeviceNumber::deviceNumber(identity.major, identity.minor) ||
+        if (os::Storage::Number(prior.major, prior.minor).getValue() ==
+                os::Storage::Number(identity.major, identity.minor).getValue() ||
             os::Runtime::stringsEqual(prior.name, identity.name) ||
             os::Runtime::stringsEqual(prior.hardwarePath, identity.hardwarePath))
             return false;
@@ -75,7 +84,7 @@ bool DeviceCatalog::add(const os::StorageDeviceIdentity& identity,
     record.identity = identity;
     uint8_t boot[2048]{};
     if (device.sectorCount() >= 4 && device.readSectors(0, 4, boot)) {
-        record.format = FormatProbe::detectFormat(boot, sizeof(boot), nullptr, 0);
+        record.format = FormatProbe().detectFormat(boot, sizeof(boot), nullptr, 0);
         if (record.format == Format::Ext3 || record.format == Format::Ext4) {
             DeviceNames::uuid(record.uuid, boot + 1024 + 104);
             DeviceNames::text(record.label, sizeof(record.label), boot + 1024 + 120, 16);
@@ -91,7 +100,7 @@ bool DeviceCatalog::add(const os::StorageDeviceIdentity& identity,
         }
     }
     if (record.format == Format::Unknown && device.sectorCount() >= 68 &&
-        device.readSectors(64, 4, boot) && FormatProbe::probeIso9660(boot, sizeof(boot))) {
+        device.readSectors(64, 4, boot) && iso::Probe().detect(boot, sizeof(boot))) {
         record.format = Format::Iso9660;
         DeviceNames::text(record.label, sizeof(record.label), boot + 40, 32);
         // libblkid uses the ISO volume creation timestamp as its filesystem

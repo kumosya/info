@@ -167,6 +167,7 @@ void init();
 void initTimer(uint8_t vector, uint32_t initialCount);
 
 void sendEndOfInterrupt();
+void stopOtherCpus();
 void sendInterTaskorInterrupt(uint32_t apicId, uint8_t vector);
 void sendInitInterTaskorInterrupt(uint32_t apicId);
 void sendStartupInterTaskorInterrupt(uint32_t apicId, uint8_t vector);

@@ -1,8 +1,8 @@
 # 内核架构
 
-所有服务进程运行在 Ring3：init、task、fs、pci、device、storage、tty、console、guiw、users、MM、pipe、msgq。固定 boot 身份只授予受控机制调用权限，不改变进程运行级别。
+所有服务进程运行在 Ring3。boot 身份只会授予受控机制调用权限，不改变进程运行级别。
 
-Ring0 只保留基础内核机制及 task.kernel、pci.kernel、device.kernel、memory.kernel、system.kernel 等机制对象。服务进程不得直接操作 I/O 端口。PS/2 控制器和 PCI 配置端口属于内核硬件实现；Ring3 只发送受限设备协议。
+Ring0 只有基础内核机制及 task.kernel、pci.kernel、device.kernel、memory.kernel、system.kernel 等机制对象。Ring3 服务进程是不能直接操作 I/O 端口的，只会向对应 Ring0 进程发送 I/O 请求。
 
 ~~~mermaid
 flowchart TB
@@ -112,42 +112,8 @@ flowchart LR
   GUI --> Sessions["GUI terminal + 六个 shell"]
 ~~~
 
-普通磁盘 SpawnImage 不能申请 capabilities 或 ServiceRole。guiw 服务与终端客户端位于独立 `D:/osinfo/guiw` 项目的 `server/`、`src/`；inpkg 位于 `D:/osinfo/inpkg`。OS 仓库只接收并安装这两个项目的 `.inpk`，将 guiw 包中的引导镜像交给固定 WindowServer 角色。`user/Makefile` 是其余用户空间组件的独立构建入口。硬件权限按固定 boot 角色验证，不以 Ring0 执行或 root UID 作为服务身份。
+普通磁盘程序不能通过启动参数申请特权。 即使指定了 capabilities 或 ServiceRole，也不能借此把自己变成系统服务。否则，任意程序都可以申请访问硬件。
 
-普通磁盘程序通过 Ring3 `/lib/ld-osinfo-x86-64.so` 加载 `DT_NEEDED` 依赖。内核只验证、映射主 ELF 与 `PT_INTERP` 解释器；文件搜索、符号查找、重定位和共享库初始化不进入内核。文件系统可用之前的 boot 模块保留封闭的引导链接路径。宿主开发环境 Info IDE 位于 `D:/osinfo/infoide`，通过导出的 SDK 交叉编译和打包。
+普通磁盘程序通过 Ring3 `/lib/ld-osinfo-x86-64.so` 加载 `DT_NEEDED` 依赖。内核只验证、映射主 ELF 与 `PT_INTERP` 解释器；文件搜索、符号查找、重定位和共享库初始化不进入内核。文件系统可用之前的 boot 模块保留封闭的引导链接路径。开发环境 Info IDE 的仓库在 [这里](https://github.com/kumosya/infoide)。infoide 通过由 osinfo 导出的 SDK 交叉编译和打包。
 
-## RPC 请求状态
-
-~~~mermaid
-stateDiagram-v2
-  [*] --> Queued: 校验权限及容量，捕获句柄引用
-  Queued --> Claimed: 实际接收 Task 原子安装句柄
-  Claimed --> Replied: 验证 Endpoint、Token 和领取进程
-  Queued --> Cancelled: 超时、取消、信号或关闭
-  Claimed --> Cancelled: 超时、取消或服务死亡
-  Replied --> [*]
-  Cancelled --> [*]: 唤醒调用者，拒绝迟到回复
-~~~
-
-pipe/msgq 延迟回复时查询请求是否仍有效，取消后释放所持能力引用。服务状态不放在内核。消息已领取后取消不回滚此前已完成的业务副作用；服务重启不自动重放原请求。
-
-## SMP 旧地址空间回收
-
-终止清理由专用内核 TaskReclaimer 执行，队列持有 Task 引用，请求者死亡不丢失回收责任。exec 的不可逆提交区禁止抢占，保持中断可用；并发 kill 必须等待提交线程实际切走后才能回收其地址空间。
-
-~~~mermaid
-sequenceDiagram
-  participant A as exec CPU / 内核回收线程
-  participant S as 调度器
-  participant B as 远端 CPU
-  participant M as 地址空间
-  A->>S: 禁止新线程，终止其他线程并摘运行队列
-  S->>B: 请求重新调度
-  B->>B: 完成上下文及 CR3 切换
-  B->>S: 更新 executingTasks 和已选中线程
-  A->>S: quiesceTask 等待所有 CPU 离开
-  S-->>A: 已停稳
-  A->>M: 替换根并回收旧页表
-~~~
-
-Task 退出状态保留至 wait 回收。独立生命周期测试内核覆盖清理请求者被杀和跨 CPU exec/kill 交错。CPU 停稳不能替代 DMA 设备停止；设备死亡后的硬件停机与安全重启协议仍需完善。
+guiw 服务、osgui 库与图形界面的实现位于 [GUI Window](https://github.com/kumosya/guiw) 项目的 `server/`、`src/`；inpkg 位于 [这里](https://github.com/kumosya/inpkg)。

@@ -1,3 +1,4 @@
+#define _GNU_SOURCE 1
 #include <pwd.h>
 #include <grp.h>
 #include <stdio.h>
@@ -87,3 +88,28 @@ int getlogin_r(char* buffer,size_t size) {
     memcpy(buffer,value.pw_name,length+1); return 0;
 }
 char* getlogin(void) { static char name[64]; int e=getlogin_r(name,sizeof(name)); if(e) { errno=e; return NULL; } return name; }
+int getgrouplist(const char* name, gid_t base, gid_t* groups, int* capacity) {
+    if (!name || !capacity || *capacity < 0 || base == (gid_t)-1) { errno = EINVAL; return -1; }
+    gid_t values[32] = {base}; unsigned count = 1;
+    FILE* file = fopen("/etc/group", "r"); if (!file) return -1;
+    struct group group; char buffer[1024]; int error;
+    while (!(error = read_group(file, &group, buffer, sizeof(buffer)))) {
+        int member = 0;
+        for (char** entry = group.gr_mem; entry && *entry; ++entry) if (!strcmp(*entry, name)) { member = 1; break; }
+        if (!member) continue;
+        unsigned i = 0; while (i < count && values[i] != group.gr_gid) ++i;
+        if (i != count) continue;
+        if (count == 32) { error = E2BIG; break; }
+        values[count++] = group.gr_gid;
+    }
+    fclose(file);
+    if (error != ENOENT) { errno = error; return -1; }
+    const int size = *capacity; *capacity = count;
+    if ((unsigned)size < count) { errno = ERANGE; return -1; }
+    if (!groups) { errno = EFAULT; return -1; }
+    memcpy(groups, values, count * sizeof(gid_t)); return count;
+}
+int initgroups(const char* name, gid_t base) {
+    gid_t groups[32]; int count = 32;
+    return getgrouplist(name, base, groups, &count) < 0 ? -1 : setgroups(count, groups);
+}

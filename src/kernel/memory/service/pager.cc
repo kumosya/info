@@ -1,10 +1,11 @@
+#include "service/common/identity.h"
+#include "service/common/kernel-requests.h"
 #include "kernel/mm.h"
 #include "kernel/ipc.h"
 #include "kernel/task.h"
 #include "kernel/time.h"
 #include "kernel/page.h"
-#include "kernel/recovery.h"
-#include "os/mm.h"
+#include "service/common/requests.h"
 namespace kernel::memory {
 namespace {
 SpinLock pagerLock; Endpoint* pagerEndpoint;
@@ -12,7 +13,7 @@ int exchange(IpcMessage& request, IpcMessage& reply, bool optional = false) {
     const auto flags = interrupt::disable(); interrupt::enable();
     const uint64_t deadline = time::getMonotonicTime() + 20000000000ULL;
     bool observed = false;
-    for (;;) {
+    while (true) {
         Endpoint* endpoint;
         {
             InterruptSpinLockGuard guard(pagerLock); endpoint = pagerEndpoint;
@@ -35,14 +36,18 @@ bool PagerBridge::bind(Task& owner, Endpoint* endpoint) {
     if (pagerEndpoint && !pagerEndpoint->isClosed() && pagerEndpoint->getOwner() != &owner) return false;
     endpoint->retain(); if (pagerEndpoint) pagerEndpoint->release(); pagerEndpoint = endpoint; return true;
 }
-bool PagerBridge::resolve(uint64_t address, uint64_t flags) {
+bool PagerBridge::resolve(uint64_t address, uint64_t flags, int* failure) {
+    if (failure) *failure = -4;
     Task* caller = task::getCurrent();
     if (!caller || caller->serviceRole() == os::ServiceRole::Memory || address < 0x10000 || address >= 0x0000800000000000ULL || (flags & 8)) return false;
     IpcMessage request{}, reply{};
     request.type = static_cast<uint64_t>(os::MmOperation::Fault); request.length = 3;
     request.data[0] = address; request.data[1] = flags;
     const int result = exchange(request, reply);
-    if (result || static_cast<int64_t>(reply.data[0])) return false;
+    if (result || static_cast<int64_t>(reply.data[0])) {
+        if (failure) *failure = result ? result : static_cast<int>(reply.data[0]);
+        return false;
+    }
     PreemptionSpinLockGuard guard(caller->addressSpace().lock());
     const uint64_t root = caller->addressSpace().rootPhysicalAddress(); uint64_t actual = 0;
     return root && memory::validateUserMemory(root, address, 1, (flags & 2) != 0) &&

@@ -4,7 +4,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "os_adapter.h"
+#include "internal.h"
 
 #define NANOSECONDS_PER_SECOND 1000000000ULL
 

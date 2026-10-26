@@ -1,7 +1,14 @@
-#include "os/task.h"
+#include "service/common/runtime.h"
+#include "service/common/queries.h"
+#include <os/mm.h>
+#include <os/task.h>
 #include <thread>
 
-#include "os/abi.h"
+#include <os/ipc.h>
+#include <os/task.h>
+#include <os/mm.h>
+#include <os/device.h>
+#include <os/service.h>
 
 namespace std::detail {
 
@@ -38,7 +45,7 @@ void run(void* argument) {
 }
 
 void releaseState(ThreadState& state) {
-    os::Memory::freeMemory(state.stack);
+    os::Runtime::freeMemory(state.stack);
     state = {};
 }
 
@@ -46,7 +53,7 @@ void reapDetachedThreads() {
     for (ThreadState& state : states) {
         int exitCode = 0;
         if (state.used && state.detached && state.id != 0 &&
-            os::Task::waitThread(state.id, exitCode, true) == 0) {
+            os::detail::TaskControl().waitThread(state.id, exitCode, true) == 0) {
             releaseState(state);
         }
     }
@@ -66,7 +73,7 @@ ThreadState* createStandardThread(ThreadInvoker invoker, void* object) {
             continue;
         }
         state = {};
-        state.stack = os::Memory::allocateMemory(threadStackSize);
+        state.stack = os::Runtime::allocateMemory(threadStackSize);
         if (state.stack == nullptr) {
             unlockStates();
             return nullptr;
@@ -78,7 +85,7 @@ ThreadState* createStandardThread(ThreadInvoker invoker, void* object) {
             run, reinterpret_cast<uint64_t>(state.stack) + threadStackSize,
             &state);
         if (state.id == 0) {
-            os::Memory::freeMemory(state.stack);
+            os::Runtime::freeMemory(state.stack);
             state = {};
             unlockStates();
             return nullptr;
@@ -95,7 +102,7 @@ void joinStandardThread(ThreadState* state) {
         return;
     }
     int exitCode = 0;
-    os::Task::waitThread(state->id, exitCode);
+    os::detail::TaskControl().waitThread(state->id, exitCode);
     lockStates();
     releaseState(*state);
     unlockStates();

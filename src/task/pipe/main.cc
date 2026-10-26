@@ -1,11 +1,15 @@
-#include "os/abi.h"
-#include "os/core_service.h"
-#include "os/service.h"
-#include "os/task.h"
-#include "../../service/replay.h"
-#ifdef OS_PIPE_TRANSACTION_TEST
-#include "../../../tests/pipe-phase.h"
-#endif
+#include "service/common/queries.h"
+#include "service/common/runtime.h"
+#include "service/common/kernel-requests.h"
+#include "service/common/requests.h"
+#include <os/ipc.h>
+#include <os/task.h>
+#include <os/mm.h>
+#include <os/device.h>
+#include <os/service.h>
+#include <os/service.h>
+#include <os/task.h>
+#include "service/common/replay.h"
 
 class PipeServer {
     static constexpr size_t capacity = 64, pendingCapacity = 128, bufferSize = 16384;
@@ -19,7 +23,7 @@ class PipeServer {
         unsigned char data[512]{};
     } pending_[pendingCapacity];
     uint64_t endpoint_ = 0;
-    os::ServiceCheckpoint checkpoint_;
+    os::Sys::Checkpoint checkpoint_;
     services::RecoveryCapabilities capabilities_{checkpoint_};
     services::ReplayCache results_;
     bool durableResults_[services::ReplayCache::capacity]{};
@@ -38,7 +42,7 @@ class PipeServer {
     static_assert(sizeof(Delta) <= 4096 - 32);
     uint64_t nextCollection_ = 0;
 
-    [[noreturn]] static void failed() { os::System::log("[PIPE] recovery transaction failed\n"); os::exitTask(2); }
+    [[noreturn]] static void failed() { os::Sys().log("[PIPE] recovery transaction failed\n"); os::exitTask(2); }
     bool retain() {
         capabilities_.begin();
         if (!capabilities_.encode(endpoint_)) return false;
@@ -94,10 +98,10 @@ class PipeServer {
         const int loaded = checkpoint_.open(&snapshot_, sizeof(snapshot_), 0x5049504553543032ULL);
         if (loaded < 0) return false;
         if (!loaded) {
-            endpoint_ = os::Endpoint::create();
+            endpoint_ = os::detail::EndpointControl().create();
             return endpoint_ && !checkpoint_.prepare() && save();
         }
-        for (uint32_t i = 0; i < checkpoint_.records(); ++i) {
+        for (uint32_t i = 0; i < checkpoint_.getRecordCount(); ++i) {
             if (checkpoint_.readLog(i, &delta_, sizeof(delta_)) || delta_.pair > capacity || delta_.outcome > services::ReplayCache::capacity) return false;
             if (delta_.size > 512 || (delta_.size && (delta_.pair >= capacity || !delta_.value.used || delta_.stream >= 2 || delta_.offset >= bufferSize))) return false;
             if (delta_.pair < capacity) {
@@ -130,7 +134,7 @@ class PipeServer {
             for (auto& end : pair.ends) {
                 if (!end.handle || end.handle != end.token) return false;
                 end.handle = capabilities_.decode(end.token);
-                if (!end.handle || os::Handle::identity(end.handle) != end.id) return false;
+                if (!end.handle || os::Ipc::Handle(end.handle, false).queryIdentity() != end.id) return false;
             }
             if (pair.ends[0].id == pair.ends[1].id) return false;
             for (uint32_t n = 0; n < i; ++n) if (pairs_[n].used)
@@ -143,10 +147,10 @@ class PipeServer {
             if (!found) return false;
         }
         if (!results_.retain(capabilities_) || !capabilities_.discardOrphans()) return false;
-        os::System::log("[PIPE] byte streams and replay results restored\n"); return true;
+        os::Sys().log("[PIPE] byte streams and replay results restored\n"); return true;
     }
 
-    static void closeTag(uint64_t handle) { if (handle) { os::Handle::destroyEndpoint(handle); os::closeHandle(handle); } }
+    static void closeTag(uint64_t handle) { if (handle) { os::Ipc::Handle(handle, false).destroyEndpoint(); os::closeHandle(handle); } }
     void release(size_t index) {
         auto& pair = pairs_[index];
         if (!prepare()) return;
@@ -155,7 +159,7 @@ class PipeServer {
         for (auto& end : pair.ends) closeTag(end.handle);
         pair = {};
     }
-    bool live(const Pair& pair, size_t end) { return os::Handle::references(pair.ends[end].handle) > 1; }
+    bool live(const Pair& pair, size_t end) { return os::Ipc::Handle(pair.ends[end].handle, false).queryReferences() > 1; }
     bool reply(uint64_t token, int64_t status, os::IpcMessage* value = nullptr) {
         os::IpcMessage empty{}; auto& result = value ? *value : empty;
         result.data[0] = status; if (!result.length) result.length = 1;
@@ -164,14 +168,10 @@ class PipeServer {
     void finish(Pending& request, int64_t status, os::IpcMessage* value = nullptr) {
         os::IpcMessage empty{}; auto& result = value ? *value : empty;
         result.data[0] = status; if (!result.length) result.length = 1;
-#ifdef OS_PIPE_TRANSACTION_TEST
-        PipeTestPhase::pause(request.operation, request.size, false);
-#endif
+
         if (!results_.remember(request.outcome, result, capabilities_)) failed();
         commit(request.pair, request.outcome, &request);
-#ifdef OS_PIPE_TRANSACTION_TEST
-        PipeTestPhase::pause(request.operation, request.size, true);
-#endif
+
         os::replyMessage(endpoint_, request.token, result);
     }
     bool attempt(Pending& request) {
@@ -208,18 +208,18 @@ class PipeServer {
     void progress() {
         // Cancelled RPCs release their capability references before objects are collected.
         for (auto& request : pending_) if (request.used) {
-            if (os::Handle::requestActive(endpoint_, request.token) != 1 || attempt(request)) {
+            if (os::Ipc::Handle(endpoint_, false).requestActive(request.token) != 1 || attempt(request)) {
                 os::closeHandle(request.handle); request = {};
             }
         }
         for (size_t i = 0; i < capacity; ++i)
             if (pairs_[i].used && !live(pairs_[i], 0) && !live(pairs_[i], 1) &&
                 !results_.references(pairs_[i].ends[0].token) && !results_.references(pairs_[i].ends[1].token)) release(i);
-        if (os::Clock::getMonotonicTime() >= nextCollection_) {
-            nextCollection_ = os::Clock::getMonotonicTime() + 1000000000ULL;
+        if (os::Sys().readMonotonicTime() >= nextCollection_) {
+            nextCollection_ = os::Sys().readMonotonicTime() + 1000000000ULL;
             for (uint32_t i = 0; i < services::ReplayCache::capacity; ++i) {
                 const auto& record = results_.records[i]; if (!record.task) continue;
-                uint64_t generation = 0; const auto status = checkpoint_.generation(record.task, generation);
+                uint64_t generation = 0; const auto status = checkpoint_.queryGeneration(record.task, generation);
                 const bool dead = status == static_cast<int>(os::ErrorCode::NotFound) || (!status && generation != record.generation);
                 if (dead && prepare()) {
                     results_.records[i] = {}; commit(capacity, i);
@@ -233,7 +233,7 @@ class PipeServer {
             auto& pair = pairs_[i]; pair.used = true; pair.channel = channel;
             for (auto& stream : pair.streams) { stream.head = stream.count = stream.eof = 0; }
             for (auto& end : pair.ends) {
-                end.handle = os::Endpoint::create(); end.id = os::Handle::identity(end.handle); end.nonblocking = false;
+                end.handle = os::detail::EndpointControl().create(); end.id = os::Ipc::Handle(end.handle, false).queryIdentity(); end.nonblocking = false;
             }
             if (!pair.ends[0].handle || !pair.ends[1].handle) {
                 for (auto& end : pair.ends) closeTag(end.handle);
@@ -274,7 +274,7 @@ class PipeServer {
         if (request.length < 3) { reply(request.replyToken, -1); return; }
         if (operation == os::PipeOperation::Create || operation == os::PipeOperation::CreateChannel) { create(request, operation == os::PipeOperation::CreateChannel, replay.slot); return; }
         if (request.handleCount != 1) { reply(request.replyToken, -2); return; }
-        const uint64_t identity = os::Handle::identity(request.handles[0]);
+        const uint64_t identity = os::Ipc::Handle(request.handles[0], false).queryIdentity();
         for (size_t index = 0; index < capacity; ++index) if (pairs_[index].used) for (size_t side = 0; side < 2; ++side) {
             auto& pair = pairs_[index];
             if (pair.ends[side].id != identity) continue;
@@ -313,15 +313,13 @@ class PipeServer {
  public:
     int run() {
         if (!restore()) return 1;
-#ifdef OS_PIPE_TRANSACTION_TEST
-        if (!PipeTestPhase::initialize()) return 1;
-#endif
-        if (!os::ServiceRegistry::registerService(os::getBootstrapHandle(), "pipe", endpoint_)) return 1;
-        os::System::log("[PIPE] Ring 3 service ready\n");
-        for (;;) {
+
+        if (!os::detail::RegistryClient(os::getBootstrapHandle()).registerName("pipe", endpoint_)) return 1;
+        os::Sys().log("[PIPE] Ring 3 service ready\n");
+        while (true) {
             progress();
             os::IpcMessage request{};
-            if (os::receiveMessage(endpoint_, request, os::Clock::getMonotonicTime() + 10000000) == 0) {
+            if (os::receiveMessage(endpoint_, request, os::Sys().readMonotonicTime() + 10000000) == 0) {
                 handle(request);
                 for (uint32_t n = 0; n < request.handleCount; ++n) os::closeHandle(request.handles[n]);
                 progress();
@@ -329,4 +327,7 @@ class PipeServer {
         }
     }
 };
-int main(int, char**) { static PipeServer server; return server.run(); }
+int main(int, char**) {
+    static PipeServer server;
+    return server.run();
+}

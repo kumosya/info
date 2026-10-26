@@ -1,8 +1,8 @@
 #include "kernel/boot_image.h"
-#include "kernel/service_message.h"
+#include "kernel/ipc.h"
 #include "kernel/spinlock.h"
-#include "os/core_service.h"
-#include "os/storage.h"
+#include "service/common/kernel-requests.h"
+#include <os/storage.h>
 
 namespace kernel::device {
 namespace {
@@ -10,7 +10,7 @@ uint8_t* bytes;
 uint64_t size;
 SpinLock lock;
 }
-void BootImage::initialize(const BootInfo& boot) {
+void BootImage::init(const BootInfo& boot) {
     for (uint32_t i = 0; i < boot.moduleCount; ++i) {
         const auto& module = boot.modules[i];
         const char* name = module.commandLine;

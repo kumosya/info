@@ -1,0 +1,7 @@
+# Bounded ELF core snapshots, written by the Ring 3 task service.
+enabled=1
+maximum_bytes=8388608
+maximum_concurrent=2
+maximum_space=67108864
+timeout_ms=10000
+directory=/var/core

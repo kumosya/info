@@ -34,5 +34,6 @@
 #define PATH_MAX 384
 #define PIPE_BUF 4096
 #define OPEN_MAX 32
+#define NGROUPS_MAX 32
 
 #endif

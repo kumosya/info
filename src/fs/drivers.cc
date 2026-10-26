@@ -1,11 +1,18 @@
+#include "service/common/runtime.h"
+#include "service/common/queries.h"
+#include <os/mm.h>
 #include <new>
 
-#include "ext3.h"
-#include "ext4.h"
-#include "fat32.h"
-#include "iso.h"
-#include "os/abi.h"
-#include "vfs.h"
+#include "service/fs/ext3/filesystem.h"
+#include "service/fs/ext4/filesystem.h"
+#include "service/fs/fat/filesystem.h"
+#include "service/fs/iso/filesystem.h"
+#include <os/ipc.h>
+#include <os/task.h>
+#include <os/mm.h>
+#include <os/device.h>
+#include <os/service.h>
+#include "service/fs/vfs.h"
 
 namespace vfs {
 class DriverTypes {
@@ -24,7 +31,7 @@ static bool matches(const char* value, const char* expected) {
 
 template <typename Type>
 static FileSystem* create() {
-    void* memory = os::Memory::allocateMemory(sizeof(Type));
+    void* memory = os::Runtime::allocateMemory(sizeof(Type));
     return memory == nullptr ? nullptr : new (memory) Type{};
 }
 
@@ -48,7 +55,7 @@ void FileSystemFactory::destroyFileSystem(FileSystem* filesystem, const char* ty
         static_cast<Fat32FileSystem*>(filesystem)->~Fat32FileSystem();
     else if (DriverTypes::matches(type, "iso9660"))
         static_cast<Iso9660FileSystem*>(filesystem)->~Iso9660FileSystem();
-    os::Memory::freeMemory(filesystem);
+    os::Runtime::freeMemory(filesystem);
 }
 
 }  // namespace vfs

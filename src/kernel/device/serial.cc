@@ -81,4 +81,19 @@ void serialWriteDecimal(uint64_t value) {
     }
 }
 
+// Emergency diagnostics must also work when an NMI interrupted outputLock's owner.
+void emergencyWrite(const char* value) {
+    if (!value) return;
+    while (*value) {
+        if (*value == '\n') writeCharacter('\r');
+        writeCharacter(*value++);
+    }
+}
+void emergencyHex(uint64_t value) {
+    constexpr char digits[] = "0123456789abcdef";
+    char text[19] = "0x";
+    for (unsigned i = 0; i < 16; ++i) text[i + 2] = digits[(value >> (60 - i * 4)) & 15];
+    emergencyWrite(text);
+}
+
 }  // namespace kernel::serial

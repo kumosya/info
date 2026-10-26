@@ -1,135 +1,111 @@
 #include "host.h"
+#include "qmp_json.h"
+#include <iomanip>
+
 namespace host {
-void defaults(const Context&) {
-    if (!fs::exists("config/services.conf")) write("config/services.conf", R"OSINFO_CONFIG(
-# name|ring|source relative to src|ProgramId|id|ServiceRole|role id|capability|origin|ready endpoint|dependencies|startup order|process name|link libraries|source traversal|loading source|owner
-init|3|init|Init|0|Init|1|taskCapabilitySpawn|local|services|-|0|init|-|flat|boot|kernel
-task|3|task|TaskServer|1|Task|2|taskCapabilitySpawn|local|task|init|1|task-server|-|flat|boot|init
-fs|3|fs|FsServer|2|Fs|3|0|local|fs|storage|7|fs-server|-|recursive|boot|init
-pci|3|device/pci|PciServer|3|Pci|4|taskCapabilityPci|local|pci|device|5|pci-server|-|flat|boot|device
-device|3|device|DeviceServer|4|Device|5|taskCapabilityDevice|local|device|task|4|device-server|-|flat|boot|init
-storage|3|device/storage|StorageServer|5|Storage|6|taskCapabilityDevice|local|storage|pci,task|6|storage-server|-|flat|boot|device
-tty|3|tty|TtyServer|6|Tty|7|0|disk|tty|users,fs,mm|10|tty-server|-|flat|file|init
-console|3|console|ConsoleServer|7|Console|8|taskCapabilityDisplay|disk|console|tty|11|console-server|graphic|flat|file|init
-guiw|3|-|WindowServer|8|Window|9|taskCapabilityDisplay|external|guiw|console|12|window-server|-|flat|file|init
-users|3|users|UsersServer|9|Users|10|taskCapabilityUsers|disk|users|fs,mm|9|users-server|c|flat|file|init
-mm|3|mm|MemoryManager|10|Memory|11|taskCapabilityMemory|local|mm|fs|8|memory-manager|-|flat|boot|init
-pipe|3|task/pipe|PipeServer|11|Pipe|12|0|local|pipe|task|2|pipe-server|-|flat|boot|task
-msgq|3|task/msgq|MessageQueueServer|12|MessageQueue|13|0|local|msgq|task|3|message-queue-server|-|flat|boot|task
-task.kernel|0|kernel/task/service|-|-|-|-|-|resident|-|-|-|-|-|flat|resident|kernel
-system.kernel|0|kernel/task/sys|-|-|-|-|-|resident|-|-|-|-|-|flat|resident|kernel
-pci.kernel|0|kernel/device/pci|-|-|-|-|-|resident|-|-|-|-|-|flat|resident|kernel
-device.kernel|0|kernel/device/service|-|-|-|-|-|resident|-|-|-|-|-|flat|resident|kernel
-memory.kernel|0|kernel/memory/service|-|-|-|-|-|resident|-|-|-|-|-|flat|resident|kernel
-)OSINFO_CONFIG");
-    if (!fs::exists("config/layout.conf")) write("config/layout.conf", R"OSINFO_CONFIG(
-# Declarative deployment and SDK inputs; {build}, {packages}, {objects} are build parameters.
-directory|bin|0755
-directory|boot/grub|0755
-directory|dev/pts|0755
-directory|etc/xdg|0755
-directory|home|0755
-directory|lib|0755
-directory|media|0755
-directory|mnt/cdrom|0755
-directory|mnt/ext4|0755
-directory|mnt/fat32|0755
-directory|proc|0755
-directory|run/lock|0755
-directory|run/user|0755
-directory|sbin/sys|0755
-directory|sys|0755
-directory|tmp|1777
-directory|usr/bin|0755
-directory|usr/sbin|0755
-directory|usr/lib|0755
-directory|usr/include|0755
-directory|usr/share|0755
-directory|usr/local/share|0755
-directory|var/cache|0755
-directory|var/lib/inpkg|0755
-directory|var/log|0755
-directory|var/tmp|1777
-user-directory|.local|0700
-user-directory|.local/bin|0700
-user-directory|.local/lib|0700
-user-directory|.local/include|0700
-user-directory|.local/share|0700
-user-directory|.local/state/inpkg|0700
-user-directory|.config|0700
-user-directory|.cache|0700
-copy|{build}/kernel.elf|boot/kernel.elf|0755
-copy|{build}/lib/ld-osinfo-x86-64.so|lib/ld-osinfo-x86-64.so|0755
-copy|script/lib/version.1|lib/version.1|0644
-copy|{build}/generated/grub.cfg|boot/grub/grub.cfg|0644
-tree|script/etc|etc
-mode|etc/shadow|0600
-mode|etc/sudoers|0440
-runtime|libos-c++|libos-c++.so
-runtime|libc++|libc.so
-runtime|libc++|libc++.so
-external-runtime|libosgui-c++|libosgui-c++.so
-sdk-tree|include/stdc|stdc
-sdk-tree|include/stdc++|stdc++
-sdk-tree|include/posix|posix
-sdk-tree|include/os-c++|os-c++
-sdk-file|{objects}/user/runtime/start.o|lib/start.o
-sdk-file|{objects}/user/runtime/service_start.o|lib/service_start.o
-sdk-file|{build}/lib/ld-osinfo-x86-64.so|lib/ld-osinfo-x86-64.so
-sdk-file|script/user.lds|lib/user.lds
-sdk-file|script/boot-service.lds|lib/boot-service.lds
-legacy-database|etc/inpkg/system|var/lib/inpkg
-legacy-home|app|.local
-)OSINFO_CONFIG");
-    // Existing generated layouts survive configure; migrate only the old GUI row.
-    auto layout = read("config/layout.conf");
-    const std::string legacy = "external-runtime|libosgui|libosgui.so";
-    const auto offset = layout.find(legacy);
-    if (offset != std::string::npos && (offset == 0 || layout[offset - 1] == '\n')) {
-        const auto end = offset + legacy.size();
-        if (end == layout.size() || layout[end] == '\n' || layout[end] == '\r') {
-            layout.replace(offset, legacy.size(), "external-runtime|libosgui-c++|libosgui-c++.so");
-            write("config/layout.conf", layout);
+namespace {
+using Json = host_json::Json;
+class ConfigReader {
+    fs::path path_;
+ public:
+    explicit ConfigReader(const fs::path& path) : path_(path) {}
+    Json load() const {
+        try { return Json::parse(read(path_)); }
+        catch (const std::exception& error) { throw std::runtime_error(path_.string() + ": " + error.what()); }
+    }
+    void keys(const Json& value, const std::vector<std::string>& expected) const {
+        for (const auto& [key, item] : value.object()) {
+            (void)item;
+            if (std::find(expected.begin(), expected.end(), key) == expected.end()) fail("unknown field: " + key);
         }
     }
-    if (!fs::exists("config/checks.conf")) write("config/checks.conf", R"OSINFO_CONFIG(
-# Source audit policy, not a second service catalog.
-project|.
-memory-root|include/kernel/memory
-memory-root|src/kernel/memory
-memory-root|src/mm
-memory-header|mm.h
-memory-header|page.h
-forbidden-memory-header|memory.h
-forbidden-memory-header|heap.h
-forbidden-memory-header|buddy.h
-forbidden-memory-header|slab.h
-forbidden-memory-header|pool.h
-forbidden-memory-header|page_object.h
-forbidden-memory-header|numa.h
-audit-root|user/ld
-audit-root|lib/os
-audit-root|include/os-c++
-syscall|invokeSyscall
-syscall|exitTask
-syscall|exitThread
-syscall|createThread
-syscall|waitAddress
-syscall|wakeAddress
-syscall|forkTask
-syscall|replaceTaskImage
-syscall|yield
-syscall|sleep
-syscall|mapMemory
-syscall|sendMessage
-syscall|receiveMessage
-syscall|callService
-syscall|replyMessage
-syscall|getStandardHandle
-syscall|getBootstrapHandle
-syscall|closeHandle
-syscall|unmapMemory
-syscall|protectMemory
-)OSINFO_CONFIG");
+    [[noreturn]] void fail(const std::string& message) const { throw std::runtime_error(path_.string() + ": " + message); }
+    std::string cell(const Json& value) const {
+        std::string result;
+        if (const auto* text = std::get_if<std::string>(&value.value)) result = *text;
+        else if (const auto* number = std::get_if<double>(&value.value)) {
+            if (*number < 0 || *number > 9007199254740991.0 || std::floor(*number) != *number) fail("expected a nonnegative integer");
+            std::ostringstream output; output << std::fixed << std::setprecision(0) << *number; result = output.str();
+        } else fail("expected a string or nonnegative integer");
+        if (result.empty() || result.find_first_of("|\r\n\t", 0, 5) != std::string::npos || result.find('\0') != std::string::npos) fail("empty field or reserved separator/control character");
+        return result;
+    }
+    std::string text(const Json& value) const { if (!std::holds_alternative<std::string>(value.value)) fail("expected a string"); return cell(value); }
+    void version(const Json& root, std::vector<std::string> expected) const {
+        expected.push_back("version"); keys(root, expected);
+        const auto* version = std::get_if<double>(&root.at("version").value);
+        if (!version || *version != 1) fail("unsupported version; expected integer 1");
+    }
+    void row(std::ostringstream& output, const Row& cells) const {
+        for (size_t i = 0; i < cells.size(); ++i) { if (i) output << '|'; output << cells[i]; }
+        output << '\n';
+    }
+};
+std::string services(const fs::path& path) {
+    ConfigReader reader(path); const auto root = reader.load(); reader.version(root, {"services"});
+    const std::vector<std::string> fields = {"name", "ring", "source", "program", "id", "role", "roleId", "capability", "origin", "ready", "dependencies", "order", "process", "libraries", "traversal", "loading", "owner"};
+    std::ostringstream output; output << "# Generated from script/config/services.json; edit the JSON source.\n";
+    for (const auto& service : root.at("services").array()) {
+        reader.keys(service, fields); Row cells;
+        for (const auto& field : fields) cells.push_back(field == "ring" || field == "id" || field == "roleId" || field == "order" ? reader.cell(service.at(field)) : reader.text(service.at(field)));
+        reader.row(output, cells);
+    }
+    if (root.at("services").array().empty()) reader.fail("services must not be empty");
+    return output.str();
+}
+std::string layout(const fs::path& path) {
+    ConfigReader reader(path); const auto root = reader.load(); reader.version(root, {"entries"});
+    const std::map<std::string, std::vector<std::string>> schemas = {
+        {"directory", {"path", "mode"}}, {"user-directory", {"path", "mode"}},
+        {"copy", {"source", "target", "mode"}}, {"tree", {"source", "target"}}, {"mode", {"path", "mode"}},
+        {"runtime", {"package", "library"}}, {"external-runtime", {"package", "library"}},
+        {"sdk-tree", {"source", "target"}}, {"sdk-file", {"source", "target"}},
+        {"legacy-database", {"source", "target"}}, {"legacy-home", {"source", "target"}}};
+    std::ostringstream output; output << "# Generated from script/config/layout.json; edit the JSON source.\n";
+    for (const auto& entry : root.at("entries").array()) {
+        const auto type = reader.text(entry.at("type")); const auto found = schemas.find(type);
+        if (found == schemas.end()) reader.fail("unknown layout type: " + type);
+        auto fields = found->second; fields.push_back("type"); reader.keys(entry, fields); Row cells{type};
+        for (const auto& field : found->second) {
+            const auto value = reader.text(entry.at(field));
+            if (field == "mode" && (value.size() < 3 || value.size() > 4 || !std::all_of(value.begin(), value.end(), [](char c) { return c >= '0' && c <= '7'; }))) reader.fail("mode must be an octal permission string");
+            cells.push_back(value);
+        }
+        reader.row(output, cells);
+    }
+    if (root.at("entries").array().empty()) reader.fail("entries must not be empty");
+    return output.str();
+}
+std::string checks(const fs::path& path) {
+    ConfigReader reader(path); const auto root = reader.load();
+    reader.version(root, {"project", "memoryRoots", "memoryHeaders", "forbiddenMemoryHeaders", "auditRoots", "syscalls", "runtimeEntries"});
+    std::ostringstream output; output << "# Generated from script/config/checks.json; edit the JSON source.\n";
+    reader.row(output, {"project", reader.text(root.at("project"))});
+    for (const auto& [field, kind] : std::vector<std::pair<std::string, std::string>>{
+        {"memoryRoots", "memory-root"}, {"memoryHeaders", "memory-header"}, {"forbiddenMemoryHeaders", "forbidden-memory-header"},
+        {"auditRoots", "audit-root"}, {"syscalls", "syscall"}, {"runtimeEntries", "runtime-entry"}})
+        for (const auto& value : root.at(field).array()) reader.row(output, {kind, reader.text(value)});
+    return output.str();
+}
+}
+void defaults(const Context& context) {
+    // Validate all inputs before replacing any generated table.
+    const auto source = context.repository / "script/config";
+    const auto convert = [&](const char* name, std::string (*transform)(const fs::path&)) {
+        const auto path = source / name;
+        try { return transform(path); }
+        catch (const std::exception& error) {
+            const std::string message = error.what();
+            throw std::runtime_error(message.rfind(path.string(), 0) == 0 ? message : path.string() + ": " + message);
+        }
+    };
+    const std::vector<std::pair<std::string, std::string>> outputs = {
+        {"services.conf", convert("services.json", services)},
+        {"layout.conf", convert("layout.json", layout)},
+        {"checks.conf", convert("checks.json", checks)}};
+    for (const auto& [name, value] : outputs) {
+        const auto path = context.build / "config" / name;
+        if (!fs::exists(path) || read(path) != value) write(path, value);
+    }
 }
 }  // namespace host

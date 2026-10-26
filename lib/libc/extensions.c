@@ -23,10 +23,18 @@ char* strsignal(int signal) {
     switch(signal) {
         case SIGHUP:return "Hangup"; case SIGINT:return "Interrupt"; case SIGQUIT:return "Quit";
         case SIGILL:return "Illegal instruction"; case SIGABRT:return "Aborted"; case SIGFPE:return "Floating point exception";
+        case SIGTRAP:return "Trace/breakpoint trap"; case SIGBUS:return "Bus error";
         case SIGKILL:return "Killed"; case SIGSEGV:return "Segmentation fault"; case SIGPIPE:return "Broken pipe";
         case SIGALRM:return "Alarm clock"; case SIGTERM:return "Terminated"; case SIGCHLD:return "Child status changed";
         case SIGCONT:return "Continued"; case SIGSTOP:return "Stopped"; case SIGTSTP:return "Stopped";
-        default:return "Unknown signal";
+        case SIGUSR1:return "User defined signal 1"; case SIGUSR2:return "User defined signal 2";
+        case SIGSTKFLT:return "Stack fault"; case SIGTTIN:return "Stopped (terminal input)";
+        case SIGTTOU:return "Stopped (terminal output)"; case SIGURG:return "Urgent I/O condition";
+        case SIGXCPU:return "CPU time limit exceeded"; case SIGXFSZ:return "File size limit exceeded";
+        case SIGVTALRM:return "Virtual timer expired"; case SIGPROF:return "Profiling timer expired";
+        case SIGWINCH:return "Window changed"; case SIGPOLL:return "I/O possible";
+        case SIGPWR:return "Power failure"; case SIGSYS:return "Bad system call";
+        default:return signal >= SIGRTMIN && signal <= SIGRTMAX ? "Real-time signal" : "Unknown signal";
     }
 }
 static void (*quick_handlers[16])(void);

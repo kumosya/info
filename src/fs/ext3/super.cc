@@ -1,8 +1,8 @@
-#include "../format.h"
+#include "service/fs/ext3/filesystem.h"
 
 namespace vfs {
 
-bool FormatProbe::probeExt3(const uint8_t* data, size_t size) {
+bool ext3::Probe::detect(const uint8_t* data, size_t size) {
     if (data == nullptr || size < 1124) return false;
     const uint8_t* super = data + 1024;
     const uint16_t magic = static_cast<uint16_t>(super[56]) |

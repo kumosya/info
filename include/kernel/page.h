@@ -48,6 +48,8 @@ namespace memory {
     bool copyFromAddressSpace(void* destination, uint64_t rootPhysicalAddress,
                             uint64_t source, uint64_t size);
     uint64_t getKernelAddressSpaceRoot();
+    // Iterate resident ordinary user pages; caller holds the address-space lock.
+    bool nextDumpPage(uint64_t root, uint64_t cursor, uint64_t& address, uint64_t& flags);
     uint64_t createAddressSpaceRoot();
     bool cloneAddressSpaceRoot(uint64_t sourceRootPhysicalAddress,
                             uint64_t destinationRootPhysicalAddress);
@@ -86,7 +88,7 @@ struct PhysicalPageInfo {
 // The caller supplies metadata; allocation never allocates metadata recursively.
 class BuddyAllocator {
    public:
-    void initialize(PageFrame* frames, uint32_t count);
+    void init(PageFrame* frames, uint32_t count);
     bool addRange(uint32_t first, uint32_t count, uint16_t node);
     uint64_t allocate(uint32_t order, uint64_t owner = 0, uint16_t preferred = anyMemoryNode,
                       bool strict = false, uint64_t limit = UINT64_MAX);
@@ -138,7 +140,7 @@ class PageObject {
 };
 class PageMappings {
    public:
-    static bool initialize();
+    static bool init();
     static bool map(Task& target, PageObject& object, uint64_t address, uint64_t size,
                     uint64_t offset, uint64_t protection, uint64_t maximumProtection = 3);
     // Caller holds the target address-space lock across this transaction.
@@ -149,6 +151,7 @@ class PageMappings {
     static bool protectionAllowed(Task& target, uint64_t address, uint64_t size, uint64_t protection);
     static bool markCopyOnWrite(Task& target, uint64_t address, uint64_t size);
     static bool nextManagedMapping(Task& target, uint64_t cursor, uint64_t& address, uint64_t& size);
+    static bool dumpAllowed(Task& target, uint64_t address);
 };
 }  // namespace kernel::memory
 

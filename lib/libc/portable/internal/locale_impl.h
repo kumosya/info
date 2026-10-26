@@ -1,3 +1,4 @@
+#pragma once
 #include <locale.h>
 #include <langinfo.h>
 #define LCTRANS_CUR(s) (s)

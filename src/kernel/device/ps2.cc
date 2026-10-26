@@ -106,7 +106,7 @@ class Controller {
 Controller controller;
 SpinLock controllerLock;
 }
-int Ps2Access::initialize() {
+int Ps2Access::init() {
     InterruptSpinLockGuard guard(controllerLock);
     return controller.init() ? controller.mousePacketSize() : -11;
 }

@@ -79,9 +79,14 @@ isrCommon:
     pushq %r14
     pushq %r15
 
-    testb $3, 144(%rsp)
-    jz 1f
+    # NMI may interrupt the CPL0 swapgs window. Inspect live GS instead of CS.
+    xorl %r12d, %r12d
+    movl $0xc0000101, %ecx
+    rdmsr
+    testl %edx, %edx
+    js 1f
     swapgs
+    movl $1, %r12d
 1:
     movq %rsp, %rdi
     movq %rsp, %rbx
@@ -89,7 +94,7 @@ isrCommon:
     call interruptDispatch
     movq %rbx, %rsp
 
-    testb $3, 144(%rsp)
+    testl %r12d, %r12d
     jz 2f
     swapgs
 2:

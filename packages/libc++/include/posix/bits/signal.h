@@ -5,7 +5,7 @@
 
 #if defined(_XOPEN_SOURCE) || defined(_GNU_SOURCE) || defined(_BSD_SOURCE)
 #define MINSIGSTKSZ 2048
-#define SIGSTKSZ 8192
+#define SIGSTKSZ 65536
 #endif
 
 #ifdef _GNU_SOURCE
@@ -107,11 +107,11 @@ typedef struct __ucontext {
 
 #define SA_NOCLDSTOP  1
 #define SA_NOCLDWAIT  2
-#define SA_SIGINFO    4
+#define SA_SIGINFO    0x00000004
 #define SA_ONSTACK    0x08000000
 #define SA_RESTART    0x10000000
 #define SA_NODEFER    0x40000000
-#define SA_RESETHAND  0x80000000
+#define SA_RESETHAND  ((int)0x80000000U)
 #define SA_RESTORER   0x04000000
 
 #endif

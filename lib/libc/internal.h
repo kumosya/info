@@ -4,7 +4,16 @@
 #include <stdint.h>
 #include <sys/types.h>
 
-#include "os_adapter.h"
+#include <os/capi.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct OsPipeHandles {
+    uint64_t readHandle;
+    uint64_t writeHandle;
+} OsPipeHandles;
 
 #define LIBC_DESCRIPTOR_CAPACITY 32
 #define LIBC_PATH_CAPACITY 384
@@ -93,3 +102,150 @@ uint64_t __libc_file_handle(void* object);
 void __libc_file_set_flags(void* object, int flags);
 struct stat;
 int __libc_file_stat(void* object, struct stat* result);
+
+void* __libc_file_from_descriptor(int descriptor);
+int __libc_file_to_descriptor(void* object);
+
+
+int __libc_os_rename_file(uint64_t fs, const char* existing, const char* newPath);
+int __libc_os_credentials(unsigned operation, uint32_t first, uint32_t second, uint32_t third, const uint32_t* groups, OsCredentialInfo* info);
+
+enum {
+    OS_FILE_TYPE_NONE      = 0,
+    OS_FILE_TYPE_FILE      = 1,
+    OS_FILE_TYPE_DIRECTORY = 2
+};
+
+
+uint64_t __libc_os_get_fs_service(void);
+uint64_t __libc_os_open_file(uint64_t fs, const char* path);
+int __libc_os_close_file(uint64_t fs, uint64_t descriptor);
+int64_t __libc_os_read_file(uint64_t fs, uint64_t descriptor, void* buffer,
+                     size_t size);
+int64_t __libc_os_write_file(uint64_t fs, uint64_t descriptor, const void* buffer,
+                      size_t size);
+int __libc_os_seek_file(uint64_t fs, uint64_t descriptor, uint64_t offset);
+int64_t __libc_os_seek_file_position(uint64_t fs, uint64_t descriptor, int64_t offset,
+                              int whence);
+int __libc_os_clone_file_descriptors(uint64_t fs, uint64_t parent_task_id,
+                              uint64_t* old_descriptors,
+                              uint64_t* new_descriptors, size_t capacity);
+int __libc_os_create_file(uint64_t fs, const char* path);
+int __libc_os_make_directory(uint64_t fs, const char* path);
+int __libc_os_remove_path(uint64_t fs, const char* path);
+int __libc_os_truncate_file(uint64_t fs, const char* path);
+int __libc_os_stat_file(uint64_t fs, const char* path, OsFileStat* status);
+int __libc_os_link_file(uint64_t fs, const char* existing, const char* new_path);
+int __libc_os_change_file_mode(uint64_t fs, const char* path, uint32_t mode);
+int __libc_os_change_file_owner(uint64_t fs, const char* path, uint32_t uid,
+                         uint32_t gid);
+int __libc_os_change_file_times(uint64_t fs, const char* path, uint64_t access_time,
+                         uint64_t modification_time);
+int64_t __libc_os_read_directory_batch(uint64_t fs, const char* path, uint64_t index,
+                                OsDirectoryEntry* entries, size_t capacity);
+uint64_t __libc_os_create_endpoint(void);
+int __libc_os_read_file_async(uint64_t fs, uint64_t descriptor, uint64_t offset,
+                       size_t size, uint64_t completion_endpoint,
+                       uint64_t request_id);
+int __libc_os_write_file_async(uint64_t fs, uint64_t descriptor, uint64_t offset,
+                        const void* buffer, size_t size,
+                        uint64_t completion_endpoint, uint64_t request_id);
+int __libc_os_wait_file_operation(uint64_t completion_endpoint,
+                           OsFileOperationResult* result, void* buffer,
+                           size_t capacity);
+
+int __libc_os_create_pipe(OsPipeHandles* handles);
+int64_t __libc_os_read_pipe(uint64_t handle, void* buffer, size_t size);
+int64_t __libc_os_write_pipe(uint64_t handle, const void* buffer, size_t size);
+uint64_t __libc_os_get_standard_handle(uint32_t index);
+int __libc_os_close_handle(uint64_t handle);
+int64_t __libc_os_read_terminal(void* buffer, size_t size);
+int64_t __libc_os_write_terminal(const void* buffer, size_t size);
+uint32_t __libc_os_get_terminal_id(void);
+void __libc_os_set_terminal_id(uint32_t terminal_id);
+
+void __libc_os_yield(void);
+void __libc_os_sleep(uint64_t milliseconds);
+void __libc_os_exit_thread(int status) __attribute__((noreturn));
+uint64_t __libc_os_create_thread(void (*entry)(void*), void* argument,
+                          uint64_t stack_pointer);
+int __libc_os_wait_thread(uint64_t thread_id, int* exit_code, int no_hang);
+int __libc_os_wait_address(volatile uint32_t* address, uint32_t expected);
+int __libc_os_wake_address(volatile uint32_t* address, uint32_t count);
+int __libc_os_set_signal_action(uint32_t signal, const OsSignalAction* action,
+                         OsSignalAction* old_action);
+int __libc_os_set_signal_mask(int how, uint64_t mask, uint64_t* old_mask);
+int __libc_os_get_pending_signals(uint64_t* mask);
+int __libc_os_wait_signal(uint64_t mask);
+int __libc_os_signal_stack(const void* stack, void* old_stack);
+int __libc_os_core_limit(int set, uint64_t* soft, uint64_t* hard);
+int __libc_os_priority(unsigned operation, unsigned which, uint64_t who, int value, int* result);
+int __libc_os_resource_limit(uint64_t pid, int resource, int set, uint64_t* soft, uint64_t* hard);
+int __libc_os_accessible(const void* address, uint64_t size, int writable);
+uint64_t __libc_os_signal_generation(void);
+void __libc_os_signal_return(void* frame) __attribute__((noreturn));
+uint64_t __libc_os_open_message_queue(const char* name, int flags,
+                               uint32_t maximum_messages,
+                               uint32_t message_size);
+int __libc_os_unlink_message_queue(const char* name);
+int __libc_os_send_message_queue(uint64_t handle, const void* data, size_t size,
+                          uint32_t priority);
+int64_t __libc_os_receive_message_queue(uint64_t handle, void* data, size_t capacity,
+                                 uint32_t* priority);
+int __libc_os_get_message_queue_attributes(uint64_t handle,
+                                    OsMessageQueueAttributes* attributes);
+int __libc_os_set_message_queue_flags(uint64_t handle, uint64_t flags,
+                               uint64_t* old_flags);
+uint64_t __libc_os_open_shared_memory(const char* name, int flags);
+int __libc_os_unlink_shared_memory(const char* name);
+int __libc_os_resize_shared_memory(uint64_t handle, uint64_t size);
+uint64_t __libc_os_map_shared_memory(uint64_t handle, uint64_t address, uint64_t size,
+                              uint64_t offset, uint64_t protection);
+int __libc_os_send_thread_signal(uint64_t thread_id, uint32_t signal);
+int __libc_os_register_message_queue_notification(uint64_t handle, int type,
+                                           uint32_t signal);
+int64_t __libc_os_fork_task(void);
+int64_t __libc_os_fork_endpoint(void);
+int __libc_os_fork_notify(uint64_t endpoint, int status);
+int __libc_os_fork_receive(uint64_t endpoint, uint64_t child);
+int64_t __libc_os_wait_child(int64_t task_id, int* status, int options);
+int64_t __libc_os_wait_id(int64_t task_id, int options, uint32_t* uid, int* code, int* status);
+int __libc_os_replace_task_image(const OsExecImageInfo* info);
+int __libc_os_image_interpreter(const void* image, size_t size, char* path, size_t capacity);
+int __libc_os_is_terminal_handle(uint64_t handle);
+uint64_t __libc_os_get_task_id(void);
+uint64_t __libc_os_get_thread_id(void);
+void __libc_os_exit_task(int status) __attribute__((noreturn));
+void* __libc_os_allocate_memory(size_t size);
+int __libc_os_free_memory(void* pointer);
+uint64_t __libc_os_map_memory(uint64_t address, uint64_t size, uint64_t protection);
+int __libc_os_unmap_memory(uint64_t address, uint64_t size);
+int __libc_os_protect_memory(uint64_t address, uint64_t size, uint64_t protection);
+uint64_t __libc_os_mm_anonymous(uint64_t size, uint32_t protection, uint64_t hint);
+uint64_t __libc_os_mm_shared(uint64_t handle, uint64_t size, uint32_t protection, uint64_t offset, uint64_t hint);
+uint64_t __libc_os_mm_file(uint64_t descriptor, uint64_t size, uint32_t protection, uint64_t offset, uint64_t hint);
+int __libc_os_mm_unmap(uint64_t address, uint64_t size);
+int __libc_os_mm_protect(uint64_t address, uint64_t size, uint32_t protection);
+int __libc_os_mm_sync(uint64_t address, uint64_t size);
+uint64_t __libc_os_get_monotonic_time(void);
+uint64_t __libc_os_get_wall_clock_time(void);
+uint64_t __libc_os_get_clock_resolution(void);
+int __libc_os_get_task_identifiers(OsTaskIdentifiers* identifiers, uint64_t task_id);
+int __libc_os_send_signal(uint64_t taskId, uint32_t signal);
+int __libc_os_set_task_group(uint64_t taskGroupId, uint64_t task_id);
+int64_t __libc_os_create_session(void);
+uint64_t __libc_os_execute_task(const char* path, int argument_count,
+                         const char* const* arguments, uint64_t standard_input,
+                         uint64_t standard_output, uint64_t standard_error);
+int __libc_os_get_task_state(uint64_t handle, int* exit_code);
+int __libc_os_get_task_info(uint64_t handle, OsTaskInfo* info);
+int __libc_os_query_task(uint64_t task_id, OsTaskInfo* info);
+int __libc_os_set_credentials(uint64_t task_id, uint32_t uid, uint32_t gid, int effective_only);
+void __libc_os_runtime_fini(void);
+void __libc_os_bind_environment(char*** environment);
+
+
+
+#ifdef __cplusplus
+}
+#endif

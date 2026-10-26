@@ -1,11 +1,17 @@
-#include "os/core_service.h"
-#include "os/abi.h"
-#include "../service/lifecycle.h"
-#include "os/input.h"
-#include "os/pci.h"
-#include "os/protocol.h"
-#include "os/service.h"
-#include "os/sync.h"
+#include <os/device.h>
+#include <os/input.h>
+#include <os/ipc.h>
+#include <os/mm.h>
+#include <os/service.h>
+#include <os/sync.h>
+#include <os/task.h>
+#include "service/common/channel.h"
+#include "service/common/kernel-requests.h"
+#include "service/common/lifecycle.h"
+#include "service/common/queries.h"
+#include "service/common/records.h"
+#include "service/common/requests.h"
+#include "service/common/runtime.h"
 
 namespace {
 
@@ -32,19 +38,27 @@ constexpr uint64_t irqNotification = 0x495251;
 
 class InputQueue {
    public:
-    bool enqueue(const os::InputEvent& event) {
-        os::SpinLockGuard guard(lock_);
+    bool enqueue(const os::wire::InputEvent& event) {
+        os::SpinLock::Guard guard(lock_);
+        if (event.type == os::Input::Event::Type::KeyDown ||
+            event.type == os::Input::Event::Type::KeyUp) {
+            const uint32_t key = static_cast<uint32_t>(event.key.keyCode);
+            if (key < sizeof(keys_)) keys_[key] = event.key.pressed;
+            modifiers_ = event.key.modifiers;
+        } else
+            buttons_ = event.mouse.buttons;
         if (nextSequence_ != firstSequence_ && canCoalesceLast()) {
-            os::InputEvent& previous = events_[(nextSequence_ - 1) % capacity];
-            if (event.type == os::InputEventType::MouseMove &&
-                previous.type == os::InputEventType::MouseMove) {
+            os::wire::InputEvent& previous =
+                events_[(nextSequence_ - 1) % capacity];
+            if (event.type == os::Input::Event::Type::MouseMove &&
+                previous.type == os::Input::Event::Type::MouseMove) {
                 previous.mouse.deltaX += event.mouse.deltaX;
                 previous.mouse.deltaY += event.mouse.deltaY;
                 previous.timestamp = event.timestamp;
                 return true;
             }
-            if (event.type == os::InputEventType::MouseWheel &&
-                previous.type == os::InputEventType::MouseWheel) {
+            if (event.type == os::Input::Event::Type::MouseWheel &&
+                previous.type == os::Input::Event::Type::MouseWheel) {
                 previous.mouse.wheel += event.mouse.wheel;
                 previous.timestamp = event.timestamp;
                 return true;
@@ -58,8 +72,8 @@ class InputQueue {
         return true;
     }
 
-    bool dequeue(uint64_t taskId, os::InputEvent& event) {
-        os::SpinLockGuard guard(lock_);
+    bool dequeue(uint64_t taskId, os::wire::InputEvent& event) {
+        os::SpinLock::Guard guard(lock_);
         Subscriber* subscriber = findSubscriber(taskId);
         if (subscriber == nullptr) {
             return false;
@@ -83,14 +97,17 @@ class InputQueue {
         if (taskId == 0 || wakeEndpoint == 0) {
             return false;
         }
-        os::SpinLockGuard guard(lock_);
+        const uint64_t identity = os::Ipc::Handle(wakeEndpoint, false).queryIdentity();
+        if (!identity || static_cast<int64_t>(identity) < 0) return false;
+        os::SpinLock::Guard guard(lock_);
         Subscriber* existing = findSubscriber(taskId);
         if (existing != nullptr) {
             return existing->wakeEndpoint == wakeEndpoint;
         }
         for (Subscriber& subscriber : subscribers_) {
             if (subscriber.taskId == 0) {
-                subscriber = {taskId, nextSequence_, wakeEndpoint, false};
+                subscriber = {taskId, nextSequence_, wakeEndpoint,
+                              false,  identity,      false};
                 return true;
             }
         }
@@ -101,11 +118,11 @@ class InputQueue {
         if (endpoints == nullptr || capacity == 0) {
             return 0;
         }
-        os::SpinLockGuard guard(lock_);
+        os::SpinLock::Guard guard(lock_);
         uint32_t count = 0;
         for (Subscriber& subscriber : subscribers_) {
             if (subscriber.taskId == 0 || subscriber.wakeEndpoint == 0 ||
-                subscriber.notified) {
+                subscriber.notified || subscriber.closing) {
                 continue;
             }
             if (subscriber.nextSequence < firstSequence_) {
@@ -124,7 +141,7 @@ class InputQueue {
     }
 
     bool unsubscribe(uint64_t wakeEndpoint) {
-        os::SpinLockGuard guard(lock_);
+        os::SpinLock::Guard guard(lock_);
         for (Subscriber& subscriber : subscribers_) {
             if (subscriber.wakeEndpoint == wakeEndpoint) {
                 subscriber = {};
@@ -134,14 +151,28 @@ class InputQueue {
         return false;
     }
 
+    uint64_t removeSubscription(uint64_t taskId, uint64_t identity) {
+        os::SpinLock::Guard guard(lock_);
+        auto* subscriber = findSubscriber(taskId);
+        if (!subscriber || subscriber->identity != identity) return 0;
+        subscriber->closing = true;
+        return subscriber->wakeEndpoint;
+    }
+    void snapshot(os::wire::InputState& state) {
+        os::SpinLock::Guard guard(lock_);
+        state.modifiers = modifiers_;
+        state.buttons   = buttons_;
+        os::Runtime::copyBytes(state.keys, keys_, sizeof(keys_));
+    }
     void retryNotification(uint64_t wakeEndpoint) {
-        os::SpinLockGuard guard(lock_);
+        os::SpinLock::Guard guard(lock_);
         for (auto& subscriber : subscribers_)
-            if (subscriber.wakeEndpoint == wakeEndpoint) subscriber.notified = false;
+            if (subscriber.wakeEndpoint == wakeEndpoint)
+                subscriber.notified = false;
     }
 
     uint32_t size(uint64_t taskId) {
-        os::SpinLockGuard guard(lock_);
+        os::SpinLock::Guard guard(lock_);
         Subscriber* subscriber = findSubscriber(taskId);
         if (subscriber == nullptr) {
             return 0;
@@ -158,6 +189,8 @@ class InputQueue {
         uint64_t nextSequence;
         uint64_t wakeEndpoint;
         bool notified;
+        uint64_t identity;
+        bool closing;
     };
 
     bool canCoalesceLast() const {
@@ -183,7 +216,9 @@ class InputQueue {
     }
 
     static constexpr uint32_t capacity = 256;
-    os::InputEvent events_[capacity];
+    uint8_t keys_[128]{};
+    uint32_t modifiers_{}, buttons_{};
+    os::wire::InputEvent events_[capacity];
     Subscriber subscribers_[4]{};
     uint64_t firstSequence_ = 0;
     uint64_t nextSequence_  = 0;
@@ -191,22 +226,33 @@ class InputQueue {
 };
 
 class Ps2Controller {
- public:
+   public:
     bool init() {
         os::IpcMessage request{}, reply{};
-        request.type = static_cast<uint64_t>(os::DeviceOperation::InitializeInput); request.length = 5;
-        const int64_t result = os::CoreServiceClient::result(os::CoreServiceKind::Device, request, reply);
+        request.type =
+            static_cast<uint64_t>(os::DeviceOperation::InitializeInput);
+        request.length = 5;
+        const int64_t result =
+            services::RequestChannel(os::CoreServiceKind::Device)
+                .result(request, reply);
         if (result < 3 || result > 4) return false;
-        packetSize_ = result; return true;
+        packetSize_ = result;
+        return true;
     }
     bool readInterruptByte(uint8_t& value, bool& mouse) {
         os::IpcMessage request{}, reply{};
-        request.type = static_cast<uint64_t>(os::DeviceOperation::ReadInput); request.length = 5;
-        if (os::CoreServiceClient::result(os::CoreServiceKind::Device, request, reply)) return false;
-        value = reply.data[1]; mouse = reply.data[2] != 0; return true;
+        request.type   = static_cast<uint64_t>(os::DeviceOperation::ReadInput);
+        request.length = 5;
+        if (services::RequestChannel(os::CoreServiceKind::Device)
+                .result(request, reply))
+            return false;
+        value = reply.data[1];
+        mouse = reply.data[2] != 0;
+        return true;
     }
     uint8_t mousePacketSize() const { return packetSize_; }
- private:
+
+   private:
     uint8_t packetSize_ = 3;
 };
 
@@ -217,18 +263,18 @@ class KeyboardDriver {
             extended_ = true;
             return;
         }
-        const bool pressed    = (scanCode & 0x80U) == 0;
-        const uint8_t code    = scanCode & 0x7fU;
-        const os::KeyCode key = translate(code, extended_);
-        extended_             = false;
-        if (key == os::KeyCode::Unknown) {
+        const bool pressed       = (scanCode & 0x80U) == 0;
+        const uint8_t code       = scanCode & 0x7fU;
+        const os::Input::Key key = translate(code, extended_);
+        extended_                = false;
+        if (key == os::Input::Key::Unknown) {
             return;
         }
         updateModifiers(key, pressed);
-        os::InputEvent event{};
-        event.type =
-            pressed ? os::InputEventType::KeyDown : os::InputEventType::KeyUp;
-        event.timestamp     = os::Clock::getMonotonicTime();
+        os::wire::InputEvent event{};
+        event.type          = pressed ? os::Input::Event::Type::KeyDown
+                                      : os::Input::Event::Type::KeyUp;
+        event.timestamp     = os::Sys().readMonotonicTime();
         event.key.keyCode   = key;
         event.key.modifiers = modifiers_;
         event.key.pressed   = pressed;
@@ -236,205 +282,206 @@ class KeyboardDriver {
     }
 
    private:
-    static os::KeyCode translate(uint8_t code, bool extended) {
+    static os::Input::Key translate(uint8_t code, bool extended) {
         if (extended) {
             switch (code) {
                 case 0x1d:
-                    return os::KeyCode::RightControl;
+                    return os::Input::Key::RightControl;
                 case 0x38:
-                    return os::KeyCode::RightAlt;
+                    return os::Input::Key::RightAlt;
                 case 0x1c:
-                    return os::KeyCode::KeypadEnter;
+                    return os::Input::Key::KeypadEnter;
                 case 0x35:
-                    return os::KeyCode::KeypadDivide;
+                    return os::Input::Key::KeypadDivide;
                 case 0x47:
-                    return os::KeyCode::Home;
+                    return os::Input::Key::Home;
                 case 0x48:
-                    return os::KeyCode::Up;
+                    return os::Input::Key::Up;
                 case 0x49:
-                    return os::KeyCode::PageUp;
+                    return os::Input::Key::PageUp;
                 case 0x50:
-                    return os::KeyCode::Down;
+                    return os::Input::Key::Down;
                 case 0x4f:
-                    return os::KeyCode::End;
+                    return os::Input::Key::End;
                 case 0x51:
-                    return os::KeyCode::PageDown;
+                    return os::Input::Key::PageDown;
                 case 0x52:
-                    return os::KeyCode::Insert;
+                    return os::Input::Key::Insert;
                 case 0x53:
-                    return os::KeyCode::Delete;
+                    return os::Input::Key::Delete;
                 case 0x4b:
-                    return os::KeyCode::Left;
+                    return os::Input::Key::Left;
                 case 0x4d:
-                    return os::KeyCode::Right;
+                    return os::Input::Key::Right;
                 default:
-                    return os::KeyCode::Unknown;
+                    return os::Input::Key::Unknown;
             }
         }
-        constexpr os::KeyCode scanCodes[] = {os::KeyCode::Unknown,
-                                             os::KeyCode::Escape,
-                                             os::KeyCode::Digit1,
-                                             os::KeyCode::Digit2,
-                                             os::KeyCode::Digit3,
-                                             os::KeyCode::Digit4,
-                                             os::KeyCode::Digit5,
-                                             os::KeyCode::Digit6,
-                                             os::KeyCode::Digit7,
-                                             os::KeyCode::Digit8,
-                                             os::KeyCode::Digit9,
-                                             os::KeyCode::Digit0,
-                                             os::KeyCode::Minus,
-                                             os::KeyCode::Equal,
-                                             os::KeyCode::Backspace,
-                                             os::KeyCode::Tab,
-                                             os::KeyCode::Q,
-                                             os::KeyCode::W,
-                                             os::KeyCode::E,
-                                             os::KeyCode::R,
-                                             os::KeyCode::T,
-                                             os::KeyCode::Y,
-                                             os::KeyCode::U,
-                                             os::KeyCode::I,
-                                             os::KeyCode::O,
-                                             os::KeyCode::P,
-                                             os::KeyCode::LeftBracket,
-                                             os::KeyCode::RightBracket,
-                                             os::KeyCode::Enter,
-                                             os::KeyCode::LeftControl,
-                                             os::KeyCode::A,
-                                             os::KeyCode::S,
-                                             os::KeyCode::D,
-                                             os::KeyCode::F,
-                                             os::KeyCode::G,
-                                             os::KeyCode::H,
-                                             os::KeyCode::J,
-                                             os::KeyCode::K,
-                                             os::KeyCode::L,
-                                             os::KeyCode::Semicolon,
-                                             os::KeyCode::Apostrophe,
-                                             os::KeyCode::Grave,
-                                             os::KeyCode::LeftShift,
-                                             os::KeyCode::Backslash,
-                                             os::KeyCode::Z,
-                                             os::KeyCode::X,
-                                             os::KeyCode::C,
-                                             os::KeyCode::V,
-                                             os::KeyCode::B,
-                                             os::KeyCode::N,
-                                             os::KeyCode::M};
+        constexpr os::Input::Key scanCodes[] = {os::Input::Key::Unknown,
+                                                os::Input::Key::Escape,
+                                                os::Input::Key::Digit1,
+                                                os::Input::Key::Digit2,
+                                                os::Input::Key::Digit3,
+                                                os::Input::Key::Digit4,
+                                                os::Input::Key::Digit5,
+                                                os::Input::Key::Digit6,
+                                                os::Input::Key::Digit7,
+                                                os::Input::Key::Digit8,
+                                                os::Input::Key::Digit9,
+                                                os::Input::Key::Digit0,
+                                                os::Input::Key::Minus,
+                                                os::Input::Key::Equal,
+                                                os::Input::Key::Backspace,
+                                                os::Input::Key::Tab,
+                                                os::Input::Key::Q,
+                                                os::Input::Key::W,
+                                                os::Input::Key::E,
+                                                os::Input::Key::R,
+                                                os::Input::Key::T,
+                                                os::Input::Key::Y,
+                                                os::Input::Key::U,
+                                                os::Input::Key::I,
+                                                os::Input::Key::O,
+                                                os::Input::Key::P,
+                                                os::Input::Key::LeftBracket,
+                                                os::Input::Key::RightBracket,
+                                                os::Input::Key::Enter,
+                                                os::Input::Key::LeftControl,
+                                                os::Input::Key::A,
+                                                os::Input::Key::S,
+                                                os::Input::Key::D,
+                                                os::Input::Key::F,
+                                                os::Input::Key::G,
+                                                os::Input::Key::H,
+                                                os::Input::Key::J,
+                                                os::Input::Key::K,
+                                                os::Input::Key::L,
+                                                os::Input::Key::Semicolon,
+                                                os::Input::Key::Apostrophe,
+                                                os::Input::Key::Grave,
+                                                os::Input::Key::LeftShift,
+                                                os::Input::Key::Backslash,
+                                                os::Input::Key::Z,
+                                                os::Input::Key::X,
+                                                os::Input::Key::C,
+                                                os::Input::Key::V,
+                                                os::Input::Key::B,
+                                                os::Input::Key::N,
+                                                os::Input::Key::M};
         if (code < sizeof(scanCodes) / sizeof(scanCodes[0])) {
             return scanCodes[code];
         }
         switch (code) {
             case 0x0c:
-                return os::KeyCode::Minus;
+                return os::Input::Key::Minus;
             case 0x0d:
-                return os::KeyCode::Equal;
+                return os::Input::Key::Equal;
             case 0x1a:
-                return os::KeyCode::LeftBracket;
+                return os::Input::Key::LeftBracket;
             case 0x1b:
-                return os::KeyCode::RightBracket;
+                return os::Input::Key::RightBracket;
             case 0x36:
-                return os::KeyCode::RightShift;
+                return os::Input::Key::RightShift;
             case 0x38:
-                return os::KeyCode::LeftAlt;
+                return os::Input::Key::LeftAlt;
             case 0x39:
-                return os::KeyCode::Space;
+                return os::Input::Key::Space;
             case 0x3a:
-                return os::KeyCode::CapsLock;
+                return os::Input::Key::CapsLock;
             case 0x27:
-                return os::KeyCode::Semicolon;
+                return os::Input::Key::Semicolon;
             case 0x28:
-                return os::KeyCode::Apostrophe;
+                return os::Input::Key::Apostrophe;
             case 0x29:
-                return os::KeyCode::Grave;
+                return os::Input::Key::Grave;
             case 0x2b:
-                return os::KeyCode::Backslash;
+                return os::Input::Key::Backslash;
             case 0x33:
-                return os::KeyCode::Comma;
+                return os::Input::Key::Comma;
             case 0x34:
-                return os::KeyCode::Period;
+                return os::Input::Key::Period;
             case 0x35:
-                return os::KeyCode::Slash;
+                return os::Input::Key::Slash;
             case 0x3b:
-                return os::KeyCode::F1;
+                return os::Input::Key::F1;
             case 0x3c:
-                return os::KeyCode::F2;
+                return os::Input::Key::F2;
             case 0x3d:
-                return os::KeyCode::F3;
+                return os::Input::Key::F3;
             case 0x3e:
-                return os::KeyCode::F4;
+                return os::Input::Key::F4;
             case 0x3f:
-                return os::KeyCode::F5;
+                return os::Input::Key::F5;
             case 0x40:
-                return os::KeyCode::F6;
+                return os::Input::Key::F6;
             case 0x41:
-                return os::KeyCode::F7;
+                return os::Input::Key::F7;
             case 0x42:
-                return os::KeyCode::F8;
+                return os::Input::Key::F8;
             case 0x43:
-                return os::KeyCode::F9;
+                return os::Input::Key::F9;
             case 0x44:
-                return os::KeyCode::F10;
+                return os::Input::Key::F10;
             case 0x57:
-                return os::KeyCode::F11;
+                return os::Input::Key::F11;
             case 0x58:
-                return os::KeyCode::F12;
+                return os::Input::Key::F12;
             case 0x45:
-                return os::KeyCode::NumLock;
+                return os::Input::Key::NumLock;
             case 0x46:
-                return os::KeyCode::ScrollLock;
+                return os::Input::Key::ScrollLock;
             case 0x47:
-                return os::KeyCode::Keypad7;
+                return os::Input::Key::Keypad7;
             case 0x48:
-                return os::KeyCode::Keypad8;
+                return os::Input::Key::Keypad8;
             case 0x49:
-                return os::KeyCode::Keypad9;
+                return os::Input::Key::Keypad9;
             case 0x4a:
-                return os::KeyCode::KeypadMinus;
+                return os::Input::Key::KeypadMinus;
             case 0x4b:
-                return os::KeyCode::Keypad4;
+                return os::Input::Key::Keypad4;
             case 0x4c:
-                return os::KeyCode::Keypad5;
+                return os::Input::Key::Keypad5;
             case 0x4d:
-                return os::KeyCode::Keypad6;
+                return os::Input::Key::Keypad6;
             case 0x4e:
-                return os::KeyCode::KeypadPlus;
+                return os::Input::Key::KeypadPlus;
             case 0x4f:
-                return os::KeyCode::Keypad1;
+                return os::Input::Key::Keypad1;
             case 0x50:
-                return os::KeyCode::Keypad2;
+                return os::Input::Key::Keypad2;
             case 0x51:
-                return os::KeyCode::Keypad3;
+                return os::Input::Key::Keypad3;
             case 0x52:
-                return os::KeyCode::Keypad0;
+                return os::Input::Key::Keypad0;
             case 0x53:
-                return os::KeyCode::KeypadDecimal;
+                return os::Input::Key::KeypadDecimal;
             case 0x37:
-                return os::KeyCode::KeypadMultiply;
+                return os::Input::Key::KeypadMultiply;
             default:
-                return os::KeyCode::Unknown;
+                return os::Input::Key::Unknown;
         }
     }
 
-    void updateModifiers(os::KeyCode key, bool pressed) {
+    void updateModifiers(os::Input::Key key, bool pressed) {
         uint32_t mask = 0;
-        if (key == os::KeyCode::LeftShift || key == os::KeyCode::RightShift) {
-            mask = os::keyModifierShift;
-        } else if (key == os::KeyCode::LeftControl ||
-                   key == os::KeyCode::RightControl) {
-            mask = os::keyModifierControl;
-        } else if (key == os::KeyCode::LeftAlt ||
-                   key == os::KeyCode::RightAlt) {
-            mask = os::keyModifierAlt;
-        } else if (key == os::KeyCode::CapsLock && pressed) {
-            modifiers_ ^= os::keyModifierCapsLock;
+        if (key == os::Input::Key::LeftShift ||
+            key == os::Input::Key::RightShift) {
+            mask = os::Input::Modifier::Shift;
+        } else if (key == os::Input::Key::LeftControl ||
+                   key == os::Input::Key::RightControl) {
+            mask = os::Input::Modifier::Control;
+        } else if (key == os::Input::Key::LeftAlt ||
+                   key == os::Input::Key::RightAlt) {
+            mask = os::Input::Modifier::Alt;
+        } else if (key == os::Input::Key::CapsLock && pressed) {
+            modifiers_ ^= os::Input::Modifier::CapsLock;
             return;
-        } else if (key == os::KeyCode::NumLock && pressed) {
-            modifiers_ ^= os::keyModifierNumLock;
+        } else if (key == os::Input::Key::NumLock && pressed) {
+            modifiers_ ^= os::Input::Modifier::NumLock;
             return;
-        } else if (key == os::KeyCode::ScrollLock && pressed) {
-            modifiers_ ^= os::keyModifierScrollLock;
+        } else if (key == os::Input::Key::ScrollLock && pressed) {
+            modifiers_ ^= os::Input::Modifier::ScrollLock;
             return;
         }
         if (pressed) {
@@ -467,17 +514,20 @@ class MouseDriver {
             packetSize_ == 4 ? static_cast<int8_t>(packet_[3] << 4) >> 4 : 0;
         const uint32_t buttons = packet_[0] & 0x07U;
         if (deltaX != 0 || deltaY != 0) {
-            emit(queue, os::InputEventType::MouseMove, deltaX, deltaY, 0,
+            emit(queue, os::Input::Event::Type::MouseMove, deltaX, deltaY, 0,
                  buttons);
         }
         if (wheel != 0) {
-            emit(queue, os::InputEventType::MouseWheel, 0, 0, wheel, buttons);
+            emit(queue, os::Input::Event::Type::MouseWheel, 0, 0, wheel,
+                 buttons);
         }
         if ((buttons & ~buttons_) != 0) {
-            emit(queue, os::InputEventType::MouseButtonDown, 0, 0, 0, buttons);
+            emit(queue, os::Input::Event::Type::MouseButtonDown, 0, 0, 0,
+                 buttons);
         }
         if ((buttons_ & ~buttons) != 0) {
-            emit(queue, os::InputEventType::MouseButtonUp, 0, 0, 0, buttons);
+            emit(queue, os::Input::Event::Type::MouseButtonUp, 0, 0, 0,
+                 buttons);
         }
         if (buttons != buttons_) {
             buttons_ = buttons;
@@ -491,11 +541,12 @@ class MouseDriver {
         return delta * scale;
     }
 
-    static void emit(InputQueue& queue, os::InputEventType type, int32_t deltaX,
-                     int32_t deltaY, int32_t wheel, uint32_t buttons) {
-        os::InputEvent event{};
+    static void emit(InputQueue& queue, os::Input::Event::Type type,
+                     int32_t deltaX, int32_t deltaY, int32_t wheel,
+                     uint32_t buttons) {
+        os::wire::InputEvent event{};
         event.type      = type;
-        event.timestamp = os::Clock::getMonotonicTime();
+        event.timestamp = os::Sys().readMonotonicTime();
         event.mouse     = {deltaX, deltaY, wheel, buttons};
         queue.enqueue(event);
     }
@@ -508,14 +559,26 @@ class MouseDriver {
 
 class InputService {
    public:
+    bool bindInputIrq(uint8_t irq) {
+        os::IpcMessage request{}, reply{};
+        request.type    = static_cast<uint64_t>(os::DeviceOperation::BindIrq);
+        request.length  = 5;
+        request.data[0] = irq;
+        request.data[1] = irqEndpoint_;
+        const int64_t handle =
+            services::RequestChannel(os::CoreServiceKind::Device)
+                .result(request, reply);
+        if (handle <= 0) return false;
+        inputBindings_[irq == 1 ? 0 : 1].reset(handle, true);
+        return true;
+    }
     bool init(uint64_t registry) {
-        requestEndpoint_ = os::Endpoint::create();
-        irqEndpoint_     = os::Endpoint::create();
-        if (requestEndpoint_ == 0 || irqEndpoint_ == 0 ||
-            !controller_.init() || os::Device::bindIrq(1, irqEndpoint_) == 0 ||
-            os::Device::bindIrq(12, irqEndpoint_) == 0 ||
-            !os::ServiceRegistry::registerService(registry, os::inputServiceName,
-                                 requestEndpoint_)) {
+        requestEndpoint_ = os::detail::EndpointControl().create();
+        irqEndpoint_     = os::detail::EndpointControl().create();
+        if (requestEndpoint_ == 0 || irqEndpoint_ == 0 || !controller_.init() ||
+            !bindInputIrq(1) || !bindInputIrq(12) ||
+            !os::detail::RegistryClient(registry).registerName(os::inputServiceName,
+                                                        requestEndpoint_)) {
             return false;
         }
         mouse_.init(controller_.mousePacketSize());
@@ -525,19 +588,37 @@ class InputService {
     [[noreturn]] void run() {
         while (true) {
             os::IpcMessage request{};
-            if (os::receiveMessage(requestEndpoint_, request, os::Clock::getMonotonicTime() + 10000000) != 0) {
+            if (os::receiveMessage(
+                    requestEndpoint_, request,
+                    os::Sys().readMonotonicTime() + 10000000) != 0) {
                 notifySubscribers();
                 continue;
             }
             os::IpcMessage reply{};
+            os::wire::TaskInfo caller{};
+            if (os::detail::TaskQuery().query(request.senderPid, caller) ||
+                !caller.managedService ||
+                (caller.serviceRole != uint32_t(os::ServiceRole::Console) &&
+                 caller.serviceRole != uint32_t(os::ServiceRole::Window))) {
+                for (uint32_t i = 0; i < request.handleCount; ++i)
+                    os::closeHandle(request.handles[i]);
+                reply.length = 1;
+                reply.data[0] =
+                    static_cast<int64_t>(os::ErrorCode::PermissionDenied);
+                os::replyMessage(requestEndpoint_, request.replyToken, reply);
+                continue;
+            }
             if (request.type ==
                 static_cast<uint64_t>(os::InputRequest::GetState)) {
                 reply.data[0] = 0;
                 reply.data[1] = queue_.size(request.senderPid);
-                reply.length  = 2;
+                os::wire::InputState state{};
+                queue_.snapshot(state);
+                os::Runtime::copyBytes(&reply.data[2], &state, sizeof(state));
+                reply.length = 2 + sizeof(state) / 8;
             } else if (request.type ==
                        static_cast<uint64_t>(os::InputRequest::GetEvent)) {
-                os::InputEvent event{};
+                os::wire::InputEvent event{};
                 if (!queue_.dequeue(request.senderPid, event)) {
                     reply.data[0] =
                         static_cast<uint64_t>(os::ErrorCode::WouldBlock);
@@ -561,6 +642,29 @@ class InputService {
                 if (!subscribed && request.handleCount == 1) {
                     os::closeHandle(request.handles[0]);
                 }
+            } else if (request.type ==
+                       static_cast<uint64_t>(os::InputRequest::Unsubscribe)) {
+                reply.length = 1;
+                reply.data[0] =
+                    static_cast<int64_t>(os::ErrorCode::InvalidArgument);
+                if (request.handleCount == 1) {
+                    const uint64_t identity =
+                        os::Ipc::Handle(request.handles[0], false).queryIdentity();
+                    if (identity && static_cast<int64_t>(identity) > 0) {
+                        const uint64_t endpoint = queue_.removeSubscription(
+                            request.senderPid, identity);
+                        if (!endpoint)
+                            reply.data[0] = 0;
+                        else if (os::closeHandle(endpoint)) {
+                            queue_.unsubscribe(endpoint);
+                            reply.data[0] = 0;
+                        } else
+                            reply.data[0] =
+                                static_cast<int64_t>(os::ErrorCode::IoError);
+                    }
+                }
+                for (uint32_t i = 0; i < request.handleCount; ++i)
+                    os::closeHandle(request.handles[i]);
             } else {
                 reply.data[0] = 1;
                 reply.length  = 1;
@@ -609,7 +713,8 @@ class InputService {
         for (uint32_t index = 0; index < count; ++index) {
             os::IpcMessage notification{};
             notification.type = os::inputEventNotification;
-            const int result = os::sendMessage(endpoints[index], notification, 0);
+            const int result =
+                os::sendMessage(endpoints[index], notification, 0);
             if (result == static_cast<int>(os::ErrorCode::WouldBlock) ||
                 result == static_cast<int>(os::ErrorCode::Timeout) ||
                 result == static_cast<int>(os::ErrorCode::Interrupted)) {
@@ -622,39 +727,38 @@ class InputService {
 
     uint64_t requestEndpoint_ = 0;
     uint64_t irqEndpoint_     = 0;
+    os::Ipc::Handle inputBindings_[2];
     Ps2Controller controller_;
     KeyboardDriver keyboard_;
     MouseDriver mouse_;
     InputQueue queue_;
 };
 
-
-
 class Device {
    public:
-    void init(const os::PciFunctionInfo& function) {
+    void init(const os::Device::Pci& function) {
         function_ = function;
         category_ = classify(function);
     }
 
-    const os::PciFunctionInfo& function() const { return function_; }
+    const os::Device::Pci& function() const { return function_; }
     DeviceCategory category() const { return category_; }
 
    private:
-    static DeviceCategory classify(const os::PciFunctionInfo& function) {
-        if (function.classCode == 0x01) {
+    static DeviceCategory classify(const os::Device::Pci& function) {
+        if (function.getClassCode() == 0x01) {
             return DeviceCategory::Storage;
         }
-        if (function.classCode == 0x02) {
+        if (function.getClassCode() == 0x02) {
             return DeviceCategory::Network;
         }
-        if (function.classCode == 0x03) {
+        if (function.getClassCode() == 0x03) {
             return DeviceCategory::Display;
         }
         return DeviceCategory::Pci;
     }
 
-    os::PciFunctionInfo function_;
+    os::Device::Pci function_;
     DeviceCategory category_;
 };
 
@@ -703,27 +807,23 @@ class Driver {
 class PciDriver : public Driver {
    public:
     bool readConfiguration(uint16_t offset, uint32_t& value) {
-        return device() != nullptr &&
-               os::Pci::readPciConfig(device()->function(), offset, value) == 0;
+        if (!device()) return false;
+        os::Device::Pci function = device()->function();
+        return function.readConfig(offset, value) == 0;
     }
 
     bool writeConfiguration(uint16_t offset, uint32_t value) {
-        return device() != nullptr &&
-               os::Pci::writePciConfig(device()->function(), offset, value) == 0;
-    }
-
-    uint64_t mapBar(uint8_t barIndex, uint64_t address, uint64_t size) {
-        return device() == nullptr ? 0
-                                   : os::Device::mapDeviceMmio(device()->function(),
-                                                       barIndex, address, size);
+        if (!device()) return false;
+        os::Device::Pci function = device()->function();
+        return function.writeConfig(offset, value) == 0;
     }
 };
 
 class PciBus {
    public:
     uint32_t enumerate(Device* devices, uint32_t capacity) {
-        os::PciFunctionInfo functions[64]{};
-        const int count = os::Pci::enumeratePci(functions, capacity);
+        os::Device::Pci functions[64]{};
+        const int count = os::Device::Pci().enumerate(functions, capacity);
         if (count < 0) {
             return 0;
         }
@@ -773,101 +873,119 @@ class DeviceManager {
 }  // namespace
 
 class DeviceApplication {
- public:
-    static void inputServiceMain(void* input) { static_cast<InputService*>(input)->run(); }
-    static void inputIrqMain(void* input) { static_cast<InputService*>(input)->runIrq(); }
+   public:
+    static void inputServiceMain(void* input) {
+        static_cast<InputService*>(input)->run();
+    }
+    static void inputIrqMain(void* input) {
+        static_cast<InputService*>(input)->runIrq();
+    }
+
     int run() {
-    os::System::log("[DEVICE] Device Server started in Ring 3\n");
-    const uint64_t registry = os::getBootstrapHandle();
-    static services::Lifecycle children;
-    if (!children.initialize("device", registry) || !children.bootstrap() || !children.supervise()) return 1;
-    const uint64_t endpoint = os::Endpoint::create();
-    if (registry == 0 || endpoint == 0 ||
-        !os::ServiceRegistry::registerService(registry, os::deviceServiceName, endpoint)) {
-        os::System::log("[DEVICE] registration failed\n");
-        return 1;
-    }
-
-    DeviceManager manager;
-    if (!manager.init()) {
-        os::System::log("[DEVICE] driver initialization failed\n");
-        return 2;
-    }
-    os::System::log("[DEVICE] PCI discovery and driver matching complete\n");
-    os::System::log("[DEVICE] drivers entered Running state\n");
-
-    constexpr uint64_t inputStackBase    = 0x0000000060000000ULL;
-    constexpr uint64_t inputStackSize    = 64 * 1024;
-    constexpr uint64_t inputIrqStackBase = inputStackBase + inputStackSize;
-    if (!inputService.init(registry) ||
-        os::mapMemory(inputStackBase, inputStackSize, 1) != inputStackBase ||
-        os::mapMemory(inputIrqStackBase, inputStackSize, 1) !=
-            inputIrqStackBase ||
-        os::createThread(inputServiceMain, inputStackBase + inputStackSize, &inputService) ==
-            0 ||
-        os::createThread(inputIrqMain, inputIrqStackBase + inputStackSize, &inputService) ==
-            0) {
-        os::System::log("[INPUT] unable to start PS/2 input service\n");
-        return 3;
-    }
-    os::System::log("[INPUT] PS/2 keyboard and mouse service online\n");
-
-    while (true) {
-        os::IpcMessage request{};
-        if (os::receiveMessage(endpoint, request) != 0) {
-            continue;
+        os::Sys().log("[DEVICE] Device Server started in Ring 3\n");
+        const uint64_t registry = os::getBootstrapHandle();
+        static services::Lifecycle children;
+        if (!children.init("device", registry) || !children.bootstrap() ||
+            !children.supervise())
+            return 1;
+        const uint64_t endpoint = os::detail::EndpointControl().create();
+        if (registry == 0 || endpoint == 0 ||
+            !os::detail::RegistryClient(registry).registerName(os::deviceServiceName,
+                                                        endpoint)) {
+            os::Sys().log("[DEVICE] registration failed\n");
+            return 1;
         }
-        os::IpcMessage reply{};
-        if (request.type == static_cast<uint64_t>(os::DeviceRequest::List)) {
-            reply.data[0] = 0;
-            reply.data[1] = manager.deviceCount();
-            reply.data[2] = manager.driverCount();
-            reply.data[3] = manager.categoryCount(DeviceCategory::Storage);
-            reply.data[4] = manager.categoryCount(DeviceCategory::Network);
-            reply.data[5] = manager.categoryCount(DeviceCategory::Display);
-            reply.length  = 6;
-        } else if (request.type ==
-                   static_cast<uint64_t>(os::DeviceRequest::ListNode)) {
-            constexpr const char* nodes[] = {
-                "zero", "null",
-                "tty1", "tty2", "tty3", "tty4", "tty5", "tty6", "tty7",
-                "ptmx", "pts"};
-            const uint32_t index = static_cast<uint32_t>(request.data[0]);
-            if (index >= sizeof(nodes) / sizeof(nodes[0])) {
-                reply.data[0] = 1;
-                reply.length = 1;
-            } else {
-                reply.data[0] = 0;
-                reply.data[1] = os::Runtime::stringsEqual(nodes[index], "pts") ? 1 : 0;
-                os::Runtime::copyString(reinterpret_cast<char*>(&reply.data[2]),
-                               nodes[index], 6 * sizeof(uint64_t));
-                reply.length = 8;
-            }
-        } else if (request.type ==
-                   static_cast<uint64_t>(os::DeviceRequest::ReadNode)) {
-            const char* name = reinterpret_cast<const char*>(request.data);
-            uint64_t size = request.data[6];
-            const uint64_t capacity =
-                (os::ipcDataWordCount - 2) * sizeof(uint64_t);
-            if (!os::Runtime::stringsEqual(name, "zero") || size == 0 ||
-                size > capacity) {
-                reply.data[0] = static_cast<uint64_t>(
-                    static_cast<int64_t>(os::ErrorCode::InvalidArgument));
-                reply.length = 1;
-            } else {
-                reply.data[0] = 0;
-                reply.data[1] = size;
-                reply.length = static_cast<uint32_t>(
-                    2 + (size + sizeof(uint64_t) - 1) / sizeof(uint64_t));
-            }
-        } else {
-            reply.data[0] = 2;
-            reply.length  = 1;
+
+        DeviceManager manager;
+        if (!manager.init()) {
+            os::Sys().log("[DEVICE] driver initialization failed\n");
+            return 2;
         }
-        os::replyMessage(endpoint, request.replyToken, reply);
+        os::Sys().log(
+            "[DEVICE] PCI discovery and driver matching complete\n");
+        os::Sys().log("[DEVICE] drivers entered Running state\n");
+
+        constexpr uint64_t inputStackBase    = 0x0000000060000000ULL;
+        constexpr uint64_t inputStackSize    = 64 * 1024;
+        constexpr uint64_t inputIrqStackBase = inputStackBase + inputStackSize;
+        if (!inputService.init(registry) ||
+            os::mapMemory(inputStackBase, inputStackSize, 1) !=
+                inputStackBase ||
+            os::mapMemory(inputIrqStackBase, inputStackSize, 1) !=
+                inputIrqStackBase ||
+            os::createThread(inputServiceMain, inputStackBase + inputStackSize,
+                             &inputService) == 0 ||
+            os::createThread(inputIrqMain, inputIrqStackBase + inputStackSize,
+                             &inputService) == 0) {
+            os::Sys().log(
+                "[INPUT] unable to start PS/2 input service\n");
+            return 3;
+        }
+        os::Sys().log(
+            "[INPUT] PS/2 keyboard and mouse service online\n");
+
+        while (true) {
+            os::IpcMessage request{};
+            if (os::receiveMessage(endpoint, request) != 0) {
+                continue;
+            }
+            os::IpcMessage reply{};
+            if (request.type ==
+                static_cast<uint64_t>(os::DeviceRequest::List)) {
+                reply.data[0] = 0;
+                reply.data[1] = manager.deviceCount();
+                reply.data[2] = manager.driverCount();
+                reply.data[3] = manager.categoryCount(DeviceCategory::Storage);
+                reply.data[4] = manager.categoryCount(DeviceCategory::Network);
+                reply.data[5] = manager.categoryCount(DeviceCategory::Display);
+                reply.length  = 6;
+            } else if (request.type ==
+                       static_cast<uint64_t>(os::DeviceRequest::ListNode)) {
+                constexpr const char* nodes[] = {"zero", "null", "tty1", "tty2",
+                                                 "tty3", "tty4", "tty5", "tty6",
+                                                 "tty7", "ptmx", "pts"};
+                const uint32_t index = static_cast<uint32_t>(request.data[0]);
+                if (index >= sizeof(nodes) / sizeof(nodes[0])) {
+                    reply.data[0] = 1;
+                    reply.length  = 1;
+                } else {
+                    reply.data[0] = 0;
+                    reply.data[1] =
+                        os::Runtime::stringsEqual(nodes[index], "pts") ? 1 : 0;
+                    os::Runtime::copyString(
+                        reinterpret_cast<char*>(&reply.data[2]), nodes[index],
+                        6 * sizeof(uint64_t));
+                    reply.length = 8;
+                }
+            } else if (request.type ==
+                       static_cast<uint64_t>(os::DeviceRequest::ReadNode)) {
+                const char* name = reinterpret_cast<const char*>(request.data);
+                uint64_t size    = request.data[6];
+                const uint64_t capacity =
+                    (os::ipcDataWordCount - 2) * sizeof(uint64_t);
+                if (!os::Runtime::stringsEqual(name, "zero") || size == 0 ||
+                    size > capacity) {
+                    reply.data[0] = static_cast<uint64_t>(
+                        static_cast<int64_t>(os::ErrorCode::InvalidArgument));
+                    reply.length = 1;
+                } else {
+                    reply.data[0] = 0;
+                    reply.data[1] = size;
+                    reply.length  = static_cast<uint32_t>(
+                        2 + (size + sizeof(uint64_t) - 1) / sizeof(uint64_t));
+                }
+            } else {
+                reply.data[0] = 2;
+                reply.length  = 1;
+            }
+            os::replyMessage(endpoint, request.replyToken, reply);
+        }
     }
-}
- private:
+
+   private:
     InputService inputService;
 };
-int main(int, char**) { static DeviceApplication application; return application.run(); }
+int main(int, char**) {
+    static DeviceApplication application;
+    return application.run();
+}

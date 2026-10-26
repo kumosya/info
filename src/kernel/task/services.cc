@@ -1,12 +1,12 @@
-#include "kernel/services.h"
+#include "service/common/records.h"
+#include "kernel/syscall.h"
 
 #include "kernel/device.h"
 #include "kernel/ipc.h"
+#include "kernel/mm.h"
 #include "kernel/serial.h"
 #include "kernel/task.h"
-#include "kernel/thread.h"
 #include "kernel/time.h"
-#include "kernel/core_service.h"
 #include "kernel/sync.h"
 
 namespace kernel {
@@ -97,22 +97,7 @@ int Services::cancel(uint64_t handle, uint64_t thread) {
 }
 uint64_t Services::monotonicTime() { return time::getMonotonicTime(); }
 void Services::log(const char* text) { if (text) serial::serialWrite(text); }
-int Services::pciRequest(os::PciRequest& request) {
-    auto* caller = task::getCurrent();
-    if (!caller || !caller->isSystemService() || !caller->hasCapability(taskCapabilityPci))
-        return static_cast<int>(os::ErrorCode::PermissionDenied);
-    switch (request.operation) {
-        case os::PciOperation::Enumerate:
-            return request.functions && request.capacity && request.capacity <= 64
-                ? device::PciAccess::enumerate(request.functions, request.capacity) : -1;
-        case os::PciOperation::ReadConfig:
-            return device::PciAccess::read(request.function, request.offset, request.value) ? 0 : -1;
-        case os::PciOperation::WriteConfig:
-            return device::ResourceDomain::writeConfiguration(request.requester, request.function, request.offset, request.value) ? 0 : -1;
-    }
-    return -1;
-}
-int Services::queryTask(uint64_t id, os::TaskInfo& info) {
+int Services::queryTask(uint64_t id, os::wire::TaskInfo& info) {
     auto target = task::find(id);
     if (!target) return static_cast<int>(os::ErrorCode::NotFound);
     info = {};
@@ -120,14 +105,14 @@ int Services::queryTask(uint64_t id, os::TaskInfo& info) {
     info.trustedDeviceService = target->isSystemService() && target->hasCapability(taskCapabilityDevice);
     return 0;
 }
-uint64_t Services::mapMmio(const os::PciFunctionInfo& function, uint8_t bar, uint64_t address, uint64_t size) {
+uint64_t Services::mapMmio(const os::wire::PciFunctionInfo& function, uint8_t bar, uint64_t address, uint64_t size) {
     if (!deviceAccess()) return 0;
     auto* region = device::MmioRegion::map(*task::getCurrent(), function, bar, address, size);
     const auto handle = region ? task::getCurrent()->handles().add(region, HandleType::MmioRegion, 3) : 0;
     if (region && !handle) region->destroy();
     return handle;
 }
-int Services::allocateDma(uint64_t device, uint64_t address, os::DmaBufferInfo& info) {
+int Services::allocateDma(uint64_t device, uint64_t address, os::wire::DmaBufferInfo& info) {
     if (!deviceAccess()) return static_cast<int>(os::ErrorCode::PermissionDenied);
     HandleTable::Pin pin(task::getCurrent()->handles(), device, HandleType::DeviceDomain, handleRightManage);
     auto* domain = pin.as<device::ResourceDomain>();
@@ -154,18 +139,11 @@ int Services::acknowledgeIrq(uint64_t handle) {
 uint64_t Services::resolve(const char* symbol) {
     struct Import { const char* name; uint64_t address; };
     const Import imports[] = {
-        {"_ZN2os17CoreServiceClient10openHandleENS_15CoreServiceKindE", reinterpret_cast<uint64_t>(&coreHandle)},
         {"_ZN2os17getStandardHandleEj", reinterpret_cast<uint64_t>(&standardHandle)},
-        {"_ZN2os4Task11getThreadIdEv", reinterpret_cast<uint64_t>(&threadId)},
         {"_ZN2os11unmapMemoryEmm", reinterpret_cast<uint64_t>(&unmapMemory)},
         {"_ZN2os13protectMemoryEmmm", reinterpret_cast<uint64_t>(&protectMemory)},
         {"_ZN2os11waitAddressEPVjj", reinterpret_cast<uint64_t>(&waitAddress)},
         {"_ZN2os11wakeAddressEPVjj", reinterpret_cast<uint64_t>(&wakeAddress)},
-        {"_ZN2os6Handle9duplicateEmjj", reinterpret_cast<uint64_t>(&duplicateHandle)},
-        {"_ZN2os6Handle14restrictRightsEmj", reinterpret_cast<uint64_t>(&restrictHandle)},
-        {"_ZN2os6Handle8setFlagsEmj", reinterpret_cast<uint64_t>(&setHandleFlags)},
-        {"_ZN2os6Handle5stateEm", reinterpret_cast<uint64_t>(&handleState)},
-        {"_ZN2os8Endpoint6createEv", reinterpret_cast<uint64_t>(&createEndpoint)},
         {"_ZN2os18getBootstrapHandleEv", reinterpret_cast<uint64_t>(&bootstrapHandle)},
         {"_ZN2os11closeHandleEm", reinterpret_cast<uint64_t>(&closeHandle)},
         {"_ZN2os8exitTaskEi", reinterpret_cast<uint64_t>(&exitTask)},
@@ -179,15 +157,6 @@ uint64_t Services::resolve(const char* symbol) {
         {"_ZN2os14receiveMessageEmRNS_10IpcMessageEm", reinterpret_cast<uint64_t>(&receive)},
         {"_ZN2os11callServiceEmRNS_10IpcMessageES1_m", reinterpret_cast<uint64_t>(&call)},
         {"_ZN2os12replyMessageEmmRNS_10IpcMessageE", reinterpret_cast<uint64_t>(&reply)},
-        {"_ZN2os8Endpoint6cancelEmm", reinterpret_cast<uint64_t>(&cancel)},
-        {"_ZN2os5Clock16getMonotonicTimeEv", reinterpret_cast<uint64_t>(&monotonicTime)},
-        {"_ZN2os6System3logEPKc", reinterpret_cast<uint64_t>(&log)},
-        {"_ZN2os13SystemService10pciRequestERNS_10PciRequestE", reinterpret_cast<uint64_t>(&pciRequest)},
-        {"_ZN2os13SystemService9queryTaskEmRNS_8TaskInfoE", reinterpret_cast<uint64_t>(&queryTask)},
-        {"_ZN2os6Device13mapDeviceMmioERKNS_15PciFunctionInfoEhmm", reinterpret_cast<uint64_t>(&mapMmio)},
-        {"_ZN2os6Device11allocateDmaEmmRNS_13DmaBufferInfoE", reinterpret_cast<uint64_t>(&allocateDma)},
-        {"_ZN2os6Device7bindIrqEhmb", reinterpret_cast<uint64_t>(&bindIrq)},
-        {"_ZN2os6Device14acknowledgeIrqEm", reinterpret_cast<uint64_t>(&acknowledgeIrq)}
     };
     for (const auto& item : imports) {
         uint32_t i = 0;
@@ -197,3 +166,9 @@ uint64_t Services::resolve(const char* symbol) {
     return 0;
 }
 }  // namespace kernel
+
+namespace kernel {
+uint64_t Services::mapMemory(uint64_t address,uint64_t size,uint64_t protection) { auto* caller=task::getCurrent();return caller ? memory::MappingOperations::map(*caller,address,size,protection) : static_cast<uint64_t>(-1); }
+bool Services::unmapMemory(uint64_t address,uint64_t size) { auto* caller=task::getCurrent();return caller ? memory::MappingOperations::unmap(*caller,address,size)==0 : false; }
+bool Services::protectMemory(uint64_t address,uint64_t size,uint64_t protection) { auto* caller=task::getCurrent();return caller ? memory::MappingOperations::protect(*caller,address,size,protection)==0 : false; }
+}

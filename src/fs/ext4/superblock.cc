@@ -1,5 +1,5 @@
-#include "../ext4.h"
-#include "internal.h"
+#include "service/fs/ext4/filesystem.h"
+#include "service/fs/ext4/internal.h"
 
 namespace fs::ext4 {
 

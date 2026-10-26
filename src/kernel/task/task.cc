@@ -1,5 +1,7 @@
+#include "service/common/records.h"
+#include "service/common/identity.h"
+#include "service/common/kernel-requests.h"
 #include "kernel/task.h"
-#include "kernel/recovery.h"
 #include "kernel/time.h"
 
 #include "kernel/atomic.h"
@@ -10,7 +12,6 @@
 #include "kernel/page.h"
 #include "kernel/new.h"
 #include "kernel/serial.h"
-#include "kernel/signal.h"
 #include "kernel/smp.h"
 
 namespace {
@@ -52,7 +53,7 @@ class TaskReclaimer {
     static void init() {
         worker_ = Thread::create(nullptr, run, nullptr);
         if (!worker_) {
-            serial::serialWrite("[TASK] unable to initialize task reclaimer\n");
+            serial::serialWrite("[TASK] unable to init task reclaimer\n");
             cpu::halt();
         }
     }
@@ -69,7 +70,7 @@ class TaskReclaimer {
     }
    private:
     static void run(void*) {
-        for (;;) {
+        while (true) {
             Task* task;
             {
                 InterruptSpinLockGuard guard(lock_);
@@ -87,11 +88,11 @@ class TaskReclaimer {
             const bool exited = task->destroyResources();
             __atomic_store_n(&task->resourceState_, 2U, __ATOMIC_RELEASE);
             // The requester may have died before notifying the parent.
-            if (exited) {
+            if (exited && !CoreDump::pending(*task)) {
                 auto parent = task->parentReference();
                 if (parent) {
                     parent->notifyChildStateChange();
-                    parent->deliverSignal(static_cast<uint32_t>(Signal::Child));
+                    parent->notifyChildExit(*task);
                 }
             }
             task->release();
@@ -388,6 +389,8 @@ void HandleTable::Reference::release(Reference* reference) {
         static_cast<device::DmaBuffer*>(object)->destroy();
     } else if (type == HandleType::MmioRegion) {
         static_cast<device::MmioRegion*>(object)->destroy();
+    } else if (type == HandleType::FramebufferMapping) {
+        static_cast<device::FrameMapping*>(object)->destroy();
     } else if (type == HandleType::DeviceDomain) {
         static_cast<device::ResourceDomain*>(object)->closeLease();
     }
@@ -496,7 +499,7 @@ bool HandleTable::Transfer::capture(HandleTable& source, const os::IpcMessage& m
         const auto& entry = source.entries_[static_cast<uint32_t>(message.handles[i]) - 1];
         const auto type = entry.reference->type;
         if (type == HandleType::MmioRegion || type == HandleType::DmaBuffer ||
-            type == HandleType::InterruptBinding || type == HandleType::DeviceDomain) return false;
+            type == HandleType::InterruptBinding || type == HandleType::DeviceDomain || type == HandleType::FramebufferMapping) return false;
         if (message.handleOptions[i] & ~(os::ipcHandleRestrictRights | os::ipcHandleMove)) return false;
         if ((message.handleOptions[i] & os::ipcHandleRestrictRights) &&
             (message.handleRights[i] & entry.getRights()) != message.handleRights[i]) return false;
@@ -632,8 +635,10 @@ void HandleTable::closeAll() {
     }
 }
 
+uint64_t task::allocateId() { return nextTaskId.fetchAdd(1, MemoryOrder::Relaxed); }
+
 bool Task::init(const char* name, uint64_t rootPhysicalAddress, Task* parent) {
-    id_ = nextTaskId.fetchAdd(1, MemoryOrder::Relaxed);
+    id_ = task::allocateId();
     copyName(name_, name);
     state_ = TaskState::Created;
     addressSpace_.init(rootPhysicalAddress);
@@ -650,6 +655,18 @@ bool Task::init(const char* name, uint64_t rootPhysicalAddress, Task* parent) {
     startedNanoseconds_ = time::getMonotonicTime();
     uid_ = effectiveUid_ = parent ? parent->effectiveUid() : 0;
     gid_ = effectiveGid_ = parent ? parent->effectiveGid() : 0;
+    if (parent) {
+        InterruptSpinLockGuard guard(parent->lock_);
+        coreLimit_ = parent->coreLimit_; coreHardLimit_ = parent->coreHardLimit_;
+        uid_ = parent->uid_; effectiveUid_ = parent->effectiveUid_; savedUid_ = parent->savedUid_;
+        gid_ = parent->gid_; effectiveGid_ = parent->effectiveGid_; savedGid_ = parent->savedGid_;
+        supplementaryCount_ = parent->supplementaryCount_;
+        for (uint32_t i = 0; i < supplementaryCount_; ++i) supplementaryGroups_[i] = parent->supplementaryGroups_[i];
+        niceLimit_ = parent->niceLimit_; niceHardLimit_ = parent->niceHardLimit_;
+        Thread* creator = Thread::getCurrent();
+        initialNice_ = creator && creator->getTask() == parent ? creator->getNice() :
+            parent->mainThread_ ? parent->mainThread_->getNice() : 0;
+    }
     if (parent) parent->authentication(authenticationSession_, authenticationUid_, authenticationGid_);
     firstChild_      = nullptr;
     nextSibling_     = nullptr;
@@ -765,7 +782,17 @@ bool Task::inheritForFork(Task& parent) {
         gid_ = parent.gid_;
         effectiveUid_ = parent.effectiveUid_;
         effectiveGid_ = parent.effectiveGid_;
+        savedUid_ = parent.savedUid_; savedGid_ = parent.savedGid_;
+        supplementaryCount_ = parent.supplementaryCount_;
+        for (uint32_t i = 0; i < supplementaryCount_; ++i) supplementaryGroups_[i] = parent.supplementaryGroups_[i];
+          coreLimit_ = parent.coreLimit_; coreHardLimit_ = parent.coreHardLimit_;
+          niceLimit_ = parent.niceLimit_; niceHardLimit_ = parent.niceHardLimit_;
+          dumpable_ = parent.dumpable_;
+          imageMappingCount_ = parent.imageMappingCount_;
+          for (uint32_t i = 0; i < imageMappingCount_; ++i) imageMappings_[i] = parent.imageMappings_[i];
+          for (unsigned i = 0; i < 14; ++i) auxiliary_[i] = parent.auxiliary_[i];
         bootstrapHandle_ = parent.bootstrapHandle_;
+        kernelHandle_ = parent.kernelHandle_;
         for (uint32_t index = 0; index < 3; ++index) {
             standardHandles_[index] = parent.standardHandles_[index];
         }
@@ -849,9 +876,17 @@ bool Task::commitExec(uint64_t newRootPhysicalAddress, const char* name,
         }
         currentThread->setTaskNext(nullptr);
         currentThread->setPendingSignals(0);
+        currentThread->signalStack = {};
+        currentThread->signalDepth = 0; currentThread->activeSignalFrame = 0;
+        currentThread->lastFault = {};
+        imageMappingCount_ = 0;
+        for (auto& value : auxiliary_) value = 0;
         currentThread->setWaitNext(nullptr);
         threads_          = currentThread;
         mainThread_       = currentThread;
+        currentThread->setId(id_);
+        savedUid_ = effectiveUid_; savedGid_ = effectiveGid_;
+        dumpable_ = uid_ == effectiveUid_ && gid_ == effectiveGid_;
         threadCount_      = 1;
         acceptsThreads_   = false;
         state_            = TaskState::Running;
@@ -860,6 +895,7 @@ bool Task::commitExec(uint64_t newRootPhysicalAddress, const char* name,
         stopReported_     = false;
         continuedPending_ = false;
         pendingSignals_   = 0;
+        dumpable_ = uid_ == effectiveUid_ && gid_ == effectiveGid_;
         serviceRole_      = os::ServiceRole::None;
         for (uint32_t signal = 1; signal <= maximumSignal; ++signal) {
             if (signalActions_[signal].getHandler() != signalIgnore) {
@@ -899,10 +935,12 @@ bool Task::commitExec(uint64_t newRootPhysicalAddress, const char* name,
 }
 
 int Task::waitForChild(int64_t taskId, Thread* waiter, int& status,
-                       uint32_t options, uint64_t& childId) {
+                       uint32_t options, uint64_t& childId, os::wire::ChildEvent* event) {
     if (waiter == nullptr) return -1;
     TaskReference reaped;
     bool found   = false;
+    const bool waitId = (options & 0x10000000U) != 0;
+    const bool peek = (options & 0x01000000U) != 0;
     {
         InterruptSpinLockGuard guard(lock_);
         Task** link = &firstChild_;
@@ -923,23 +961,29 @@ int Task::waitForChild(int64_t taskId, Thread* waiter, int& status,
             bool stateEvent = false;
             {
                 InterruptSpinLockGuard childGuard(child->lock_);
-                terminated = child->state_ == TaskState::Terminated;
+                const bool exited = child->state_ == TaskState::Terminated && !CoreDump::pending(*child);
+                terminated = exited && (!waitId || (options & 4U));
                 if (terminated) {
-                    status     = child->exitCode_ >= 0
-                                     ? (child->exitCode_ & 0xff) << 8
-                                     : ((-child->exitCode_) & 0x7f);
+                    status     = child->exitSignal_ ? static_cast<int>(child->exitSignal_) |
+                        ((child->coreState_ == os::wire::CoreState::Complete || child->coreState_ == os::wire::CoreState::Truncated) ? 0x80 : 0) : (child->exitCode_ & 0xff) << 8;
                     stateEvent = true;
-                } else if ((options & 2U) != 0 && child->stopped_ &&
+                    if (event) *event = {child->id_, child->uid_, child->exitSignal_ ?
+                        ((child->coreState_ == os::wire::CoreState::Complete || child->coreState_ == os::wire::CoreState::Truncated) ? 3U : 2U) : 1U,
+                        child->exitSignal_ ? static_cast<int32_t>(child->exitSignal_) : child->exitCode_ & 255};
+                } else if (!exited && (options & 2U) != 0 && child->stopped_ &&
                            !child->stopReported_) {
-                    child->stopReported_ = true;
+                    if (!peek) child->stopReported_ = true;
                     status = (static_cast<int>(child->stopSignal_) << 8) | 0x7f;
                     stateEvent = true;
-                } else if ((options & 8U) != 0 && child->continuedPending_) {
-                    child->continuedPending_ = false;
+                    if (event) *event = {child->id_, child->uid_, 5, static_cast<int32_t>(child->stopSignal_)};
+                } else if (!exited && (options & 8U) != 0 && child->continuedPending_) {
+                    if (!peek) child->continuedPending_ = false;
                     status                   = 0xffff;
                     stateEvent               = true;
+                    if (event) *event = {child->id_, child->uid_, 6, 18};
                 }
             }
+            if (stateEvent && peek) { childId = child->id_; return 0; }
             if (terminated) {
                 *link               = child->nextSibling_;
                 child->nextSibling_ = nullptr;
@@ -1001,6 +1045,63 @@ void Task::notifyChildStateChange() {
     }
 }
 
+void Task::recordSignalExit(uint32_t signo, const FaultRecord* fault) {
+    InterruptSpinLockGuard guard(lock_);
+    if (exitSignal_) return;
+    exitSignal_ = signo; exitCode_ = -static_cast<int>(signo);
+    if (fault) exitFault_ = *fault;
+    else {
+        exitFault_.pid = id_; exitFault_.signal = signo;
+        exitFault_.started = startedNanoseconds_; exitFault_.timestamp = time::getMonotonicTime();
+        Thread* current = Thread::getCurrent();
+        if (current && current->getTask() == this) {
+            current->saveFloatingPointState();
+            exitFault_.tid = current->getId();
+            if (current->syscallContext()) current->lastUserContext = *current->syscallContext();
+            exitFault_.rip = current->lastUserContext.userRip; exitFault_.rsp = current->lastUserContext.userRsp;
+        }
+    }
+    CoreDump::request(*this);
+}
+void Task::getExitInfo(os::wire::ExitInfo& info) {
+    InterruptSpinLockGuard guard(lock_);
+    CoreDump::pending(*this);
+    info = {exitSignal_, static_cast<uint32_t>(coreState_), exitFault_.tid,
+        exitFault_.vector, exitFault_.error, exitFault_.rip, exitFault_.rsp,
+        exitFault_.address, startedNanoseconds_, exitFault_.addressValid, exitFault_.code};
+}
+bool Task::setCoreLimit(uint64_t soft, uint64_t hard) {
+    InterruptSpinLockGuard guard(lock_);
+    if (soft > hard || (hard > coreHardLimit_ && effectiveUid_ != 0)) return false;
+    coreLimit_ = soft; coreHardLimit_ = hard; return true;
+}
+bool Task::recordImage(const os::wire::ImageMapping& mapping) {
+    InterruptSpinLockGuard guard(lock_);
+    if (imageMappingCount_ == 64) return false;
+    imageMappings_[imageMappingCount_++] = mapping; return true;
+}
+void Task::recordAuxiliary(uint64_t headers, uint64_t count, uint64_t entry, uint64_t loader) {
+    InterruptSpinLockGuard guard(lock_);
+    const uint64_t values[14] = {3, headers, 4, 56, 5, count, 7, loader, 9, entry, 6, 4096, 0, 0};
+    for (unsigned i = 0; i < 14; ++i) auxiliary_[i] = values[i];
+}
+OsSignalInfo Task::childSignalInfo() {
+    InterruptSpinLockGuard guard(lock_); return childSignalInfo_;
+}
+void Task::notifyChildExit(Task& child) {
+    if (__atomic_exchange_n(&child.exitNotified_, true, __ATOMIC_ACQ_REL)) return;
+    os::wire::ExitInfo info{}; child.getExitInfo(info);
+    {
+        InterruptSpinLockGuard guard(lock_);
+        childSignalInfo_ = {};
+        childSignalInfo_.signo = 17; childSignalInfo_.pid = child.id(); childSignalInfo_.uid = child.uid();
+        childSignalInfo_.code = !info.signal ? 1 :
+            (info.coreState == static_cast<uint32_t>(os::wire::CoreState::Complete) || info.coreState == static_cast<uint32_t>(os::wire::CoreState::Truncated)) ? 3 : 2;
+        childSignalInfo_.status = info.signal ? static_cast<int>(info.signal) : child.exitCode() & 0xff;
+    }
+    notifyChildStateChange(); deliverSignal(17);
+}
+
 bool Task::attachThread(Thread* thread) {
     if (thread == nullptr) {
         return false;
@@ -1014,6 +1115,7 @@ bool Task::attachThread(Thread* thread) {
     threads_ = thread;
     ++threadCount_;
     if (mainThread_ == nullptr) {
+        thread->setId(id_);
         mainThread_ = thread;
     }
     state_ = TaskState::Running;
@@ -1087,7 +1189,7 @@ void Task::notifyThreadExit(Thread* thread) {
         if (newlyExited && threadCount_ == 0 && this != kernelTask) {
             state_          = TaskState::Terminated;
             acceptsThreads_ = false;
-            exitCode_       = thread->getExitCode();
+            if (!exitSignal_) exitCode_ = thread->getExitCode();
             // The reclaimer detaches endpoint ownership before closing handles.
             taskTerminated = true;
         }
@@ -1107,7 +1209,7 @@ void Task::notifyThreadExit(Thread* thread) {
 void Task::terminateOtherThreads(int exitCode) {
     InterruptSpinLockGuard guard(lock_);
     acceptsThreads_ = false;
-    exitCode_       = exitCode;
+    if (!exitSignal_) exitCode_ = exitCode;
     for (Thread* thread = threads_; thread != nullptr;
          thread         = thread->getTaskNext()) {
         if (thread != Thread::getCurrent() &&
@@ -1160,6 +1262,7 @@ bool Task::destroyResources() {
     }
     schedule::quiesceTask(this);
     device::ResourceDomain::ownerExiting(*this);
+    CoreDump::capture(*this);
     {
         PreemptionSpinLockGuard guard(addressSpace_.lock());
         root = addressSpace_.replaceRoot(0);
@@ -1305,11 +1408,18 @@ void Task::authentication(uint64_t& session, uint32_t& uid, uint32_t& gid) {
     InterruptSpinLockGuard guard(lock_);
     session = authenticationSession_; uid = authenticationUid_; gid = authenticationGid_;
 }
-bool Task::authenticate(uint32_t uid, uint32_t gid, bool preserveCredentials) {
+bool Task::authenticate(uint32_t uid, uint32_t gid, bool preserveCredentials, uint32_t groupCount, const uint32_t* groups) {
     InterruptSpinLockGuard guard(lock_);
     if (state_ == TaskState::Terminated || managedService_ || uid >= 65535 || gid >= 65535 ||
+        groupCount > os::maximumSupplementaryGroups || (groupCount && !groups) ||
         (preserveCredentials && (effectiveUid_ != uid || effectiveGid_ != gid))) return false;
-    if (!preserveCredentials) { uid_ = effectiveUid_ = uid; gid_ = effectiveGid_ = gid; }
+    for (uint32_t i = 0; i < groupCount; ++i) if (groups[i] == UINT32_MAX) return false;
+    if (!preserveCredentials) {
+        if (uid_ != uid || effectiveUid_ != uid || gid_ != gid || effectiveGid_ != gid) dumpable_ = false;
+        uid_ = effectiveUid_ = savedUid_ = uid; gid_ = effectiveGid_ = savedGid_ = gid;
+        supplementaryCount_ = groupCount;
+        for (uint32_t i = 0; i < groupCount; ++i) supplementaryGroups_[i] = groups[i];
+    }
     authenticationSession_ = sessionId_; authenticationUid_ = uid; authenticationGid_ = gid;
     return true;
 }
@@ -1399,6 +1509,35 @@ bool Task::deliverSignal(uint32_t signal) {
         isTerminated()) {
         return false;
     }
+    auto notifyState = [&](int code, int status) {
+        auto parent = parentReference();
+        if (!parent) return;
+        {
+            InterruptSpinLockGuard guard(parent->lock_);
+            parent->childSignalInfo_ = {};
+            parent->childSignalInfo_.signo = 17; parent->childSignalInfo_.code = code;
+            parent->childSignalInfo_.pid = id_; parent->childSignalInfo_.uid = uid_;
+            parent->childSignalInfo_.status = status;
+        }
+        parent->notifyChildStateChange(); parent->deliverSignal(17);
+    };
+    if (signal == static_cast<uint32_t>(Signal::Continue)) {
+        bool changed;
+        {
+            InterruptSpinLockGuard guard(lock_);
+            changed = stopped_; stopped_ = false;
+            if (changed) continuedPending_ = true;
+            for (Thread* thread = threads_; thread; thread = thread->getTaskNext()) {
+                if (memoryFrozen() || thread->getState() != ThreadState::Stopped) continue;
+                thread->setState(thread->getStateBeforeStop());
+                if (thread->getState() == ThreadState::Ready || thread->getState() == ThreadState::Running) {
+                    thread->setState(ThreadState::Ready); schedule::enqueueThread(thread);
+                }
+            }
+        }
+        // Resume is unconditional even if delivery of a SIGCONT handler is masked or ignored.
+        if (changed) notifyState(6, signal);
+    }
     SignalAction action{};
     bool queued = false;
     {
@@ -1432,29 +1571,6 @@ bool Task::deliverSignal(uint32_t signal) {
         signal == static_cast<uint32_t>(Signal::Urgent))
         return true;
     if (signal == static_cast<uint32_t>(Signal::Continue)) {
-        {
-            InterruptSpinLockGuard guard(lock_);
-            stopped_          = false;
-            continuedPending_ = true;
-            for (Thread* thread = threads_; thread != nullptr;
-                 thread         = thread->getTaskNext()) {
-                if (memoryFrozen()) continue;
-                if (thread->getState() != ThreadState::Stopped) continue;
-                thread->setState(thread->getStateBeforeStop());
-                if (thread->getState() == ThreadState::Ready ||
-                    thread->getState() == ThreadState::Running) {
-                    thread->setState(ThreadState::Ready);
-                    schedule::enqueueThread(thread);
-                }
-            }
-        }
-        {
-            auto parent = parentReference();
-            if (parent) {
-                parent->notifyChildStateChange();
-                parent->deliverSignal(static_cast<uint32_t>(Signal::Child));
-            }
-        }
         return true;
     }
     if (signal == static_cast<uint32_t>(Signal::Stop) ||
@@ -1479,15 +1595,10 @@ bool Task::deliverSignal(uint32_t signal) {
                     static_cast<uint32_t>(thread->getCpuId()));
             }
         }
-        {
-            auto parent = parentReference();
-            if (parent) {
-                parent->notifyChildStateChange();
-                parent->deliverSignal(static_cast<uint32_t>(Signal::Child));
-            }
-        }
+        notifyState(5, signal);
         return true;
     }
+    recordSignalExit(signal);
     terminateOtherThreads(-static_cast<int>(signal));
     if (this == task::getCurrent()) {
         Thread::exitCurrent(-static_cast<int>(signal));
@@ -1503,7 +1614,7 @@ void task::init() {
     Task* task    = storage == nullptr ? nullptr : new (storage) Task;
     if (task == nullptr ||
         !task->init("kernel", memory::getKernelAddressSpaceRoot(), nullptr)) {
-        serial::serialWrite("[TASK] unable to initialize kernel task\n");
+        serial::serialWrite("[TASK] unable to init kernel task\n");
         cpu::halt();
     }
     kernelTask = task;
@@ -1511,8 +1622,9 @@ void task::init() {
     kernelTask->attachThread(Thread::getCurrent());
     cpu::getCurrent()->setCurrentTask(kernelTask);
     TaskReclaimer::init();
-    device::ResourceDomain::initialize();
-    ServiceRecovery::initialize();
+    CoreDump::init();
+    device::ResourceDomain::init();
+    ServiceRecovery::init();
     serial::serialWrite("[TASK] kernel task initialized\n");
 }
 
@@ -1520,11 +1632,13 @@ Task* task::getCurrent() { return cpu::getCurrent()->getCurrentTask(); }
 
 void Task::setCredentials(uint32_t uid, uint32_t gid, bool effectiveOnly) {
     InterruptSpinLockGuard guard(lock_);
+    if (uid != effectiveUid_ || gid != effectiveGid_) dumpable_ = false;
     effectiveUid_ = uid;
     effectiveGid_ = gid;
     if (!effectiveOnly) {
         if (uid_ != uid || gid_ != gid) authenticationSession_ = 0;
         uid_ = uid; gid_ = gid;
+        savedUid_ = uid; savedGid_ = gid;
     }
 }
 
@@ -1617,3 +1731,6 @@ bool signal::sendSignalToTaskGroup(uint64_t taskGroupId, uint32_t signal, Task* 
 }
 
 }  // namespace kernel
+
+uint64_t kernel::Task::kernelHandle() const { return kernelHandle_; }
+void kernel::Task::setKernelHandle(uint64_t handle) { kernelHandle_ = handle; }

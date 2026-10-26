@@ -1,5 +1,6 @@
-#include "kernel/core_service.h"
-#include "os/pci.h"
+#include "service/common/records.h"
+#include "kernel/ipc.h"
+#include <os/device.h>
 
 #include "kernel/device.h"
 #include "kernel/mm.h"
@@ -10,13 +11,10 @@
 #include "kernel/task.h"
 #include "kernel/time.h"
 #include "kernel/new.h"
-#include "kernel/thread.h"
-#include "kernel/signal.h"
 
-#include "kernel/service_message.h"
 namespace kernel {
 namespace {
-class SystemService final : public EndpointService {
+class Sys final : public EndpointService {
    public:
     int call(Task&, const IpcMessage& request, IpcMessage& reply) override {
         switch (static_cast<os::SystemOperation>(request.type)) {
@@ -24,7 +22,7 @@ class SystemService final : public EndpointService {
             case os::SystemOperation::WallClockTime: reply.data[0] = time::getWallClockTime(); break;
             case os::SystemOperation::ClockResolution: reply.data[0] = time::getClockResolution(); break;
             case os::SystemOperation::Info: {
-                const os::SystemInfo info{time::getMonotonicTime(), memory::getTotalMemoryBytes(),
+                const os::wire::SystemInfo info{time::getMonotonicTime(), memory::getTotalMemoryBytes(),
                     memory::getFreeMemoryBytes(), smp::getOnlineCpuCount(), 0};
                 MessageData::copy(&reply.data[1], &info, sizeof(info));
                 break;
@@ -46,7 +44,7 @@ class SystemService final : public EndpointService {
 
 }  // namespace
 EndpointService& systemKernelService() {
-    static SystemService service;
+    static Sys service;
     return service;
 }
 }  // namespace kernel

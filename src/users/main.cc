@@ -1,44 +1,54 @@
-#include "os/task.h"
+#include "service/users/messages.h"
+#include "service/common/queries.h"
+#include "service/common/records.h"
+#define _GNU_SOURCE 1
+#include <os/task.h>
+#include <grp.h>
 #include <fcntl.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <sys/stat.h>
 #include <unistd.h>
-#include "os/abi.h"
-#include "os/service.h"
-#include "os/users.h"
-#include "password.h"
-#include "accounts.h"
-#include "sessions.h"
+#include <os/ipc.h>
+#include <os/task.h>
+#include <os/mm.h>
+#include <os/device.h>
+#include <os/service.h>
+#include <os/service.h>
+#include <os/user.h>
+#include "service/users/password.h"
+#include "service/users/accounts.h"
+#include "service/users/sessions.h"
 
 namespace users {
 class UserService {
    public:
     bool init() {
-        if (!accounts_.load()) { os::System::log("[USERS] cannot load account database\n"); return false; }
-        if (!directories_.initialize()) { os::System::log("[USERS] cannot initialize system directories\n"); return false; }
+        if (!accounts_.load()) { os::Sys().log("[USERS] cannot load account database\n"); return false; }
+        if (!directories_.init()) { os::Sys().log("[USERS] cannot init system directories\n"); return false; }
         for (uint32_t i = 0; i < accounts_.count(); ++i) {
             if (!directories_.prepare(accounts_.at(i).profile)) {
-                os::System::log("[USERS] cannot prepare home: ");
-                os::System::log(accounts_.at(i).profile.home);
-                os::System::log("\n");
+                os::Sys().log("[USERS] cannot prepare home: ");
+                os::Sys().log(accounts_.at(i).profile.home);
+                os::Sys().log("\n");
                 return false;
             }
         }
-        if (!sessions_.initialize()) { os::System::log("[USERS] cannot recover authenticated sessions\n"); return false; }
-        endpoint_ = os::Endpoint::create();
-        return endpoint_ && os::ServiceRegistry::registerService(os::ServiceRegistry::serviceRegistry(), "users", endpoint_);
+        if (!sessions_.init()) { os::Sys().log("[USERS] cannot recover authenticated sessions\n"); return false; }
+        endpoint_ = os::detail::EndpointControl().create();
+        return endpoint_ && os::detail::RegistryClient(os::detail::RegistryClient().endpoint()).registerName("users", endpoint_);
     }
     void run() {
-        os::System::log("[USERS] account and authentication service started\n");
+        os::Sys().log("[USERS] account and authentication service started\n");
         while (true) {
             sessions_.sweep();
             os::IpcMessage request{}, reply{};
-            if (os::receiveMessage(endpoint_, request, os::Clock::getMonotonicTime() + 100000000ULL)) continue;
+            if (os::receiveMessage(endpoint_, request, os::Sys().readMonotonicTime() + 100000000ULL)) continue;
             reply.data[0] = 1; reply.length = 1;
-            if (request.length >= (sizeof(os::UserCredentials) + 7) / 8) handle(request, reply);
+            if (request.length >= (sizeof(os::wire::UserCredentials) + 7) / 8) handle(request, reply);
             os::replyMessage(endpoint_, request.replyToken, reply);
+            for(uint32_t i=0;i<request.handleCount;++i)os::closeHandle(request.handles[i]);
             Password::erase(&request, sizeof(request));
         }
     }
@@ -74,58 +84,81 @@ class UserService {
         fclose(file); return allowed;
     }
     void handle(const os::IpcMessage& request, os::IpcMessage& reply) {
-        os::UserCredentials input{};
-        struct Erase { os::UserCredentials& value; ~Erase() { Password::erase(&value, sizeof(value)); } } erase{input};
+        os::wire::UserCredentials input{};
+        struct Erase { os::wire::UserCredentials& value; ~Erase() { Password::erase(&value, sizeof(value)); } } erase{input};
         std::memcpy(&input, request.data, sizeof(input));
         if (!std::memchr(input.name, 0, sizeof(input.name)) || !std::memchr(input.password, 0, sizeof(input.password)) ||
             !std::memchr(input.replacement, 0, sizeof(input.replacement))) return;
-        os::TaskInfo caller{};
-        if (os::Task::query(request.senderPid, caller)) return;
-        const auto operation = static_cast<os::UserOperation>(request.type);
+        os::wire::TaskInfo caller{};
+        if (os::detail::TaskQuery().query(request.senderPid, caller)) return;
+        const auto operation = static_cast<os::wire::UserOperation>(request.type);
         Account* account = find(input.name, input.id);
-        if (operation == os::UserOperation::AutoLogin) {
+        if (operation == os::wire::UserOperation::List) {
+            Account* listed=nullptr;uint32_t available=0;
+            for(uint32_t i=0;i<accounts_.count();++i){
+                auto& entry=accounts_.at(i);
+                if(entry.hash[0]=='!' || entry.hash[0]=='*' || std::strstr(entry.profile.shell,"nologin") || !std::strcmp(entry.profile.shell,"/bin/false"))continue;
+                if(available++==input.id){listed=&entry;break;}
+            }
+            if(!listed)return;
+            reply.data[0] = 0;
+            std::memcpy(&reply.data[1], &listed->profile, sizeof(os::wire::UserProfile));
+            reply.length = 1 + (sizeof(os::wire::UserProfile) + 7) / 8;
+            return;
+        }
+        const bool graphical = operation == os::wire::UserOperation::GraphicalLogin;
+        if (graphical) {
+            os::wire::TaskInfo parent{};
+            if (caller.managedService || caller.effectiveUid || caller.sessionId != caller.id ||
+                os::detail::TaskQuery().query(caller.parentId,parent) || !parent.managedService ||
+                parent.serviceRole != uint32_t(os::ServiceRole::Init)) return;
+        }
+        if (operation == os::wire::UserOperation::AutoLogin) {
             account = accounts_.automatic();
             if (!account || caller.effectiveUid || caller.managedService || !caller.terminalKind ||
                 caller.sessionId != caller.id || caller.taskGroupId != caller.id) return;
         }
-        if (operation == os::UserOperation::Who) {
-            os::TaskInfo task{};
-            if (os::Task::query(input.id, task) || task.state == 2) return;
+        if (operation == os::wire::UserOperation::Who) {
+            os::wire::TaskInfo task{};
+            if (os::detail::TaskQuery().query(input.id, task) || task.state == 2) return;
             const char* name = std::strrchr(task.name, '/'); name = name ? name + 1 : task.name;
             if (std::strcmp(name, "sh")) return;
             account = find("", task.uid);
             reply.data[40] = task.id;
         }
         if (!account) return;
-        if (operation == os::UserOperation::Login || operation == os::UserOperation::AutoLogin) {
-            if (operation == os::UserOperation::Login && !Password::verify(input.password, account->hash)) return;
+        if (operation == os::wire::UserOperation::Login || operation == os::wire::UserOperation::AutoLogin || graphical) {
+            if (operation != os::wire::UserOperation::AutoLogin && !Password::verify(input.password, account->hash)) return;
+            if (graphical && os::Ipc::Handle(endpoint_, false).requestActive(request.replyToken) <= 0) return;
             // Reserve all fallible session resources before changing credentials.
             if (!sessions_.prepare(request.senderPid, account->profile)) return;
-            if (os::SessionIdentity::establish(request.senderPid, account->profile.uid, account->profile.gid)) {
+            gid_t groups[os::maximumSupplementaryGroups]; int groupCount = os::maximumSupplementaryGroups;
+            if (getgrouplist(account->profile.name, account->profile.gid, groups, &groupCount) < 0 ||
+                os::SessionIdentity::establish(request.senderPid, account->profile.uid, account->profile.gid, false, groupCount, groups)) {
                 sessions_.cancel(account->profile); return;
             }
             sessions_.commit(request.senderPid, account->profile);
-        } else if (operation == os::UserOperation::BeginSession) {
+        } else if (operation == os::wire::UserOperation::BeginSession) {
             if (caller.effectiveUid != account->profile.uid ||
                 !sessions_.begin(request.senderPid, account->profile)) return;
-        } else if (operation == os::UserOperation::Sudo) {
+        } else if (operation == os::wire::UserOperation::Sudo) {
             account = find("", caller.uid);
             if (!account || !allowedSudo(*account) || (caller.effectiveUid != 0 && !Password::verify(input.password, account->hash)) ||
-                os::Task::setCredentials( request.senderPid, 0, 0, 1)) return;
-        } else if (operation == os::UserOperation::Password) {
+                os::detail::TaskControl().setCredentials( request.senderPid, 0, 0, 1)) return;
+        } else if (operation == os::wire::UserOperation::Password) {
             if (caller.effectiveUid && (caller.uid != account->profile.uid || !Password::verify(input.password, account->hash))) return;
             if (strlen(input.replacement) < 1) return;
             uint8_t salt[16];
-            const uint64_t values[2] = {os::Clock::getMonotonicTime() ^ ++saltCounter_, os::Clock::getWallClockTime() ^ request.senderPid};
+            const uint64_t values[2] = {os::Sys().readMonotonicTime() ^ ++saltCounter_, os::Sys().readWallClockTime() ^ request.senderPid};
             std::memcpy(salt, values, sizeof(salt));
             char old[128]; std::strcpy(old, account->hash);
             Password::encode(input.replacement, salt, account->hash);
             if (!saveShadow()) { std::strcpy(account->hash, old); Password::erase(old, sizeof(old)); return; }
             Password::erase(old, sizeof(old));
-        } else if (operation != os::UserOperation::Lookup && operation != os::UserOperation::Who) return;
+        } else if (operation != os::wire::UserOperation::Lookup && operation != os::wire::UserOperation::Who) return;
         reply.data[0] = 0;
         std::memcpy(&reply.data[1], &account->profile, sizeof(account->profile));
-        reply.length = operation == os::UserOperation::Who ? 41 : 1 + (sizeof(account->profile) + 7) / 8;
+        reply.length = operation == os::wire::UserOperation::Who ? 41 : 1 + (sizeof(account->profile) + 7) / 8;
         Password::erase(&input, sizeof(input));
     }
     Accounts accounts_;

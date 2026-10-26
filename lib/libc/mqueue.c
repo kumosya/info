@@ -4,7 +4,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 
-#include "os_adapter.h"
+#include "internal.h"
 
 static int valid_time(const struct timespec* value) {
     return value != NULL && value->tv_sec >= 0 && value->tv_nsec >= 0 &&

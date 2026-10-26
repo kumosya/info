@@ -1,7 +1,16 @@
-#include "os/abi.h"
-#include "os/core_service.h"
-#include "os/service.h"
-#include "os/task.h"
+#include "service/common/queries.h"
+#include "service/common/records.h"
+#include "service/task/msgq-records.h"
+#include "service/common/runtime.h"
+#include "service/common/kernel-requests.h"
+#include "service/common/requests.h"
+#include <os/ipc.h>
+#include <os/task.h>
+#include <os/mm.h>
+#include <os/device.h>
+#include <os/service.h>
+#include <os/service.h>
+#include <os/task.h>
 
 class MessageQueueServer {
     static constexpr size_t queueCapacity = 16, handleCapacity = 64, pendingCapacity = 128;
@@ -32,14 +41,14 @@ class MessageQueueServer {
     }
     void collect() {
         for (auto& queue : queues_) if (queue.used && queue.notificationTask) {
-            os::TaskInfo owner{};
-            if (os::Task::query(queue.notificationTask, owner) || owner.state == 2)
+            os::wire::TaskInfo owner{};
+            if (os::detail::TaskQuery().query(queue.notificationTask, owner) || owner.state == 2)
                 queue.notificationTask = queue.notificationHandle = queue.notificationSignal = 0;
         }
-        for (auto& opened : opens_) if (opened.handle && os::Handle::references(opened.handle) <= 1) {
+        for (auto& opened : opens_) if (opened.handle && os::Ipc::Handle(opened.handle, false).queryReferences() <= 1) {
             auto& queue = queues_[opened.queue];
             if (queue.notificationHandle == opened.identity) queue.notificationTask = queue.notificationHandle = queue.notificationSignal = 0;
-            os::Handle::destroyEndpoint(opened.handle); os::closeHandle(opened.handle); opened = {};
+            os::Ipc::Handle(opened.handle, false).destroyEndpoint(); os::closeHandle(opened.handle); opened = {};
         }
         for (size_t i = 0; i < queueCapacity; ++i) if (queues_[i].used && !queues_[i].linked) {
             bool live = false; for (const auto& opened : opens_) if (opened.handle && opened.queue == i) live = true;
@@ -59,11 +68,11 @@ class MessageQueueServer {
                 os::Runtime::copyBytes(message.data, request.data, request.size);
                 bool waitingReceiver = false;
                 for (const auto& pending : pending_) if (pending.used && !pending.send &&
-                    opens_[pending.opened].queue == opened.queue && os::Handle::requestActive(endpoint_, pending.token) == 1) waitingReceiver = true;
+                    opens_[pending.opened].queue == opened.queue && os::Ipc::Handle(endpoint_, false).requestActive(pending.token) == 1) waitingReceiver = true;
                 if (empty && queue.notificationHandle && !waitingReceiver) {
                     const auto task = queue.notificationTask; const auto signal = queue.notificationSignal;
                     queue.notificationTask = queue.notificationHandle = queue.notificationSignal = 0;
-                    if (signal) os::Task::sendSignal(task, signal);
+                    if (signal) os::detail::TaskControl().sendSignal(task, signal);
                 }
             }
         } else {
@@ -85,7 +94,7 @@ class MessageQueueServer {
     }
     void progress() {
         for (auto& request : pending_) if (request.used &&
-            (os::Handle::requestActive(endpoint_, request.token) != 1 || attempt(request))) {
+            (os::Ipc::Handle(endpoint_, false).requestActive(request.token) != 1 || attempt(request))) {
             os::closeHandle(request.handle); request = {};
         }
         collect();
@@ -106,13 +115,13 @@ class MessageQueueServer {
             os::Runtime::copyString(queue.name, value, sizeof(queue.name)); queue.maximum = request.data[1]; queue.size = request.data[2]; created = true;
         }
         for (auto& opened : opens_) if (!opened.handle) {
-            const uint64_t tag = os::Endpoint::create();
+            const uint64_t tag = os::detail::EndpointControl().create();
             if (!tag) break;
-            opened = {tag, os::Handle::identity(tag), static_cast<uint32_t>(queueIndex), (flags & 0x800) != 0};
+            opened = {tag, os::Ipc::Handle(tag, false).queryIdentity(), static_cast<uint32_t>(queueIndex), (flags & 0x800) != 0};
             os::IpcMessage result{}; result.handleCount = 1; result.handles[0] = tag;
             result.handleOptions[0] = os::ipcHandleRestrictRights; result.handleRights[0] = (flags & 3) == 0 ? 1 : (flags & 3) == 1 ? 2 : 3;
             if (!reply(request.replyToken, 0, &result)) {
-                os::Handle::destroyEndpoint(tag); os::closeHandle(tag); opened = {};
+                os::Ipc::Handle(tag, false).destroyEndpoint(); os::closeHandle(tag); opened = {};
                 if (created) queues_[queueIndex].used = false;
             }
             return;
@@ -133,12 +142,12 @@ class MessageQueueServer {
             reply(request.replyToken, -4); return;
         }
         if (request.handleCount != 1) { reply(request.replyToken, -2); return; }
-        const uint64_t identity = os::Handle::identity(request.handles[0]);
+        const uint64_t identity = os::Ipc::Handle(request.handles[0], false).queryIdentity();
         for (size_t index = 0; index < handleCapacity; ++index) {
             auto& opened = opens_[index]; if (!opened.handle || opened.identity != identity) continue;
             auto& queue = queues_[opened.queue];
             if (operation == os::MessageQueueOperation::Attributes) {
-                const os::MessageQueueAttributes attributes{opened.nonblocking ? 0x800ULL : 0, queue.maximum, queue.size, queue.count};
+                const os::wire::MessageQueueAttributes attributes{opened.nonblocking ? 0x800ULL : 0, queue.maximum, queue.size, queue.count};
                 os::IpcMessage result{}; result.length = 5; os::Runtime::copyBytes(&result.data[1], &attributes, sizeof(attributes)); reply(request.replyToken, 0, &result); return;
             }
             if (operation == os::MessageQueueOperation::Flags) {
@@ -172,15 +181,18 @@ class MessageQueueServer {
     }
  public:
     int run() {
-        endpoint_ = os::Endpoint::create();
-        if (!endpoint_ || !os::ServiceRegistry::registerService(os::getBootstrapHandle(), "msgq", endpoint_)) return 1;
-        os::System::log("[MSGQ] Ring 3 service ready\n");
-        for (;;) {
+        endpoint_ = os::detail::EndpointControl().create();
+        if (!endpoint_ || !os::detail::RegistryClient(os::getBootstrapHandle()).registerName("msgq", endpoint_)) return 1;
+        os::Sys().log("[MSGQ] Ring 3 service ready\n");
+        while (true) {
             progress(); os::IpcMessage request{};
-            if (os::receiveMessage(endpoint_, request, os::Clock::getMonotonicTime() + 10000000) == 0) {
+            if (os::receiveMessage(endpoint_, request, os::Sys().readMonotonicTime() + 10000000) == 0) {
                 handle(request); for (uint32_t n = 0; n < request.handleCount; ++n) os::closeHandle(request.handles[n]); progress();
             }
         }
     }
 };
-int main(int, char**) { static MessageQueueServer server; return server.run(); }
+int main(int, char**) {
+    static MessageQueueServer server;
+    return server.run();
+}

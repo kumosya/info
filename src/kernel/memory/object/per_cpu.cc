@@ -6,8 +6,8 @@ void PerCpuObjectCache::enableCpuLocal() { __atomic_store_n(&localReady, true, _
 uint32_t PerCpuObjectCache::currentCpu() {
     return __atomic_load_n(&localReady, __ATOMIC_ACQUIRE) ? cpu::getCurrentId() % cpuCapacity : 0;
 }
-void PerCpuObjectCache::initialize(size_t objectSize) {
-    cache_.initialize(objectSize);
+void PerCpuObjectCache::init(size_t objectSize) {
+    cache_.init(objectSize);
     for (auto& magazine : magazines_) { magazine.lock.init(); magazine.count = 0; }
 }
 void* PerCpuObjectCache::allocate() {

@@ -5,7 +5,6 @@
 #include "kernel/elf.h"
 #include "kernel/interrupt.h"
 #include "kernel/ipc.h"
-#include "kernel/core_service.h"
 #include "kernel/mm.h"
 #include "kernel/page.h"
 #include "kernel/serial.h"
@@ -13,25 +12,7 @@
 #include "kernel/sync.h"
 #include "kernel/syscall.h"
 #include "kernel/task.h"
-#include "kernel/thread.h"
 #include "kernel/time.h"
-
-#ifdef OS_TASK_LIFECYCLE_TEST
-#include "../../tests/kernel-lifecycle.h"
-#endif
-#ifdef OS_DEVICE_RESOURCE_TEST
-#include "../../tests/kernel-device.h"
-#endif
-#ifdef OS_SERVICE_RECOVERY_TEST
-#include "../../tests/kernel-recovery.h"
-#endif
-#ifdef OS_MM_RECOVERY_TEST
-#include "../../tests/kernel-mm.h"
-#endif
-#ifdef OS_PIPE_RECOVERY_TEST
-#include "../../tests/kernel-pipe.h"
-#endif
-
 
 namespace {
 
@@ -90,8 +71,15 @@ kernel::Task* createSyscallProbe() {
     for (uint64_t index = 0; index < pageSize; ++index) {
         stack[index] = 0;
     }
+    for (uint64_t i = 1; i < 4; ++i) {
+        if (kernel::memory::allocateUserPageInAddressSpace(
+                task->addressSpace().rootPhysicalAddress(), userProbeStackBase + i * pageSize,
+                kernel::pageUser | kernel::pageWritable | kernel::pageNoExecute) != kernel::UserPageMapResult::Success)
+            return nullptr;
+    }
     kernel::Thread* thread = kernel::Thread::createUser(
-        task, userProbeCode, userProbeStackBase + pageSize, 0, 0,
+        task, userProbeCode, userProbeStackBase + 4 * pageSize,
+        kernel::CoreServices::getHandle(*task, os::CoreServiceKind::Task), 0,
         kernel::smp::getOnlineCpuCount() > 1 ? 1ULL << 1 : 1ULL);
     if (thread == nullptr) {
         kernel::serial::serialWrite("[SYSCALL] probe thread creation failed\n");
@@ -177,7 +165,7 @@ void kernelMain(const BootInfo* bootInfo) {
     interrupt::initIdt();
     interrupt::initControllers(bootInfo);
     device::init(bootInfo);
-    device::BootImage::initialize(*bootInfo);
+    device::BootImage::init(*bootInfo);
     smp::initSmp(bootInfo);
     Thread::init();
     schedule::init();
@@ -204,14 +192,14 @@ void kernelMain(const BootInfo* bootInfo) {
     }
 
     taskProbe->destroy();
+    Endpoint::init();
+    if (!CoreServices::init()) {
+        serial::serialWrite("[SERVICE] unable to create core service objects\n");
+        cpu::halt();
+    }
     Task* syscallProbe = createSyscallProbe();
     if (syscallProbe == nullptr) {
         serial::serialWrite("[SYSCALL] unable to create Ring 3 probe\n");
-        cpu::halt();
-    }
-    Endpoint::init();
-    if (!CoreServices::initialize()) {
-        serial::serialWrite("[SERVICE] unable to create core service objects\n");
         cpu::halt();
     }
     ipcProbeEndpoint = Endpoint::create();
@@ -232,24 +220,10 @@ void kernelMain(const BootInfo* bootInfo) {
     }
     interrupt::enable();
 
-#ifdef OS_TASK_LIFECYCLE_TEST
-    TaskLifecycleTest::run();
-#endif
-#ifdef OS_SERVICE_RECOVERY_TEST
-    ServiceRecoveryTest::run();
-#endif
     if (UserProgramLoader::startInitial(bootInfo) == nullptr) {
         cpu::halt();
     }
-#ifdef OS_DEVICE_RESOURCE_TEST
-    if (!Thread::create(task::getCurrent(), DeviceResourceTest::run, nullptr)) cpu::halt();
-#endif
-#ifdef OS_MM_RECOVERY_TEST
-    if (!Thread::create(task::getCurrent(), MmRecoveryTest::run, nullptr)) cpu::halt();
-#endif
-#ifdef OS_PIPE_RECOVERY_TEST
-    if (!Thread::create(task::getCurrent(), PipeRecoveryTest::run, nullptr)) cpu::halt();
-#endif
+
     // serial::serialWrite("[KERNEL] entering idle loop\n");
 
     // The per-CPU idle thread owns idle time. Keeping this bootstrap thread

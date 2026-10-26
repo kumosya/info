@@ -35,7 +35,7 @@ class Qmp {
         request("qmp_capabilities", "{}");
     }
     host_json::Json message() {
-        for (;;) {
+        while (true) {
             auto end = buffer_.find('\n');
             if (end != std::string::npos) {
                 auto line = buffer_.substr(0, end);
@@ -63,7 +63,7 @@ class Qmp {
             if (count <= 0) throw std::runtime_error("QMP send failed");
             used += count;
         }
-        for (;;) {
+        while (true) {
             auto reply = message();
             if (reply.find("error"))
                 throw std::runtime_error("QMP operation rejected: " +

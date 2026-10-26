@@ -41,8 +41,8 @@ _start:
 
     lgdt gdtPointer
     movl %cr0, %eax
-    andl $~(1 << 2), %eax
-    orl $(1 << 1), %eax
+    andl $~((1 << 2) | (1 << 3)), %eax
+    orl $((1 << 1) | (1 << 5) | (1 << 18)), %eax
     movl %eax, %cr0
     movl %cr4, %eax
     orl $((1 << 5) | (1 << 9) | (1 << 10)), %eax

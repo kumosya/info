@@ -3,6 +3,8 @@
 #include "kernel/page.h"
 #include "kernel/spinlock.h"
 #include "kernel/task.h"
+#include "service/common/identity.h"
+#include "service/common/kernel-requests.h"
 
 namespace {
 
@@ -90,14 +92,16 @@ SharedMemoryHandle* resolve(kernel::Task& task, uint64_t handle,
 namespace kernel {
 
 uint64_t SharedMemory::open(Task& task, const char* name, int flags) {
-    const int access = flags & openAccessMode;
-    if (name == nullptr || name[0] != '/' || name[1] == '\0' ||
+    const int access     = flags & openAccessMode;
+    const bool anonymous = name == nullptr;
+    if ((!anonymous && (name[0] != '/' || name[1] == '\0')) ||
+        (anonymous && !(flags & openCreate)) ||
         (access != openReadOnly && access != openReadWrite))
         return 0;
     PreemptionSpinLockGuard guard(registryLock);
     SharedMemoryObject* object = nullptr;
     for (SharedMemoryObject& candidate : objects) {
-        if (candidate.used && candidate.linked &&
+        if (!anonymous && candidate.used && candidate.linked &&
             namesEqual(candidate.name, name)) {
             object = &candidate;
             break;
@@ -112,12 +116,15 @@ uint64_t SharedMemory::open(Task& task, const char* name, int flags) {
             if (!candidate.used) {
                 object             = &candidate;
                 object->used       = true;
-                object->linked     = true;
+                object->linked     = !anonymous;
                 object->references = 0;
                 object->mappings   = 0;
                 object->pageCount  = 0;
                 object->size       = 0;
-                copyName(object->name, name);
+                if (anonymous)
+                    object->name[0] = 0;
+                else
+                    copyName(object->name, name);
                 break;
             }
         }
@@ -132,7 +139,10 @@ uint64_t SharedMemory::open(Task& task, const char* name, int flags) {
             break;
         }
     }
-    if (sharedHandle == nullptr) return 0;
+    if (sharedHandle == nullptr) {
+        releaseObject(*object);
+        return 0;
+    }
     ++object->references;
     uint32_t rights = handleRightRead;
     if (access == openReadWrite) rights |= handleRightWrite | handleRightManage;
@@ -142,6 +152,7 @@ uint64_t SharedMemory::open(Task& task, const char* name, int flags) {
         sharedHandle->used   = false;
         sharedHandle->object = nullptr;
         --object->references;
+        releaseObject(*object);
     }
     return result;
 }
@@ -149,7 +160,8 @@ uint64_t SharedMemory::open(Task& task, const char* name, int flags) {
 uint64_t SharedMemory::duplicateHandle(Task& source, Task& destination,
                                        uint64_t handle,
                                        uint64_t destinationHandle) {
-    return source.handles().copyTo(destination.handles(), handle, destinationHandle);
+    return source.handles().copyTo(destination.handles(), handle,
+                                   destinationHandle);
 }
 
 bool SharedMemory::unlink(const char* name) {
@@ -198,6 +210,27 @@ bool SharedMemory::resize(Task& task, uint64_t handle, uint64_t size) {
         object->pages[object->pageCount] = 0;
     }
     object->size = size;
+    return true;
+}
+
+bool SharedMemory::querySize(Task& task, uint64_t handle, uint64_t& size) {
+    HandleTable::Pin pin(task.handles(), handle, HandleType::SharedMemory, 0);
+    auto* reference = pin.as<SharedMemoryHandle>();
+    if (!reference) return false;
+    PreemptionSpinLockGuard guard(registryLock);
+    size = reference->object->size;
+    return true;
+}
+bool SharedMemory::unlink(Task& task, uint64_t handle) {
+    HandleTable::Pin pin(task.handles(), handle, HandleType::SharedMemory, 0);
+    auto* reference = pin.as<SharedMemoryHandle>();
+    if (!reference) return false;
+    PreemptionSpinLockGuard guard(registryLock);
+    auto& object = *reference->object;
+    if (!object.linked) return false;
+    object.linked  = false;
+    object.name[0] = 0;
+    releaseObject(object);
     return true;
 }
 
@@ -251,8 +284,10 @@ uint64_t SharedMemory::map(Task& task, uint64_t handle, uint64_t address,
         }
         mapped += pageSize;
     }
-    mapping->used     = true;
-    mapping->pagerManaged = kernel::task::getCurrent() != &task && kernel::task::getCurrent()->serviceRole() == os::ServiceRole::Memory;
+    mapping->used = true;
+    mapping->pagerManaged =
+        kernel::task::getCurrent() != &task &&
+        kernel::task::getCurrent()->serviceRole() == os::ServiceRole::Memory;
     mapping->task     = &task;
     mapping->object   = object;
     mapping->address  = address;
@@ -263,14 +298,22 @@ uint64_t SharedMemory::map(Task& task, uint64_t handle, uint64_t address,
     return address;
 }
 
-bool SharedMemory::prepareUnmap(Task& task, uint64_t address, uint64_t size, void*& reservation) {
+bool SharedMemory::prepareUnmap(Task& task, uint64_t address, uint64_t size,
+                                void*& reservation) {
     reservation = nullptr;
     PreemptionSpinLockGuard guard(registryLock);
     for (const auto& mapping : mappings) {
-        if (!mapping.used || mapping.task != &task || address <= mapping.address || address + size >= mapping.address + mapping.size) continue;
-        for (auto& spare : mappings) if (!spare.used) {
-            spare = {}; spare.used = true; reservation = &spare; return true;
-        }
+        if (!mapping.used || mapping.task != &task ||
+            address <= mapping.address ||
+            address + size >= mapping.address + mapping.size)
+            continue;
+        for (auto& spare : mappings)
+            if (!spare.used) {
+                spare       = {};
+                spare.used  = true;
+                reservation = &spare;
+                return true;
+            }
         return false;
     }
     return true;
@@ -280,25 +323,35 @@ void SharedMemory::cancelUnmap(void* reservation) {
     PreemptionSpinLockGuard guard(registryLock);
     *static_cast<SharedMemoryMapping*>(reservation) = {};
 }
-bool SharedMemory::releaseMapping(Task& task, uint64_t address, uint64_t size, void* reservation) {
+bool SharedMemory::releaseMapping(Task& task, uint64_t address, uint64_t size,
+                                  void* reservation) {
     PreemptionSpinLockGuard guard(registryLock);
-    auto* spare = static_cast<SharedMemoryMapping*>(reservation);
-    const uint64_t end = address + size; bool changed = false;
+    auto* spare        = static_cast<SharedMemoryMapping*>(reservation);
+    const uint64_t end = address + size;
+    bool changed       = false;
     for (auto& mapping : mappings) {
         if (!mapping.used || mapping.task != &task) continue;
         const uint64_t oldEnd = mapping.address + mapping.size;
         if (end <= mapping.address || address >= oldEnd) continue;
         changed = true;
         if (address <= mapping.address && end >= oldEnd) {
-            SharedMemoryObject* object = mapping.object; mapping = {};
-            --object->mappings; releaseObject(*object);
+            SharedMemoryObject* object = mapping.object;
+            mapping                    = {};
+            --object->mappings;
+            releaseObject(*object);
         } else if (address > mapping.address && end < oldEnd) {
             if (!spare) return false;
-            *spare = mapping; spare->address = end; spare->size = oldEnd - end;
-            ++mapping.object->mappings; mapping.size = address - mapping.address; spare = nullptr;
+            *spare         = mapping;
+            spare->address = end;
+            spare->size    = oldEnd - end;
+            ++mapping.object->mappings;
+            mapping.size = address - mapping.address;
+            spare        = nullptr;
         } else if (address <= mapping.address) {
-            mapping.address = end; mapping.size = oldEnd - end;
-        } else mapping.size = address - mapping.address;
+            mapping.address = end;
+            mapping.size    = oldEnd - end;
+        } else
+            mapping.size = address - mapping.address;
     }
     if (spare) *spare = {};
     return changed;
@@ -361,14 +414,19 @@ void SharedMemory::closeHandleObject(void* object) {
     if (shared != nullptr && shared->references != 0) --shared->references;
     if (shared != nullptr) releaseObject(*shared);
 }
-bool SharedMemory::nextManagedMapping(Task& task, uint64_t cursor, uint64_t& address, uint64_t& size) {
+bool SharedMemory::nextManagedMapping(Task& task, uint64_t cursor,
+                                      uint64_t& address, uint64_t& size) {
     PreemptionSpinLockGuard guard(registryLock);
     const SharedMemoryMapping* selected = nullptr;
     for (const auto& mapping : mappings)
-        if (mapping.used && mapping.task == &task && mapping.pagerManaged && mapping.address >= cursor &&
-            (!selected || mapping.address < selected->address)) selected = &mapping;
+        if (mapping.used && mapping.task == &task && mapping.pagerManaged &&
+            mapping.address >= cursor &&
+            (!selected || mapping.address < selected->address))
+            selected = &mapping;
     if (!selected) return false;
-    address = selected->address; size = selected->size; return true;
+    address = selected->address;
+    size    = selected->size;
+    return true;
 }
 
 }  // namespace kernel

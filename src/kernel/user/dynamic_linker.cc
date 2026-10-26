@@ -1,6 +1,6 @@
 #include "kernel/elf.h"
 #include "kernel/page.h"
-#include "kernel/services.h"
+#include "kernel/syscall.h"
 
 namespace {
 

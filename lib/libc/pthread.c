@@ -4,7 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "os_adapter.h"
+#include "internal.h"
+#include "lock.h"
 
 #define LIBC_THREAD_CAPACITY 64
 #define LIBC_DEFAULT_STACK_SIZE (64U * 1024U)
@@ -37,16 +38,30 @@ typedef struct {
 static ThreadControl controls[LIBC_THREAD_CAPACITY];
 static ThreadSpecificValues specific_values[LIBC_THREAD_CAPACITY];
 static ThreadKey keys[PTHREAD_KEYS_MAX];
-static volatile uint8_t registry_lock;
+static volatile uint32_t registry_lock;
 
 static void lock_registry(void) {
-    while (__atomic_test_and_set(&registry_lock, __ATOMIC_ACQUIRE)) {
-        __libc_os_yield();
-    }
+    libcWaitLock(&registry_lock);
 }
 
 static void unlock_registry(void) {
-    __atomic_clear(&registry_lock, __ATOMIC_RELEASE);
+    libcWaitUnlock(&registry_lock);
+}
+void __libc_pthread_fork_prepare(void) { lock_registry(); }
+void __libc_pthread_fork_parent(void) { unlock_registry(); }
+void __libc_pthread_fork_child(uint64_t previous) {
+    const pthread_t current = __libc_os_get_thread_id();
+    registry_lock = 0;
+    for (size_t i = 0; i < LIBC_THREAD_CAPACITY; ++i) {
+        if (specific_values[i].used && specific_values[i].id == previous) specific_values[i].id = current;
+        else memset(&specific_values[i], 0, sizeof(specific_values[i]));
+        if (controls[i].used && controls[i].id == previous) controls[i].id = current;
+        else {
+            void* stack = controls[i].stack;
+            memset(&controls[i], 0, sizeof(controls[i]));
+            free(stack);
+        }
+    }
 }
 
 static ThreadControl* find_control(pthread_t id) {
@@ -168,6 +183,7 @@ static void run_specific_destructors(void) {
 
 static void thread_entry(void* argument) {
     ThreadControl* control = (ThreadControl*)argument;
+    while (!__atomic_load_n(&control->id, __ATOMIC_ACQUIRE)) __libc_os_yield();
     void* result = control->start(control->argument);
     run_specific_destructors();
     control->result = result;
@@ -260,7 +276,7 @@ int pthread_create(pthread_t* thread, const pthread_attr_t* attr,
     control->start = start;
     control->argument = argument;
     stack_top = ((uint64_t)(uintptr_t)control->stack + stack_size) & ~15ULL;
-    control->id = __libc_os_create_thread(thread_entry, control, stack_top);
+    __atomic_store_n(&control->id, __libc_os_create_thread(thread_entry, control, stack_top), __ATOMIC_RELEASE);
     if (control->id == 0) {
         release_control(control);
         return EAGAIN;

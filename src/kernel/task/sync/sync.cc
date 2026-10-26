@@ -2,7 +2,7 @@
 
 #include "kernel/cpu.h"
 #include "kernel/serial.h"
-#include "kernel/thread.h"
+#include "kernel/task.h"
 
 namespace {
 

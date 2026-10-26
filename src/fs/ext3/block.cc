@@ -1,7 +1,14 @@
-#include "../ext3.h"
-#include "internal.h"
+#include "service/common/runtime.h"
+#include "service/common/kernel-requests.h"
+#include "service/common/requests.h"
+#include "service/fs/ext3/filesystem.h"
+#include "service/fs/ext3/internal.h"
 
-#include "os/abi.h"
+#include <os/ipc.h>
+#include <os/task.h>
+#include <os/mm.h>
+#include <os/device.h>
+#include <os/service.h>
 
 namespace fs::ext3 {
 
