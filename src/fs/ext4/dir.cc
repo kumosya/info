@@ -1,13 +1,13 @@
-#include "service/common/runtime.h"
 #include "service/common/kernel-requests.h"
 #include "service/common/requests.h"
+#include "service/common/runtime.h"
 #include "service/fs/ext4/filesystem.h"
 #include "service/fs/ext4/internal.h"
-#include <os/ipc.h>
-#include <os/task.h>
-#include <os/mm.h>
 #include <os/device.h>
+#include <os/ipc.h>
+#include <os/mm.h>
 #include <os/service.h>
+#include <os/task.h>
 
 namespace fs::ext4 {
 
@@ -15,7 +15,8 @@ using namespace detail;
 
 bool Filesystem::lookupInDirectory(const uint8_t* directory, const char* name,
                                    size_t nameLength, uint32_t& inodeNumber) {
-    if ((DiskEncoding::read16(directory) & 0xf000U) != modeDirectory) return false;
+    if ((DiskEncoding::read16(directory) & 0xf000U) != modeDirectory)
+        return false;
     uint64_t directorySize = DiskEncoding::read32(directory + 4);
     const uint32_t blockCount =
         static_cast<uint32_t>((directorySize + blockSize_ - 1) / blockSize_);
@@ -33,8 +34,9 @@ bool Filesystem::lookupInDirectory(const uint8_t* directory, const char* name,
                 return false;
             }
             if (inode != 0 && entryNameLength == nameLength &&
-                DiskEncoding::namesEqual(reinterpret_cast<const char*>(entry + 8), name,
-                           nameLength)) {
+                DiskEncoding::namesEqual(
+                    reinterpret_cast<const char*>(entry + 8), name,
+                    nameLength)) {
                 inodeNumber = inode;
                 return true;
             }
@@ -108,8 +110,8 @@ bool Filesystem::addDirectoryEntry(uint32_t directoryNumber, uint8_t* directory,
         return length;
     }();
     if (nameLength == 0 || nameLength > 255) return false;
-    const uint16_t required =
-        DiskEncoding::alignedDirectoryEntry(static_cast<uint32_t>(8 + nameLength));
+    const uint16_t required = DiskEncoding::alignedDirectoryEntry(
+        static_cast<uint32_t>(8 + nameLength));
     uint64_t directorySize = DiskEncoding::read32(directory + 4);
     uint32_t blockCount =
         static_cast<uint32_t>((directorySize + blockSize_ - 1) / blockSize_);
@@ -124,17 +126,21 @@ bool Filesystem::addDirectoryEntry(uint32_t directoryNumber, uint8_t* directory,
                 return false;
             }
             const uint32_t used =
-                DiskEncoding::read32(entry) == 0 ? 0
-                                   : DiskEncoding::alignedDirectoryEntry(
-                                         8 + static_cast<uint32_t>(entry[6]));
-            if ((DiskEncoding::read32(entry) == 0 && recordLength >= required) ||
-                (DiskEncoding::read32(entry) != 0 && recordLength - used >= required)) {
+                DiskEncoding::read32(entry) == 0
+                    ? 0
+                    : DiskEncoding::alignedDirectoryEntry(
+                          8 + static_cast<uint32_t>(entry[6]));
+            if ((DiskEncoding::read32(entry) == 0 &&
+                 recordLength >= required) ||
+                (DiskEncoding::read32(entry) != 0 &&
+                 recordLength - used >= required)) {
                 if (DiskEncoding::read32(entry) != 0) {
-                    DiskEncoding::write16(entry + 4, static_cast<uint16_t>(used));
+                    DiskEncoding::write16(entry + 4,
+                                          static_cast<uint16_t>(used));
                     offset += used;
                     entry = blockBuffer_ + offset;
-                    DiskEncoding::write16(entry + 4,
-                            static_cast<uint16_t>(recordLength - used));
+                    DiskEncoding::write16(
+                        entry + 4, static_cast<uint16_t>(recordLength - used));
                 } else {
                     os::Runtime::clearMemory(entry, recordLength);
                     DiskEncoding::write16(entry + 4, recordLength);
@@ -164,23 +170,31 @@ bool Filesystem::addDirectoryEntry(uint32_t directoryNumber, uint8_t* directory,
     return writeInode(directoryNumber, directory);
 }
 
-bool Filesystem::removeDirectoryEntry(const uint8_t* directory, const char* name) {
+bool Filesystem::removeDirectoryEntry(const uint8_t* directory,
+                                      const char* name) {
     size_t length = 0;
     while (name[length]) ++length;
-    const uint32_t blocks = (DiskEncoding::read32(directory + 4) + blockSize_ - 1) / blockSize_;
+    const uint32_t blocks =
+        (DiskEncoding::read32(directory + 4) + blockSize_ - 1) / blockSize_;
     for (uint32_t logical = 0; logical < blocks; ++logical) {
         const uint64_t physical = getDataBlock(directory, logical);
         if (!physical || !readBlock(physical, blockBuffer_)) return false;
         uint8_t* previous = nullptr;
         for (uint32_t offset = 0; offset + 8 <= blockSize_;) {
-            uint8_t* entry = blockBuffer_ + offset;
+            uint8_t* entry        = blockBuffer_ + offset;
             const uint16_t record = DiskEncoding::read16(entry + 4);
-            if (record < 8 || (record & 3) || record > blockSize_ - offset || entry[6] > record - 8)
+            if (record < 8 || (record & 3) || record > blockSize_ - offset ||
+                entry[6] > record - 8)
                 return false;
             if (DiskEncoding::read32(entry) && entry[6] == length &&
-                DiskEncoding::namesEqual(reinterpret_cast<const char*>(entry + 8), name, length)) {
-                if (previous) DiskEncoding::write16(previous + 4, DiskEncoding::read16(previous + 4) + record);
-                else DiskEncoding::write32(entry, 0);
+                DiskEncoding::namesEqual(
+                    reinterpret_cast<const char*>(entry + 8), name, length)) {
+                if (previous)
+                    DiskEncoding::write16(
+                        previous + 4,
+                        DiskEncoding::read16(previous + 4) + record);
+                else
+                    DiskEncoding::write32(entry, 0);
                 return writeBlock(physical, blockBuffer_);
             }
             previous = entry;
@@ -191,17 +205,20 @@ bool Filesystem::removeDirectoryEntry(const uint8_t* directory, const char* name
 }
 
 bool Filesystem::directoryEmpty(const uint8_t* directory) {
-    const uint32_t blocks = (DiskEncoding::read32(directory + 4) + blockSize_ - 1) / blockSize_;
+    const uint32_t blocks =
+        (DiskEncoding::read32(directory + 4) + blockSize_ - 1) / blockSize_;
     for (uint32_t logical = 0; logical < blocks; ++logical) {
         const uint64_t physical = getDataBlock(directory, logical);
         if (!physical || !readBlock(physical, blockBuffer_)) return false;
         for (uint32_t offset = 0; offset + 8 <= blockSize_;) {
-            const uint8_t* entry = blockBuffer_ + offset;
+            const uint8_t* entry  = blockBuffer_ + offset;
             const uint16_t record = DiskEncoding::read16(entry + 4);
-            if (record < 8 || (record & 3) || record > blockSize_ - offset || entry[6] > record - 8)
+            if (record < 8 || (record & 3) || record > blockSize_ - offset ||
+                entry[6] > record - 8)
                 return false;
             const bool dot = entry[6] == 1 && entry[8] == '.';
-            const bool parent = entry[6] == 2 && entry[8] == '.' && entry[9] == '.';
+            const bool parent =
+                entry[6] == 2 && entry[8] == '.' && entry[9] == '.';
             if (DiskEncoding::read32(entry) && !dot && !parent) return false;
             offset += record;
         }

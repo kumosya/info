@@ -1,11 +1,10 @@
 #include "service/common/queries.h"
-#include <os/input.h>
-
-#include <os/ipc.h>
-#include <os/service.h>
 #include "service/common/records.h"
 #include "service/common/requests.h"
 #include "service/common/runtime.h"
+#include <os/input.h>
+#include <os/ipc.h>
+#include <os/service.h>
 namespace os {
 namespace {
 int inputError(ErrorCode value) { return static_cast<int>(value); }
@@ -36,7 +35,8 @@ int Input::open() {
     if (service_ || wakeEndpoint_) return error_ = inputError(ErrorCode::Busy);
     service_ = detail::RegistryClient().lookup(inputServiceName, 5000);
     if (!service_) return error_ = inputError(ErrorCode::NotFound);
-    const int64_t wake = static_cast<int64_t>(detail::EndpointControl().create());
+    const int64_t wake =
+        static_cast<int64_t>(detail::EndpointControl().create());
     if (wake <= 0) {
         releaseInputEndpoint(service_);
         return error_ = wake ? static_cast<int>(wake)

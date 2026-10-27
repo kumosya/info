@@ -1,7 +1,6 @@
 #ifndef _STDC_STDDEF_H
 #define _STDC_STDDEF_H
 
-
 typedef __SIZE_TYPE__ size_t;
 typedef __PTRDIFF_TYPE__ ptrdiff_t;
 #define offsetof(type, member) __builtin_offsetof(type, member)
@@ -12,7 +11,10 @@ typedef __WCHAR_TYPE__ wchar_t;
 #endif
 #endif
 #ifndef __DEFINED_max_align_t
-typedef struct { long long integer; long double floating; } max_align_t;
+typedef struct {
+    long long integer;
+    long double floating;
+} max_align_t;
 #define __DEFINED_max_align_t
 #endif
 

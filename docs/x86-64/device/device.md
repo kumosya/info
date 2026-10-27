@@ -1,152 +1,63 @@
-# 设备管理（src/kernel/device/）
+# 设备机制
 
-本文档描述 `src/kernel/device/` 的实现：内核侧的设备访问控制层，为可信 pci/device/storage 服务及显示服务提供受能力门控的硬件资源。对应头文件 `include/kernel/device.h`。
+设备模块保存引导设备信息，并把硬件访问包装成有权限和生命周期的内核对象。声明主要在 `include/kernel/device.h`，命名空间为 `kernel::device`。PCI、时间和 ACPI 各有自己的头文件；时间和 ACPI 当前分别使用 `kernel::time`、`kernel::acpi`。
 
-内核负责硬件访问控制；device/storage 服务在 Ring3 运行。PCI 配置、MMIO、DMA、中断通过内核接口管理，端口指令仅在内核 PS/2 与 PCI 机制中执行。所有类和函数位于 `namespace kernel::device`。
+## 文件分工
 
-## 1. 初始化
+以下路径均相对于 `src/kernel/device/`。
 
-```cpp
-namespace kernel::device {
-void init(const BootInfo* bootInfo);
-}
-```
+| 文件 | 作用 |
+| --- | --- |
+| `device.cc` | 保存引导帧缓冲，建立、查询和撤销用户帧缓冲映射。 |
+| `serial.cc` | 初始化 COM1，输出串口诊断，并提供不等待输出锁的应急输出。 |
+| `service/service.cc` | 检查 device.kernel 请求的角色、能力和句柄权限，创建资源对象。 |
+| `pci/access.cc` | 串行访问 PCI 配置端口，枚举功能并探测内存 BAR。 |
+| `pci/service.cc` | 实现 pci.kernel 请求，限制配置写入。 |
+| `resource/domain.cc` | 管理设备所有者、MMIO/DMA 引用、停机和延后回收。 |
+| `resource/mmio.cc` | 分配设备映射地址区间，把已认领设备的 BAR 映射到用户地址空间。 |
+| `resource/irq.cc` | 配置 IRQ 路由，将中断转为端点通知，处理确认与解绑。 |
+| `dmabuffer/dmabuffer.cc` | 分配连续物理块，建立 DMA 用户映射并挂入资源域。 |
+| `storage/boot_image.cc` | 对名为 rootfs 的引导模块提供有界块读写。 |
+| `time/time.cc` | 校准 TSC、读取 RTC，提供单调时间和墙钟时间。 |
+| `ps2/ps2.cc` | 初始化 PS/2 控制器，读取键盘或鼠标的原始字节。 |
+| `acpi/acpi.cc` | 校验 ACPI 表并按四字节签名查找。 |
 
-从 `bootInfo->framebuffer` 复制启动帧缓冲信息到内核（供 `MapFramebuffer` 使用），并打印 `[DISPLAY]` 参数日志。同时注册 IRQ 处理函数 `irqHandler`（向量 64-79）。
+用户态 device、pci、storage 服务分别负责设备协调、PCI 查询和存储驱动。内核不负责窗口、桌面、输入焦点等 GUI 策略。
 
-## 2. I/O 端口访问
+## 引导显示信息和映射
 
-Ring3 device 服务通过 device.kernel 的 InitializeInput/ReadInput 请求初始化 PS/2 并读取输入字节，不暴露任意端口读写；PCI 配置由 pci.kernel 处理。
+`initDevices(bootInfo)` 从 BootInfo 复制帧缓冲信息；传入空指针时保存空信息。它只登记地址、尺寸、步长和像素布局，不进行图形绘制。
 
-## 3. 帧缓冲映射（DisplayAccess）
+| 函数 | 作用与参数 |
+| --- | --- |
+| `describeDisplay(userAddress, info)` | 将显示参数写入 info。userAddress 是页对齐映射基址，返回地址还包含原始物理地址的页内偏移。无有效帧缓冲时返回 false。 |
+| `mapFramebuffer(task, userAddress, info, generation)` | 为具有 Display 能力的 task 建立映射；地址为零时自动选择。info 接收显示参数，可选 generation 接收地址空间代际。失败返回 false。 |
+| `reserveDisplayAddress(size)` | 原子分配设备映射使用的虚拟地址区间，按页取整并留一页间隔。越界返回零；它不创建 PTE，也不证明某个任务的该区间尚未使用。 |
 
-```cpp
-class DisplayAccess {
-   public:
-    static bool mapFramebuffer(Task& task, uint64_t userAddress, os::DisplayInfo& info);
-};
-```
+映射先校验能力、页对齐、用户地址范围和帧缓冲尺寸，再在地址空间锁内逐页建立 PTE。可见数据为 pitch × height，最多 64 MiB；实际映射长度包含起始页内偏移并向上取整。映射页为用户可写、不可执行、禁用缓存的 external 页，不能按普通匿名页释放显存。中途失败时撤销本次已经建立的映射。
 
-校验链：
+`describeDisplay` 只在可识别的 32 位通道布局下标记 Bgra 或 Rgba，其余布局标记 Unknown。调用者必须使用 pitch 和颜色位置信息，不能假定每行等于 width × 4。
 
-1. 进程须有 `taskCapabilityDisplay`；
-2. 启动帧缓冲的 address/width/height/pitch 非零、`bitsPerPixel >= 24`；
-3. `userAddress` 页对齐且 `>= 0x10000`；
-4. 可见大小 = `pitch * height`，非零、≤ 64 MiB、无溢出；
-5. 用户区间不回绕且 `< 2^47`。
+## FrameMapping 的生命周期
 
-映射：逐页 `memory::mapPageInAddressSpace`，页标志 `pageUser | pageWritable | pageNoExecute | pageCacheDisable | pageExternal`（用户可读写、不可执行、禁缓存、外部管理）。失败回滚。
+FrameMapping 保存 owner_、address_、size_ 和 generation_。
 
-填充 `os::DisplayInfo`：address（含页内偏移）、size、width、height、pitch、bitsPerPixel、颜色分量位置；像素格式判定：32bpp 且 R=16,G=8,B=0 → `Bgra`；R=0,G=8,B=16 → `Rgba`；其他 → `Unknown`。
+| 成员函数 | 作用与参数 |
+| --- | --- |
+| `create(task, address, info)` | 分配包装对象并建立映射，成功后保留 task 引用；失败撤销已分配资源并返回空指针。 |
+| `query(task, info)` | 要求调用者就是所有者，地址空间代际未变，且每页仍指向原来的帧缓冲物理页；通过后返回显示信息。 |
+| `destroy()` | 只撤销仍属于该对象的 PTE，释放包装对象和所有者引用。 |
 
-对应 device.kernel 的 Framebuffer 请求，由已有 IPC syscall 承载；console 与 guiw 服务使用。
+保存代际是为了区分同一 Task 在 exec 前后的地址空间；逐页核对物理地址则避免错误撤销已经被其他映射替换的页面。映射对象关闭不释放硬件帧缓冲本体。
 
-## 4. PCI 访问（PciAccess）
+## 串口与应急诊断
 
-```cpp
-class PciAccess {
-   public:
-    static uint32_t enumerate(os::PciFunctionInfo* functions, uint32_t capacity);
-    static bool read(const os::PciFunctionInfo& function, uint16_t offset,
-                     uint32_t& value);
-    static bool write(const os::PciFunctionInfo& function, uint16_t offset,
-                      uint32_t value);
-    static bool getMemoryBar(const os::PciFunctionInfo& function,
-                             uint8_t barIndex, uint64_t& base, uint64_t& size);
-};
-```
+`initSerial()` 配置 COM1 的波特率、8 位字符、FIFO 和控制寄存器。`serialWrite(char)`、`serialWrite(const char*)` 在关闭本地中断并取得 outputLock 后输出，字符串换行补充回车。`serialWriteHex(value)` 输出带 0x 前缀的 16 位十六进制数，`serialWriteDecimal(value)` 输出十进制数。
 
-通过传统配置机制（端口 `0xcf8` 地址 / `0xcfc` 数据，32 位访问），全局 `pciLock` 保护。
+底层 `writeCharacter(value)` 最多轮询发送状态 100000 次，然后写发送寄存器。因此它有等待上界，但不能保证异常硬件仍完整接收输出。
 
-- **枚举**：遍历 256 总线 × 32 设备；先探测 function 0 的 vendor ID（`0xffff` 为不存在）；读偏移 0x0c 的多功能位决定扫描 1 或 8 个 function；填充 `PciFunctionInfo`（vendorId、deviceId、classCode、subclass、programmingInterface、headerType）。受 `capacity` 限制。
-- **读/写**：校验 `segment == 0 && device < 32 && function < 8`、`offset < 256`、4 字节对齐。
-- **BAR 探测**（`getMemoryBar`）：保存原值；I/O BAR（bit 0）返回 false；临时关闭命令寄存器内存/IO 解码，向 BAR 写全 1 读回掩码，恢复原值；输出 base 与 `size = ~mask + 1`；支持 64 位内存 BAR。
+`emergencyWrite(text)` 和 `emergencyHex(value)` 绕过 outputLock。NMI 可能打断正在持锁的 CPU，应急诊断不能再次等待这把锁；代价是多个输出源的文本可能交错。
 
-独立的 `pci` 服务通过 IPC 调用 `pci.kernel`，由 `src/kernel/device/pci/service.cc` 检查固定 PCI 角色及能力，再调用同目录 `access.cc` 中的 PciAccess。没有独立 PCI syscall。device/storage 通过 IPC 调用 pci 服务。端口指令只存在于内核 PCI 驱动中。
+## 继续阅读
 
-```cpp
-struct PciFunctionInfo {   // os/abi.h
-    uint16_t segment; uint8_t bus, device, function;
-    uint8_t classCode, subclass, programmingInterface;
-    uint16_t vendorId, deviceId; uint8_t headerType; uint8_t reserved[3];
-};
-```
-
-## 5. MMIO 区域（MmioRegion）
-
-```cpp
-class MmioRegion {
-   public:
-    static MmioRegion* map(Task& task, const os::PciFunctionInfo& function,
-                           uint8_t barIndex, uint64_t userAddress, uint64_t size);
-   private:
-    uint64_t physicalAddress_;
-    uint64_t virtualAddress_;
-    uint64_t size_;
-};
-```
-
-校验用户地址/大小页对齐、无溢出、在用户半区；`getMemoryBar` 且 `size <= barSize`、BAR 物理基址页对齐；逐页映射（标志同帧缓冲）；失败回滚。成功返回对象（作为 `HandleType::MmioRegion` 句柄）。
-
-对应 device.kernel 的 MapMmio 请求。storage 服务用它映射 virtio PCI 能力区域。
-
-## 6. DMA 缓冲（DmaBuffer）
-
-```cpp
-class DmaBuffer {
-   public:
-    static DmaBuffer* create(Task& task, uint64_t userAddress,
-                             os::DmaBufferInfo& info);
-   private:
-    uint64_t physicalAddress_;
-    uint64_t virtualAddress_;
-    uint64_t size_;
-};
-```
-
-分配**一个物理页**并映射到用户地址（`pageUser | pageWritable | pageNoExecute`）；填充 `DmaBufferInfo`：`virtualAddress = userAddress`、`deviceAddress = 物理地址`、`size = 4096`（固定单页）。
-
-对应 device.kernel 的 AllocateDma 请求。storage 服务用它构建 virtqueue。
-
-## 7. 中断绑定（InterruptBinding）
-
-```cpp
-class InterruptBinding {
-   public:
-    static InterruptBinding* create(Task& task, uint8_t irq,
-                                    Endpoint* endpoint,
-                                    bool levelTriggered = false);
-    uint8_t irq() const;
-    Endpoint* endpoint() const;
-    bool requiresAcknowledgement() const;
-    bool acknowledge(Task& task) const;
-   private:
-    uint8_t irq_;
-    Endpoint* endpoint_;
-    Task* owner_;
-    uint32_t apicId_;
-    bool levelTriggered_;
-};
-```
-
-- 校验 `irq <= 15` 且 endpoint 非空；每个 IRQ 只能绑定一次（`bindings[16]` 表）；
-- `interrupt::registerHandler(64 + irq, irqHandler)`；
-- `interrupt::setIrq(irq, 64 + irq, cpu::getCurrent()->getApicId(), levelTriggered)` 配置 I/O APIC 路由（见 [cpu.md](../cpu/cpu.md)）。
-
-中断触发时 `irqHandler` 校验向量在 `[64, 79]`：
-- 电平触发中断先屏蔽 IRQ（`interrupt::maskIrq`），用户态通过 device.kernel 的 AcknowledgeIrq 请求重新启用；
-- 调用 `endpoint->notifyFromInterrupt(0x495251, irq)`——以消息类型 `0x495251`（ASCII "IRQ"）向绑定的 IPC 端点投递通知（见 [ipc.md](../task/ipc.md)）。
-
-对应 device.kernel 的 BindIrq、AcknowledgeIrq 请求。device 服务绑定键盘（IRQ 1）与鼠标（IRQ 12），storage 服务绑定 virtio-blk 中断。
-
-## 8. 接口汇总
-
-| 接口 | 所需能力 | 驻留端点/操作 | 使用者 |
-| --- | --- | --- | --- |
-| DisplayAccess | Display | device.kernel / Framebuffer | console、guiw |
-| PciAccess | Pci + 固定 PCI 角色 | pci.kernel / Enumerate、ReadConfig、WriteConfig | PCI 服务 |
-| MmioRegion | Device + 固定设备角色 | device.kernel / MapMmio | storage |
-| DmaBuffer | Device + 固定设备角色 | device.kernel / AllocateDma | storage |
-| InterruptBinding | Device + 固定设备角色 | device.kernel / BindIrq、AcknowledgeIrq | device、storage |
-
-Ring3 入口分别位于 `src/device/main.cc`、`src/device/pci/main.cc`、`src/device/storage/main.cc`。Ring0 的通用设备端点位于 `src/kernel/device/service/service.cc`，PCI 端点与配置端口实现位于 `src/kernel/device/pci/`。公共 SDK 只提供协议和客户端声明，不包含原始端口指令或 CS 检查。
+硬件访问授权见[设备机制服务](service.md)，设备停机与引用回收见[资源域](resource.md)，连续物理内存见[DMA](dmabuffer.md)，PCI 配置访问见[PCI](pci.md)。[存储](storage.md)、[输入](ps2.md)、[时间](time.md)和[ACPI](acpi.md)分别说明各自的执行过程与实现范围。

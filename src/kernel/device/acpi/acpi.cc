@@ -2,6 +2,8 @@
 
 #include "kernel/boot.h"
 
+namespace kernel::acpi {
+
 namespace {
 
 constexpr uint64_t directMapBase = 0xffff800000000000ULL;
@@ -53,30 +55,28 @@ const Type* mapPhysical(uint64_t physicalAddress) {
     return reinterpret_cast<const Type*>(directMapBase + physicalAddress);
 }
 
-bool tableValid(const kernel::AcpiSdtHeader* table) {
-    return table != nullptr && table->length >= sizeof(kernel::AcpiSdtHeader) &&
+bool tableValid(const AcpiSdtHeader* table) {
+    return table != nullptr && table->length >= sizeof(AcpiSdtHeader) &&
            table->length <= 1024 * 1024 && checksumValid(table, table->length);
 }
 
-const kernel::AcpiSdtHeader* findInRoot(uint64_t rootPhysicalAddress,
-                                        bool extended,
-                                        const char signature[4]) {
-    const kernel::AcpiSdtHeader* root =
-        mapPhysical<kernel::AcpiSdtHeader>(rootPhysicalAddress);
+const AcpiSdtHeader* findInRoot(uint64_t rootPhysicalAddress, bool extended,
+                                const char signature[4]) {
+    const AcpiSdtHeader* root = mapPhysical<AcpiSdtHeader>(rootPhysicalAddress);
     if (!tableValid(root) ||
         !bytesEqual(root->signature, extended ? "XSDT" : "RSDT", 4)) {
         return nullptr;
     }
     const uint32_t entrySize = extended ? 8 : 4;
     const uint32_t entryCount =
-        (root->length - sizeof(kernel::AcpiSdtHeader)) / entrySize;
+        (root->length - sizeof(AcpiSdtHeader)) / entrySize;
     const uint8_t* entries =
-        reinterpret_cast<const uint8_t*>(root) + sizeof(kernel::AcpiSdtHeader);
+        reinterpret_cast<const uint8_t*>(root) + sizeof(AcpiSdtHeader);
     for (uint32_t index = 0; index < entryCount; ++index) {
         const uint64_t physicalAddress =
             readLittleEndian(entries + index * entrySize, entrySize);
-        const kernel::AcpiSdtHeader* table =
-            mapPhysical<kernel::AcpiSdtHeader>(physicalAddress);
+        const AcpiSdtHeader* table =
+            mapPhysical<AcpiSdtHeader>(physicalAddress);
         if (tableValid(table) && bytesEqual(table->signature, signature, 4)) {
             return table;
         }
@@ -86,14 +86,12 @@ const kernel::AcpiSdtHeader* findInRoot(uint64_t rootPhysicalAddress,
 
 }  // namespace
 
-namespace kernel::acpi {
-
-const AcpiSdtHeader* findAcpiTable(const BootInfo* bootInfo,
-                                   const char signature[4]) {
-    if (bootInfo == nullptr || bootInfo->acpiRoot == nullptr) {
+const AcpiSdtHeader* Tables::find(const char signature[4]) const {
+    const BootInfo* bootInfo = boot_;
+    if (bootInfo == nullptr || bootInfo->getAcpiRoot() == nullptr) {
         return nullptr;
     }
-    const Rsdp* rsdp = static_cast<const Rsdp*>(bootInfo->acpiRoot);
+    const Rsdp* rsdp = static_cast<const Rsdp*>(bootInfo->getAcpiRoot());
     if (!bytesEqual(rsdp->signature, "RSD PTR ", 8) ||
         !checksumValid(rsdp, 20)) {
         return nullptr;

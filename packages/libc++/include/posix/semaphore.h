@@ -1,7 +1,6 @@
 #ifndef _POSIX_SEMAPHORE_H
 #define _POSIX_SEMAPHORE_H
 
-
 #include <stdint.h>
 #include <time.h>
 
@@ -40,7 +39,8 @@ int sem_unlink(const char* name);
 #ifdef __cplusplus
 extern "C" {
 #endif
-int sem_clockwait(sem_t *__restrict, clockid_t, const struct timespec *__restrict);
+int sem_clockwait(sem_t* __restrict, clockid_t,
+                  const struct timespec* __restrict);
 #ifdef __cplusplus
 }
 #endif

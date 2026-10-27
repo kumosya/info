@@ -1,4 +1,3 @@
-#pragma once
 /*
  * Copyright (c) 2026, Kumosya
  * SPDX-License-Identifier: BSD-2-Clause
@@ -11,9 +10,9 @@
 
 #include <cstdint>
 
-namespace kernel {
+class BootInfo;
 
-struct BootInfo;
+namespace kernel::acpi {
 
 struct [[gnu::packed]] AcpiSdtHeader {
     char signature[4];
@@ -27,12 +26,15 @@ struct [[gnu::packed]] AcpiSdtHeader {
     uint32_t creatorRevision;
 };
 
-namespace acpi {
-const AcpiSdtHeader* findAcpiTable(const BootInfo* bootInfo,
-                                   const char signature[4]);
+class Tables {
+   public:
+    explicit Tables(const ::BootInfo* boot) : boot_(boot) {}
+    const AcpiSdtHeader* find(const char signature[4]) const;
 
-}  // namespace acpi
+   private:
+    const ::BootInfo* boot_;
+};
 
-}  // namespace kernel
+}  // namespace kernel::acpi
 
 #endif  // _KERNEL_ACPI_H_

@@ -1,14 +1,12 @@
-#include "service/common/runtime.h"
-#include "service/common/queries.h"
-#include <os/mm.h>
-#include <os/task.h>
 #include <thread>
 
-#include <os/ipc.h>
-#include <os/task.h>
-#include <os/mm.h>
+#include "service/common/queries.h"
+#include "service/common/runtime.h"
 #include <os/device.h>
+#include <os/ipc.h>
+#include <os/mm.h>
 #include <os/service.h>
+#include <os/task.h>
 
 namespace std::detail {
 
@@ -25,7 +23,7 @@ struct ThreadState {
 namespace {
 
 constexpr uint32_t threadCapacity = 8;
-constexpr size_t threadStackSize = 64 * 1024;
+constexpr size_t threadStackSize  = 64 * 1024;
 ThreadState states[threadCapacity]{};
 bool stateLock;
 
@@ -53,7 +51,8 @@ void reapDetachedThreads() {
     for (ThreadState& state : states) {
         int exitCode = 0;
         if (state.used && state.detached && state.id != 0 &&
-            os::detail::TaskControl().waitThread(state.id, exitCode, true) == 0) {
+            os::detail::TaskControl().waitThread(state.id, exitCode, true) ==
+                0) {
             releaseState(state);
         }
     }
@@ -72,16 +71,16 @@ ThreadState* createStandardThread(ThreadInvoker invoker, void* object) {
         if (state.used) {
             continue;
         }
-        state = {};
+        state       = {};
         state.stack = os::Runtime::allocateMemory(threadStackSize);
         if (state.stack == nullptr) {
             unlockStates();
             return nullptr;
         }
         state.invoker = invoker;
-        state.object = object;
-        state.used = true;
-        state.id = os::createThread(
+        state.object  = object;
+        state.used    = true;
+        state.id      = os::createThread(
             run, reinterpret_cast<uint64_t>(state.stack) + threadStackSize,
             &state);
         if (state.id == 0) {

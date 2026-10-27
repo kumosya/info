@@ -1,20 +1,20 @@
-#include "service/common/runtime.h"
 #include "service/common/kernel-requests.h"
 #include "service/common/requests.h"
+#include "service/common/runtime.h"
 #include "service/fs/ext3/filesystem.h"
 #include "service/fs/ext3/internal.h"
-#include <os/ipc.h>
-#include <os/task.h>
-#include <os/mm.h>
 #include <os/device.h>
+#include <os/ipc.h>
+#include <os/mm.h>
 #include <os/service.h>
+#include <os/task.h>
 
 namespace fs::ext3 {
 
 using namespace detail;
 
 bool Filesystem::lookupInDirectory(const Inode& directory, const char* name,
-                               size_t nameLength, uint32_t& inode) {
+                                   size_t nameLength, uint32_t& inode) {
     uint8_t data[maximumBlockSize]{};
     const uint32_t blocks = (directory.size + blockSize_ - 1) / blockSize_;
     for (uint32_t logical = 0; logical < blocks; ++logical) {
@@ -61,7 +61,7 @@ bool Filesystem::resolve(const char* path, uint32_t& number, Inode* inode) {
 }
 
 bool Filesystem::resolveParent(const char* path, uint32_t& parentNumber,
-                           Inode& parent, char* name, size_t capacity) {
+                               Inode& parent, char* name, size_t capacity) {
     if (path == nullptr || path[0] != '/') return false;
     size_t length = 0;
     while (path[length] != '\0') ++length;
@@ -85,7 +85,8 @@ bool Filesystem::resolveParent(const char* path, uint32_t& parentNumber,
 }
 
 bool Filesystem::addDirectoryEntry(uint32_t directoryNumber, Inode& directory,
-                               uint32_t child, const char* name, uint8_t type) {
+                                   uint32_t child, const char* name,
+                                   uint8_t type) {
     size_t nameLength = 0;
     while (name[nameLength] != '\0') ++nameLength;
     if (nameLength == 0 || nameLength > 255) return false;
@@ -101,7 +102,8 @@ bool Filesystem::addDirectoryEntry(uint32_t directoryNumber, Inode& directory,
             if (entry->recordLength < sizeof(RawDirectoryEntry) ||
                 offset + entry->recordLength > blockSize_)
                 return false;
-            const uint16_t used = DirectoryEncoding::alignedEntrySize(entry->nameLength);
+            const uint16_t used =
+                DirectoryEncoding::alignedEntrySize(entry->nameLength);
             if (entry->inode == 0 && entry->recordLength >= needed) {
                 entry->inode      = child;
                 entry->nameLength = static_cast<uint8_t>(nameLength);
@@ -142,8 +144,8 @@ bool Filesystem::addDirectoryEntry(uint32_t directoryNumber, Inode& directory,
     return writeBlock(block, data) && writeInode(directoryNumber, directory);
 }
 
-bool Filesystem::removeDirectoryEntry(uint32_t directoryNumber, Inode& directory,
-                                  const char* name) {
+bool Filesystem::removeDirectoryEntry(uint32_t directoryNumber,
+                                      Inode& directory, const char* name) {
     size_t nameLength = 0;
     while (name[nameLength] != '\0') ++nameLength;
     uint8_t data[maximumBlockSize]{};
@@ -159,8 +161,8 @@ bool Filesystem::removeDirectoryEntry(uint32_t directoryNumber, Inode& directory
                 offset + entry->recordLength > blockSize_)
                 return false;
             if (entry->inode != 0 && entry->nameLength == nameLength &&
-                DirectoryEncoding::namesEqual(reinterpret_cast<char*>(entry + 1), name,
-                           nameLength)) {
+                DirectoryEncoding::namesEqual(
+                    reinterpret_cast<char*>(entry + 1), name, nameLength)) {
                 if (previous != nullptr)
                     previous->recordLength += entry->recordLength;
                 else
@@ -202,13 +204,13 @@ bool Filesystem::directoryEmpty(const Inode& directory) {
 }
 
 int Filesystem::readDirectory(const char* path, uint32_t index,
-                          DirectoryEntry& result) {
+                              DirectoryEntry& result) {
     const int count = readDirectoryBatch(path, index, &result, 1);
     return count < 0 ? -1 : (count == 0 ? 1 : 0);
 }
 
 int Filesystem::readDirectoryBatch(const char* path, uint32_t index,
-                               DirectoryEntry* results, uint32_t capacity) {
+                                   DirectoryEntry* results, uint32_t capacity) {
     if (results == nullptr || capacity == 0) return -1;
     uint32_t number = 0;
     Inode directory{};
@@ -238,7 +240,7 @@ int Filesystem::readDirectoryBatch(const char* path, uint32_t index,
                 result                 = {};
                 result.inode           = raw->inode;
                 result.type            = raw->fileType;
-                size_t nameLength = raw->nameLength;
+                size_t nameLength      = raw->nameLength;
                 if (nameLength >= sizeof(result.name))
                     nameLength = sizeof(result.name) - 1;
                 for (size_t i = 0; i < nameLength; ++i)

@@ -1,8 +1,10 @@
 #include "kernel/acpi.h"
 #include "kernel/boot.h"
+#include "kernel/device.h"
 #include "kernel/interrupt.h"
-#include "kernel/serial.h"
-#include "kernel/spinlock.h"
+#include "kernel/sync.h"
+
+namespace kernel::cpu {
 
 namespace {
 
@@ -12,7 +14,7 @@ constexpr uint32_t maxIoApics     = 8;
 constexpr uint32_t legacyIrqCount = 16;
 
 struct [[gnu::packed]] Madt {
-    kernel::AcpiSdtHeader header;
+    kernel::acpi::AcpiSdtHeader header;
     uint32_t localApicAddress;
     uint32_t flags;
 };
@@ -52,7 +54,7 @@ struct IrqRoute {
 IoApic ioApics[maxIoApics];
 uint32_t ioApicCount;
 IrqRoute irqRoutes[legacyIrqCount];
-kernel::SpinLock ioApicLock;
+kernel::task::SpinLock ioApicLock;
 
 template <typename Type>
 Type* mapPhysical(uint64_t physicalAddress) {
@@ -62,9 +64,9 @@ Type* mapPhysical(uint64_t physicalAddress) {
     return reinterpret_cast<Type*>(directMapBase + physicalAddress);
 }
 
-const Madt* findMadt(const kernel::BootInfo* bootInfo) {
+const Madt* findMadt(const ::BootInfo* bootInfo) {
     return reinterpret_cast<const Madt*>(
-        kernel::acpi::findAcpiTable(bootInfo, "APIC"));
+        kernel::acpi::Tables(bootInfo).find("APIC"));
 }
 
 uint32_t readIoApic(const IoApic& ioApic, uint8_t index) {
@@ -103,8 +105,6 @@ void maskGlobalInterruptLocked(uint32_t globalSystemInterrupt) {
 
 }  // namespace
 
-namespace kernel::interrupt {
-
 void initControllers(const BootInfo* bootInfo) {
     for (uint32_t irq = 0; irq < legacyIrqCount; ++irq) {
         irqRoutes[irq].globalSystemInterrupt = irq;
@@ -113,7 +113,7 @@ void initControllers(const BootInfo* bootInfo) {
 
     const Madt* madt = findMadt(bootInfo);
     if (madt == nullptr || madt->header.length < sizeof(Madt)) {
-        serial::serialWrite(
+        device::serialWrite(
             "[INTERRUPT] ACPI MADT unavailable; external IRQ routing "
             "disabled\n");
         return;
@@ -158,7 +158,7 @@ void initControllers(const BootInfo* bootInfo) {
     }
 
     {
-        InterruptSpinLockGuard guard(ioApicLock);
+        ::kernel::task::InterruptSpinLockGuard guard(ioApicLock);
         for (uint32_t index = 0; index < ioApicCount; ++index) {
             const IoApic& ioApic = ioApics[index];
             for (uint32_t pin = 0; pin < ioApic.redirectionCount; ++pin) {
@@ -169,18 +169,18 @@ void initControllers(const BootInfo* bootInfo) {
     }
 
     if (ioApicCount == 0) {
-        serial::serialWrite(
+        device::serialWrite(
             "[INTERRUPT] no I/O APIC found; external IRQ routing disabled\n");
         return;
     }
-    serial::serialWrite("[INTERRUPT] I/O APIC routing initialized\n");
+    device::serialWrite("[INTERRUPT] I/O APIC routing initialized\n");
 }
 
 bool setIrq(uint8_t irq, uint8_t vector, uint32_t apicId, bool levelTriggered) {
     if (irq >= legacyIrqCount || vector < 32) {
         return false;
     }
-    InterruptSpinLockGuard guard(ioApicLock);
+    ::kernel::task::InterruptSpinLockGuard guard(ioApicLock);
     const IrqRoute& route = irqRoutes[irq];
     IoApic* ioApic        = findIoApic(route.globalSystemInterrupt);
     if (ioApic == nullptr) {
@@ -207,8 +207,8 @@ void maskIrq(uint8_t irq) {
     if (irq >= legacyIrqCount) {
         return;
     }
-    InterruptSpinLockGuard guard(ioApicLock);
+    ::kernel::task::InterruptSpinLockGuard guard(ioApicLock);
     maskGlobalInterruptLocked(irqRoutes[irq].globalSystemInterrupt);
 }
 
-}  // namespace kernel::interrupt
+}  // namespace kernel::cpu

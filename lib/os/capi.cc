@@ -1,17 +1,16 @@
-#include <os/capi.h>
-
 #include <new>
 
+#include "service/common/channel.h"
+#include "service/common/queries.h"
+#include "service/common/requests.h"
+#include "service/common/runtime.h"
+#include <os/capi.h>
 #include <os/console.h>
 #include <os/dir.h>
 #include <os/file.h>
 #include <os/mm.h>
 #include <os/pty.h>
 #include <os/task.h>
-#include "service/common/channel.h"
-#include "service/common/queries.h"
-#include "service/common/requests.h"
-#include "service/common/runtime.h"
 namespace {
 using namespace os;
 constexpr int invalid = static_cast<int>(ErrorCode::InvalidArgument),
@@ -90,7 +89,9 @@ int CapiEncoding::decodeStat(const IpcMessage& r, OsFileStat& out) {
     return 0;
 }
 }  // namespace
+
 using namespace os;
+
 static_assert(sizeof(OsIpcMessage) == sizeof(IpcMessage));
 static_assert(sizeof(OsTaskInfo) == sizeof(wire::TaskInfo));
 extern "C" {

@@ -116,7 +116,6 @@ int callService(uint64_t endpoint, IpcMessage& request, IpcMessage& reply,
                 uint64_t deadline = UINT64_MAX);
 int replyMessage(uint64_t endpoint, uint64_t token, IpcMessage& reply);
 
-
 int64_t invokeSyscall(SyscallNumber number, uint64_t arg1 = 0,
                       uint64_t arg2 = 0, uint64_t arg3 = 0, uint64_t arg4 = 0,
                       uint64_t arg5 = 0, uint64_t arg6 = 0);

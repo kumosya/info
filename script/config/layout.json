@@ -118,6 +118,11 @@
     },
     {
       "type": "directory",
+      "path": "var/core",
+      "mode": "0700"
+    },
+    {
+      "type": "directory",
       "path": "var/lib/inpkg",
       "mode": "0755"
     },
@@ -199,6 +204,11 @@
       "type": "tree",
       "source": "script/etc",
       "target": "etc"
+    },
+    {
+      "type": "mode",
+      "path": "etc/core",
+      "mode": "0644"
     },
     {
       "type": "mode",

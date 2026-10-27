@@ -1,3 +1,11 @@
+#include "service/common/kernel-requests.h"
+#include "service/common/lifecycle.h"
+#include "service/common/queries.h"
+#include "service/common/records.h"
+#include "service/common/requests.h"
+#include "service/common/runtime.h"
+#include "service/console/client.h"
+#include "service/task/core_dump.h"
 #include <os/console.h>
 #include <os/device.h>
 #include <os/elf.h>
@@ -7,14 +15,6 @@
 #include <os/pty.h>
 #include <os/service.h>
 #include <os/task.h>
-#include "service/common/kernel-requests.h"
-#include "service/common/lifecycle.h"
-#include "service/common/queries.h"
-#include "service/common/records.h"
-#include "service/common/requests.h"
-#include "service/common/runtime.h"
-#include "service/console/client.h"
-#include "service/task/core_dump.h"
 
 namespace {
 class TaskServer {
@@ -129,8 +129,8 @@ class TaskServer {
             os::Sys().log("[TASK] executable stat failed\n");
             return 0;
         }
-        void* image = os::Runtime::allocateMemory(
-            static_cast<size_t>(stat.getSize()));
+        void* image =
+            os::Runtime::allocateMemory(static_cast<size_t>(stat.getSize()));
         if (image == nullptr) {
             os::Sys().log("[TASK] executable allocation failed\n");
             return 0;
@@ -284,8 +284,8 @@ class TaskServer {
             return 1;
         const uint64_t endpoint = os::detail::EndpointControl().create();
         if (registry == 0 || endpoint == 0 ||
-            !os::detail::RegistryClient(registry).registerName(os::taskServiceName,
-                                                        endpoint)) {
+            !os::detail::RegistryClient(registry).registerName(
+                os::taskServiceName, endpoint)) {
             os::Sys().log("[TASK] registration failed\n");
             return 1;
         }
@@ -364,8 +364,8 @@ class TaskServer {
                     valid = false;
                 }
                 if (fs == 0) {
-                    fs = os::detail::RegistryClient(registry).lookup(os::fsServiceName,
-                                                              30000);
+                    fs = os::detail::RegistryClient(registry).lookup(
+                        os::fsServiceName, 30000);
                 }
                 if (!valid) {
                     os::Sys().log("[TASK] invalid execute request\n");
@@ -387,9 +387,9 @@ class TaskServer {
             } else if (request.type ==
                            static_cast<uint64_t>(os::TaskRequest::Wait) &&
                        request.handleCount == 1) {
-                int exitCode = 0;
-                const int state =
-                    os::detail::TaskControl().getState(request.handles[0], exitCode);
+                int exitCode    = 0;
+                const int state = os::detail::TaskControl().getState(
+                    request.handles[0], exitCode);
                 os::closeHandle(request.handles[0]);
                 reply.data[0] = state < 0 ? 2 : static_cast<uint64_t>(state);
                 reply.data[1] = static_cast<uint64_t>(exitCode);

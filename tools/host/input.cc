@@ -124,7 +124,11 @@ class Qmp {
         }
     }
     void terminal(unsigned number) {
-        request("send-key", "{\"keys\":[{\"type\":\"qcode\",\"data\":\"ctrl\"},{\"type\":\"qcode\",\"data\":\"shift\"},{\"type\":\"qcode\",\"data\":\"f" + std::to_string(number) + "\"}],\"hold-time\":25}");
+        request(
+            "send-key",
+            "{\"keys\":[{\"type\":\"qcode\",\"data\":\"ctrl\"},{\"type\":"
+            "\"qcode\",\"data\":\"shift\"},{\"type\":\"qcode\",\"data\":\"f" +
+                std::to_string(number) + "\"}],\"hold-time\":25}");
         sleep(1000);
     }
 };
@@ -134,7 +138,8 @@ void input(const Context& context) {
         throw std::runtime_error("input requires isolated --root stage");
     auto qmp = stage / "qmp.sock", log = stage / "input-serial.log";
     if (fs::exists(qmp)) fs::remove(qmp);
-    const auto image = context.image.empty() ? stage / "smoke.img" : fs::canonical(context.image);
+    const auto image   = context.image.empty() ? stage / "smoke.img"
+                                               : fs::canonical(context.image);
     const bool optical = image.extension() == ".iso";
     std::vector<std::string> command = {
         "qemu-system-x86_64",
@@ -153,8 +158,15 @@ void input(const Context& context) {
         "-qmp",
         "unix:" + qmp.string() + ",server=on,wait=off",
         "-no-reboot"};
-    if (optical) command.insert(command.end(), {"-cdrom", image.string()});
-    else command.insert(command.end(), {"-drive", "file=" + image.string() + ",if=none,format=raw,id=osdisk", "-device", "virtio-blk-pci,drive=osdisk,disable-legacy=on,bootindex=0"});
+    if (optical)
+        command.insert(command.end(), {"-cdrom", image.string()});
+    else
+        command.insert(
+            command.end(),
+            {"-drive",
+             "file=" + image.string() + ",if=none,format=raw,id=osdisk",
+             "-device",
+             "virtio-blk-pci,drive=osdisk,disable-legacy=on,bootindex=0"});
     std::vector<char*> argv;
     for (auto& argument : command) argv.push_back(argument.data());
     argv.push_back(nullptr);
@@ -185,40 +197,65 @@ void input(const Context& context) {
         control.connect(qmp);
         Qmp::sleep(2000);
         auto occurrences = [&](const std::string& marker) {
-            const auto serial = read(log); size_t offset = 0; unsigned count = 0;
-            while ((offset = serial.find(marker, offset)) != std::string::npos) { ++count; offset += marker.size(); }
+            const auto serial = read(log);
+            size_t offset     = 0;
+            unsigned count    = 0;
+            while ((offset = serial.find(marker, offset)) !=
+                   std::string::npos) {
+                ++count;
+                offset += marker.size();
+            }
             return count;
         };
         if (context.pattern == "windows") {
             for (unsigned tabs = 1; tabs <= 4; ++tabs) {
                 if (occurrences("[TERMINAL] tab started") >= tabs) continue;
                 if (tabs > 1) {
-                    control.move(-127, -127); control.move(-127, -127);
-                    control.exact(130 + (tabs - 1) * 136 + 18, 105); control.click();
+                    control.move(-127, -127);
+                    control.move(-127, -127);
+                    control.exact(130 + (tabs - 1) * 136 + 18, 105);
+                    control.click();
                 }
                 bool started = false;
                 for (unsigned attempt = 0; attempt < 200; ++attempt) {
-                    if (occurrences("[TERMINAL] tab started") >= tabs) { started = true; break; }
+                    if (occurrences("[TERMINAL] tab started") >= tabs) {
+                        started = true;
+                        break;
+                    }
                     Qmp::sleep(50);
                 }
-                if (!started) throw std::runtime_error("four terminal tabs were not ready before input stress");
+                if (!started)
+                    throw std::runtime_error(
+                        "four terminal tabs were not ready before input "
+                        "stress");
             }
         }
-        if (context.pattern == "pressure" && read(log).find("[INPUT PRESSURE] subscriber queue full") == std::string::npos)
+        if (context.pattern == "pressure" &&
+            read(log).find("[INPUT PRESSURE] subscriber queue full") ==
+                std::string::npos)
             throw std::runtime_error("input pressure client was not armed");
         control.request("screendump",
                         "{\"filename\":" +
                             quote((stage / "input-before.ppm").string()) + "}");
         for (unsigned i = 0; i < context.clicks; ++i) {
             if (context.pattern == "windows") {
-                static const int positions[][2] = {{110,190}, {110,250}, {600,80}, {280,105}, {110,250}, {600,80}, {420,105}, {550,105}, {690,105}};
-                control.move(-127, -127); control.move(-127, -127);
-                const auto position = i % (sizeof(positions) / sizeof(positions[0]));
+                static const int positions[][2] = {
+                    {110, 190}, {110, 250}, {600, 80},  {280, 105}, {110, 250},
+                    {600, 80},  {420, 105}, {550, 105}, {690, 105}};
+                control.move(-127, -127);
+                control.move(-127, -127);
+                const auto position =
+                    i % (sizeof(positions) / sizeof(positions[0]));
                 control.exact(positions[position][0], positions[position][1]);
                 control.click();
-            } else { control.move(2, 0); control.click(); control.move(-2, 0); }
+            } else {
+                control.move(2, 0);
+                control.click();
+                control.move(-2, 0);
+            }
         }
-        control.move(-127, -127); control.move(-127, -127);
+        control.move(-127, -127);
+        control.move(-127, -127);
         control.exact(284, 105);
         control.click();
         Qmp::sleep(2000);
@@ -229,10 +266,15 @@ void input(const Context& context) {
             bool restored = false;
             for (unsigned attempt = 0; attempt < 300; ++attempt) {
                 const unsigned count = occurrences("[TERMINAL] login restored");
-                if (count >= (context.pattern == "windows" ? 4U : 1U)) { restored = true; break; }
+                if (count >= (context.pattern == "windows" ? 4U : 1U)) {
+                    restored = true;
+                    break;
+                }
                 Qmp::sleep(100);
             }
-            if (!restored) throw std::runtime_error("GUI login recovery did not complete after killall sh");
+            if (!restored)
+                throw std::runtime_error(
+                    "GUI login recovery did not complete after killall sh");
         }
         Qmp::sleep(2000);
         control.terminal(1);
@@ -245,17 +287,21 @@ void input(const Context& context) {
         child       = -1;
         auto serial = read(log);
         if (serial.find("[CONSOLE] switched to tty1") == std::string::npos ||
-            serial.rfind("[CONSOLE] switched to tty7") < serial.find("[CONSOLE] switched to tty1"))
-            throw std::runtime_error("keyboard/TTY switching stalled after mouse input");
+            serial.rfind("[CONSOLE] switched to tty7") <
+                serial.find("[CONSOLE] switched to tty1"))
+            throw std::runtime_error(
+                "keyboard/TTY switching stalled after mouse input");
         for (const auto& marker :
-             {"page fault", "unrecoverable kernel exception", "[LD]", "[SERVICE] startup/exit failure"})
+             {"page fault", "unrecoverable kernel exception", "[LD]",
+              "[SERVICE] startup/exit failure"})
             if (serial.find(marker) != std::string::npos)
                 throw std::runtime_error("guest fault during input test");
         if (read(stage / "input-before.ppm") == read(stage / "input-after.ppm"))
             throw std::runtime_error(
                 "desktop did not visually change after input");
         std::cout
-            << context.clicks << " mouse clicks, new tab and keyboard delivered; screenshots: "
+            << context.clicks
+            << " mouse clicks, new tab and keyboard delivered; screenshots: "
             << stage << '\n';
     } catch (...) {
         if (child > 0) {

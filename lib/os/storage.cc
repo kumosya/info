@@ -1,10 +1,9 @@
-#include <os/storage.h>
-
-#include <os/service.h>
 #include "service/common/kernel-requests.h"
 #include "service/common/queries.h"
 #include "service/common/requests.h"
 #include "service/common/runtime.h"
+#include <os/service.h>
+#include <os/storage.h>
 
 namespace os {
 uint64_t Storage::Part::getStartBlock() const { return startBlock_; }

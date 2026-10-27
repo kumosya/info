@@ -1,12 +1,11 @@
 #include "service/common/queries.h"
-#include <os/console.h>
-
-#include <os/ipc.h>
-#include <os/service.h>
-#include <os/syscall.h>
 #include "service/common/requests.h"
 #include "service/common/runtime.h"
 #include "service/console/client.h"
+#include <os/console.h>
+#include <os/ipc.h>
+#include <os/service.h>
+#include <os/syscall.h>
 
 namespace os {
 Console::Console() = default;

@@ -1,7 +1,7 @@
-#include "service/common/runtime.h"
 #include "service/common/queries.h"
-#include <os/file.h>
+#include "service/common/runtime.h"
 #include "service/mm/mm.h"
+#include <os/file.h>
 namespace mm {
 int Pager::loadFile(ResidentPage& page, const Region& region,
                     Backing& backing) {

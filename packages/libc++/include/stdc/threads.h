@@ -2,7 +2,6 @@
 #define _STDC_THREADS_H
 typedef void (*tss_dtor_t)(void*);
 
-
 #include <pthread.h>
 #include <time.h>
 
@@ -13,19 +12,9 @@ typedef pthread_once_t once_flag;
 typedef pthread_key_t tss_t;
 typedef int (*thrd_start_t)(void*);
 
-enum {
-    thrd_success = 0,
-    thrd_nomem,
-    thrd_timedout,
-    thrd_busy,
-    thrd_error
-};
+enum { thrd_success = 0, thrd_nomem, thrd_timedout, thrd_busy, thrd_error };
 
-enum {
-    mtx_plain = 0,
-    mtx_recursive = 1,
-    mtx_timed = 2
-};
+enum { mtx_plain = 0, mtx_recursive = 1, mtx_timed = 2 };
 
 #define ONCE_FLAG_INIT PTHREAD_ONCE_INIT
 #define TSS_DTOR_ITERATIONS PTHREAD_DESTRUCTOR_ITERATIONS

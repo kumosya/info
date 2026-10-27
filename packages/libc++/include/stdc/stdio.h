@@ -1,7 +1,6 @@
 #ifndef _STDC_STDIO_H
 #define _STDC_STDIO_H
 
-
 #include <stdarg.h>
 #include <stddef.h>
 
@@ -20,35 +19,35 @@ typedef struct FileStream {
 #ifdef __cplusplus
 extern "C" {
 #endif
-int rename(const char* existing, const char* newPath);
-extern FILE* stdin;
-extern FILE* stdout;
-extern FILE* stderr;
+int rename(const char *existing, const char *newPath);
+extern FILE *stdin;
+extern FILE *stdout;
+extern FILE *stderr;
 #define stdin stdin
 #define stdout stdout
 #define stderr stderr
 
-int printf(const char* format, ...);
-int fprintf(FILE* stream, const char* format, ...);
-int snprintf(char* buffer, size_t size, const char* format, ...);
-int vsnprintf(char* buffer, size_t size, const char* format, va_list arguments);
+int printf(const char *format, ...);
+int fprintf(FILE *stream, const char *format, ...);
+int snprintf(char *buffer, size_t size, const char *format, ...);
+int vsnprintf(char *buffer, size_t size, const char *format, va_list arguments);
 int putchar(int character);
-int puts(const char* string);
+int puts(const char *string);
 int getchar(void);
-int fputc(int character, FILE* stream);
-int fputs(const char* string, FILE* stream);
-int fgetc(FILE* stream);
-char* fgets(char* buffer, int size, FILE* stream);
-size_t fread(void* buffer, size_t size, size_t count, FILE* stream);
-size_t fwrite(const void* buffer, size_t size, size_t count, FILE* stream);
-FILE* fopen(const char* path, const char* mode);
-int fclose(FILE* stream);
-int fflush(FILE* stream);
-int fileno(FILE* stream);
-int feof(FILE* stream);
-int ferror(FILE* stream);
-void clearerr(FILE* stream);
-void perror(const char* prefix);
+int fputc(int character, FILE *stream);
+int fputs(const char *string, FILE *stream);
+int fgetc(FILE *stream);
+char *fgets(char *buffer, int size, FILE *stream);
+size_t fread(void *buffer, size_t size, size_t count, FILE *stream);
+size_t fwrite(const void *buffer, size_t size, size_t count, FILE *stream);
+FILE *fopen(const char *path, const char *mode);
+int fclose(FILE *stream);
+int fflush(FILE *stream);
+int fileno(FILE *stream);
+int feof(FILE *stream);
+int ferror(FILE *stream);
+void clearerr(FILE *stream);
+void perror(const char *prefix);
 #ifdef __cplusplus
 }
 #endif

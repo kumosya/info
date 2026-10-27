@@ -1,355 +1,149 @@
-# 任务管理（src/kernel/task/）
-
-本文档描述 `src/kernel/task/` 的核心实现：线程（`thread.cc`）、进程与句柄表（`task.cc`）、调度器（`schedule.cc`）、信号投递（`signal.cc`）与上下文切换汇编（`switch.S`）。IPC 见 [ipc.md](ipc.md)，同步原语见 [sync.md](sync.md)，系统调用见 [syscall.md](syscall.md)。对应头文件 `include/kernel/thread.h`、`task.h`、`signal.h`。
-
-## 1. 线程（thread.cc）
-
-### 状态与类型
-
-```cpp
-enum class ThreadState : uint8_t {
-    Created, Ready, Running, Blocked, Sleeping, Stopped, Terminated
-};
-enum class ThreadType : uint8_t { Kernel, User, SystemService };
-using ThreadEntry = void (*)(void* argument);
-```
-
-### CpuContext 类
-
-```cpp
-class CpuContext {
-   public:
-    uint64_t getStackPointer() const;
-    uint64_t setStackPointer(uint64_t value);
-    uint64_t& accessStackPointer();
-    uint64_t setRip(uint64_t value);
-    uint64_t setRflags(uint64_t value);
-   private:
-    uint64_t stackPointer;
-    uint64_t rax, rbx, rcx, rdx, rsi, rdi, rbp;
-    uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
-    uint64_t rip, rflags, cr3, fsBase, gsBase;
-};
-```
-
-### Thread 类（关键字段）
-
-```cpp
-class Thread {
-   public:
-    static void init();
-    static Thread* create(Task* task, ThreadEntry entryPoint, void* argument,
-                          ThreadType type = ThreadType::Kernel,
-                          bool makeRunnable = true);
-    static Thread* createUser(Task* task, uint64_t entryPoint,
-                              uint64_t userStackPointer,
-                              uint64_t argument = 0,
-                              uint64_t initialStackSize = 0);
-    static Thread* createForkedUser(Task* task, const SyscallContext& context,
-                                    uint64_t signalMask);
-    [[noreturn]] static void exitCurrent(int exitCode);
-    static void blockCurrent();
-    static void prepareWait();
-    static void wake(Thread* thread);
-    static void sleepCurrent(uint64_t milliseconds);
-    void switchTo(Thread* next);
-    static Thread* getCurrent();
-    static void bootstrap();
-
-    bool migrate(uint32_t cpuId);
-    bool setAffinity(uint64_t cpuMask);
-
-    // getter/setter: getId/setId, getState/setState, getType/setType, ...
-
-   private:
-    uint64_t id;
-    ThreadState state;
-    ThreadType type;
-    void* kernelStack;
-    void* kernelStackTop;
-    void* userStack;
-    CpuContext context;
-    Task* task;
-    uint64_t cpuId;
-    uint64_t cpuAffinity;
-    uint64_t vruntime;
-    uint64_t runtime;
-    uint64_t timeSlice;
-    uint64_t sliceRuntime;
-    uint32_t weight;
-    int32_t nice;
-    ThreadEntry entryPoint;
-    void* argument;
-    void* userArgument;
-    int exitCode;
-    Thread* rbParent;
-    Thread* rbLeft;
-    Thread* rbRight;
-    bool rbRed;
-    bool inRunQueue;
-    bool wakePending;
-    bool activeIpcCall;
-    ThreadState stateBeforeStop;
-    Thread* waitNext;
-    Thread* joinWaiters;
-    Thread* joinWaitersTail;
-    volatile uint32_t* waitAddress;
-    uint64_t waitKey;
-    uint64_t signalMask;
-    uint64_t pendingSignals;
-    Thread* taskNext;
-    uint64_t wakeDeadlineNanoseconds;
-    alignas(16) uint8_t floatingPointState[512];
-};
-```
-
-### 创建与启动
-
-- 普通线程内核栈为 **64 KiB**（`kernelStackSize`）；固定 boot 服务的用户线程分配 256 KiB 内核栈；线程 ID 由全局原子计数器分配（从 1 起）。
-- `Thread::create(task, entryPoint, argument, type, makeRunnable)`：分配 Thread + 栈；构造初始栈帧（自栈顶向下：填充 0、`Thread::bootstrap` 返回地址、RFLAGS `0x202`、15 个零寄存器槽，与 `switchThreadContext` 弹出顺序匹配）；默认 `weight = schedule::getSchedulerWeight(0)`（1024）、`timeSlice = 4 ms`；`task->attachThread`；`makeRunnable` 且调度器已初始化则入队。
-- `Thread::createUser(task, entryPoint, userStackPointer, argument, initialStackSize)`：校验入口与栈指针在用户半区；复用 `create`（User 或 SystemService 类型），记录 `userStack`/`userArgument`。SystemService 类型时从用户空间复制初始栈到内核侧。
-- `Thread::createForkedUser(task, context, signalMask)`：fork 用；堆上复制 `SyscallContext` 并置 `rax = 0`（子进程返回 0）；以 Kernel 类型、入口 `forkedUserEntry` 创建，随后入队；`forkedUserEntry` 将线程类型置 User 后 `resumeUserContext` 直接进入用户态。
-
-### 生命周期
-
-- `Thread::bootstrap`：`schedule::finishContextSwitch()` → 开中断；User 线程 → `enterUserMode(entryPoint, userStack, userArgument)`（不返回）；SystemService 线程 → `enterSystemService`；Kernel 线程 → 执行 `entryPoint(argument)` 后 `exitCurrent(0)`。
-- `Thread::exitCurrent`：关中断 → 记录退出码、状态 Terminated → `task->notifyThreadExit` → 请求重调度并 `schedule()`。
-- `Thread::blockCurrent`：委托 `schedule::blockCurrentThread()`。
-- `Thread::wake`：委托 `schedule::wakeThread()`。
-- 用户异常统一由 `signal::raiseException` 定向处理，默认致命动作调用 `signal::fatal` 结束整个 Task；不将异常向量作为负退出码。旧的线程级异常退出入口已删除，详见[异常、信号与 core](exceptions-and-core.md)。
-
-### 浮点状态
-
-每线程保存 512 字节 FXSAVE 区域（`floatingPointState`）。`switchTo` 时 `fxsave64` 保存旧线程、`fxrstor64` 恢复新线程。`resetFloatingPointState` 初始化 x87 控制字和 MXCSR。
-
-### 上下文切换（switch.S）
-
-- `switchThreadContext(uint64_t* prevRsp, uint64_t nextRsp)`：`pushfq` + 15 个寄存器（128 字节帧）→ 保存旧栈 → 切换 → 逆序恢复 → `popfq`、`ret`。
-- `enterUserMode(entryPoint, stackPointer, argument)`：构造 iretq 帧（SS=0x1b、RFLAGS=0x202、CS=0x23），参数入 rdi，`swapgs`，`iretq`。
-- `enterSystemService(entryPoint, stackPointer, argument)`：类似但进入系统服务入口。
-- `resumeUserContext(SyscallContext*)`：恢复全部寄存器后 `swapgs`、`sysretq`（rcx→RIP、r11→RFLAGS）。
-
-## 2. 进程（task.cc）
-
-### 进程状态与能力
-
-```cpp
-enum class TaskState : uint8_t { Created, Running, Terminated, Stopped };
-constexpr uint64_t taskCapabilityDevice  = 1ULL << 0;
-constexpr uint64_t taskCapabilitySpawn   = 1ULL << 1;
-constexpr uint64_t taskCapabilityDisplay = 1ULL << 2;
-constexpr uint64_t taskCapabilityUsers   = 1ULL << 3;
-```
-
-### 地址空间与句柄表
-
-```cpp
-class AddressSpace {  // init/replaceRoot/rootPhysicalAddress/lock
-};
-
-enum class HandleType : uint16_t {
-    None, Endpoint, Task, MmioRegion, DmaBuffer,
-    InterruptBinding, SharedMemory, PageObject
-};
-constexpr uint32_t handleRightRead   = 1U << 0;
-constexpr uint32_t handleRightWrite  = 1U << 1;
-constexpr uint32_t handleRightManage = 1U << 2;
-```
-
-句柄编码：低 32 位 = 槽位索引 + 1，高 16 位 = generation（跳过 0）。`HandleTable` 接口：`init(capacity)`、`add`、`addAt`（fork 继承，指定句柄值）、`get`（校验类型与权限）、`inspect`/`inspectAt`、`close`、`closeAll`。支持动态增长（`growLocked`）。关闭时释放共享 Reference，最后一个引用再按类型释放对象；Task、Endpoint 和 PageObject 均有明确引用计数。dispose 释放 entries 数组并拒绝再次安装。每进程初始 64 槽。
-
-### 进程创建与 fork/exec
-
-- `Task::create(name, parent)`：`memory::createAddressSpaceRoot` 建页表根 → 初始化（pid 原子分配、名字 ≤63 字符、句柄表 64 槽、继承父进程 pgid/sid 或等于自身 id）→ 挂入父进程 child 链表与全局进程链表。
-- `inheritForFork(parent)`：复制能力、引导句柄、3 个标准句柄、pgid/sid、全部信号动作；逐槽复制父进程句柄表（Endpoint/Pipe/Channel/MessageQueue/SharedMemory 用各自 duplicate，其余通过 copyTo 共享 Reference）。
-- `commitExec(newRoot, name, currentThread)`：杀死除调用线程外的所有线程；线程计数置 1；复位非 ignore 信号动作；换名；`replaceRoot` 换页表根；释放共享内存映射、切换地址空间、销毁旧根。
-- `waitForChild(pid, waiter, status, options, childId)`：pid 语义（-1 任意 / >0 指定 / 0 同组 / < -1 指定组）；options 位 1=NOHANG、2=UNTRACED、8=CONTINUED；status 编码：正常退出 `(exitCode & 0xff) << 8`、信号致死 `(-exitCode) & 0x7f`、停止 `(stopSignal << 8) | 0x7f`、继续 `0xffff`；返回 -1 无匹配 / 0 已回收 / 1 需阻塞 / 2 NOHANG 无事件。
-
-### 用户凭据与文件表
-
-```cpp
-class Task {
-   public:
-    uint32_t uid() const;
-    uint32_t gid() const;
-    uint32_t effectiveUid() const;
-    uint32_t effectiveGid() const;
-    void setCredentials(uint32_t uid, uint32_t gid, bool effectiveOnly = false);
-    bool isSystemService() const;
-    void setSystemService(bool value);
-    uint32_t terminalId() const;
-    void setTerminalId(uint32_t value);
-};
-```
-
-- 凭据模型：uid/gid + effectiveUid/effectiveGid；`setCredentials` 支持仅修改 effective 版本。
-- POSIX 文件描述符表由 libc 与 fs 服务维护，不在 Task 中创建 FileTable。
-- 所有服务进程使用 User 线程在 Ring3 运行；SystemService 枚举是未启用的旧入口，boot 加载器始终设置 isSystemService=false。
-
-### 线程与退出
-
-- `attachThread`：需 `acceptsThreads_`；头插链表；首个线程为 `mainThread_`；进程状态置 Running。
-- `notifyThreadExit`：唤醒该线程的 join 等待者；计数递减；归零且非内核进程 → 进程 Terminated、关闭全部句柄、通知父进程（`notifyChildStateChange` + 投递 `Signal::Child`）。
-- `terminateOtherThreads(exitCode)`：杀死除当前线程外的所有线程。
-- `destroy()`：跳过内核进程与当前进程；终止线程、关闭句柄、释放共享内存映射、销毁地址空间根；从链表摘除。
-- `task::exitCurrent(exitCode)`：内核进程只退出线程；否则先 `terminateOtherThreads` 再 `exitCurrent`。
-
-### 会话与信号动作
-
-- `createSession()`：已是进程组组长则失败；否则 sid = pgid = 自身 id。
-- `setTaskGroup(groupId)`：在同一会话内加入现有进程组；`groupId == 0` 时以自身 id 创建进程组。
-- `setSignalAction(signal, action, oldAction)`：拒绝无效信号及 Kill/Stop；设 ignore 时清除该信号 pending 位。
-- `takePendingSignal(thread, accepted, action, respectMask = true)`：取 `(进程|线程) & accepted &（可选）~signalMask` 中编号最小者；优先清线程私有位；`signalFlagResetHand` 时复位为默认。
-- `deliverSignal(signal)` 进程级投递规则：
-  - ignore → 成功；
-  - 入队条件（置 `pendingSignals_` 位）：非 Kill/Stop 且（handler 非默认 或 所有线程都屏蔽）；
-  - **Continue**：清 `stopped_`、恢复所有 Stopped 线程、通知父进程 + SIGCHLD；
-  - **Stop/TerminalStop/TerminalInput/TerminalOutput**：置 `stopped_`、所有线程保存 `stateBeforeStop` 后置 Stopped 并出队、通知父进程 + SIGCHLD；
-  - **其余致命信号**：`terminateOtherThreads(-signal)`；当前进程则 `Thread::exitCurrent(-signal)`；最后 `destroy()`。
-
-### 全局接口
-
-```cpp
-namespace kernel::task {
-void init();                    // 创建 "kernel" 进程，attach 引导线程
-Task* getCurrent();
-Task* getIdle();                // 返回内核进程
-Task* find(uint64_t taskId);
-Task* at(uint32_t index);      // 按索引遍历（跳过内核进程）
-[[noreturn]] void exitCurrent(int exitCode);
-}
-
-namespace kernel::signal {
-bool isValidSignal(uint32_t signal);    // 1..64
-bool sendSignalToTask(uint64_t taskId, uint32_t signal);
-bool sendSignalToTaskGroup(uint64_t taskGroupId, uint32_t signal);
-}
-```
-
-信号发送包含权限检查：调用者 effectiveUid 为 0 或与目标进程 uid/effectiveUid 匹配才允许投递。`sendSignalToTaskGroup` 支持 signal=0 的存在性检查，采用分批处理（每批 32 个）避免长期持有全局锁。
-
-## 3. 调度器（schedule.cc）
-
-每 CPU 独立运行队列的 CFS 风格调度器（红黑树 + 虚拟运行时）。所有函数位于 `namespace kernel::schedule`。
-
-### 运行队列
-
-```cpp
-class RunQueue {
-   public:
-    static void clearRunQueue(RunQueue* queue);
-    void insertNode(Thread* thread);
-    void removeNode(Thread* thread);
-    // getter/setter ...
-   private:
-    static bool isRed(const Thread* node);
-    static bool comesBefore(const Thread* left, const Thread* right);
-    void rotateLeft(Thread* node);
-    void rotateRight(Thread* node);
-    void insertFixup(Thread* node);
-    void transplant(Thread* target, Thread* replacement);
-    void deleteFixup(Thread* node, Thread* parent);
-
-    Thread* root;              // 红黑树根
-    Thread* leftmost;          // 最小 vruntime
-    Thread* currentThread;
-    Thread* idleThread;
-    Thread* sleepingThreads;   // 按到期时间排序的睡眠链表
-    uint64_t runnableCount;
-    uint64_t minVruntime;
-    uint64_t clock;
-    SpinLock lock;
-};
-```
-
-### 权重与 vruntime
-
-- 权重表 `niceWeights[40]`（Linux 风格，索引 = nice + 20）：nice 0 = 1024，范围 88761（nice -20）到 15（nice 19）。
-- `calculateVruntimeDelta(runtime, weight) = (runtime * 1024 + weight - 1) / weight`（向上取整）。
-- 红黑树排序键：先比 `vruntime`，相等比线程 `id`。
-
-### 接口
-
-```cpp
-namespace kernel::schedule {
-void init();
-bool isSchedulerInitialized();
-void enqueueThread(Thread* thread);
-void prepareCurrentWait();
-void blockCurrentThread();
-void wakeThread(Thread* thread);
-void finishContextSwitch();
-void dequeueThread(Thread* thread);
-Thread* pickNextThread();
-void schedule();
-void yieldThread();
-void requestReschedule();
-void schedulerTick();
-void sleepCurrentThread(uint64_t milliseconds);
-uint32_t getSchedulerWeight(int32_t nice);
-}
-```
-
-### 关键行为
-
-- `init`：为当前 CPU 分配 RunQueue；创建 idle 线程并立即摘除；注册定时器中断（向量 32）并配置 APIC Timer（初始计数 1,000,000，约 1 ms）。
-- `enqueueThread`：目标 CPU 首选 `thread->cpuId`（需亲和位允许），否则扫描在线 CPU；入队前 `vruntime < minVruntime` 则钳制；目标非当前 CPU 则 `smp::requestRemoteReschedule`。
-- `schedule`：关中断 + 队列锁；前一线程仍 Running 则置 Ready 重新插入；取 leftmost（无则 idle）；置 Running、更新 `cpuId`/`currentThread`/`currentTask`；若切换则 `setKernelStack` → `switchAddressSpace`（无进程用内核根）→ `switchThread`。
-- `schedulerTick`：更新时钟与 `tickCount`；当前线程累加 `runtime`/`sliceRuntime`/`vruntime`；**抢占条件**：时间片耗尽（`sliceRuntime >= timeSlice`）或 `leftmost->vruntime < current->vruntime`；随后唤醒睡眠链表上所有到期线程。
-- `sleepCurrentThread`：0 → yield；否则置 Sleeping、计算 `wakeDeadlineNanoseconds`、按截止时间升序插入睡眠链表、`schedule`。
-
-## 4. 信号投递（signal.cc）
-
-用户态信号帧的投递与恢复，配合系统调用返回路径（详见 [syscall.md](syscall.md)）。
-
-```cpp
-namespace kernel::signal {
-bool deliverPendingSignal(SyscallContext* context);
-bool restoreSignalFrame(SyscallContext* context, uint64_t userFrame);
-}
-```
-
-信号帧：
-
-```cpp
-struct SignalFrame {
-    uint64_t magic;      // 0x5349474652414d45（"SIGFRAME"）
-    uint64_t oldMask;
-    SyscallContext context;
-};
-```
-
-- `deliverPendingSignal`：系统调用返回前调用；取一个待处理信号；要求 `handler > signalIgnore && restorer != 0`；在用户栈上构造 16 字节对齐的帧，并在帧上方压 `restorer` 地址作为处理函数返回地址；更新线程信号掩码（`|= action.mask`，未设 NoDefer 时再屏蔽本信号，Kill/Stop 位永远清除）；改写上下文 `userRip = handler`、`rdi = signal`。
-- `restoreSignalFrame`：sigreturn 路径；校验 magic 与帧内地址；净化 `userRflags`；恢复 `oldMask` 与上下文。
-
-## 5. 信号编号（signal.h）
-
-POSIX 风格编号（`enum class Signal : uint32_t`）：Hangup=1、Interrupt=2、Quit=3、IllegalInstruction=4、Trap=5、Abort=6、Bus=7、FloatingPoint=8、Kill=9、User1=10、SegmentationViolation=11、User2=12、BrokenPipe=13、Alarm=14、Terminate=15、StackFault=16、Child=17、Continue=18、Stop=19、TerminalStop=20、TerminalInput=21、TerminalOutput=22、Urgent=23、CpuLimit=24、FileSizeLimit=25、VirtualAlarm=26、Profiling=27、WindowChanged=28。`maximumSignal = 64`。
-
-信号动作：
-
-```cpp
-constexpr uint64_t signalDefault = 0;
-constexpr uint64_t signalIgnore = 1;
-constexpr uint64_t signalFlagNoDefer = 0x40000000;
-constexpr uint64_t signalFlagResetHand = 0x80000000;
-
-class SignalAction {
-   public:
-    uint64_t getHandler() const;
-    uint64_t getMask() const;
-    uint64_t getFlags() const;
-    uint64_t getRestorer() const;
-   private:
-    uint64_t handler;
-    uint64_t mask;
-    uint64_t flags;
-    uint64_t restorer;
-};
-```
-
-`handler` 取值：0 = 默认、1 = 忽略、>1 = 用户处理函数地址。
-
-TaskReference 为跨锁、跨阻塞路径持引用；Task 的退出状态保留到 wait 回收。destroy 将清理提交给专用内核 TaskReclaimer，队列持有独立 Task 引用，以 resourceState 防止重复提交；请求线程被杀或取消不影响清理完成。内核工作线程释放线程栈、HandleTable entries、映射引用和地址空间。wait 摘除子进程时，在父进程锁内先提交回收并转移引用，再从全局表移除；等待线程中途死亡也不会遗失回收责任。
-
-exec 的不可逆提交区禁止抢占但保持中断可用，保证已摘除线程和新地址空间的所有权交接完成；同时拒绝重复 exec 提交和对已终止进程重新开放线程创建。exec 与 destroy 先调用 quiesceTask 等待远端 CPU 实际离开旧 Task，再释放页表。fork 在子线程可运行前同步 Ring 3 MM 的 VMA 和 COW 页面状态；地址空间 generation 在 exec 时递增。
+# 内核任务管理
+
+`src/kernel/task/` 管理进程对象、线程、调度、IPC、同步和退出后的资源清理。这里的 C++ 声明位于 `include/kernel/task.h`、`ipc.h`、`sync.h` 和 `syscall.h`，均在 `kernel::task` 命名空间内。汇编入口保留 C 链接名称。
+
+内核保存能够执行任务所必需的状态；程序启动策略、服务监督、管道和消息队列的业务处理位于用户态。内核 `task.kernel` 的实现见 [任务机制服务](service.md)，用户态 task 服务见 [任务管理服务](../../service/task/task.md)。
+
+## 源文件分工
+
+| 文件 | 实现内容 |
+| --- | --- |
+| `task.cc` | Task 创建、全局任务表、父子关系、地址空间根、fork 资源继承、exec 提交、进程组与会话。 |
+| `thread.cc` | 引导线程登记、线程创建、首次运行入口、内核栈和浮点状态切换。 |
+| `wait.cc` | 等待子进程、等待线程、子进程状态通知，以及 join 与线程对象回收的衔接。 |
+| `exit.cc` | 当前进程和线程退出、终止其他线程、提交销毁、向父进程报告退出。 |
+| `reclaim.cc` | TaskReclaimer 工作队列和线程；实际释放线程栈、句柄、映射及页表。 |
+| `signal.cc` | 信号动作、待处理信号、停止与继续、用户信号帧、异常投递与信号返回。 |
+| `sched/rbtree.cc` | 运行队列红黑树的插入、删除、旋转和修复。 |
+| `sched/cfs.cc` | nice 权重、虚拟运行时间、线程入队、出队、亲和性和迁移入口。 |
+| `sched/schedule.cc` | 每 CPU 调度器、阻塞和唤醒、休眠、时钟处理、切换完成与远端停稳。 |
+| `sched/switch.S` | 保存和恢复内核执行现场、首次进入用户态、恢复 fork 用户上下文。 |
+| `ipc/handle.cc` | 句柄表、对象引用、临时固定引用、句柄传递及 Task 的启动和标准句柄。 |
+| `ipc/ipc.cc` | Endpoint 消息队列、请求与回复、等待、取消、超时和中断通知。 |
+| `ipc/core_service.cc` | CoreServices 创建内核服务端点，为调用进程安装初始端点和具体服务句柄。 |
+| `ipc/service.cc` | 内核 IPC 服务：创建端点、取得内核服务、操作调用者的句柄表。 |
+| `credentials/credentials.cc` | 用户与组凭据、附加组、认证会话以及能力位操作。 |
+| `resource/resource.cc` | core/nice 资源限额、线程信息、进程或线程优先级请求。 |
+| `core/core_dump.cc` | 故障记录、ELF core 内存快照、写出票据和超时回收。 |
+| `service/service.cc` | task.kernel 请求分派、映像启动、查询、等待和权限检查。 |
+| `service/mechanisms.cc` | 当前调用线程的创建线程、fork 和替换映像机制。 |
+| `service/recovery.cc` | 受监督服务的恢复域、快照、增量记录、对象托管和内存冻结。 |
+| `sys/service.cc` | system.kernel 的时间、系统信息与串口日志请求。 |
+| `sync/sync.cc` | 内核等待队列、互斥锁、信号量、一次初始化，以及线程等待和清理登记。 |
+| `sync/wait.cc` | 按用户地址等待与唤醒。 |
+| `syscall/syscall.cc` | 六个系统调用的分派、用户数据复制、服务调用缓冲区和上下文返回处理。 |
+| `syscall/entry.S` | SYSCALL 入口、内核栈切换、寄存器保存及统一 IRET 返回。 |
+| `syscall/services.cc` | 固定可信映像使用的内核导入函数和符号白名单。 |
+| `syscall/user_probe.S` | 由内核启动探针进入用户态时使用的短汇编程序。 |
+
+调度细节见 [调度器](sched.md)，通信和句柄见 [IPC](ipc.md)，锁与等待见 [同步](sync.md)，异常现场和快照见 [信号与 core](core.md)。
+
+## Task、Thread 和 AddressSpace
+
+`Task` 表示进程，保存地址空间、句柄表、父子关系、线程链表、凭据、能力、会话、信号动作和退出信息。`Thread` 是调度单位，保存所属进程、内核栈、用户执行现场、CPU 亲和性、运行时间、等待登记和浮点状态。一个 Task 可以有多个 Thread；独立内核工作线程允许没有所属 Task。
+
+`AddressSpace` 保存页表根物理地址、代数和锁：
+
+| 成员函数 | 功能与参数 |
+| --- | --- |
+| `init(rootPhysicalAddress)` | 登记页表根，初始化锁，代数从 1 开始。 |
+| `replaceRoot(rootPhysicalAddress)` | 替换根并返回旧根；根发生变化时增加代数，跳过 0。调用者负责加锁、切换 CR3 和释放旧根。 |
+
+读取接口涉及页表根、代数和锁。代数用于区分同一 Task 在 exec 前后的地址空间，防止旧映射对象对新地址空间执行清理。
+
+`TaskState` 包括 Created、Running、Terminated、Stopped。`Task::state()` 在进程仍存活且被作业控制停止时返回 Stopped。`ThreadState` 包括 Created、Ready、Running、Blocked、Sleeping、Stopped、Terminated。进程停止与内存恢复冻结分别保存，SIGCONT 不能解除内存恢复冻结。
+
+## 创建与查找
+
+| 函数 | 功能与参数 |
+| --- | --- |
+| `allocateId()` | 从原子计数器取得任务或线程编号；主线程挂入 Task 时采用该 Task 的编号。 |
+| `initThreads()` | 为当前 CPU 已在执行的引导现场建立 Thread 对象。 |
+| `initScheduler()` | 为当前 CPU 建立运行队列和 idle 线程，配置定时器。 |
+| `init()` | 建立 kernel Task，关联引导线程，初始化回收、core、设备资源域和服务恢复。 |
+| `Task::create(name, parent)` | 新建页表根、Task 和初始 64 槽句柄表，继承父进程凭据及限额，加入父子链和全局任务表。name 最多保存 63 字节；parent 可为空。 |
+| `Task::setInitTask(task)` | 登记接收孤儿进程的 init，并保留其引用；由启动路径调用。 |
+| `find(taskId)` | 按任务编号查找并返回 TaskReference。 |
+| `at(index)` | 按全局链表位置查找，跳过 kernel Task。 |
+| `next(minimumId)` | 查找编号不小于 minimumId 的最小任务，供按编号遍历使用。 |
+| `Task::parentReference()` | 在读取父进程指针时取得引用，供离开锁后继续使用。 |
+
+`getCurrent()`、`currentThread()` 分别读取当前 CPU 的 Task 和 Thread。`getIdle()` 返回 kernel Task；每 CPU 的 idle 线程由运行队列另行保存。
+
+`TaskReference` 不可复制、可以移动。构造时保留 Task 引用，并将释放动作加入当前线程的 ThreadCleanup 链；正常析构或线程被清理时释放引用。裸指针不能代替跨锁、跨阻塞路径上的 TaskReference。对象引用存活只保证 Task 对象仍在，不保证其原地址空间仍可访问。
+
+## 线程创建和首次运行
+
+| 成员函数 | 功能与参数 |
+| --- | --- |
+| `Thread::create(task, entryPoint, argument, type, makeRunnable)` | 分配线程与内核栈，建立首次切换栈帧；task 指定所属进程，entryPoint 和 argument 指定内核入口，type 指定执行类型，makeRunnable 控制是否立即入队。 |
+| `Thread::createUser(task, entryPoint, userStackPointer, argument, initialStackSize, initialAffinity, makeRunnable)` | 建立用户线程；设置用户入口、栈、首参数和 CPU 掩码。initialStackSize 用于旧 Sys 入口的初始栈复制，普通用户栈由地址空间准备。 |
+| `Thread::createForkedUser(task, context, signalMask)` | 保存 fork 子进程的用户现场和掩码，将返回寄存器置零，从专用入口恢复用户执行。 |
+| `Task::attachThread(thread)` | 将线程挂入进程链；首个线程设为主线程，更新存活线程数。进程停止接受新线程时失败。 |
+| `Thread::bootstrap()` | 完成首次上下文切换收尾；User 进入 Ring3，Kernel 执行入口并在返回后退出，Sys 使用保留的特权入口。 |
+| `Thread::switchTo(next)` | 保存当前线程的浮点状态，恢复 next 的浮点状态，再调用汇编切换内核栈。 |
+
+普通内核栈为 64 KiB；Sys 线程或有固定服务角色的任务线程使用 256 KiB。默认时间片为 4 ms。用户态服务正常使用 User 线程，`ThreadType::Sys` 是保留路径，不能据此把所有系统服务描述为内核态运行。
+
+每线程保存 512 字节 FXSAVE64 状态；内核 C++ 仅使用通用寄存器，切换时保存的浮点状态属于用户线程。初始栈帧必须与 `switchThreadContext` 的寄存器恢复顺序一致。
+
+## fork 和 exec
+
+`TaskMechanisms::fork()` 处理当前调用线程的 fork：先在用户回复区写入子进程的零结果，创建子 Task，复制页表和映射引用，再调用 `inheritForFork(parent)` 复制句柄、凭据、会话、限额及信号动作。完成用户态 MM 的 VMA/COW 状态克隆后，才创建可运行的子线程。拥有设备资源域的进程禁止 fork，防止硬件映射脱离所有者。
+
+`TaskMechanisms::replace(image, failure)` 读取 ExecImageInfo，复制参数和环境，准备新 ELF、共享映像、运行时状态和用户栈。image 是调用进程中的描述地址；failure 接收准备失败时的错误。
+
+`Task::commitExec(newRootPhysicalAddress, name, currentThread)` 执行提交：关闭新线程接纳，终止并摘除其他线程，等待远端 CPU 切走，停止设备资源，取消旧等待和临时引用，释放旧映射，切换页表根，关闭 CloseOnExec 句柄并销毁旧根。当前线程成为唯一主线程；捕获型信号动作恢复默认，忽略型动作保留。不可逆提交段禁止抢占，保持中断可用，不能在其中睡眠。
+
+exec 准备失败时保留原映像。提交成功后改写当前 SyscallContext，并标记 contextRestored，系统调用返回路径直接进入新映像，不向旧回复地址写入数据。
+
+## 等待、退出与回收
+
+`wait.cc` 的等待函数只检查状态并登记等待；真正阻塞和重试由 task.kernel 的请求处理循环完成。
+
+| 成员函数 | 功能与参数 |
+| --- | --- |
+| `waitForChild(taskId, waiter, status, options, childId, event)` | 等待匹配的子进程。taskId 为 -1 时任意子进程、正数时指定 PID、0 时同进程组、小于 -1 时指定组；waiter 是当前等待线程，status 和 childId 返回结果，event 可接收 waitid 事件。 |
+| `waitForThread(threadId, waiter, exitCode, noHang)` | 等待同进程线程，拒绝等待自身和重复消费；noHang 表示不能立即取得结果时不登记等待。 |
+| `notifyChildStateChange()` | 摘下并唤醒父进程的子进程等待链。 |
+| `retireJoinedThread(thread)` | 记录目标线程内核栈已退役；join 结果也被消费后才释放 Thread 对象。 |
+| `reapJoinedThreadLocked(thread)` | 在 Task 锁内摘除满足回收条件的线程对象，必要时更新主线程指针；它不负责释放仍在使用的栈。 |
+| `notifyThreadExit(thread)` | 唤醒 join 等待者，只计一次线程退出；最后线程退出时将进程标记终止并提交回收。 |
+| `terminateOtherThreads(exitCode)` | 拒绝新线程，终止除当前线程外的线程，更新线程计数并请求远端调度。 |
+| `destroy()` | 向 TaskReclaimer 提交清理并等待资源回收完成；拒绝销毁 kernel Task 和当前 Task。 |
+| `TaskReclaimer::submit(task)` | 只提交一次，队列独立持有 Task 引用；提交者退出不会丢失回收责任。 |
+
+等待函数返回 0 表示有结果，1 表示已登记、需要阻塞，2 表示非阻塞且暂无事件，-1 表示目标不存在或不能等待。子进程选项包括 NOHANG、停止和继续事件；waitid 另外支持事件筛选与不消费事件。
+
+正常退出状态为 `(exitCode & 255) << 8`；信号退出保留信号号，只有 core 写出 Complete 或 Truncated 才置 core 标志；停止为 `(signal << 8) | 0x7f`，继续为 `0xffff`。core 仍在处理时延迟向父进程报告最终退出结果。
+
+`exitCurrent(code)` 先结束同进程其他线程，再进入 `exitCurrentThread(code)`。线程退出取消 IPC、执行临时引用清理、登记退出，并切换到其他线程；不能在自己的栈上释放当前内核栈。
+
+`TaskReclaimer::run()` 调用 `Task::destroyResources()`：
+
+1. 禁止新线程，标记剩余线程终止，调用 `quiesceTask` 等待远端 CPU 完成切换。
+2. 通知设备资源域停止访问，必要时采集 core 快照。
+3. 将地址空间根置零，撤销端点所有权，取消各线程等待并释放 ThreadCleanup。
+4. 将子进程转交 init；init 不可用时转交 kernel Task。
+5. 释放线程、句柄表、普通映射、共享映射和旧页表，通知设备地址空间已释放。
+6. 发布资源回收完成状态，必要时通知父进程，再释放队列持有的引用。
+
+resourceState_ 的 0、1、2 分别表示未提交、已提交和已回收。正常退出的 Task 对象保留退出信息，直到父进程 wait 从父子链与全局表摘除；尚未启动线程便失败的 Created Task 由回收器直接摘除。
+
+`unlinkGlobal()` 是 Task 的私有方法，在全局任务表锁内摘除当前对象。wait 和回收器复用它，不直接访问全局链表变量。
+
+## 锁与资源生命期
+
+全局任务表锁保护查找和链表修改，Task 自身的锁保护进程状态与线程、父子关系等数据，AddressSpace 的锁保护页表根和映射访问。需要离开全局锁继续操作任务时，先取得 TaskReference；访问句柄对象时使用 HandleTable::Pin。
+
+调度队列锁保证线程状态与队列操作衔接，不能替代地址空间锁。终止标志、远端 CPU 停稳、设备停止、地址空间释放是不同步骤：对象仍有引用不表示旧页表仍有效，CPU 切走也不表示 DMA 已经停止。
+
+`quiesceTask` 等待时不能持 Task 锁、地址空间锁或运行队列锁。处理大范围释放、端点取消和设备回收时，按当前实现先离开保护任务状态的短临界区，再进入可能耗时的清理路径。
+
+## 进程组、会话与终端
+
+`setTaskGroup(groupId)` 将进程放入同一会话的进程组，0 表示以自身编号作为组号。`createSession()` 拒绝已有进程组组长，成功后令 SID 和 PGID 都等于自身编号，并解除终端关联。已存在的认证会话标识随新会话调整。
+
+`terminalForeground(kind, index)` 和 `setTerminalForeground(kind, index, group)` 保存终端前台进程组，不管理窗口或像素尺寸。kind 区分 console 终端和 PTY；具体输入输出与作业控制策略由对应用户态服务处理。
+
+`sendSignalToTask` 和 `sendSignalToTaskGroup` 根据实际调用者身份校验发送权限；signal 为 0 时只检查目标存在性。向组投递时分批取得 TaskReference，在释放全局表锁后逐个投递，避免持全局锁进入可能阻塞或退出的路径。

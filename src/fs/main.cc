@@ -2,41 +2,59 @@
 #include <fcntl.h>
 #include <new>
 
-#include <os/task.h>
 #include "service/common/kernel-requests.h"
 #include "service/common/queries.h"
 #include "service/common/records.h"
 #include "service/common/requests.h"
 #include "service/common/runtime.h"
 #include "service/fs/server.h"
+#include <os/task.h>
 
 namespace vfs::server {
 
 bool FsServer::handle(const os::IpcMessage& original, os::IpcMessage& reply) {
     os::IpcMessage request = original;
     const auto operation   = static_cast<os::FsRequest>(request.type);
-    if (operation == os::FsRequest::Fchmod || operation == os::FsRequest::Fchown || operation == os::FsRequest::Ftimes) {
+    if (operation == os::FsRequest::Fchmod ||
+        operation == os::FsRequest::Fchown ||
+        operation == os::FsRequest::Ftimes) {
         reply.length = 1;
-        if (request.length != 3 || (operation == os::FsRequest::Fchmod && request.data[1] > 07777) ||
-            (operation == os::FsRequest::Fchown && (request.data[1] >= 65535 || request.data[2] >= 65535)) ||
-            (operation == os::FsRequest::Ftimes && (request.data[1] > UINT32_MAX || request.data[2] > UINT32_MAX))) {
-            reply.data[0] = static_cast<int64_t>(os::ErrorCode::InvalidArgument); return true;
+        if (request.length != 3 ||
+            (operation == os::FsRequest::Fchmod && request.data[1] > 07777) ||
+            (operation == os::FsRequest::Fchown &&
+             (request.data[1] >= 65535 || request.data[2] >= 65535)) ||
+            (operation == os::FsRequest::Ftimes &&
+             (request.data[1] > UINT32_MAX || request.data[2] > UINT32_MAX))) {
+            reply.data[0] =
+                static_cast<int64_t>(os::ErrorCode::InvalidArgument);
+            return true;
         }
         os::IpcMessage pathRequest{};
-        pathRequest.senderPid = request.senderPid; pathRequest.senderTid = request.senderTid;
+        pathRequest.senderPid = request.senderPid;
+        pathRequest.senderTid = request.senderTid;
         {
             std::lock_guard<std::mutex> guard(descriptorLock_);
-            auto* entry = getDescriptorRecord(request.senderPid, request.data[0]);
-            if (!entry || !entry->description || entry->description->backend != DescriptorBackend::Filesystem) {
-                reply.data[0] = static_cast<int64_t>(os::ErrorCode::InvalidHandle); return true;
+            auto* entry =
+                getDescriptorRecord(request.senderPid, request.data[0]);
+            if (!entry || !entry->description ||
+                entry->description->backend != DescriptorBackend::Filesystem) {
+                reply.data[0] =
+                    static_cast<int64_t>(os::ErrorCode::InvalidHandle);
+                return true;
             }
-            os::Runtime::copyString(reinterpret_cast<char*>(pathRequest.data), entry->description->path, 384);
+            os::Runtime::copyString(reinterpret_cast<char*>(pathRequest.data),
+                                    entry->description->path, 384);
         }
-        pathRequest.type = static_cast<uint64_t>(operation == os::FsRequest::Fchmod ? os::FsRequest::ChangeMode : operation == os::FsRequest::Fchown ? os::FsRequest::ChangeOwner : os::FsRequest::ChangeTimes);
-        pathRequest.length = operation == os::FsRequest::Fchmod ? 49 : 50;
-        pathRequest.data[48] = request.data[1]; pathRequest.data[49] = request.data[2];
-        const bool handled = handle(pathRequest, reply);
-        if (reply.data[0] == 1) reply.data[0] = static_cast<int64_t>(os::ErrorCode::IoError);
+        pathRequest.type = static_cast<uint64_t>(
+            operation == os::FsRequest::Fchmod   ? os::FsRequest::ChangeMode
+            : operation == os::FsRequest::Fchown ? os::FsRequest::ChangeOwner
+                                                 : os::FsRequest::ChangeTimes);
+        pathRequest.length   = operation == os::FsRequest::Fchmod ? 49 : 50;
+        pathRequest.data[48] = request.data[1];
+        pathRequest.data[49] = request.data[2];
+        const bool handled   = handle(pathRequest, reply);
+        if (reply.data[0] == 1)
+            reply.data[0] = static_cast<int64_t>(os::ErrorCode::IoError);
         return handled;
     }
     switch (operation) {
@@ -474,8 +492,7 @@ class FsApplication {
             const auto now = os::Sys().readMonotonicTime();
             if (maintenance && now >= nextMaintenance) {
                 fsServer.reapDescriptors();
-                nextMaintenance =
-                    os::Sys().readMonotonicTime() + 1000000000ULL;
+                nextMaintenance = os::Sys().readMonotonicTime() + 1000000000ULL;
             }
             os::IpcMessage request{};
             if (os::receiveMessage(fsEndpoint, request,
@@ -495,18 +512,17 @@ class FsApplication {
         const uint64_t registry = os::getBootstrapHandle();
         fsEndpoint              = os::detail::EndpointControl().create();
         if (registry == 0 || fsEndpoint == 0 ||
-            !os::detail::RegistryClient(registry).registerName(os::fsServiceName,
-                                                        fsEndpoint)) {
+            !os::detail::RegistryClient(registry).registerName(
+                os::fsServiceName, fsEndpoint)) {
             os::Sys().log("[FS] registration failed\n");
             return 1;
         }
-        const uint64_t storage =
-            os::detail::RegistryClient(registry).lookup(os::storageServiceName, 5000);
-        const uint64_t device =
-            os::detail::RegistryClient(registry).lookup(os::deviceServiceName, 5000);
+        const uint64_t storage = os::detail::RegistryClient(registry).lookup(
+            os::storageServiceName, 5000);
+        const uint64_t device = os::detail::RegistryClient(registry).lookup(
+            os::deviceServiceName, 5000);
         if (!fsServer.init(storage, device)) {
-            os::Sys().log(
-                "[FS] fstab filesystem initialization failed\n");
+            os::Sys().log("[FS] fstab filesystem initialization failed\n");
             return 2;
         }
         if (os::mapMemory(workerStackAddress,
@@ -519,14 +535,12 @@ class FsApplication {
             const uint64_t stackTop =
                 workerStackAddress + workerStackSize * (index + 1);
             if (os::createThread(runFsWorker, stackTop, this) == 0) {
-                os::Sys().log(
-                    "[FS] unable to start request worker\n");
+                os::Sys().log("[FS] unable to start request worker\n");
                 return 4;
             }
         }
         os::Sys().log("[FS] storage IPC probe complete\n");
-        os::Sys().log(
-            "[FS] mounted filesystems configured in /etc/fstab\n");
+        os::Sys().log("[FS] mounted filesystems configured in /etc/fstab\n");
         workerLoop(true);
     }
 };

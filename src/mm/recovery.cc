@@ -49,8 +49,11 @@ bool Recovery::lookup(const os::IpcMessage& request, uint64_t id,
             if (outcome.handle) {
                 const uint32_t rights = outcome.rights ? outcome.rights : 7;
                 os::Ipc::Handle handleOwner;
-    const int handleStatus = os::Ipc::Handle(outcome.handle, false).duplicate(rights, 0, handleOwner);
-    const int64_t handle = handleStatus ? handleStatus : static_cast<int64_t>(handleOwner.release());
+                const int handleStatus = os::Ipc::Handle(outcome.handle, false)
+                                             .duplicate(rights, 0, handleOwner);
+                const int64_t handle =
+                    handleStatus ? handleStatus
+                                 : static_cast<int64_t>(handleOwner.release());
                 if (handle <= 0) {
                     reply.data[0] = static_cast<uint64_t>(-5LL);
                     return true;
@@ -86,8 +89,12 @@ bool Recovery::remember(const os::IpcMessage& request, uint64_t id,
         if (!reply.handleRights[0] || (reply.handleRights[0] & ~7U))
             return false;
         os::Ipc::Handle duplicateOwner;
-    const int duplicateStatus = os::Ipc::Handle(reply.handles[0], false).duplicate(reply.handleRights[0], 0, duplicateOwner);
-    const int64_t duplicate = duplicateStatus ? duplicateStatus : static_cast<int64_t>(duplicateOwner.release());
+        const int duplicateStatus =
+            os::Ipc::Handle(reply.handles[0], false)
+                .duplicate(reply.handleRights[0], 0, duplicateOwner);
+        const int64_t duplicate =
+            duplicateStatus ? duplicateStatus
+                            : static_cast<int64_t>(duplicateOwner.release());
         if (duplicate <= 0) return false;
         handle = duplicate;
     }
@@ -254,8 +261,9 @@ bool Recovery::activate() {
     }
 }
 bool Recovery::collectFileLeases() {
-    const auto fs = os::detail::RegistryClient(os::detail::RegistryClient().endpoint())
-                        .lookup(os::fsServiceName, 1000);
+    const auto fs =
+        os::detail::RegistryClient(os::detail::RegistryClient().endpoint())
+            .lookup(os::fsServiceName, 1000);
     if (!fs) return false;
     bool ok         = true;
     uint64_t cursor = 0;
@@ -309,9 +317,9 @@ bool Recovery::open(uint64_t& endpoint) {
                     if (!backing.handle) return false;
                 }
                 if (backing.lease) {
-                    backing.fs =
-                        os::detail::RegistryClient(os::detail::RegistryClient().endpoint())
-                            .lookup(os::fsServiceName, 1000);
+                    backing.fs = os::detail::RegistryClient(
+                                     os::detail::RegistryClient().endpoint())
+                                     .lookup(os::fsServiceName, 1000);
                     if (!backing.fs) return false;
                 }
             }
@@ -334,9 +342,8 @@ bool Recovery::open(uint64_t& endpoint) {
         !capabilities_.discardOrphans() || !collectFileLeases())
         return false;
     endpoint = endpoint_;
-    os::Sys().log(restored
-                                ? "[MM] VMA and backing checkpoint restored\n"
-                                : "[MM] recovery domain initialized\n");
+    os::Sys().log(restored ? "[MM] VMA and backing checkpoint restored\n"
+                           : "[MM] recovery domain initialized\n");
     return true;
 }
 }  // namespace mm

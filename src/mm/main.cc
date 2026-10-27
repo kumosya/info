@@ -1,13 +1,13 @@
-#include <os/file.h>
-#include <os/ipc.h>
-#include <os/service.h>
-#include <os/task.h>
 #include "service/common/kernel-requests.h"
 #include "service/common/queries.h"
 #include "service/common/records.h"
 #include "service/common/requests.h"
 #include "service/common/runtime.h"
 #include "service/mm/mm.h"
+#include <os/file.h>
+#include <os/ipc.h>
+#include <os/service.h>
+#include <os/task.h>
 
 namespace mm {
 class MemoryManager {
@@ -16,11 +16,11 @@ class MemoryManager {
         const auto registry = os::getBootstrapHandle();
         if (!registry || !recovery_.open(endpoint_) ||
             KernelMemory::bindPager(endpoint_) ||
-            !os::detail::RegistryClient(registry).registerName("mm", endpoint_) ||
+            !os::detail::RegistryClient(registry).registerName("mm",
+                                                               endpoint_) ||
             !recovery_.activate())
             return 1;
-        os::Sys().log(
-            "[MM] Ring 3 memory policy and pager service ready\n");
+        os::Sys().log("[MM] Ring 3 memory policy and pager service ready\n");
         uint64_t nextSweep = 0;
         bool dirty         = false;
         while (true) {
@@ -51,8 +51,7 @@ class MemoryManager {
                     reply.data[0] =
                         static_cast<uint64_t>(os::ErrorCode::PeerDied);
                 else if (!recovery_.prepare(request, id)) {
-                    os::Sys().log(
-                        "[MM] checkpoint preparation failed\n");
+                    os::Sys().log("[MM] checkpoint preparation failed\n");
                     if (!recovery_.activate()) return 2;
                     reply.data[0] =
                         static_cast<uint64_t>(os::ErrorCode::OutOfMemory);
@@ -181,8 +180,10 @@ class MemoryManager {
         if (!size || (size & 4095) || size > 32ULL * 1024 * 1024 ||
             args[1] > 7 || (args[1] & 6) == 6 || (args[2] & ~7ULL))
             return -1;
+
         Backing* backing = state_.createBacking(kind);
-        if (!backing) return -5;
+        if (!backing)
+            return -5;
         Region region{};
         region.task              = request.senderPid;
         region.size              = size;
@@ -207,9 +208,9 @@ class MemoryManager {
             }
             // Only the protected FS service can validate and redeem a
             // delegation.
-            const uint64_t fs =
-                os::detail::RegistryClient(os::detail::RegistryClient().endpoint())
-                    .lookup(os::fsServiceName, 1);
+            const uint64_t fs = os::detail::RegistryClient(
+                                    os::detail::RegistryClient().endpoint())
+                                    .lookup(os::fsServiceName, 1);
             os::IpcMessage claim{}, reply{};
             claim.type    = static_cast<uint64_t>(os::FsRequest::ClaimMapping);
             claim.length  = 2;
@@ -243,8 +244,7 @@ class MemoryManager {
             region.address = 0;
         }
         if (!region.address || !state_.regions.insert(region)) {
-            os::Sys().log(
-                "[MM] virtual address reservation failed\n");
+            os::Sys().log("[MM] virtual address reservation failed\n");
             state_.collectBackings();
             return -5;
         }

@@ -1,13 +1,12 @@
-#include <os/device.h>
-
-#include <os/ipc.h>
-#include <os/service.h>
 #include "service/common/channel.h"
 #include "service/common/kernel-requests.h"
 #include "service/common/queries.h"
 #include "service/common/records.h"
 #include "service/common/requests.h"
 #include "service/common/runtime.h"
+#include <os/device.h>
+#include <os/ipc.h>
+#include <os/service.h>
 namespace os {
 namespace {
 class PciConnection {

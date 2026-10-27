@@ -23,7 +23,9 @@ class Filesystem final : public vfs::FileSystem {
     bool lookup(const char* path, FileStatus& status) override;
     bool statInode(uint32_t inode, FileStatus& status) override;
     bool retainOpenFile(uint32_t inode) override { return retainInode(inode); }
-    bool releaseOpenFile(uint32_t inode) override { return releaseInode(inode); }
+    bool releaseOpenFile(uint32_t inode) override {
+        return releaseInode(inode);
+    }
     int64_t read(const FileStatus& status, uint64_t offset, void* buffer,
                  size_t size) override;
     int64_t write(const FileStatus& status, uint64_t offset, const void* buffer,
@@ -33,7 +35,8 @@ class Filesystem final : public vfs::FileSystem {
     bool remove(const char* path) override;
     bool rename(const char* existing, const char* newPath) override;
     bool changeOwner(const char* path, uint16_t uid, uint16_t gid) override;
-    bool changeTimes(const char* path, uint32_t accessTime, uint32_t modificationTime) override;
+    bool changeTimes(const char* path, uint32_t accessTime,
+                     uint32_t modificationTime) override;
     bool changeMode(const char* path, uint16_t mode) override;
     int64_t read(uint32_t inode, uint64_t offset, void* buffer, size_t size);
     int readDirectory(const char* path, uint32_t index,
@@ -93,7 +96,7 @@ class Filesystem final : public vfs::FileSystem {
 
 namespace vfs::ext4 {
 class Probe {
- public:
+   public:
     bool detect(const uint8_t* data, size_t size);
 };
-}
+}  // namespace vfs::ext4

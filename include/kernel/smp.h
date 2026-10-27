@@ -4,9 +4,10 @@
 
 #include "kernel/atomic.h"
 
-namespace kernel {
+class BootInfo;
 
-struct BootInfo;
+namespace kernel::cpu {
+
 class CpuLocalData;
 
 enum class CpuState : uint8_t { Offline, Starting, Online, Stopping, Failed };
@@ -31,10 +32,10 @@ class CpuDescriptor {
         enabled = value;
         return enabled;
     }
-    Atomic<CpuState>& getState() { return state; }
-    const Atomic<CpuState>& getState() const { return state; }
-    Atomic<uint32_t>& getStartupStage() { return startupStage; }
-    const Atomic<uint32_t>& getStartupStage() const { return startupStage; }
+    ::Atomic<CpuState>& getState() { return state; }
+    const ::Atomic<CpuState>& getState() const { return state; }
+    ::Atomic<uint32_t>& getStartupStage() { return startupStage; }
+    const ::Atomic<uint32_t>& getStartupStage() const { return startupStage; }
     CpuLocalData* getLocalData() const { return localData; }
     CpuLocalData* setLocalData(CpuLocalData* value) {
         localData = value;
@@ -46,26 +47,23 @@ class CpuDescriptor {
     uint32_t taskorId;
     uint32_t apicId;
     bool enabled;
-    Atomic<CpuState> state;
-    Atomic<uint32_t> startupStage;
+    ::Atomic<CpuState> state;
+    ::Atomic<uint32_t> startupStage;
     CpuLocalData* localData;
 };
 
 constexpr uint8_t rescheduleIpiVector   = 0xf0;
 constexpr uint8_t tlbShootdownIpiVector = 0xf1;
 
-namespace smp {
-    void initSmp(const BootInfo* bootInfo);
-    void startApplicationTaskors();
-    uint32_t getDiscoveredCpuCount();
-    uint32_t getOnlineCpuCount();
-    CpuDescriptor* getCpuDescriptor(uint32_t cpuId);
-    CpuLocalData* getCpuLocalData(uint32_t cpuId);
-    void requestRemoteReschedule(uint32_t cpuId);
-    void requestTlbShootdown(uint64_t virtualAddress);
+void initSmp(const ::BootInfo* bootInfo);
+void startApplicationTaskors();
+uint32_t getDiscoveredCpuCount();
+uint32_t getOnlineCpuCount();
+CpuDescriptor* getCpuDescriptor(uint32_t cpuId);
+CpuLocalData* getCpuLocalData(uint32_t cpuId);
+void requestRemoteReschedule(uint32_t cpuId);
+void requestTlbShootdown(uint64_t virtualAddress);
 
-    extern "C" [[noreturn]] void applicationTaskorEntry(CpuLocalData* cpu);
+extern "C" [[noreturn]] void applicationTaskorEntry(CpuLocalData* cpu);
 
-}  // namespace smp
-
-}  // namespace kernel
+}  // namespace kernel::cpu

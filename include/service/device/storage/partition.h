@@ -58,7 +58,7 @@ class PartitionTable {
                 partitionBlocks <= driver.blockCount() - start) {
                 if (count >= capacity) return false;
                 os::Storage::Part& output = partitions[count++];
-                output                = {};
+                output                    = {};
                 char partitionUuid[40]{};
                 output.setStartBlock(start);
                 output.setBlockCount(partitionBlocks);
@@ -133,7 +133,7 @@ class PartitionTable {
                 }
                 if (count >= capacity) return false;
                 os::Storage::Part& output = partitions[count++];
-                output                = {};
+                output                    = {};
                 char partitionUuid[40]{};
                 output.setStartBlock(start);
                 output.setBlockCount(end - start + 1);

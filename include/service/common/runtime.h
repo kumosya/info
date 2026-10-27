@@ -64,5 +64,4 @@ uint64_t getStandardHandle(uint32_t index);
 uint64_t getBootstrapHandle();
 bool closeHandle(uint64_t handle);
 
-
-}
+}  // namespace os

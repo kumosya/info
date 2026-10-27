@@ -1,12 +1,12 @@
 #ifndef _POSIX_MQUEUE_H
 #define _POSIX_MQUEUE_H
 
-
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <sys/types.h>
 #include <time.h>
+
+#include <sys/types.h>
 
 typedef uint64_t mqd_t;
 
@@ -31,8 +31,7 @@ int mq_send(mqd_t descriptor, const char* message, size_t length,
 ssize_t mq_receive(mqd_t descriptor, char* message, size_t length,
                    unsigned int* priority);
 int mq_timedsend(mqd_t descriptor, const char* message, size_t length,
-                 unsigned int priority,
-                 const struct timespec* absolute_time);
+                 unsigned int priority, const struct timespec* absolute_time);
 ssize_t mq_timedreceive(mqd_t descriptor, char* message, size_t length,
                         unsigned int* priority,
                         const struct timespec* absolute_time);

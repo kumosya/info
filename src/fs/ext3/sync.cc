@@ -1,10 +1,10 @@
 #include "service/fs/ext3/filesystem.h"
 #include "service/fs/ext3/internal.h"
-#include <os/ipc.h>
-#include <os/task.h>
-#include <os/mm.h>
 #include <os/device.h>
+#include <os/ipc.h>
+#include <os/mm.h>
 #include <os/service.h>
+#include <os/task.h>
 
 namespace fs::ext3 {
 

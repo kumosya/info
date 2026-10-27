@@ -1,18 +1,17 @@
-#include <os/mm.h>
-#include <os/service.h>
 #include "service/common/channel.h"
 #include "service/common/kernel-requests.h"
 #include "service/common/queries.h"
 #include "service/common/requests.h"
 #include "service/common/runtime.h"
+#include <os/mm.h>
+#include <os/service.h>
 
 namespace os {
 namespace {
-constexpr uint64_t magic           = 0x5356435354415445ULL,
-                                  maximumBytes    = 4ULL * 1024 * 1024;
-constexpr uint64_t logSchema       = 0x4c4f475245434f52ULL;
-constexpr uint64_t stagingAddress  = 0x6a000000,
-                                  snapshotAddress = 0x6b000000;
+constexpr uint64_t magic          = 0x5356435354415445ULL,
+                   maximumBytes   = 4ULL * 1024 * 1024;
+constexpr uint64_t logSchema      = 0x4c4f475245434f52ULL;
+constexpr uint64_t stagingAddress = 0x6a000000, snapshotAddress = 0x6b000000;
 
 struct Header {
     uint64_t magic, schema, size, checksum;

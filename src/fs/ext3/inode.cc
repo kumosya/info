@@ -1,10 +1,10 @@
 #include "service/fs/ext3/filesystem.h"
 #include "service/fs/ext3/internal.h"
-#include <os/ipc.h>
-#include <os/task.h>
-#include <os/mm.h>
 #include <os/device.h>
+#include <os/ipc.h>
+#include <os/mm.h>
 #include <os/service.h>
+#include <os/task.h>
 
 namespace fs::ext3 {
 
@@ -74,8 +74,7 @@ uint32_t Filesystem::getDataBlock(const Inode& inode, uint32_t logical) {
                    : 0;
     }
     logical -= pointers;
-    const uint64_t doubleCapacity =
-        static_cast<uint64_t>(pointers) * pointers;
+    const uint64_t doubleCapacity = static_cast<uint64_t>(pointers) * pointers;
     if (logical < doubleCapacity) {
         if (inode.blocks[doublyIndirectIndex] == 0) return 0;
         uint32_t indirect = 0;
@@ -91,15 +90,14 @@ uint32_t Filesystem::getDataBlock(const Inode& inode, uint32_t logical) {
         inode.blocks[triplyIndirectIndex] == 0) {
         return 0;
     }
-    uint32_t first = 0;
+    uint32_t first  = 0;
     uint32_t second = 0;
     return readPointer(inode.blocks[triplyIndirectIndex],
                        logical / doubleCapacity, first) &&
                    first != 0 &&
                    readPointer(first, (logical / pointers) % pointers,
                                second) &&
-                   second != 0 &&
-                   readPointer(second, logical % pointers, value)
+                   second != 0 && readPointer(second, logical % pointers, value)
                ? value
                : 0;
 }
@@ -142,8 +140,7 @@ uint32_t Filesystem::ensureDataBlock(Inode& inode, uint32_t logical) {
         return allocated;
     }
     logical -= pointers;
-    const uint64_t doubleCapacity =
-        static_cast<uint64_t>(pointers) * pointers;
+    const uint64_t doubleCapacity = static_cast<uint64_t>(pointers) * pointers;
     if (logical < doubleCapacity) {
         if (inode.blocks[doublyIndirectIndex] == 0) {
             inode.blocks[doublyIndirectIndex] = allocateBlock(preferredGroup);
@@ -153,7 +150,7 @@ uint32_t Filesystem::ensureDataBlock(Inode& inode, uint32_t logical) {
             }
             inode.sectorsCount += blockSize_ / sectorSize;
         }
-        uint32_t indirect = 0;
+        uint32_t indirect    = 0;
         const uint32_t first = logical / pointers;
         if (!readPointer(inode.blocks[doublyIndirectIndex], first, indirect)) {
             freeBlock(allocated);
@@ -190,9 +187,8 @@ uint32_t Filesystem::ensureDataBlock(Inode& inode, uint32_t logical) {
         }
         inode.sectorsCount += blockSize_ / sectorSize;
     }
-    uint32_t firstBlock = 0;
-    const uint32_t firstIndex =
-        static_cast<uint32_t>(logical / doubleCapacity);
+    uint32_t firstBlock       = 0;
+    const uint32_t firstIndex = static_cast<uint32_t>(logical / doubleCapacity);
     if (!readPointer(inode.blocks[triplyIndirectIndex], firstIndex,
                      firstBlock)) {
         freeBlock(allocated);
@@ -200,16 +196,15 @@ uint32_t Filesystem::ensureDataBlock(Inode& inode, uint32_t logical) {
     }
     if (firstBlock == 0) {
         firstBlock = allocateBlock(preferredGroup);
-        if (firstBlock == 0 ||
-            !writePointer(inode.blocks[triplyIndirectIndex], firstIndex,
-                          firstBlock)) {
+        if (firstBlock == 0 || !writePointer(inode.blocks[triplyIndirectIndex],
+                                             firstIndex, firstBlock)) {
             if (firstBlock != 0) freeBlock(firstBlock);
             freeBlock(allocated);
             return 0;
         }
         inode.sectorsCount += blockSize_ / sectorSize;
     }
-    uint32_t secondBlock = 0;
+    uint32_t secondBlock       = 0;
     const uint32_t secondIndex = (logical / pointers) % pointers;
     if (!readPointer(firstBlock, secondIndex, secondBlock)) {
         freeBlock(allocated);
@@ -253,11 +248,12 @@ bool Filesystem::clearInodeBlocks(Inode& inode) {
         freeBlock(inode.blocks[doublyIndirectIndex]);
     }
     if (inode.blocks[triplyIndirectIndex] != 0) {
-        uint32_t first = 0;
+        uint32_t first  = 0;
         uint32_t second = 0;
         for (uint32_t firstIndex = 0; firstIndex < pointers; ++firstIndex) {
             if (!readPointer(inode.blocks[triplyIndirectIndex], firstIndex,
-                             first) || first == 0) {
+                             first) ||
+                first == 0) {
                 continue;
             }
             for (uint32_t secondIndex = 0; secondIndex < pointers;

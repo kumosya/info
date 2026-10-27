@@ -1,10 +1,12 @@
 #include "kernel/cpu.h"
 
 #include <cstddef>
+#include <new>
 
+#include "kernel/device.h"
 #include "kernel/mm.h"
-#include "kernel/new.h"
-#include "kernel/serial.h"
+
+namespace kernel::cpu {
 
 namespace {
 
@@ -15,9 +17,9 @@ constexpr uint64_t directMapBase    = 0xffff800000000000ULL;
 constexpr uint64_t stackSize        = 16 * 1024;
 constexpr uint64_t startupStackSize = 32 * 1024;
 
-kernel::CpuFeatures cpuFeatures{};
-kernel::CpuLocalData bootstrapCpu{};
-kernel::CpuArchData bootstraparch{};
+CpuFeatures cpuFeatures{};
+CpuLocalData bootstrapCpu{};
+CpuArchData bootstraparch{};
 volatile uint32_t* localApic;
 
 void clearMemory(void* address, uint64_t size) {
@@ -39,20 +41,19 @@ uint64_t createSegmentDescriptor(uint8_t access, uint8_t flags) {
            (static_cast<uint64_t>(flags & 0x0f) << 52);
 }
 
-void installTssDescriptor(kernel::CpuArchData* arch, uint64_t base,
-                          uint32_t limit) {
+void installTssDescriptor(CpuArchData* arch, uint64_t base, uint32_t limit) {
     uint64_t low = limit & 0xffff;
     low |= (base & 0xffffff) << 16;
     low |= static_cast<uint64_t>(0x89) << 40;
     low |= static_cast<uint64_t>((limit >> 16) & 0x0f) << 48;
     low |= static_cast<uint64_t>((base >> 24) & 0xff) << 56;
-    arch->gdt[5] = low;
-    arch->gdt[6] = base >> 32;
+    arch->getGdt()[5] = low;
+    arch->getGdt()[6] = base >> 32;
 }
 
-void loadGdt(kernel::CpuArchData* arch) {
-    const kernel::DescriptorTablePointer pointer{
-        sizeof(arch->gdt) - 1, reinterpret_cast<uint64_t>(arch->gdt)};
+void loadGdt(CpuArchData* arch) {
+    const DescriptorTablePointer pointer{
+        7 * sizeof(uint64_t) - 1, reinterpret_cast<uint64_t>(arch->getGdt())};
     asm volatile("lgdt %0" : : "m"(pointer));
     asm volatile(
         "pushq $0x08\n"
@@ -72,7 +73,7 @@ void loadGdt(kernel::CpuArchData* arch) {
 }
 
 void* allocateStack(uint64_t size = stackSize) {
-    uint8_t* stack = static_cast<uint8_t*>(kernel::heap::kernelAllocate(size));
+    uint8_t* stack = static_cast<uint8_t*>(kernel::mm::allocateHeap(size));
     return stack == nullptr ? nullptr : stack + size;
 }
 
@@ -98,7 +99,7 @@ void writeIcr(uint32_t apicId, uint32_t command) {
 
 }  // namespace
 
-void kernel::CpuFeatures::detect() {
+void CpuFeatures::detect() {
     uint32_t eax;
     uint32_t ebx;
     uint32_t ecx;
@@ -125,44 +126,42 @@ void kernel::CpuFeatures::detect() {
     }
 }
 
-void kernel::CpuLocalData::initDescriptorTables(kernel::CpuArchData* arch) {
-    clearMemory(arch, sizeof(kernel::CpuArchData));
-    arch->gdt[0] = 0;
-    arch->gdt[1] = createSegmentDescriptor(0x9a, 0x0a);
-    arch->gdt[2] = createSegmentDescriptor(0x92, 0x0c);
-    arch->gdt[3] = createSegmentDescriptor(0xf2, 0x0c);
-    arch->gdt[4] = createSegmentDescriptor(0xfa, 0x0a);
+void CpuLocalData::initDescriptorTables(CpuArchData* arch) {
+    clearMemory(arch, sizeof(CpuArchData));
+    arch->getGdt()[0] = 0;
+    arch->getGdt()[1] = createSegmentDescriptor(0x9a, 0x0a);
+    arch->getGdt()[2] = createSegmentDescriptor(0x92, 0x0c);
+    arch->getGdt()[3] = createSegmentDescriptor(0xf2, 0x0c);
+    arch->getGdt()[4] = createSegmentDescriptor(0xfa, 0x0a);
 
-    arch->tss.ioMapBase = sizeof(kernel::TssTable);
-    arch->tss.rsp0      = reinterpret_cast<uint64_t>(kernelStack);
-    arch->tss.ist1      = reinterpret_cast<uint64_t>(allocateStack());
-    arch->tss.ist2      = reinterpret_cast<uint64_t>(allocateStack());
-    arch->tss.ist3      = reinterpret_cast<uint64_t>(allocateStack());
-    if (arch->tss.rsp0 == 0 || arch->tss.ist1 == 0 || arch->tss.ist2 == 0 ||
-        arch->tss.ist3 == 0) {
-        kernel::serial::serialWrite("[CPU] unable to allocate TSS stacks\n");
-        kernel::cpu::halt();
+    arch->getTss().ioMapBase = sizeof(TssTable);
+    arch->getTss().rsp0      = reinterpret_cast<uint64_t>(kernelStack);
+    arch->getTss().ist1      = reinterpret_cast<uint64_t>(allocateStack());
+    arch->getTss().ist2      = reinterpret_cast<uint64_t>(allocateStack());
+    arch->getTss().ist3      = reinterpret_cast<uint64_t>(allocateStack());
+    if (arch->getTss().rsp0 == 0 || arch->getTss().ist1 == 0 ||
+        arch->getTss().ist2 == 0 || arch->getTss().ist3 == 0) {
+        kernel::device::serialWrite("[CPU] unable to allocate TSS stacks\n");
+        halt();
     }
-    installTssDescriptor(arch, reinterpret_cast<uint64_t>(&arch->tss),
-                         sizeof(kernel::TssTable) - 1);
-    tss      = &arch->tss;
+    installTssDescriptor(arch, reinterpret_cast<uint64_t>(&arch->getTss()),
+                         sizeof(TssTable) - 1);
+    tss      = &arch->getTss();
     archData = arch;
     loadGdt(arch);
 }
 
-namespace kernel {
-
 CpuLocalData* CpuLocalData::prepare(uint32_t cpuId, uint32_t apicId) {
     CpuLocalData* cpu = static_cast<CpuLocalData*>(
-        kernel::heap::kernelAllocate(sizeof(CpuLocalData)));
-    kernel::CpuArchData* arch = static_cast<kernel::CpuArchData*>(
-        kernel::heap::kernelAllocate(sizeof(kernel::CpuArchData)));
+        kernel::mm::allocateHeap(sizeof(CpuLocalData)));
+    CpuArchData* arch = static_cast<CpuArchData*>(
+        kernel::mm::allocateHeap(sizeof(CpuArchData)));
     void* stackTop = allocateStack(startupStackSize);
     if (cpu == nullptr || arch == nullptr || stackTop == nullptr) {
         return nullptr;
     }
     new (cpu) CpuLocalData{};
-    clearMemory(arch, sizeof(kernel::CpuArchData));
+    clearMemory(arch, sizeof(CpuArchData));
     cpu->setCpuId(cpuId);
     cpu->setApicId(apicId);
     cpu->setKernelStack(stackTop);
@@ -176,17 +175,15 @@ void CpuLocalData::initApplicationTaskorCpu() {
     }
     cpu::writeMsr(ia32GsBase, reinterpret_cast<uint64_t>(this));
     cpu::writeMsr(ia32KernelGsBase, 0);
-    initDescriptorTables(static_cast<kernel::CpuArchData*>(archData));
-    localapic::init();
+    initDescriptorTables(static_cast<CpuArchData*>(archData));
+    cpu::initLocalApic();
 }
 
-void kernel::CpuLocalData::setKernelStack(void* stackTop) {
+void CpuLocalData::setKernelStack(void* stackTop) {
     // CpuLocalData* cpu = cpu::getCurrent();
     kernelStack = stackTop;
     if (tss != nullptr) tss->rsp0 = reinterpret_cast<uint64_t>(stackTop);
 }
-
-namespace cpu {
 
 uint64_t readMsr(uint32_t msr) {
     uint32_t low;
@@ -207,7 +204,7 @@ void init() {
     if (!cpuFeatures.hasLongMode() || !cpuFeatures.hasNoExecute() ||
         !cpuFeatures.hasSse() || !cpuFeatures.hasSse2() ||
         !cpuFeatures.hasApic()) {
-        serial::serialWrite("[CPU] required CPU feature missing\n");
+        device::serialWrite("[CPU] required CPU feature missing\n");
         halt();
     }
 
@@ -216,8 +213,8 @@ void init() {
     bootstrapCpu.initDescriptorTables(&bootstraparch);
     cpu::writeMsr(ia32GsBase, reinterpret_cast<uint64_t>(&bootstrapCpu));
     cpu::writeMsr(ia32KernelGsBase, 0);
-    localapic::init();
-    serial::serialWrite("[CPU] GDT, TSS and per-CPU data initialized\n");
+    cpu::initLocalApic();
+    device::serialWrite("[CPU] GDT, TSS and per-CPU data initialized\n");
 }
 
 const CpuFeatures& getCpuFeatures() { return cpuFeatures; }
@@ -230,18 +227,15 @@ CpuLocalData* getCurrent() {
 
 uint32_t getCurrentId() { return cpu::getCurrent()->getCpuId(); }
 
-void disablePreemption() { cpu::getCurrent()->addPreemptionCount(1); }
-
-void enablePreemption() {
-    CpuLocalData* cpu = cpu::getCurrent();
-    if (cpu->getPreemptionCount() != 0) {
-        cpu->addPreemptionCount(-1);
-    }
+void CpuLocalData::disablePreemption() { ++preemptionCount; }
+void CpuLocalData::enablePreemption() {
+    if (preemptionCount) --preemptionCount;
 }
-
-bool isPreemptionEnabled() {
-    return cpu::getCurrent()->getPreemptionCount() == 0;
-}
+bool CpuLocalData::isPreemptionEnabled() const { return preemptionCount == 0; }
+PreemptionGuard::PreemptionGuard() : PreemptionGuard(*getCurrent()) {}
+void disablePreemption() { getCurrent()->disablePreemption(); }
+void enablePreemption() { getCurrent()->enablePreemption(); }
+bool isPreemptionEnabled() { return getCurrent()->isPreemptionEnabled(); }
 
 [[noreturn]] void halt() {
     while (true) {
@@ -249,11 +243,7 @@ bool isPreemptionEnabled() {
     }
 }
 
-}  // namespace cpu
-
-namespace localapic {
-
-void init() {
+void initLocalApic() {
     uint64_t apicBase = cpu::readMsr(ia32ApicBase);
     apicBase |= 1ULL << 11;
     cpu::writeMsr(ia32ApicBase, apicBase);
@@ -263,7 +253,7 @@ void init() {
         __atomic_store_n(&localApic, registers, __ATOMIC_RELEASE);
     }
     registers[0xf0 / 4] = 0x100 | 0xff;
-    serial::serialWrite("[CPU] Local APIC initialized\n");
+    device::serialWrite("[CPU] Local APIC initialized\n");
 }
 
 void initTimer(uint8_t vector, uint32_t initialCount) {
@@ -304,25 +294,20 @@ void sendStartupInterTaskorInterrupt(uint32_t apicId, uint8_t vector) {
     writeIcr(apicId, (6U << 8) | vector);
 }
 
-}  // namespace localapic
-
-namespace interrupt {
-
-uint64_t disable() {
+uint64_t disableInterrupts() {
     uint64_t flags;
     asm volatile("pushfq; popq %0; cli" : "=r"(flags) : : "memory");
     return flags;
 }
 
-void restore(uint64_t flags) {
+void restoreInterrupts(uint64_t flags) {
     if ((flags & (1ULL << 9)) != 0) {
         asm volatile("sti" : : : "memory");
     }
 }
 
-void enable() { asm volatile("sti" : : : "memory"); }
+void enableInterrupts() { asm volatile("sti" : : : "memory"); }
 
-}  // namespace interrupt
+static_assert(CpuLocalData::hasAssemblyLayout());
 
-}  // namespace kernel
-static_assert(kernel::CpuLocalData::hasAssemblyLayout());
+}  // namespace kernel::cpu

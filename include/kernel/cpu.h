@@ -7,15 +7,17 @@
 
 #include <cstdint>
 
-namespace kernel {
-
-class Thread;
+namespace kernel::task {
 class Task;
+class Thread;
 class RunQueue;
+}  // namespace kernel::task
+
+namespace kernel::cpu {
 
 class CpuFeatures {
    public:
-    CpuFeatures()
+    constexpr CpuFeatures()
         : longMode(false),
           noExecute(false),
           sse(false),
@@ -69,8 +71,13 @@ struct [[gnu::packed]] DescriptorTablePointer {
     uint64_t base;
 };
 
-struct CpuArchData {
-    kernel::TssTable tss;
+class CpuArchData {
+   public:
+    TssTable& getTss() { return tss; }
+    uint64_t* getGdt() { return gdt; }
+
+   private:
+    TssTable tss;
     alignas(16) uint64_t gdt[7];
 };
 
@@ -93,16 +100,21 @@ class CpuLocalData {
           archData(nullptr),
           preemptionCount(0) {}
     static CpuLocalData* prepare(uint32_t cpuId, uint32_t apicId);
+    void disablePreemption();
+    void enablePreemption();
+    bool isPreemptionEnabled() const;
     void initApplicationTaskorCpu();
     void initDescriptorTables(CpuArchData* arch);
 
     void setCpuId(uint32_t id) { cpuId = id; }
     void setApicId(uint32_t id) { apicId = id; }
     void setKernelStack(void* stackTop);
-    void setCurrentThread(Thread* thread) { __atomic_store_n(&currentThread, thread, __ATOMIC_RELEASE); }
-    void setCurrentTask(Task* task) { currentTask = task; }
-    void setRunQueue(RunQueue* queue) { runQueue = queue; }
-    void setIdleThread(Thread* thread) { idleThread = thread; }
+    void setCurrentThread(kernel::task::Thread* thread) {
+        __atomic_store_n(&currentThread, thread, __ATOMIC_RELEASE);
+    }
+    void setCurrentTask(kernel::task::Task* task) { currentTask = task; }
+    void setRunQueue(kernel::task::RunQueue* queue) { runQueue = queue; }
+    void setIdleThread(kernel::task::Thread* thread) { idleThread = thread; }
     void setRescheduleRequested(bool requested) {
         rescheduleRequested = requested;
     }
@@ -112,10 +124,12 @@ class CpuLocalData {
 
     uint32_t getCpuId() const { return cpuId; }
     uint32_t getApicId() const { return apicId; }
-    Thread* getCurrentThread() const { return __atomic_load_n(&currentThread, __ATOMIC_ACQUIRE); }
-    Task* getCurrentTask() const { return currentTask; }
-    RunQueue* getRunQueue() const { return runQueue; }
-    Thread* getIdleThread() const { return idleThread; }
+    kernel::task::Thread* getCurrentThread() const {
+        return __atomic_load_n(&currentThread, __ATOMIC_ACQUIRE);
+    }
+    kernel::task::Task* getCurrentTask() const { return currentTask; }
+    kernel::task::RunQueue* getRunQueue() const { return runQueue; }
+    kernel::task::Thread* getIdleThread() const { return idleThread; }
     void* getKernelStack() const { return kernelStack; }
     void* getIdt() const { return idt; }
     bool isRescheduleRequested() const { return rescheduleRequested; }
@@ -132,10 +146,10 @@ class CpuLocalData {
     CpuLocalData* self_;
     uint32_t cpuId;
     uint32_t apicId;
-    Thread* currentThread;
-    Task* currentTask;
-    RunQueue* runQueue;
-    Thread* idleThread;
+    kernel::task::Thread* currentThread;
+    kernel::task::Task* currentTask;
+    kernel::task::RunQueue* runQueue;
+    kernel::task::Thread* idleThread;
     void* kernelStack;
     TssTable* tss;
     void* idt;
@@ -146,7 +160,20 @@ class CpuLocalData {
     uint32_t preemptionCount;
 };
 
-namespace cpu {
+class PreemptionGuard {
+   public:
+    explicit PreemptionGuard(CpuLocalData& owner) : owner_(owner) {
+        owner_.disablePreemption();
+    }
+    PreemptionGuard();
+    ~PreemptionGuard() { owner_.enablePreemption(); }
+    PreemptionGuard(const PreemptionGuard&)            = delete;
+    PreemptionGuard& operator=(const PreemptionGuard&) = delete;
+
+   private:
+    CpuLocalData& owner_;
+};
+
 void init();
 
 const CpuFeatures& getCpuFeatures();
@@ -160,10 +187,8 @@ void disablePreemption();
 void enablePreemption();
 bool isPreemptionEnabled();
 [[noreturn]] void halt();
-}  // namespace cpu
 
-namespace localapic {
-void init();
+void initLocalApic();
 void initTimer(uint8_t vector, uint32_t initialCount);
 
 void sendEndOfInterrupt();
@@ -171,14 +196,11 @@ void stopOtherCpus();
 void sendInterTaskorInterrupt(uint32_t apicId, uint8_t vector);
 void sendInitInterTaskorInterrupt(uint32_t apicId);
 void sendStartupInterTaskorInterrupt(uint32_t apicId, uint8_t vector);
-}  // namespace localapic
 
-namespace interrupt {
-uint64_t disable();
-void restore(uint64_t flags);
-void enable();
-}  // namespace interrupt
+uint64_t disableInterrupts();
+void restoreInterrupts(uint64_t flags);
+void enableInterrupts();
 
-}  // namespace kernel
+}  // namespace kernel::cpu
 
 #endif  // __ASSEMBLER__

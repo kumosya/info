@@ -1,10 +1,9 @@
-#include <os/pty.h>
-
-#include <os/service.h>
 #include "service/common/queries.h"
 #include "service/common/requests.h"
 #include "service/common/runtime.h"
 #include "service/tty/records.h"
+#include <os/pty.h>
+#include <os/service.h>
 
 namespace os {
 Pty::Pty() = default;

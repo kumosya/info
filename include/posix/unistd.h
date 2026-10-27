@@ -1,9 +1,9 @@
 #ifndef _POSIX_UNISTD_H
 #define _POSIX_UNISTD_H
 
-
-#include <stddef.h>
 #include <fcntl.h>
+#include <stddef.h>
+
 #include <sys/types.h>
 
 #define _POSIX_VERSION 202405L
@@ -50,8 +50,8 @@ extern "C" {
 extern char **environ;
 extern char *optarg;
 extern int optind, opterr, optopt;
-ssize_t read(int fileDescriptor, void* buffer, size_t count);
-ssize_t write(int fileDescriptor, const void* buffer, size_t count);
+ssize_t read(int fileDescriptor, void *buffer, size_t count);
+ssize_t write(int fileDescriptor, const void *buffer, size_t count);
 int close(int fileDescriptor);
 int pipe(int fileDescriptors[2]);
 int pipe2(int fileDescriptors[2], int flags);
@@ -59,23 +59,23 @@ int dup(int fileDescriptor);
 int dup2(int fileDescriptor, int newFileDescriptor);
 int dup3(int fileDescriptor, int newFileDescriptor, int flags);
 off_t lseek(int fileDescriptor, off_t offset, int whence);
-ssize_t pread(int fileDescriptor, void* buffer, size_t count, off_t offset);
-ssize_t pwrite(int fileDescriptor, const void* buffer, size_t count,
+ssize_t pread(int fileDescriptor, void *buffer, size_t count, off_t offset);
+ssize_t pwrite(int fileDescriptor, const void *buffer, size_t count,
                off_t offset);
-int chdir(const char* path);
-char* getcwd(char* buffer, size_t size);
-int access(const char* path, int mode);
-int unlink(const char* path);
-int link(const char* existing, const char* new_path);
-int linkat(int old_directory, const char* existing, int new_directory,
-           const char* new_path, int flags);
-int symlink(const char* target, const char* link_path);
-ssize_t readlink(const char* path, char* buffer, size_t size);
-int chown(const char* path, uid_t owner, gid_t group);
+int chdir(const char *path);
+char *getcwd(char *buffer, size_t size);
+int access(const char *path, int mode);
+int unlink(const char *path);
+int link(const char *existing, const char *new_path);
+int linkat(int old_directory, const char *existing, int new_directory,
+           const char *new_path, int flags);
+int symlink(const char *target, const char *link_path);
+ssize_t readlink(const char *path, char *buffer, size_t size);
+int chown(const char *path, uid_t owner, gid_t group);
 int fchown(int file_descriptor, uid_t owner, gid_t group);
-int lchown(const char* path, uid_t owner, gid_t group);
-int rmdir(const char* path);
-int truncate(const char* path, off_t length);
+int lchown(const char *path, uid_t owner, gid_t group);
+int rmdir(const char *path);
+int truncate(const char *path, off_t length);
 int ftruncate(int fileDescriptor, off_t length);
 int fsync(int fileDescriptor);
 int fdatasync(int fileDescriptor);
@@ -94,11 +94,11 @@ pid_t getpgrp(void);
 pid_t getsid(pid_t taskId);
 pid_t setsid(void);
 long sysconf(int name);
-long pathconf(const char* path, int name);
-size_t confstr(int name, char* buffer, size_t length);
+long pathconf(const char *path, int name);
+size_t confstr(int name, char *buffer, size_t length);
 pid_t fork(void);
-int execve(const char* path, char* const arguments[],
-           char* const environment[]);
+int execve(const char *path, char *const arguments[],
+           char *const environment[]);
 void _exit(int status) __attribute__((noreturn));
 #ifdef __cplusplus
 }
@@ -112,24 +112,24 @@ extern "C" {
 pid_t _Fork(void);
 unsigned alarm(unsigned);
 char *crypt(const char *, const char *);
-void encrypt(char [64], int);
+void encrypt(char[64], int);
 int execl(const char *, const char *, ...);
 int execle(const char *, const char *, ...);
 int execlp(const char *, const char *, ...);
-int execv(const char *, char *const []);
-int execvp(const char *, char *const []);
+int execv(const char *, char *const[]);
+int execvp(const char *, char *const[]);
 int faccessat(int, const char *, int, int);
 int fchdir(int);
 int fchownat(int, const char *, uid_t, gid_t, int);
-int fexecve(int, char *const [], char *const []);
+int fexecve(int, char *const[], char *const[]);
 long fpathconf(int, int);
 int getentropy(void *, size_t);
-int getgroups(int, gid_t []);
+int getgroups(int, gid_t[]);
 long gethostid(void);
 int gethostname(char *, size_t);
 char *getlogin(void);
 int getlogin_r(char *, size_t);
-int getopt(int, char * const [], const char *);
+int getopt(int, char *const[], const char *);
 pid_t getpgid(pid_t);
 int getresgid(gid_t *__restrict, gid_t *__restrict, gid_t *__restrict);
 int getresuid(uid_t *__restrict, uid_t *__restrict, uid_t *__restrict);

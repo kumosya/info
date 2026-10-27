@@ -2,11 +2,10 @@
 
 #include <cstdint>
 
-namespace kernel {
+class BootInfo;
 
-struct BootInfo;
+namespace kernel::cpu {
 
-namespace interrupt {
 struct [[gnu::packed]] Context {
     uint64_t r15;
     uint64_t r14;
@@ -35,8 +34,9 @@ using Handler = void (*)(Context* context);
 
 void initIdt();
 void loadIdt();
-void initControllers(const BootInfo* bootInfo);
-bool setIrq(uint8_t irq, uint8_t vector, uint32_t apicId, bool levelTriggered = false);
+void initControllers(const ::BootInfo* bootInfo);
+bool setIrq(uint8_t irq, uint8_t vector, uint32_t apicId,
+            bool levelTriggered = false);
 void maskIrq(uint8_t irq);
 bool registerHandler(uint8_t vector, Handler handler);
 void unregisterHandler(uint8_t vector);
@@ -45,9 +45,6 @@ bool dispatchUserException(Context* context);
 void handlePageFault(Context* context);
 [[noreturn]] void panic(Context* context);
 
-}  // namespace interrupt
-}  // namespace kernel
-
-namespace kernel::interrupt {
 extern "C" void interruptDispatch(Context* context);
-}
+
+}  // namespace kernel::cpu

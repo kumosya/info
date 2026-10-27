@@ -1,6 +1,6 @@
 #pragma once
-#include <os/service.h>
 #include "service/common/records.h"
+#include <os/service.h>
 namespace os::detail {
 class TaskQuery : public Sys::Transport {
    public:
@@ -100,40 +100,42 @@ class QueueClient : public Ipc::MsgQueue {
 #include <os/pty.h>
 namespace os::detail {
 class PtyClient : public Pty {
- public:
+   public:
     explicit PtyClient(uint64_t handle);
     bool getNumber(uint32_t& number);
 };
-}
+}  // namespace os::detail
 
 #include <os/storage.h>
 namespace os::detail {
 class StorageClient {
- public:
+   public:
     int64_t deviceCount();
     bool open(Storage::Device& device, uint32_t id, uint64_t service);
 };
-}
+}  // namespace os::detail
 
 namespace os::detail {
 class RegistryClient : public Sys::Registry {
- public:
+   public:
     explicit RegistryClient(uint64_t endpoint = 0);
-    uint64_t lookup(const char* name, uint32_t attempts = 100, uint64_t* generation = nullptr);
-    bool registerName(const char* name, uint64_t endpoint, uint64_t access = 0, uint64_t* generation = nullptr);
+    uint64_t lookup(const char* name, uint32_t attempts = 100,
+                    uint64_t* generation = nullptr);
+    bool registerName(const char* name, uint64_t endpoint, uint64_t access = 0,
+                      uint64_t* generation = nullptr);
     bool unregister(const char* name, uint64_t generation);
     uint64_t endpoint() const;
 };
 class ManagerClient : public Sys::Manager {
- public:
+   public:
     explicit ManagerClient(const char* name = "control.init");
     using Sys::Manager::call;
 };
-}
+}  // namespace os::detail
 
 namespace os::detail {
 class TaskControl : public Task {
- public:
+   public:
     TaskControl();
     explicit TaskControl(uint64_t id);
     uint64_t getId() const;
@@ -141,33 +143,33 @@ class TaskControl : public Task {
     int next(uint64_t minimumId);
     int refreshExit(uint64_t id = 0);
     int setGroup(uint64_t group, uint64_t id = 0);
-    using Task::execute;
-    using Task::executeWithIo;
-    using Task::executeService;
-    using Task::refreshHandle;
-    using Task::signalReturn;
-    using Task::spawnProgram;
-    using Task::spawnImage;
-    using Task::waitChild;
-    using Task::waitThread;
-    using Task::terminate;
-    using Task::sendSignal;
-    using Task::sendThreadSignal;
-    using Task::createSession;
-    using Task::signalStack;
-    using Task::coreLimit;
-    using Task::recordImage;
     using Task::accessible;
-    using Task::recordAuxiliary;
-    using Task::getThreadId;
-    using Task::getState;
+    using Task::coreLimit;
+    using Task::createSession;
+    using Task::execute;
+    using Task::executeService;
+    using Task::executeWithIo;
     using Task::getIdentifiers;
     using Task::getPendingSignals;
-    using Task::setSignalAction;
-    using Task::setSignalMask;
-    using Task::setCredentials;
-    using Task::wait;
+    using Task::getState;
+    using Task::getThreadId;
     using Task::id;
     using Task::kill;
+    using Task::recordAuxiliary;
+    using Task::recordImage;
+    using Task::refreshHandle;
+    using Task::sendSignal;
+    using Task::sendThreadSignal;
+    using Task::setCredentials;
+    using Task::setSignalAction;
+    using Task::setSignalMask;
+    using Task::signalReturn;
+    using Task::signalStack;
+    using Task::spawnImage;
+    using Task::spawnProgram;
+    using Task::terminate;
+    using Task::wait;
+    using Task::waitChild;
+    using Task::waitThread;
 };
-}
+}  // namespace os::detail

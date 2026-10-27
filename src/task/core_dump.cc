@@ -1,6 +1,10 @@
-#include "service/common/queries.h"
 #include "service/task/core_dump.h"
 
+#include "service/common/channel.h"
+#include "service/common/kernel-requests.h"
+#include "service/common/queries.h"
+#include "service/common/requests.h"
+#include "service/common/runtime.h"
 #include <os/device.h>
 #include <os/dir.h>
 #include <os/file.h>
@@ -8,10 +12,6 @@
 #include <os/mm.h>
 #include <os/service.h>
 #include <os/task.h>
-#include "service/common/channel.h"
-#include "service/common/kernel-requests.h"
-#include "service/common/requests.h"
-#include "service/common/runtime.h"
 
 namespace {
 class CoreWriter {
@@ -30,6 +30,7 @@ class CoreWriter {
                       os::Sys().readMonotonicTime() + 1000000000ULL);
         return result ? result : static_cast<int64_t>(reply.data[0]);
     }
+
     static bool number(const char* value, uint64_t& result) {
         if (!*value) return false;
         result = 0;
@@ -41,9 +42,11 @@ class CoreWriter {
         }
         return true;
     }
+
     static bool configuration() {
         os::File input;
         if (input.open("/etc/core", O_RDONLY)) return false;
+        // Reject a policy that another user could replace with unsafe limits.
         if (input.refresh() || input.getType() != os::File::Type::File ||
             input.getUid() || (input.getMode() & 0022))
             return false;
@@ -220,9 +223,20 @@ class CoreWriter {
     static void run() {
         fs = os::detail::RegistryClient(os::getBootstrapHandle())
                  .lookup(os::fsServiceName, 30000);
-        if (!fs || !configuration() || !controlledDirectory()) {
+        if (!fs) {
+            os::Sys().log("[CORE] disabled: fs service unavailable\n");
+            os::exitThread(0);
+        }
+        if (!configuration()) {
             os::Sys().log(
-                "[CORE] disabled: invalid configuration or directory\n");
+                "[CORE] disabled: /etc/core must be readable, valid, "
+                "root-owned and not group/other-writable\n");
+            os::exitThread(0);
+        }
+        if (!controlledDirectory()) {
+            os::Sys().log("[CORE] disabled: unsafe or unavailable directory: ");
+            os::Sys().log(directory);
+            os::Sys().log("\n");
             os::exitThread(0);
         }
         os::IpcMessage request{}, reply{};

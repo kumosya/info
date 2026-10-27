@@ -1,7 +1,6 @@
-#include <os/elf.h>
-
-#include <os/syscall.h>
 #include "service/common/runtime.h"
+#include <os/elf.h>
+#include <os/syscall.h>
 namespace os {
 namespace {
 struct SectionHeader {

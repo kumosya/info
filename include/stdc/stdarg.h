@@ -1,7 +1,6 @@
 #ifndef _STDC_STDARG_H
 #define _STDC_STDARG_H
 
-
 typedef __builtin_va_list va_list;
 #define va_start(list, last) __builtin_va_start(list, last)
 #define va_end(list) __builtin_va_end(list)

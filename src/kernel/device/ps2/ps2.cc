@@ -1,18 +1,25 @@
 #include "kernel/device.h"
-#include "kernel/spinlock.h"
+#include "kernel/sync.h"
+
 namespace kernel::device {
+
 namespace {
-class Ports {
- public:
-    static int read(uint16_t port, uint8_t& value) { asm volatile("inb %1, %0" : "=a"(value) : "Nd"(port)); return 0; }
-    static int write(uint16_t port, uint8_t value) { asm volatile("outb %0, %1" : : "a"(value), "Nd"(port)); return 0; }
-};
+
+int readPs2Port(uint16_t port, uint8_t& value) {
+    asm volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
+    return 0;
+}
+int writePs2Port(uint16_t port, uint8_t value) {
+    asm volatile("outb %0, %1" : : "a"(value), "Nd"(port));
+    return 0;
+}
+
 class Controller {
    public:
     bool init() {
         uint8_t ignored;
         for (uint32_t index = 0; index < 32 && outputReady(); ++index) {
-            Ports::read(0x60, ignored);
+            readPs2Port(0x60, ignored);
         }
         if (!writeCommand(0xad) || !writeCommand(0xa7) || !writeCommand(0x20) ||
             !readData(configuration_)) {
@@ -30,8 +37,8 @@ class Controller {
 
     bool readInterruptByte(uint8_t& value, bool& mouse) {
         uint8_t status;
-        if (Ports::read(0x64, status) != 0 || (status & 1U) == 0 ||
-            Ports::read(0x60, value) != 0) {
+        if (readPs2Port(0x64, status) != 0 || (status & 1U) == 0 ||
+            readPs2Port(0x60, value) != 0) {
             return false;
         }
         mouse = (status & 0x20U) != 0;
@@ -44,7 +51,7 @@ class Controller {
     bool inputReady() {
         for (uint32_t attempt = 0; attempt < 100000; ++attempt) {
             uint8_t status;
-            if (Ports::read(0x64, status) == 0 && (status & 2U) == 0) {
+            if (readPs2Port(0x64, status) == 0 && (status & 2U) == 0) {
                 return true;
             }
             asm volatile("pause");
@@ -54,13 +61,13 @@ class Controller {
 
     bool outputReady() {
         uint8_t status;
-        return Ports::read(0x64, status) == 0 && (status & 1U) != 0;
+        return readPs2Port(0x64, status) == 0 && (status & 1U) != 0;
     }
 
     bool readData(uint8_t& value) {
         for (uint32_t attempt = 0; attempt < 100000; ++attempt) {
             if (outputReady()) {
-                return Ports::read(0x60, value) == 0;
+                return readPs2Port(0x60, value) == 0;
             }
             asm volatile("pause");
         }
@@ -68,11 +75,11 @@ class Controller {
     }
 
     bool writeCommand(uint8_t value) {
-        return inputReady() && Ports::write(0x64, value) == 0;
+        return inputReady() && writePs2Port(0x64, value) == 0;
     }
 
     bool writeData(uint8_t value) {
-        return inputReady() && Ports::write(0x60, value) == 0;
+        return inputReady() && writePs2Port(0x60, value) == 0;
     }
 
     bool sendKeyboard(uint8_t value) {
@@ -104,14 +111,17 @@ class Controller {
     uint8_t mousePacketSize_ = 3;
 };
 Controller controller;
-SpinLock controllerLock;
-}
-int Ps2Access::init() {
-    InterruptSpinLockGuard guard(controllerLock);
+::kernel::task::SpinLock controllerLock;
+}  // namespace
+
+int initPs2() {
+    ::kernel::task::InterruptSpinLockGuard guard(controllerLock);
     return controller.init() ? controller.mousePacketSize() : -11;
 }
-bool Ps2Access::read(uint8_t& value, bool& mouse) {
-    InterruptSpinLockGuard guard(controllerLock);
+
+bool readPs2(uint8_t& value, bool& mouse) {
+    ::kernel::task::InterruptSpinLockGuard guard(controllerLock);
     return controller.readInterruptByte(value, mouse);
 }
+
 }  // namespace kernel::device

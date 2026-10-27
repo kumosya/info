@@ -43,13 +43,25 @@ static std::string mask(std::string value) {
                 escape = false;
         }
     }
-    for (size_t at = 0; (at = value.find("__attribute__", at)) != std::string::npos;) {
+    for (size_t at = 0;
+         (at = value.find("__attribute__", at)) != std::string::npos;) {
         size_t end = at + 13;
-        while (end < value.size() && (value[end] == ' ' || value[end] == '\t')) ++end;
-        if (end == value.size() || value[end] != '(') { at = end; continue; }
+        while (end < value.size() && (value[end] == ' ' || value[end] == '\t'))
+            ++end;
+        if (end == value.size() || value[end] != '(') {
+            at = end;
+            continue;
+        }
         unsigned depth = 0;
-        do { if (value[end] == '(') ++depth; else if (value[end] == ')') --depth; ++end; } while (end < value.size() && depth);
-        for (size_t i = at; i < end; ++i) if (value[i] != '\n') value[i] = ' ';
+        do {
+            if (value[end] == '(')
+                ++depth;
+            else if (value[end] == ')')
+                --depth;
+            ++end;
+        } while (end < value.size() && depth);
+        for (size_t i = at; i < end; ++i)
+            if (value[i] != '\n') value[i] = ' ';
         at = end;
     }
     return value;
@@ -98,7 +110,11 @@ void audit(const Context& context) {
     std::set<std::string> capiEntries;
     const auto capiHeader = read("include/os-c++/os/capi.h");
     const std::regex capiPattern(R"(\b(os[A-Z][A-Za-z_0-9]*)\s*\()");
-    for (std::sregex_iterator it(capiHeader.begin(), capiHeader.end(), capiPattern), end; it != end; ++it) capiEntries.insert((*it)[1]);
+    for (std::sregex_iterator
+             it(capiHeader.begin(), capiHeader.end(), capiPattern),
+         end;
+         it != end; ++it)
+        capiEntries.insert((*it)[1]);
     std::set<fs::path> inspected;
     for (const auto& root : roots)
         for (const auto& entry : fs::recursive_directory_iterator(root))
@@ -126,9 +142,13 @@ void audit(const Context& context) {
                         classes.emplace_back(opening, ends.at(opening));
                 }
                 const std::regex privateNamespace(R"(\bnamespace\s*\{)");
-                for (std::sregex_iterator it(value.begin(), value.end(), privateNamespace), end; it != end; ++it) {
+                for (std::sregex_iterator
+                         it(value.begin(), value.end(), privateNamespace),
+                     end;
+                     it != end; ++it) {
                     const auto opening = value.find('{', it->position());
-                    if (ends.count(opening)) classes.emplace_back(opening, ends.at(opening));
+                    if (ends.count(opening))
+                        classes.emplace_back(opening, ends.at(opening));
                 }
                 for (std::sregex_iterator
                          it(value.begin(), value.end(), functionPattern),
@@ -148,7 +168,9 @@ void audit(const Context& context) {
                         if (begin < position && position < finish)
                             member = true;
                     if (member) continue;
-                    if (entry.path() == fs::path("lib/os/capi.cc") && capiEntries.count(name)) continue;
+                    if (entry.path() == fs::path("lib/os/capi.cc") &&
+                        capiEntries.count(name))
+                        continue;
                     static const std::map<fs::path, std::set<std::string>>
                         bridges{
                             {"lib/os/syscall.cc",
@@ -179,14 +201,24 @@ void audit(const Context& context) {
                 }
             }
     auto symbols = context.build / "audit-symbols.txt";
-    run({"nm", "-g", "--defined-only",
-         (context.objects / "lib/os/runtime.o").string(),
-         (context.objects / "lib/os/service.o").string()},
-        symbols);
+    std::vector<std::string> runtimeObjects;
+    for (const auto& entry : fs::recursive_directory_iterator("lib/os")) {
+        if (!entry.is_regular_file() || entry.path().extension() != ".cc")
+            continue;
+        auto object = context.objects / entry.path();
+        object.replace_extension(".o");
+        runtimeObjects.push_back(object.string());
+    }
+    std::sort(runtimeObjects.begin(), runtimeObjects.end());
+    std::vector<std::string> symbolCommand{"nm", "-g", "--defined-only"};
+    symbolCommand.insert(symbolCommand.end(), runtimeObjects.begin(),
+                         runtimeObjects.end());
+    run(symbolCommand, symbols);
     auto defined = read(symbols);
     fs::remove(symbols);
-    auto imports = read("src/kernel/task/services.cc");
-    std::regex importPattern(R"rx(\{"([^"]+)", reinterpret_cast<uint64_t>)rx");
+    auto imports = read("src/kernel/task/syscall/services.cc");
+    std::regex importPattern(
+        R"rx(\{\s*"([^"]+)"\s*,\s*reinterpret_cast<uint64_t>)rx");
     for (std::sregex_iterator it(imports.begin(), imports.end(), importPattern),
          end;
          it != end; ++it)

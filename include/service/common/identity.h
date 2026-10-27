@@ -2,7 +2,22 @@
 #include <cstdint>
 
 namespace os {
-enum class ServiceRole : uint32_t { None, Init, Task, Fs, Pci, Device, Storage, Tty, Console, Window, Users, Memory, Pipe, MessageQueue };
+enum class ServiceRole : uint32_t {
+    None,
+    Init,
+    Task,
+    Fs,
+    Pci,
+    Device,
+    Storage,
+    Tty,
+    Console,
+    Window,
+    Users,
+    Memory,
+    Pipe,
+    MessageQueue
+};
 enum class ProgramId : uint64_t {
     Init = 0,
     TaskServer,
@@ -19,4 +34,4 @@ enum class ProgramId : uint64_t {
     MessageQueueServer,
     Count
 };
-}
+}  // namespace os

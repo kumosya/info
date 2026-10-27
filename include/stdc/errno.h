@@ -1,7 +1,6 @@
 #ifndef _STDC_ERRNO_H
 #define _STDC_ERRNO_H
 
-
 #define E2BIG 7
 #define EACCES 13
 #define EADDRINUSE 98

@@ -19,5 +19,4 @@ bool ext3::Probe::detect(const uint8_t* data, size_t size) {
            (incompatible & 0x40U) == 0;
 }
 
-
 }  // namespace vfs

@@ -1,9 +1,9 @@
+#include "service/common/kernel-requests.h"
 #include <os/device.h>
 #include <os/ipc.h>
 #include <os/mm.h>
 #include <os/service.h>
 #include <os/task.h>
-#include "service/common/kernel-requests.h"
 
 namespace os {
 int Sys::Recovery::acquire(IpcMessage& snapshot) {
@@ -16,7 +16,7 @@ int Sys::Recovery::acquire(IpcMessage& snapshot) {
 }
 
 int Sys::Recovery::invoke(uint64_t operation, uint64_t a, uint64_t b,
-                            uint64_t c, IpcMessage& reply) {
+                          uint64_t c, IpcMessage& reply) {
     if (!epoch_) return static_cast<int>(ErrorCode::InvalidArgument);
     IpcMessage request{};
     request.type    = operation;
@@ -35,13 +35,13 @@ int Sys::Recovery::prepare(uint64_t bytes, bool logRecord) {
 }
 
 int Sys::Recovery::commit(uint64_t handle, uint64_t bytes, uint64_t sequence,
-                            IpcMessage& reply) {
+                          IpcMessage& reply) {
     return invoke(static_cast<uint64_t>(TaskOperation::RecoveryCommit), handle,
                   bytes, sequence, reply);
 }
 
 int Sys::Recovery::append(uint64_t handle, uint64_t bytes, uint64_t sequence,
-                            IpcMessage& reply) {
+                          IpcMessage& reply) {
     return invoke(static_cast<uint64_t>(TaskOperation::RecoveryAppend), handle,
                   bytes, sequence, reply);
 }

@@ -1,7 +1,7 @@
 #ifndef _POSIX_SYS_TIMES_H
 #define _POSIX_SYS_TIMES_H
-#ifndef	_SYS_TIMES_H
-#define	_SYS_TIMES_H
+#ifndef _SYS_TIMES_H
+#define _SYS_TIMES_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -11,19 +11,18 @@ extern "C" {
 #include <bits/alltypes.h>
 
 struct tms {
-	clock_t tms_utime;
-	clock_t tms_stime;
-	clock_t tms_cutime;
-	clock_t tms_cstime;
+    clock_t tms_utime;
+    clock_t tms_stime;
+    clock_t tms_cutime;
+    clock_t tms_cstime;
 };
 
-clock_t times (struct tms *);
+clock_t times(struct tms *);
 
 #ifdef __cplusplus
 }
 #endif
 
 #endif
-
 
 #endif

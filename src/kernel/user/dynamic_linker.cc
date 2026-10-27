@@ -1,6 +1,9 @@
 #include "kernel/elf.h"
 #include "kernel/page.h"
 #include "kernel/syscall.h"
+#include "kernel/task.h"
+
+namespace kernel::elf {
 
 namespace {
 
@@ -141,7 +144,7 @@ bool readSource(void* destination, uint64_t sourceRoot, uint64_t imageAddress,
         return false;
     }
     const uint64_t source = imageAddress + offset;
-    if (sourceRoot == kernel::memory::getKernelAddressSpaceRoot() &&
+    if (sourceRoot == kernel::mm::getKernelAddressSpaceRoot() &&
         source >= directMapBase && size <= UINT64_MAX - source) {
         auto* output      = static_cast<uint8_t*>(destination);
         const auto* input = reinterpret_cast<const uint8_t*>(source);
@@ -150,32 +153,32 @@ bool readSource(void* destination, uint64_t sourceRoot, uint64_t imageAddress,
         }
         return true;
     }
-    return kernel::memory::copyFromAddressSpace(destination, sourceRoot, source,
-                                                size);
+    return kernel::mm::copyFromAddressSpace(destination, sourceRoot, source,
+                                            size);
 }
 
-kernel::ElfLoadError validateHeader(const ElfHeader& header, uint64_t imageSize,
-                                    bool executable) {
+ElfLoadError validateHeader(const ElfHeader& header, uint64_t imageSize,
+                            bool executable) {
     if (header.identifier[0] != 0x7f || header.identifier[1] != 'E' ||
         header.identifier[2] != 'L' || header.identifier[3] != 'F') {
-        return kernel::ElfLoadError::InvalidMagic;
+        return ElfLoadError::InvalidMagic;
     }
     if (header.identifier[4] != elfClass64) {
-        return kernel::ElfLoadError::UnsupportedClass;
+        return ElfLoadError::UnsupportedClass;
     }
     if (header.identifier[5] != elfLittleEndian) {
-        return kernel::ElfLoadError::UnsupportedEndian;
+        return ElfLoadError::UnsupportedEndian;
     }
     if (header.identifier[6] != elfVersion || header.version != elfVersion) {
-        return kernel::ElfLoadError::UnsupportedVersion;
+        return ElfLoadError::UnsupportedVersion;
     }
     if ((executable && header.type != elfTypeExecutable &&
          header.type != elfTypeShared) ||
         (!executable && header.type != elfTypeShared)) {
-        return kernel::ElfLoadError::UnsupportedType;
+        return ElfLoadError::UnsupportedType;
     }
     if (header.machine != elfMachineX86_64) {
-        return kernel::ElfLoadError::UnsupportedMachine;
+        return ElfLoadError::UnsupportedMachine;
     }
     if (header.headerSize != sizeof(ElfHeader) ||
         header.programHeaderSize != sizeof(ProgramHeader) ||
@@ -185,9 +188,9 @@ kernel::ElfLoadError validateHeader(const ElfHeader& header, uint64_t imageSize,
                       static_cast<uint64_t>(header.programHeaderCount) *
                           sizeof(ProgramHeader),
                       imageSize)) {
-        return kernel::ElfLoadError::InvalidHeader;
+        return ElfLoadError::InvalidHeader;
     }
-    return kernel::ElfLoadError::None;
+    return ElfLoadError::None;
 }
 
 void permissionsForPage(const ProgramHeader* headers, uint16_t count,
@@ -206,23 +209,22 @@ void permissionsForPage(const ProgramHeader* headers, uint16_t count,
     }
 }
 
-kernel::ElfLoadError loadImage(uint64_t destinationRoot, uint64_t sourceRoot,
-                               uint64_t preferredBase, bool executable,
-                               Image& image, bool allowInterpreter = false) {
+ElfLoadError loadImage(uint64_t destinationRoot, uint64_t sourceRoot,
+                       uint64_t preferredBase, bool executable, Image& image,
+                       bool allowInterpreter = false) {
     ElfHeader header{};
     if (!readSource(&header, sourceRoot, image.sourceAddress, image.sourceSize,
                     0, sizeof(header))) {
-        return kernel::ElfLoadError::InvalidArgument;
+        return ElfLoadError::InvalidArgument;
     }
-    kernel::ElfLoadError result =
-        validateHeader(header, image.sourceSize, executable);
-    if (result != kernel::ElfLoadError::None) return result;
+    ElfLoadError result = validateHeader(header, image.sourceSize, executable);
+    if (result != ElfLoadError::None) return result;
     ProgramHeader headers[maximumProgramHeaders]{};
     if (!readSource(headers, sourceRoot, image.sourceAddress, image.sourceSize,
                     header.programHeaderOffset,
                     static_cast<uint64_t>(header.programHeaderCount) *
                         sizeof(ProgramHeader))) {
-        return kernel::ElfLoadError::InvalidProgramHeader;
+        return ElfLoadError::InvalidProgramHeader;
     }
 
     uint64_t minimum = UINT64_MAX;
@@ -231,7 +233,7 @@ kernel::ElfLoadError loadImage(uint64_t destinationRoot, uint64_t sourceRoot,
     for (uint16_t index = 0; index < header.programHeaderCount; ++index) {
         const ProgramHeader& segment = headers[index];
         if (segment.type == programInterpreter && !allowInterpreter) {
-            return kernel::ElfLoadError::UnsupportedProgramHeader;
+            return ElfLoadError::UnsupportedProgramHeader;
         }
         if (segment.type == programDynamic) {
             image.dynamicAddress = segment.virtualAddress;
@@ -250,7 +252,7 @@ kernel::ElfLoadError loadImage(uint64_t destinationRoot, uint64_t sourceRoot,
                   (segment.offset & (segment.alignment - 1)))) ||
             segment.virtualAddress + segment.memorySize <
                 segment.virtualAddress) {
-            return kernel::ElfLoadError::InvalidSegment;
+            return ElfLoadError::InvalidSegment;
         }
         if (segment.memorySize == 0) continue;
         hasLoad = true;
@@ -259,7 +261,7 @@ kernel::ElfLoadError loadImage(uint64_t destinationRoot, uint64_t sourceRoot,
         }
         uint64_t end = 0;
         if (!alignUp(segment.virtualAddress + segment.memorySize, end)) {
-            return kernel::ElfLoadError::InvalidAddress;
+            return ElfLoadError::InvalidAddress;
         }
         if (end > maximum) maximum = end;
         for (uint16_t previous = 0; previous < index; ++previous) {
@@ -270,12 +272,12 @@ kernel::ElfLoadError loadImage(uint64_t destinationRoot, uint64_t sourceRoot,
             const uint64_t rightEnd = other.virtualAddress + other.memorySize;
             if (segment.virtualAddress < rightEnd &&
                 other.virtualAddress < leftEnd) {
-                return kernel::ElfLoadError::OverlappingSegments;
+                return ElfLoadError::OverlappingSegments;
             }
         }
     }
     if (!hasLoad || minimum == UINT64_MAX || maximum <= minimum) {
-        return kernel::ElfLoadError::InvalidProgramHeader;
+        return ElfLoadError::InvalidProgramHeader;
     }
     image.bias = header.type == elfTypeShared ? preferredBase - minimum : 0;
     image.imageBase = image.bias + minimum;
@@ -284,7 +286,7 @@ kernel::ElfLoadError loadImage(uint64_t destinationRoot, uint64_t sourceRoot,
         image.imageEnd <= image.imageBase ||
         image.imageEnd > maximumUserAddress ||
         header.entry > maximumUserAddress - image.bias) {
-        return kernel::ElfLoadError::InvalidAddress;
+        return ElfLoadError::InvalidAddress;
     }
     image.entryPoint = image.bias + header.entry;
     if (image.dynamicAddress != 0) image.dynamicAddress += image.bias;
@@ -297,8 +299,8 @@ kernel::ElfLoadError loadImage(uint64_t destinationRoot, uint64_t sourceRoot,
         for (uint64_t page = alignDown(segment.virtualAddress); page < pageEnd;
              page += pageSize) {
             const uint64_t address = image.bias + page;
-            if (kernel::memory::getPhysicalAddressInAddressSpace(
-                    destinationRoot, address) != 0) {
+            if (kernel::mm::getPhysicalAddressInAddressSpace(destinationRoot,
+                                                             address) != 0) {
                 continue;
             }
             bool writable       = false;
@@ -306,19 +308,19 @@ kernel::ElfLoadError loadImage(uint64_t destinationRoot, uint64_t sourceRoot,
             permissionsForPage(headers, header.programHeaderCount, page,
                                writable, executablePage);
             if (writable && executablePage) {
-                return kernel::ElfLoadError::InvalidPermissions;
+                return ElfLoadError::InvalidPermissions;
             }
-            uint64_t flags = kernel::pageUser;
-            if (writable) flags |= kernel::pageWritable;
-            if (!executablePage) flags |= kernel::pageNoExecute;
-            const kernel::UserPageMapResult mapped =
-                kernel::memory::allocateUserPageInAddressSpace(destinationRoot,
-                                                               address, flags);
-            if (mapped == kernel::UserPageMapResult::OutOfMemory) {
-                return kernel::ElfLoadError::OutOfMemory;
+            uint64_t flags = kernel::mm::pageUser;
+            if (writable) flags |= kernel::mm::pageWritable;
+            if (!executablePage) flags |= kernel::mm::pageNoExecute;
+            const kernel::mm::UserPageMapResult mapped =
+                kernel::mm::allocateUserPageInAddressSpace(destinationRoot,
+                                                           address, flags);
+            if (mapped == kernel::mm::UserPageMapResult::OutOfMemory) {
+                return ElfLoadError::OutOfMemory;
             }
-            if (mapped != kernel::UserPageMapResult::Success) {
-                return kernel::ElfLoadError::MappingFailed;
+            if (mapped != kernel::mm::UserPageMapResult::Success) {
+                return ElfLoadError::MappingFailed;
             }
         }
     }
@@ -331,58 +333,63 @@ kernel::ElfLoadError loadImage(uint64_t destinationRoot, uint64_t sourceRoot,
             const uint64_t chunk = remaining < pageSize ? remaining : pageSize;
             if (!readSource(buffer, sourceRoot, image.sourceAddress,
                             image.sourceSize, segment.offset + copied, chunk) ||
-                !kernel::memory::copyToAddressSpace(
+                !kernel::mm::copyToAddressSpace(
                     destinationRoot,
                     image.bias + segment.virtualAddress + copied, buffer,
                     chunk)) {
-                return kernel::ElfLoadError::MappingFailed;
+                return ElfLoadError::MappingFailed;
             }
             copied += chunk;
         }
     }
     if (executable && (image.entryPoint < image.imageBase ||
                        image.entryPoint >= image.imageEnd)) {
-        return kernel::ElfLoadError::InvalidEntryPoint;
+        return ElfLoadError::InvalidEntryPoint;
     }
-    return kernel::ElfLoadError::None;
+    return ElfLoadError::None;
 }
 
-kernel::ElfLoadError loadInterpreter(uint64_t root, uint64_t sourceRoot,
-                                    Image& application, const ElfHeader& header,
-                                    const kernel::ElfSharedImage& interpreter,
-                                    kernel::ElfLoadResult& result) {
-    using namespace kernel;
-    ElfLoadError error = loadImage(root, sourceRoot, 0x400000, true, application, true);
+ElfLoadError loadInterpreter(uint64_t root, uint64_t sourceRoot,
+                             Image& application, const ElfHeader& header,
+                             const ElfSharedImage& interpreter,
+                             ElfLoadResult& result) {
+    ElfLoadError error =
+        loadImage(root, sourceRoot, 0x400000, true, application, true);
     if (error != ElfLoadError::None) return error;
     Image loader{};
-    loader.sourceAddress = interpreter.sourceAddress;
-    loader.sourceSize = interpreter.size;
+    loader.sourceAddress = interpreter.getSourceAddress();
+    loader.sourceSize    = interpreter.getSize();
     error = loadImage(root, sourceRoot, 0x0000070000000000ULL, true, loader);
     if (error != ElfLoadError::None) return error;
     // The interpreter is self-contained, so it can start before any libraries.
     if (loader.dynamicSize) return ElfLoadError::UnsupportedProgramHeader;
     constexpr uint64_t metadata = 0x20000;
-    const uint64_t bytes = sizeof(ElfHeader) + header.programHeaderCount * sizeof(ProgramHeader);
+    const uint64_t bytes =
+        sizeof(ElfHeader) + header.programHeaderCount * sizeof(ProgramHeader);
     for (uint64_t offset = 0; offset < bytes; offset += pageSize) {
-        if (memory::allocateUserPageInAddressSpace(root, metadata + offset,
-                pageUser | pageNoExecute) != UserPageMapResult::Success)
+        if (mm::allocateUserPageInAddressSpace(
+                root, metadata + offset,
+                ::kernel::mm::pageUser | ::kernel::mm::pageNoExecute) !=
+            ::kernel::mm::UserPageMapResult::Success)
             return ElfLoadError::MappingFailed;
     }
-    if (!memory::copyToAddressSpace(root, metadata, &header, sizeof(header)))
+    if (!mm::copyToAddressSpace(root, metadata, &header, sizeof(header)))
         return ElfLoadError::MappingFailed;
     ProgramHeader headers[maximumProgramHeaders]{};
-    if (!readSource(headers, sourceRoot, application.sourceAddress, application.sourceSize,
-            header.programHeaderOffset, bytes - sizeof(header)) ||
-        !memory::copyToAddressSpace(root, metadata + sizeof(header), headers, bytes - sizeof(header)))
+    if (!readSource(headers, sourceRoot, application.sourceAddress,
+                    application.sourceSize, header.programHeaderOffset,
+                    bytes - sizeof(header)) ||
+        !mm::copyToAddressSpace(root, metadata + sizeof(header), headers,
+                                bytes - sizeof(header)))
         return ElfLoadError::MappingFailed;
-    result.entryPoint = loader.entryPoint;
-    result.imageBase = application.imageBase;
-    result.imageEnd = application.imageEnd;
-    result.applicationEntry = application.entryPoint;
-    result.applicationBias = application.bias;
-    result.interpreterBase = loader.imageBase;
-    result.programHeaders = metadata + sizeof(header);
-    result.programHeaderCount = header.programHeaderCount;
+    result.setEntryPoint(loader.entryPoint);
+    result.setImageBase(application.imageBase);
+    result.setImageEnd(application.imageEnd);
+    result.setApplicationEntry(application.entryPoint);
+    result.setApplicationBias(application.bias);
+    result.setInterpreterBase(loader.imageBase);
+    result.setProgramHeaders(metadata + sizeof(header));
+    result.setProgramHeaderCount(header.programHeaderCount);
     return ElfLoadError::None;
 }
 
@@ -390,15 +397,15 @@ bool dynamicPointer(uint64_t root, const Image& image, uint64_t value,
                     uint64_t size, uint64_t& result) {
     if (value > maximumUserAddress - image.bias) return false;
     result = image.bias + value;
-    return kernel::memory::validateUserMemory(root, result, size, false);
+    return kernel::mm::validateUserMemory(root, result, size, false);
 }
 
-kernel::ElfLoadError readDynamicInfo(uint64_t root, Image& image) {
+ElfLoadError readDynamicInfo(uint64_t root, Image& image) {
     if (image.dynamicAddress == 0 || image.dynamicSize < sizeof(DynamicEntry) ||
         image.dynamicSize % sizeof(DynamicEntry) != 0 ||
-        !kernel::memory::validateUserMemory(root, image.dynamicAddress,
-                                            image.dynamicSize, false)) {
-        return kernel::ElfLoadError::UnsupportedProgramHeader;
+        !kernel::mm::validateUserMemory(root, image.dynamicAddress,
+                                        image.dynamicSize, false)) {
+        return ElfLoadError::UnsupportedProgramHeader;
     }
     uint64_t hash              = 0;
     uint64_t relaEntrySize     = sizeof(Rela);
@@ -407,24 +414,24 @@ kernel::ElfLoadError readDynamicInfo(uint64_t root, Image& image) {
     const uint64_t entries     = image.dynamicSize / sizeof(DynamicEntry);
     for (uint64_t index = 0; index < entries; ++index) {
         DynamicEntry entry{};
-        if (!kernel::memory::copyFromAddressSpace(
+        if (!kernel::mm::copyFromAddressSpace(
                 &entry, root,
                 image.dynamicAddress + index * sizeof(DynamicEntry),
                 sizeof(entry))) {
-            return kernel::ElfLoadError::MappingFailed;
+            return ElfLoadError::MappingFailed;
         }
         if (entry.tag == dynamicNull) break;
         uint64_t pointer = 0;
         switch (entry.tag) {
             case dynamicHash:
                 if (!dynamicPointer(root, image, entry.value, 8, pointer)) {
-                    return kernel::ElfLoadError::InvalidAddress;
+                    return ElfLoadError::InvalidAddress;
                 }
                 hash = pointer;
                 break;
             case dynamicStringTable:
                 if (!dynamicPointer(root, image, entry.value, 1, pointer)) {
-                    return kernel::ElfLoadError::InvalidAddress;
+                    return ElfLoadError::InvalidAddress;
                 }
                 image.stringTable = pointer;
                 break;
@@ -434,7 +441,7 @@ kernel::ElfLoadError readDynamicInfo(uint64_t root, Image& image) {
             case dynamicSymbolTable:
                 if (!dynamicPointer(root, image, entry.value, sizeof(Symbol),
                                     pointer)) {
-                    return kernel::ElfLoadError::InvalidAddress;
+                    return ElfLoadError::InvalidAddress;
                 }
                 image.symbolTable = pointer;
                 break;
@@ -444,7 +451,7 @@ kernel::ElfLoadError readDynamicInfo(uint64_t root, Image& image) {
             case dynamicRela:
                 if (!dynamicPointer(root, image, entry.value, sizeof(Rela),
                                     pointer)) {
-                    return kernel::ElfLoadError::InvalidAddress;
+                    return ElfLoadError::InvalidAddress;
                 }
                 image.rela = pointer;
                 break;
@@ -457,7 +464,7 @@ kernel::ElfLoadError readDynamicInfo(uint64_t root, Image& image) {
             case dynamicJumpRelocation:
                 if (!dynamicPointer(root, image, entry.value, sizeof(Rela),
                                     pointer)) {
-                    return kernel::ElfLoadError::InvalidAddress;
+                    return ElfLoadError::InvalidAddress;
                 }
                 image.jumpRela = pointer;
                 break;
@@ -476,40 +483,41 @@ kernel::ElfLoadError readDynamicInfo(uint64_t root, Image& image) {
         image.stringTableSize == 0 || image.symbolTable == 0 || hash == 0 ||
         image.relaSize % sizeof(Rela) != 0 ||
         image.jumpRelaSize % sizeof(Rela) != 0 ||
-        !kernel::memory::validateUserMemory(root, image.stringTable,
-                                            image.stringTableSize, false) ||
-        (image.relaSize != 0 && !kernel::memory::validateUserMemory(
+        !kernel::mm::validateUserMemory(root, image.stringTable,
+                                        image.stringTableSize, false) ||
+        (image.relaSize != 0 && !kernel::mm::validateUserMemory(
                                     root, image.rela, image.relaSize, false)) ||
         (image.jumpRelaSize != 0 &&
-         !kernel::memory::validateUserMemory(root, image.jumpRela,
-                                             image.jumpRelaSize, false))) {
-        return kernel::ElfLoadError::UnsupportedProgramHeader;
+         !kernel::mm::validateUserMemory(root, image.jumpRela,
+                                         image.jumpRelaSize, false))) {
+        return ElfLoadError::UnsupportedProgramHeader;
     }
     uint32_t hashHeader[2]{};
-    if (!kernel::memory::copyFromAddressSpace(hashHeader, root, hash,
-                                              sizeof(hashHeader)) ||
-        hashHeader[0] == 0 || hashHeader[0] > 65536 ||
-        hashHeader[1] == 0 || hashHeader[1] > 65536 ||
-        !kernel::memory::validateUserMemory(root, hash,
+    if (!kernel::mm::copyFromAddressSpace(hashHeader, root, hash,
+                                          sizeof(hashHeader)) ||
+        hashHeader[0] == 0 || hashHeader[0] > 65536 || hashHeader[1] == 0 ||
+        hashHeader[1] > 65536 ||
+        !kernel::mm::validateUserMemory(
+            root, hash,
             (2ULL + hashHeader[0] + hashHeader[1]) * sizeof(uint32_t), false)) {
-        return kernel::ElfLoadError::InvalidHeader;
+        return ElfLoadError::InvalidHeader;
     }
-    image.symbolCount = hashHeader[1];
+    image.symbolCount     = hashHeader[1];
     image.hashBucketCount = hashHeader[0];
-    image.hashBuckets = hash + 2 * sizeof(uint32_t);
+    image.hashBuckets     = hash + 2 * sizeof(uint32_t);
     image.hashChains = image.hashBuckets + hashHeader[0] * sizeof(uint32_t);
-    if (!kernel::memory::validateUserMemory(root, image.symbolTable,
-                                            image.symbolCount * sizeof(Symbol),
-                                            false)) {
-        return kernel::ElfLoadError::InvalidAddress;
+    if (!kernel::mm::validateUserMemory(root, image.symbolTable,
+                                        image.symbolCount * sizeof(Symbol),
+                                        false)) {
+        return ElfLoadError::InvalidAddress;
     }
-    return kernel::ElfLoadError::None;
+    return ElfLoadError::None;
 }
 
 bool readSymbol(uint64_t root, const Image& image, uint32_t index,
                 Symbol& symbol) {
     return index < image.symbolCount &&
-           kernel::memory::copyFromAddressSpace(
+           kernel::mm::copyFromAddressSpace(
                &symbol, root, image.symbolTable + index * sizeof(Symbol),
                sizeof(symbol));
 }
@@ -526,11 +534,13 @@ bool symbolNamesEqual(uint64_t root, const Image& left,
         remaining = right.stringTableSize - rightSymbol.name;
     for (uint64_t offset = 0; offset < remaining;) {
         char a[64], b[64];
-        const uint64_t count = remaining - offset < sizeof(a) ? remaining - offset : sizeof(a);
-        if (!kernel::memory::copyFromAddressSpace(a, root,
-                left.stringTable + leftSymbol.name + offset, count) ||
-            !kernel::memory::copyFromAddressSpace(b, root,
-                right.stringTable + rightSymbol.name + offset, count)) return false;
+        const uint64_t count =
+            remaining - offset < sizeof(a) ? remaining - offset : sizeof(a);
+        if (!kernel::mm::copyFromAddressSpace(
+                a, root, left.stringTable + leftSymbol.name + offset, count) ||
+            !kernel::mm::copyFromAddressSpace(
+                b, root, right.stringTable + rightSymbol.name + offset, count))
+            return false;
         for (uint64_t i = 0; i < count; ++i) {
             if (a[i] != b[i]) return false;
             if (a[i] == 0) return true;
@@ -541,18 +551,21 @@ bool symbolNamesEqual(uint64_t root, const Image& left,
 }
 
 bool symbolHash(uint64_t root, const Image& image, const Symbol& symbol,
-                 uint32_t& hash) {
+                uint32_t& hash) {
     if (symbol.name >= image.stringTableSize) return false;
-    hash = 0;
+    hash                     = 0;
     const uint64_t remaining = image.stringTableSize - symbol.name;
     for (uint64_t offset = 0; offset < remaining;) {
         uint8_t bytes[64];
-        const uint64_t count = remaining - offset < sizeof(bytes) ? remaining - offset : sizeof(bytes);
-        if (!kernel::memory::copyFromAddressSpace(bytes, root,
-                image.stringTable + symbol.name + offset, count)) return false;
+        const uint64_t count = remaining - offset < sizeof(bytes)
+                                   ? remaining - offset
+                                   : sizeof(bytes);
+        if (!kernel::mm::copyFromAddressSpace(
+                bytes, root, image.stringTable + symbol.name + offset, count))
+            return false;
         for (uint64_t i = 0; i < count; ++i) {
             if (bytes[i] == 0) return true;
-            hash = (hash << 4) + bytes[i];
+            hash                = (hash << 4) + bytes[i];
             const uint32_t high = hash & 0xf0000000U;
             hash ^= high >> 24;
             hash &= ~high;
@@ -574,13 +587,17 @@ bool resolveSymbol(uint64_t root, const Image* images, uint32_t imageCount,
     if (trustedImports) {
         char name[128]{};
         uint32_t i = 0;
-        for (; i + 1 < sizeof(name) && requested.name + i < requester.stringTableSize; ++i) {
-            if (!kernel::memory::copyFromAddressSpace(&name[i], root,
-                    requester.stringTable + requested.name + i, 1)) return false;
+        for (; i + 1 < sizeof(name) &&
+               requested.name + i < requester.stringTableSize;
+             ++i) {
+            if (!kernel::mm::copyFromAddressSpace(
+                    &name[i], root, requester.stringTable + requested.name + i,
+                    1))
+                return false;
             if (!name[i]) break;
         }
         if (i + 1 < sizeof(name) && !name[i]) {
-            value = kernel::Services::resolve(name);
+            value = kernel::task::serviceResolve(name);
             if (value) return true;
         }
     }
@@ -588,10 +605,13 @@ bool resolveSymbol(uint64_t root, const Image* images, uint32_t imageCount,
     if (!symbolHash(root, requester, requested, hash)) return false;
     for (uint32_t imageIndex = 0; imageIndex < imageCount; ++imageIndex) {
         const Image& image = images[imageIndex];
-        uint32_t index = 0;
-        if (!kernel::memory::copyFromAddressSpace(&index, root,
-                image.hashBuckets + (hash % image.hashBucketCount) * sizeof(uint32_t),
-                sizeof(index))) return false;
+        uint32_t index     = 0;
+        if (!kernel::mm::copyFromAddressSpace(
+                &index, root,
+                image.hashBuckets +
+                    (hash % image.hashBucketCount) * sizeof(uint32_t),
+                sizeof(index)))
+            return false;
         uint64_t visited = 0;
         while (index != 0) {
             if (++visited > image.symbolCount) return false;
@@ -600,13 +620,17 @@ bool resolveSymbol(uint64_t root, const Image* images, uint32_t imageCount,
             const uint8_t binding = candidate.info >> 4;
             if (candidate.sectionIndex != sectionUndefined &&
                 (binding == 1 || binding == symbolBindingWeak) &&
-                symbolNamesEqual(root, requester, requested, image, candidate)) {
+                symbolNamesEqual(root, requester, requested, image,
+                                 candidate)) {
                 value = candidate.sectionIndex == sectionAbsolute
-                            ? candidate.value : image.bias + candidate.value;
+                            ? candidate.value
+                            : image.bias + candidate.value;
                 return true;
             }
-            if (!kernel::memory::copyFromAddressSpace(&index, root,
-                    image.hashChains + index * sizeof(uint32_t), sizeof(index))) return false;
+            if (!kernel::mm::copyFromAddressSpace(
+                    &index, root, image.hashChains + index * sizeof(uint32_t),
+                    sizeof(index)))
+                return false;
         }
     }
     if ((requested.info >> 4) == symbolBindingWeak) {
@@ -616,23 +640,23 @@ bool resolveSymbol(uint64_t root, const Image* images, uint32_t imageCount,
     return false;
 }
 
-kernel::ElfLoadError applyRelocationTable(uint64_t root, const Image* images,
-                                          uint32_t imageCount,
-                                          const Image& image, uint64_t table,
-                                          uint64_t size, bool trustedImports) {
+ElfLoadError applyRelocationTable(uint64_t root, const Image* images,
+                                  uint32_t imageCount, const Image& image,
+                                  uint64_t table, uint64_t size,
+                                  bool trustedImports) {
     for (uint64_t offset = 0; offset < size; offset += sizeof(Rela)) {
         Rela relocation{};
-        if (!kernel::memory::copyFromAddressSpace(
-                &relocation, root, table + offset, sizeof(relocation)) ||
+        if (!kernel::mm::copyFromAddressSpace(&relocation, root, table + offset,
+                                              sizeof(relocation)) ||
             relocation.offset > maximumUserAddress - image.bias) {
-            return kernel::ElfLoadError::InvalidAddress;
+            return ElfLoadError::InvalidAddress;
         }
         const uint32_t type   = static_cast<uint32_t>(relocation.info);
         const uint32_t symbol = static_cast<uint32_t>(relocation.info >> 32);
         const uint64_t target = image.bias + relocation.offset;
-        if (!kernel::memory::validateUserMemory(root, target, sizeof(uint64_t),
-                                                false)) {
-            return kernel::ElfLoadError::InvalidAddress;
+        if (!kernel::mm::validateUserMemory(root, target, sizeof(uint64_t),
+                                            false)) {
+            return ElfLoadError::InvalidAddress;
         }
         uint64_t value = 0;
         if (type == relocationRelative) {
@@ -642,31 +666,38 @@ kernel::ElfLoadError applyRelocationTable(uint64_t root, const Image* images,
             uint64_t symbolValue = 0;
             if (!resolveSymbol(root, images, imageCount, image, symbol,
                                symbolValue, trustedImports)) {
-                return kernel::ElfLoadError::UndefinedSymbol;
+                return ElfLoadError::UndefinedSymbol;
             }
             value = type == relocation64
                         ? symbolValue + static_cast<uint64_t>(relocation.addend)
                         : symbolValue;
         } else {
-            return kernel::ElfLoadError::UnsupportedProgramHeader;
+            return ElfLoadError::UnsupportedProgramHeader;
         }
-        if (!kernel::memory::copyToAddressSpace(root, target, &value,
-                                                sizeof(value))) {
-            return kernel::ElfLoadError::MappingFailed;
+        if (!kernel::mm::copyToAddressSpace(root, target, &value,
+                                            sizeof(value))) {
+            return ElfLoadError::MappingFailed;
         }
     }
-    return kernel::ElfLoadError::None;
+    return ElfLoadError::None;
 }
 
 }  // namespace
 
-namespace kernel {
-
-ElfLoadError ElfLoader::loadDynamicSetFromAddressSpace(
-    uint64_t destinationRoot, uint64_t sourceRoot, uint64_t executableAddress,
-    size_t executableSize, const ElfSharedImage* sharedImages,
-    uint32_t sharedImageCount, ElfLoadResult& result, bool trustedImports) {
-    result = {};
+ElfLoadError Loader::loadDynamicSetFromAddressSpace(
+    uint64_t sourceRoot, uint64_t executableAddress, size_t executableSize,
+    const ElfSharedImage* sharedImages, uint32_t sharedImageCount,
+    ElfLoadResult& result, bool trustedImports) {
+    if (target_) {
+        ::kernel::task::PreemptionSpinLockGuard guard(
+            target_->addressSpace().lock());
+        return Loader(target_->addressSpace().rootPhysicalAddress())
+            .loadDynamicSetFromAddressSpace(
+                sourceRoot, executableAddress, executableSize, sharedImages,
+                sharedImageCount, result, trustedImports);
+    }
+    const uint64_t destinationRoot = root_;
+    result                         = {};
     if (destinationRoot == 0 || sourceRoot == 0 || executableAddress == 0 ||
         executableSize == 0 || sharedImageCount == 0 ||
         sharedImageCount >= maximumImages || sharedImages == nullptr) {
@@ -676,7 +707,8 @@ ElfLoadError ElfLoader::loadDynamicSetFromAddressSpace(
     images[0].sourceAddress = executableAddress;
     images[0].sourceSize    = executableSize;
     ElfHeader header{};
-    if (!readSource(&header, sourceRoot, executableAddress, executableSize, 0, sizeof(header)))
+    if (!readSource(&header, sourceRoot, executableAddress, executableSize, 0,
+                    sizeof(header)))
         return ElfLoadError::InvalidHeader;
     ElfLoadError validation = validateHeader(header, executableSize, true);
     if (validation != ElfLoadError::None) return validation;
@@ -684,31 +716,38 @@ ElfLoadError ElfLoader::loadDynamicSetFromAddressSpace(
     for (uint16_t i = 0; i < header.programHeaderCount; ++i) {
         ProgramHeader segment{};
         if (!readSource(&segment, sourceRoot, executableAddress, executableSize,
-                header.programHeaderOffset + i * sizeof(segment), sizeof(segment)))
+                        header.programHeaderOffset + i * sizeof(segment),
+                        sizeof(segment)))
             return ElfLoadError::InvalidProgramHeader;
         if (segment.type != programInterpreter) continue;
         if (interpreted || segment.fileSize < 2 || segment.fileSize > 256)
             return ElfLoadError::InvalidProgramHeader;
         char path[256]{};
         if (!readSource(path, sourceRoot, executableAddress, executableSize,
-                segment.offset, segment.fileSize) || path[0] != '/' ||
-                path[segment.fileSize - 1] || !path[1]) return ElfLoadError::InvalidProgramHeader;
+                        segment.offset, segment.fileSize) ||
+            path[0] != '/' || path[segment.fileSize - 1] || !path[1])
+            return ElfLoadError::InvalidProgramHeader;
         for (uint64_t byte = 0; byte + 1 < segment.fileSize; ++byte)
             if (!path[byte]) return ElfLoadError::InvalidProgramHeader;
         interpreted = true;
     }
     if (interpreted) {
         if (sharedImageCount != 1) return ElfLoadError::InvalidArgument;
-        return loadInterpreter(destinationRoot, sourceRoot, images[0], header, sharedImages[0], result);
+        return loadInterpreter(destinationRoot, sourceRoot, images[0], header,
+                               sharedImages[0], result);
     }
     ElfLoadError error =
         loadImage(destinationRoot, sourceRoot, 0x400000, true, images[0]);
     if (error != ElfLoadError::None) return error;
     for (uint32_t index = 0; index < sharedImageCount; ++index) {
-        images[index + 1].sourceAddress = sharedImages[index].sourceAddress;
-        images[index + 1].sourceSize    = sharedImages[index].size;
-        error = loadImage(destinationRoot, sharedImages[index].sourceRoot ? sharedImages[index].sourceRoot : sourceRoot, sharedImageBases[index],
-                          false, images[index + 1]);
+        images[index + 1].sourceAddress =
+            sharedImages[index].getSourceAddress();
+        images[index + 1].sourceSize = sharedImages[index].getSize();
+        error                        = loadImage(destinationRoot,
+                          sharedImages[index].getSourceRoot()
+                                                     ? sharedImages[index].getSourceRoot()
+                                                     : sourceRoot,
+                                                 sharedImageBases[index], false, images[index + 1]);
         if (error != ElfLoadError::None) return error;
     }
     const uint32_t imageCount = sharedImageCount + 1;
@@ -721,15 +760,15 @@ ElfLoadError ElfLoader::loadDynamicSetFromAddressSpace(
                                      images[index], images[index].rela,
                                      images[index].relaSize, trustedImports);
         if (error != ElfLoadError::None) return error;
-        error = applyRelocationTable(destinationRoot, images, imageCount,
-                                     images[index], images[index].jumpRela,
-                                     images[index].jumpRelaSize, trustedImports);
+        error = applyRelocationTable(
+            destinationRoot, images, imageCount, images[index],
+            images[index].jumpRela, images[index].jumpRelaSize, trustedImports);
         if (error != ElfLoadError::None) return error;
     }
-    result.entryPoint = images[0].entryPoint;
-    result.imageBase  = images[0].imageBase;
-    result.imageEnd   = images[0].imageEnd;
+    result.setEntryPoint(images[0].entryPoint);
+    result.setImageBase(images[0].imageBase);
+    result.setImageEnd(images[0].imageEnd);
     return ElfLoadError::None;
 }
 
-}  // namespace kernel
+}  // namespace kernel::elf

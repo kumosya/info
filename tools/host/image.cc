@@ -11,19 +11,24 @@ void image(const Context& context) {
         // Its final 12-byte blocklist describes the remaining contiguous core.
         // This only writes a newly generated regular image, never a device.
         auto boot = read(stage / "boot.img"), core = read(stage / "core.img");
-        if (!fs::is_regular_file(context.image) || fs::is_symlink(context.image) ||
-            boot.size() != 512 || core.size() < 1024 || core.size() > 512 * 1024)
+        if (!fs::is_regular_file(context.image) ||
+            fs::is_symlink(context.image) || boot.size() != 512 ||
+            core.size() < 1024 || core.size() > 512 * 1024)
             throw std::runtime_error("invalid GRUB image inputs");
-        std::fstream disk(context.image, std::ios::binary | std::ios::in | std::ios::out);
+        std::fstream disk(context.image,
+                          std::ios::binary | std::ios::in | std::ios::out);
         unsigned char mbr[512]{};
         disk.read(reinterpret_cast<char*>(mbr), sizeof(mbr));
         uint32_t first = 0;
         memcpy(&first, mbr + 454, 4);
         const uint32_t sectors = (core.size() + 511) / 512;
-        if (!disk || mbr[510] != 0x55 || mbr[511] != 0xaa || first < sectors + 1)
+        if (!disk || mbr[510] != 0x55 || mbr[511] != 0xaa ||
+            first < sectors + 1)
             throw std::runtime_error("no room for embedded GRUB core");
-        auto put = [](std::string& data, size_t offset, uint64_t value, unsigned bytes) {
-            for (unsigned i = 0; i < bytes; ++i) data[offset + i] = static_cast<char>(value >> (i * 8));
+        auto put = [](std::string& data, size_t offset, uint64_t value,
+                      unsigned bytes) {
+            for (unsigned i = 0; i < bytes; ++i)
+                data[offset + i] = static_cast<char>(value >> (i * 8));
         };
         put(boot, 0x5c, 1, 8);
         std::fill(core.begin() + 488, core.begin() + 500, '\0');
@@ -31,9 +36,13 @@ void image(const Context& context) {
         put(core, 508, sectors - 1, 2);
         put(core, 510, 0x820, 2);
         core.resize(sectors * 512, '\0');
-        disk.seekp(0); disk.write(boot.data(), 440); // Keep MBR identity/partitions.
-        disk.seekp(512); disk.write(core.data(), core.size()); disk.flush();
-        if (!disk) throw std::runtime_error("cannot embed GRUB into template image");
+        disk.seekp(0);
+        disk.write(boot.data(), 440);  // Keep MBR identity/partitions.
+        disk.seekp(512);
+        disk.write(core.data(), core.size());
+        disk.flush();
+        if (!disk)
+            throw std::runtime_error("cannot embed GRUB into template image");
         return;
     }
     if (context.argument == "prepare") {

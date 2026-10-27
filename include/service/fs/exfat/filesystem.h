@@ -4,7 +4,7 @@
 
 namespace vfs::exfat {
 class Probe {
- public:
+   public:
     bool detect(const uint8_t* data, size_t size);
 };
-}
+}  // namespace vfs::exfat

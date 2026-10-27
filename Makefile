@@ -24,7 +24,7 @@ CONFIG_FILES := $(wildcard script/config/*.json) $(wildcard $(BUILD_DIR)/config/
 CPPFLAGS := -I$(INCLUDE_DIR) -I$(INCLUDE_DIR)/stdc -I$(INCLUDE_DIR)/stdc++ -I$(INCLUDE_DIR)/posix -I$(INCLUDE_DIR)/os-c++ -I$(BUILD_DIR)/generated
 DEPENDENCY_FLAGS := -MMD -MP
 CFLAGS := -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -nostdinc -m32 -O2 -Wall -Wextra
-CPPFLAGS := -std=c++20 -ffreestanding -fno-builtin -fno-stack-protector -fno-exceptions -fno-rtti \
+KERNEL_CPPFLAGS := -std=c++20 -ffreestanding -fno-builtin -fno-stack-protector -fno-exceptions -fno-rtti \
 	-fno-use-cxa-atexit -fno-threadsafe-statics -fno-pic -m64 -mcmodel=large \
 	-mno-red-zone -mgeneral-regs-only -nostdinc -nostdinc++ -O2 -Wall -Wextra
 ASFLAGS := -m64 -ffreestanding -fno-pic
@@ -157,12 +157,12 @@ $(PACKAGE_DIR)/libc++/COPYRIGHT: lib/libc/portable/COPYRIGHT
 $(KERNEL): $(KERNEL_OBJECTS) $(KERNEL_LINKER_SCRIPT) Makefile
 	@mkdir -p $(@D)
 	@echo "[KERNEL LD] $@"
-	@$(CPP) $(CPPFLAGS) $(KERNEL_LDFLAGS) -o $@ $(KERNEL_OBJECTS) -lgcc
+	@$(CPP) $(KERNEL_CPPFLAGS) $(KERNEL_LDFLAGS) -o $@ $(KERNEL_OBJECTS) -lgcc
 
 $(OBJECT_DIR)/kernel/%.o: $(SOURCE_DIR)/kernel/%.cc
 	@mkdir -p $(@D)
 	@echo "[KERNEL CPP] $<"
-	@$(CPP) $(CPPFLAGS) $(CPPFLAGS) $(DEPENDENCY_FLAGS) -c $< -o $@
+	@$(CPP) $(CPPFLAGS) $(KERNEL_CPPFLAGS) $(DEPENDENCY_FLAGS) -c $< -o $@
 
 $(OBJECT_DIR)/kernel/%.o: $(SOURCE_DIR)/kernel/%.S
 	@mkdir -p $(@D)

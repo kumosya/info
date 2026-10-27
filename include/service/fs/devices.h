@@ -1,5 +1,8 @@
-#include "service/common/records.h"
 #pragma once
+
+// The catalog capacity belongs to the shared storage service contract.
+#include "service/common/kernel-requests.h"
+#include "service/common/records.h"
 #include "service/fs/block.h"
 #include "service/fs/format.h"
 #include <os/storage.h>
@@ -18,7 +21,8 @@ class DeviceCatalog {
    public:
     static constexpr int missing   = -1;
     static constexpr int ambiguous = -2;
-    bool add(const os::wire::StorageDeviceIdentity& identity, SectorDevice& device);
+    bool add(const os::wire::StorageDeviceIdentity& identity,
+             SectorDevice& device);
     int resolve(const char* source) const;
     const DeviceRecord* get(uint32_t index) const;
     uint32_t count() const { return count_; }

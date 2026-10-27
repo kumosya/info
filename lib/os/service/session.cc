@@ -1,9 +1,9 @@
+#include "service/console/display-session.h"
 #include <os/device.h>
 #include <os/ipc.h>
 #include <os/mm.h>
 #include <os/service.h>
 #include <os/task.h>
-#include "service/console/display-session.h"
 
 namespace os {
 bool GraphicalSession::bind(uint64_t endpoint, uint64_t task,

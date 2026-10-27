@@ -260,7 +260,7 @@ static int executeDescriptor(int source, const char* path, int descriptorExecuti
         OsFileStat sharedStatus;
         uint64_t sharedDescriptor;
         uint64_t sharedOffset = 0;
-        if (!__libc_os_stat_file(libcFsService(), interpreter,
+        if (!__libc_os_stat_file(interpreter,
                           &sharedStatus) ||
             sharedStatus.type != OS_FILE_TYPE_FILE ||
             sharedStatus.size == 0 ||

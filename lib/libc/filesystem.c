@@ -5,7 +5,7 @@ int rename(const char* existing, const char* newPath) {
     char source[LIBC_PATH_CAPACITY], destination[LIBC_PATH_CAPACITY];
     OsFileStat first, second;
     libcCopyPath(source, existing); libcCopyPath(destination, newPath);
-    if (!__libc_os_stat_file(libcFsService(), source, &first)) { errno = ENOENT; return -1; }
+    if (!__libc_os_stat_file(source, &first)) { errno = ENOENT; return -1; }
     // Compare the destination parent, which exists even when its leaf does not.
     char parent[LIBC_PATH_CAPACITY];
     size_t length = 0;
@@ -14,7 +14,7 @@ int rename(const char* existing, const char* newPath) {
     while (length > 1 && destination[length - 1] != '/') --length;
     for (size_t i = 0; i < length; ++i) parent[i] = destination[i];
     parent[length > 1 ? length - 1 : 1] = 0;
-    if (!__libc_os_stat_file(libcFsService(), parent, &second)) { errno = ENOENT; return -1; }
+    if (!__libc_os_stat_file(parent, &second)) { errno = ENOENT; return -1; }
     if (first.device != second.device) { errno = EXDEV; return -1; }
     if (!__libc_os_rename_file(libcFsService(), source, destination)) { errno = EIO; return -1; }
     return 0;
@@ -38,7 +38,7 @@ int stat(const char* path, struct stat* result) {
         return -1;
     }
     libcCopyPath(absolute, path);
-    if (!__libc_os_stat_file(libcFsService(), absolute, &status)) {
+    if (!__libc_os_stat_file(absolute, &status)) {
         errno = ENOENT;
         return -1;
     }
@@ -79,12 +79,12 @@ int mkdir(const char* path, mode_t mode) {
     char absolute[LIBC_PATH_CAPACITY];
     OsFileStat existing;
     libcCopyPath(absolute, path);
-    if (__libc_os_stat_file(libcFsService(), absolute, &existing)) {
+    if (__libc_os_stat_file(absolute, &existing)) {
         errno = EEXIST;
         return -1;
     }
     if (!__libc_os_make_directory(libcFsService(), absolute)) {
-        errno = __libc_os_stat_file(libcFsService(), absolute, &existing) ? EEXIST : EIO;
+        errno = __libc_os_stat_file(absolute, &existing) ? EEXIST : EIO;
         return -1;
     }
     if (!__libc_os_change_file_mode(libcFsService(), absolute, libcCreationMode(mode))) {
@@ -291,7 +291,7 @@ int chown(const char* path, uid_t owner, gid_t group) {
         return -1;
     }
     libcCopyPath(absolute, path);
-    if (!__libc_os_stat_file(libcFsService(), absolute, &status)) {
+    if (!__libc_os_stat_file(absolute, &status)) {
         errno = ENOENT;
         return -1;
     }
@@ -340,7 +340,7 @@ int utimensat(int directory, const char* path,
         return -1;
     }
     if(libcPathAt(directory,path,absolute)) return -1;
-    if (!__libc_os_stat_file(libcFsService(), absolute, &status)) {
+    if (!__libc_os_stat_file(absolute, &status)) {
         errno = ENOENT;
         return -1;
     }

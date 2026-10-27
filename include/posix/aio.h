@@ -1,11 +1,11 @@
 #ifndef _POSIX_AIO_H
 #define _POSIX_AIO_H
 
-
 #include <pthread.h>
 #include <stddef.h>
-#include <sys/types.h>
 #include <time.h>
+
+#include <sys/types.h>
 
 struct sigevent;
 
@@ -47,8 +47,8 @@ int aio_cancel(int file_descriptor, struct aiocb* control);
 int aio_suspend(const struct aiocb* const controls[], int count,
                 const struct timespec* timeout);
 int aio_fsync(int operation, struct aiocb* control);
-int lio_listio(int mode, struct aiocb* __restrict const* __restrict controls, int count,
-               struct sigevent* notification);
+int lio_listio(int mode, struct aiocb* __restrict const* __restrict controls,
+               int count, struct sigevent* notification);
 
 #ifdef __cplusplus
 }

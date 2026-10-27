@@ -6,11 +6,12 @@ namespace fs::ext4 {
 namespace {
 
 class MetadataChecksum {
- public:
+   public:
     static uint32_t crc32c(uint32_t crc, const uint8_t* data, size_t size);
 };
 
-uint32_t MetadataChecksum::crc32c(uint32_t crc, const uint8_t* data, size_t size) {
+uint32_t MetadataChecksum::crc32c(uint32_t crc, const uint8_t* data,
+                                  size_t size) {
     for (size_t index = 0; index < size; ++index) {
         crc ^= data[index];
         for (uint32_t bit = 0; bit < 8; ++bit) {
@@ -52,7 +53,7 @@ bool Filesystem::mount(SectorDevice& device) {
     incompatibleFeatures_ = DiskEncoding::read32(superblock_ + 96);
     readOnlyFeatures_     = DiskEncoding::read32(superblock_ + 100);
     const bool has64Bit   = (incompatibleFeatures_ & featureIncompat64Bit) != 0;
-    descriptorSize_       = has64Bit ? DiskEncoding::read16(superblock_ + 254) : 32;
+    descriptorSize_ = has64Bit ? DiskEncoding::read16(superblock_ + 254) : 32;
     if (descriptorSize_ == 0) descriptorSize_ = 32;
 
     constexpr uint32_t supportedIncompatible =
@@ -76,7 +77,9 @@ bool Filesystem::mount(SectorDevice& device) {
 
     blocksCount_ = DiskEncoding::read32(superblock_ + 4);
     if (has64Bit) {
-        blocksCount_ |= static_cast<uint64_t>(DiskEncoding::read32(superblock_ + 336)) << 32;
+        blocksCount_ |=
+            static_cast<uint64_t>(DiskEncoding::read32(superblock_ + 336))
+            << 32;
     }
     if (blocksCount_ <= firstDataBlock_) return false;
     groupCount_ = static_cast<uint32_t>(
@@ -84,8 +87,9 @@ bool Filesystem::mount(SectorDevice& device) {
         blocksPerGroup_);
 
     if ((readOnlyFeatures_ & featureRoCompatMetadataCsum) != 0) {
-        if (superblock_[373] != 1 || MetadataChecksum::crc32c(0xffffffffU, superblock_, 1020) !=
-                                         DiskEncoding::read32(superblock_ + 1020)) {
+        if (superblock_[373] != 1 ||
+            MetadataChecksum::crc32c(0xffffffffU, superblock_, 1020) !=
+                DiskEncoding::read32(superblock_ + 1020)) {
             return false;
         }
     }
@@ -108,7 +112,8 @@ bool Filesystem::readGroup(uint32_t group, uint8_t* descriptor) {
         descriptor[index] = blockBuffer_[within + index];
     }
 
-    if ((DiskEncoding::read32(superblock_ + 100) & featureRoCompatMetadataCsum) != 0) {
+    if ((DiskEncoding::read32(superblock_ + 100) &
+         featureRoCompatMetadataCsum) != 0) {
         const uint16_t expected = DiskEncoding::read16(descriptor + 30);
         uint8_t savedLow[2]{descriptor[30], descriptor[31]};
         descriptor[30] = 0;
@@ -123,10 +128,12 @@ bool Filesystem::readGroup(uint32_t group, uint8_t* descriptor) {
                               static_cast<uint8_t>(group >> 8),
                               static_cast<uint8_t>(group >> 16),
                               static_cast<uint8_t>(group >> 24)};
-        uint32_t checksum = MetadataChecksum::crc32c(seed, groupBytes, sizeof(groupBytes));
-        checksum          = MetadataChecksum::crc32c(checksum, descriptor, descriptorSize_);
-        descriptor[30]    = savedLow[0];
-        descriptor[31]    = savedLow[1];
+        uint32_t checksum =
+            MetadataChecksum::crc32c(seed, groupBytes, sizeof(groupBytes));
+        checksum =
+            MetadataChecksum::crc32c(checksum, descriptor, descriptorSize_);
+        descriptor[30] = savedLow[0];
+        descriptor[31] = savedLow[1];
         if (static_cast<uint16_t>(checksum) != expected) {
             return false;
         }

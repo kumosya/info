@@ -38,8 +38,8 @@ class Iso9660FileSystem final : public vfs::FileSystem {
 
 namespace vfs::iso {
 class Probe {
- public:
+   public:
     bool detect(const uint8_t* data, size_t size);
     uint64_t blockOffset(uint32_t block);
 };
-}
+}  // namespace vfs::iso

@@ -1,10 +1,3 @@
-#include <os/service.h>
-
-#include <os/console.h>
-#include <os/device.h>
-#include <os/ipc.h>
-#include <os/mm.h>
-#include <os/task.h>
 #include "service/common/channel.h"
 #include "service/common/entry.h"
 #include "service/common/kernel-requests.h"
@@ -13,6 +6,12 @@
 #include "service/common/requests.h"
 #include "service/common/runtime.h"
 #include "service/console/client.h"
+#include <os/console.h>
+#include <os/device.h>
+#include <os/ipc.h>
+#include <os/mm.h>
+#include <os/service.h>
+#include <os/task.h>
 
 namespace os {
 

@@ -1,13 +1,5 @@
-#include <os/mm.h>
-
 #include <fcntl.h>
 
-#include <os/console.h>
-#include <os/device.h>
-#include <os/file.h>
-#include <os/ipc.h>
-#include <os/service.h>
-#include <os/task.h>
 #include "service/common/channel.h"
 #include "service/common/entry.h"
 #include "service/common/kernel-requests.h"
@@ -16,12 +8,18 @@
 #include "service/common/requests.h"
 #include "service/common/runtime.h"
 #include "service/console/client.h"
+#include <os/console.h>
+#include <os/device.h>
+#include <os/file.h>
+#include <os/ipc.h>
+#include <os/mm.h>
+#include <os/service.h>
+#include <os/task.h>
 #include <sys/mman.h>
 
 namespace os {
 
-detail::MemoryQuery::MemoryQuery()
-    : Sys::Transport(CoreServiceKind::Memory) {}
+detail::MemoryQuery::MemoryQuery() : Sys::Transport(CoreServiceKind::Memory) {}
 
 namespace {
 
@@ -108,17 +106,17 @@ class VirtualMemoryClient {
         request.data[original + 1] = ++sequence_;
         request.data[original + 2] = 0;
         request.length += 3;
-        const uint64_t deadline =
-            Sys().readMonotonicTime() + 20000000000ULL;
+        const uint64_t deadline = Sys().readMonotonicTime() + 20000000000ULL;
         IpcMessage reply{};
         int status = 0;
         while (true) {
             if (!endpoint_) {
-                endpoint_ =
-                    os::detail::RegistryClient(os::detail::RegistryClient().endpoint())
-                        .lookup("mm", 1);
+                endpoint_ = os::detail::RegistryClient(
+                                os::detail::RegistryClient().endpoint())
+                                .lookup("mm", 1);
                 if (endpoint_)
-                    Ipc::Handle(endpoint_, false).setFlags(handleFlagCloseOnExec);
+                    Ipc::Handle(endpoint_, false)
+                        .setFlags(handleFlagCloseOnExec);
             }
             status = endpoint_
                          ? callService(endpoint_, request, reply, deadline)
@@ -326,8 +324,9 @@ uint64_t detail::MappingClient::file(uint64_t descriptor, uint64_t size,
                                      uint64_t hint, uint64_t* identity) {
     if (!descriptor || !size || size > UINT64_MAX - 4095)
         return static_cast<int64_t>(ErrorCode::InvalidArgument);
-    const uint64_t fs = os::detail::RegistryClient(os::detail::RegistryClient().endpoint())
-                            .lookup(fsServiceName, 1);
+    const uint64_t fs =
+        os::detail::RegistryClient(os::detail::RegistryClient().endpoint())
+            .lookup(fsServiceName, 1);
     if (!fs) return static_cast<int64_t>(ErrorCode::NotFound);
     IpcMessage delegate{}, reply{};
     delegate.type    = static_cast<uint64_t>(FsRequest::DelegateMapping);

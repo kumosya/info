@@ -14,15 +14,17 @@ void generate(const Context& context) {
                                           "taskCapabilityUsers",
                                           "taskCapabilityMemory",
                                           "taskCapabilityReadIdentity"};
-    const auto capabilityExpression = [&](const std::string& value) {
+    const auto capabilityExpression    = [&](const std::string& value) {
         std::string result;
         for (const auto& token : split(value, '+')) {
             if (!capabilities.count(token))
-                throw std::runtime_error("invalid service capability: " + token);
+                throw std::runtime_error("invalid service capability: " +
+                                            token);
             if (!result.empty()) result += " | ";
-            result += token == "0" ? "0" : "kernel::" + token;
+            result += token == "0" ? "0" : "kernel::task::" + token;
         }
-        if (result.empty()) throw std::runtime_error("empty service capabilities");
+        if (result.empty())
+            throw std::runtime_error("empty service capabilities");
         return result;
     };
     for (const auto& service : services) {
@@ -33,14 +35,16 @@ void generate(const Context& context) {
         if (service[2] != "-" && !fs::is_directory("src/" + service[2]))
             throw std::runtime_error("missing service directory " + service[2]);
         if (service[1] == "0") {
-            if (service[2].rfind("kernel/", 0) || service[15] != "resident" || service[16] != "kernel")
+            if (service[2].rfind("kernel/", 0) || service[15] != "resident" ||
+                service[16] != "kernel")
                 throw std::runtime_error("Ring0 outside kernel");
             continue;
         }
         if (service[2].rfind("kernel/", 0) == 0)
             throw std::runtime_error("Ring3 inside kernel");
         if ((service[15] != "boot" && service[15] != "file") ||
-            (service[16] != "init" && service[16] != "task" && service[16] != "device" && service[16] != "kernel") ||
+            (service[16] != "init" && service[16] != "task" &&
+             service[16] != "device" && service[16] != "kernel") ||
             (service[15] == "file" && service[16] != "init"))
             throw std::runtime_error("invalid service loading source or owner");
         if (!std::regex_match(service[3], symbol) ||
@@ -86,9 +90,9 @@ void generate(const Context& context) {
             << ");\nstatic_assert(static_cast<uint32_t>(os::ServiceRole::"
             << service[5] << ") == " << service[6] << ");\n";
         images << "    {" << quote(service[0]) << ", " << quote(service[12])
-               << ", 0, 0, "
-               << capabilityExpression(service[7])
-               << ", os::ServiceRole::" << service[5] << ", " << (service[15] == "boot" ? "true" : "false") << "},\n";
+               << ", 0, 0, " << capabilityExpression(service[7])
+               << ", os::ServiceRole::" << service[5] << ", "
+               << (service[15] == "boot" ? "true" : "false") << "},\n";
         if (service[8] != "external")
             make << "SERVICE_DIR_" << service[0] << " := " << service[2]
                  << '\n';
@@ -109,18 +113,24 @@ void generate(const Context& context) {
             make << '\n';
         }
         modules << service[0] << '|' << service[8] << '\n';
-        if (service[15] == "boot") grub << "    module2 /boot/" << service[0] << ".elf " << service[0] << '\n';
+        if (service[15] == "boot")
+            grub << "    module2 /boot/" << service[0] << ".elf " << service[0]
+                 << '\n';
     }
     images << "};\n";
     images << "static constexpr const char* configuredRuntimeLibraries[] = {\n";
     for (const auto& row : table(context.build / "config/layout.conf"))
-        if ((row[0] == "runtime" || row[0] == "external-runtime")) images << "    " << quote(row.at(2)) << ",\n";
-    images << "};\nstatic constexpr uint32_t configuredRuntimeCount = sizeof(configuredRuntimeLibraries) / sizeof(configuredRuntimeLibraries[0]);\n";
+        if ((row[0] == "runtime" || row[0] == "external-runtime"))
+            images << "    " << quote(row.at(2)) << ",\n";
+    images << "};\nstatic constexpr uint32_t configuredRuntimeCount = "
+              "sizeof(configuredRuntimeLibraries) / "
+              "sizeof(configuredRuntimeLibraries[0]);\n";
     std::sort(boot.begin(), boot.end(), [](const Row& a, const Row& b) {
         return std::stoi(a[11]) < std::stoi(b[11]);
     });
     startup << "struct ConfiguredService { os::ProgramId program; const char* "
-               "ready; const char* name; const char* owner; };\nstatic const ConfiguredService "
+               "ready; const char* name; const char* owner; };\nstatic const "
+               "ConfiguredService "
                "configuredServices[] = {\n";
     for (const auto& service : boot)
         if (service[0] != "init" && service[15] == "boot")

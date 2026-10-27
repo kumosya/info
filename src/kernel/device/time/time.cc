@@ -2,19 +2,17 @@
 
 #include "kernel/atomic.h"
 #include "kernel/cpu.h"
-#include "kernel/serial.h"
-#include "kernel/spinlock.h"
+#include "kernel/device.h"
+#include "kernel/sync.h"
 #include "kernel/task.h"
+
+namespace kernel::time {
 
 namespace {
 
 constexpr uint64_t nanoseconds_per_second = 1000000000ULL;
 constexpr uint64_t maximum_time_value     = ~0ULL;
-kernel::Atomic<uint64_t> last_monotonic_nanoseconds{0};
-kernel::SpinLock rtc_lock;
-uint64_t tsc_frequency;
-uint64_t boot_tsc;
-uint64_t wall_clock_base_nanoseconds;
+Clock systemClock;
 
 void cpuid(uint32_t leaf, uint32_t subleaf, uint32_t& eax, uint32_t& ebx,
            uint32_t& ecx, uint32_t& edx) {
@@ -102,8 +100,10 @@ uint64_t daysBeforeYear(uint32_t year) {
            (previous / 100 - 1969 / 100) + (previous / 400 - 1969 / 400);
 }
 
-uint64_t readWallClockSeconds() {
-    kernel::InterruptSpinLockGuard guard(rtc_lock);
+}  // namespace
+
+uint64_t Clock::readWallClockSeconds() {
+    kernel::task::InterruptSpinLockGuard guard(rtc_lock);
     while ((readRtcRegister(0x0a) & 0x80U) != 0) {
         asm volatile("pause");
     }
@@ -145,42 +145,38 @@ uint64_t readWallClockSeconds() {
     return ((days * 24 + hour) * 60 + minute) * 60 + second;
 }
 
-uint64_t scaleTsc(uint64_t cycles) {
+uint64_t Clock::scaleTsc(uint64_t cycles) const {
     const uint64_t seconds   = cycles / tsc_frequency;
     const uint64_t remainder = cycles % tsc_frequency;
     return seconds * nanoseconds_per_second +
            (remainder * nanoseconds_per_second) / tsc_frequency;
 }
 
-}  // namespace
-
-namespace kernel {
-namespace time {
-
-void init() {
+Clock& clock() { return systemClock; }
+void Clock::init() {
     if (!cpu::getCpuFeatures().hasTsc()) {
-        serial::serialWrite("[TIME] TSC is unavailable\n");
+        device::serialWrite("[TIME] TSC is unavailable\n");
         cpu::halt();
     }
     rtc_lock.init();
     tsc_frequency = detectTscFrequency();
     if (tsc_frequency == 0) {
-        serial::serialWrite("[TIME] unable to determine TSC frequency\n");
+        device::serialWrite("[TIME] unable to determine TSC frequency\n");
         cpu::halt();
     }
     boot_tsc = readTsc();
     wall_clock_base_nanoseconds =
         readWallClockSeconds() * nanoseconds_per_second;
     last_monotonic_nanoseconds.store(0, MemoryOrder::Release);
-    serial::serialWrite(
+    device::serialWrite(
         cpu::getCpuFeatures().hasInvariantTsc()
             ? "[TIME] invariant TSC monotonic clock initialized at "
             : "[TIME] calibrated TSC monotonic clock initialized at ");
-    serial::serialWriteDecimal(tsc_frequency);
-    serial::serialWrite(" Hz\n");
+    device::serialWriteDecimal(tsc_frequency);
+    device::serialWrite(" Hz\n");
 }
 
-uint64_t getMonotonicTime() {
+uint64_t Clock::getMonotonicTime() {
     const uint64_t current = scaleTsc(readTsc() - boot_tsc);
     uint64_t previous = last_monotonic_nanoseconds.load(MemoryOrder::Acquire);
     while (current > previous &&
@@ -190,18 +186,23 @@ uint64_t getMonotonicTime() {
     return current > previous ? current : previous;
 }
 
-uint64_t getWallClockTime() {
-    const uint64_t monotonic = time::getMonotonicTime();
+uint64_t Clock::getWallClockTime() {
+    const uint64_t monotonic = getMonotonicTime();
     return maximum_time_value - wall_clock_base_nanoseconds < monotonic
                ? maximum_time_value
                : wall_clock_base_nanoseconds + monotonic;
 }
 
-uint64_t getClockResolution() {
+uint64_t Clock::getClockResolution() const {
     return tsc_frequency >= nanoseconds_per_second
                ? 1
                : (nanoseconds_per_second + tsc_frequency - 1) / tsc_frequency;
 }
+
+void initClock() { clock().init(); }
+uint64_t getMonotonicTime() { return clock().getMonotonicTime(); }
+uint64_t getWallClockTime() { return clock().getWallClockTime(); }
+uint64_t getClockResolution() { return clock().getClockResolution(); }
 
 uint64_t milliseconds2Nanoseconds(uint64_t milliseconds) {
     return milliseconds > maximum_time_value / 1000000ULL
@@ -214,7 +215,7 @@ uint64_t microseconds2Nanoseconds(uint64_t microseconds) {
                                                        : microseconds * 1000ULL;
 }
 
-uint64_t getCpuRuntime(const Thread* thread) {
+uint64_t getCpuRuntime(const ::kernel::task::Thread* thread) {
     return thread == nullptr ? 0 : thread->getRuntime();
 }
 
@@ -222,5 +223,4 @@ bool deadlineReached(uint64_t now, uint64_t deadline) {
     return static_cast<int64_t>(now - deadline) >= 0;
 }
 
-}  // namespace time
-}  // namespace kernel
+}  // namespace kernel::time

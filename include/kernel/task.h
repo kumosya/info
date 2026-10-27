@@ -1,16 +1,39 @@
-#include "service/common/records.h"
 #pragma once
-#include "service/common/identity.h"
-#include "service/common/kernel-requests.h"
 
 #include <cstdint>
-#include <os/syscall.h>
 
-namespace kernel {
+#include "kernel/elf.h"
+#include "kernel/ipc.h"
+#include "kernel/sync.h"
+#include "kernel/syscall.h"
+#include "service/common/identity.h"
+#include "service/common/kernel-requests.h"
+#include "service/common/records.h"
+#include <os/device.h>
+#include <os/ipc.h>
+#include <os/mm.h>
+#include <os/service.h>
+#include <os/syscall.h>
+#include <os/task.h>
+
+namespace kernel::cpu {
+struct Context;
+}
+namespace kernel::device {
+class MmioRegion;
+class DmaBuffer;
+class InterruptBinding;
+}  // namespace kernel::device
+namespace kernel::mm {
+class PageObject;
+class SharedMemory;
+}  // namespace kernel::mm
+class BootInfo;
+
+namespace kernel::task {
 
 struct SyscallContext;
 class Task;
-namespace interrupt { struct Context; }
 
 class TaskMechanisms {
    public:
@@ -18,22 +41,30 @@ class TaskMechanisms {
     uint64_t createThread(uint64_t entry, uint64_t stack, uint64_t argument);
     uint64_t fork();
     bool replace(uint64_t image, uint64_t& failure);
+
    private:
     Task& caller_;
 };
 
 enum class FaultAccess : uint8_t { Unknown, Read, Write, Execute };
-enum class FaultOrigin : uint8_t { Asynchronous, UserException, ServiceException };
+enum class FaultOrigin : uint8_t {
+    Asynchronous,
+    UserException,
+    ServiceException
+};
+// Written verbatim to the OSINFO ELF core note (type 0x4f530001).
 struct FaultRecord {
     uint64_t pid = 0, tid = 0, started = 0, timestamp = 0;
-    uint64_t vector = 0, error = 0, rip = 0, rsp = 0, address = 0, debugStatus = 0;
-    uint32_t signal = 0;
-    int32_t code = 0;
-    FaultAccess access = FaultAccess::Unknown;
-    bool addressValid = false;
-    FaultOrigin origin = FaultOrigin::Asynchronous;
+    uint64_t vector = 0, error = 0, rip = 0, rsp = 0, address = 0,
+             debugStatus = 0;
+    uint32_t signal      = 0;
+    int32_t code         = 0;
+    FaultAccess access   = FaultAccess::Unknown;
+    bool addressValid    = false;
+    FaultOrigin origin   = FaultOrigin::Asynchronous;
     uint8_t reserved[5]{};
 };
+static_assert(sizeof(FaultRecord) == 96);
 
 enum class Signal : uint32_t {
     Hangup                = 1,
@@ -71,7 +102,7 @@ constexpr uint64_t signalDefault       = 0;
 constexpr uint64_t signalIgnore        = 1;
 constexpr uint64_t signalFlagNoDefer   = 0x40000000ULL;
 constexpr uint64_t signalFlagResetHand = 0x80000000ULL;
-constexpr uint64_t signalFlagOnStack = 0x08000000ULL;
+constexpr uint64_t signalFlagOnStack   = 0x08000000ULL;
 
 class SignalAction {
    public:
@@ -99,30 +130,22 @@ class SignalAction {
     uint64_t restorer;
 };
 
-namespace signal {
 bool isValidSignal(uint32_t signal);
 bool sendSignalToTask(uint64_t taskId, uint32_t signal, Task* caller = nullptr);
-bool sendSignalToTaskGroup(uint64_t taskGroupId, uint32_t signal, Task* caller = nullptr);
+bool sendSignalToTaskGroup(uint64_t taskGroupId, uint32_t signal,
+                           Task* caller = nullptr);
 bool deliverPendingSignal(SyscallContext* context);
 bool restoreSignalFrame(SyscallContext* context, uint64_t userFrame);
-void returnToUser(interrupt::Context* context);
-void captureUserContext(const interrupt::Context* context);
-void raiseException(interrupt::Context* context, uint32_t signal, int code,
+void returnToUser(kernel::cpu::Context* context);
+void captureUserContext(const kernel::cpu::Context* context);
+void raiseException(kernel::cpu::Context* context, uint32_t signal, int code,
                     uint64_t address = 0, bool addressValid = false,
-                    FaultAccess access = FaultAccess::Unknown, uint64_t debugStatus = 0);
+                    FaultAccess access   = FaultAccess::Unknown,
+                    uint64_t debugStatus = 0);
 [[noreturn]] void fatal(uint32_t signal, const FaultRecord* fault = nullptr);
 bool hasCoreDefault(uint32_t signal);
 void toMachineContext(const SyscallContext& source, OsMachineContext& target);
 void fromMachineContext(const OsMachineContext& source, SyscallContext& target);
-
-}  // namespace signal
-
-}  // namespace kernel
-
-
-#include "kernel/syscall.h"
-
-namespace kernel {
 
 class Task;
 class SpinLock;
@@ -135,12 +158,13 @@ class ThreadCleanup {
     void detach();
     void reset();
     static void releaseAll(Thread& thread);
+
    private:
-    Thread* owner_ = nullptr;
+    Thread* owner_           = nullptr;
     ThreadCleanup* previous_ = nullptr;
-    ThreadCleanup* next_ = nullptr;
-    void* object_ = nullptr;
-    void (*release_)(void*) = nullptr;
+    ThreadCleanup* next_     = nullptr;
+    void* object_            = nullptr;
+    void (*release_)(void*)  = nullptr;
 };
 struct SyscallContext;
 
@@ -199,24 +223,27 @@ class CpuContext {
     uint64_t gsBase;
 };
 
+Thread* currentThread();
+void initThreads();
+[[noreturn]] void exitCurrentThread(int exitCode);
+void blockWaitingThread();
+
 class Thread {
    public:
-    bool migrate(uint32_t cpuId);
+    bool migrate(uint32_t cpu_id);
     bool setAffinity(uint64_t cpuMask);
-    static void init();
+
     static Thread* create(Task* task, ThreadEntry entryPoint, void* argument,
                           ThreadType type   = ThreadType::Kernel,
                           bool makeRunnable = true);
     static Thread* createUser(Task* task, uint64_t entryPoint,
                               uint64_t userStackPointer, uint64_t argument = 0,
                               uint64_t initialStackSize = 0,
-                              uint64_t initialAffinity = ~0ULL,
-                              bool makeRunnable = true);
+                              uint64_t initialAffinity  = ~0ULL,
+                              bool makeRunnable         = true);
     static Thread* createForkedUser(Task* task, const SyscallContext& context,
                                     uint64_t signalMask);
-    [[noreturn]] static void exitCurrent(int exitCode);
-    static void blockCurrent();
-    static void prepareWait();
+
     void registerWait(SpinLock& lock, Thread*& head, Thread** tail = nullptr);
     void clearWaitRegistration();
     void cancelWait();
@@ -230,33 +257,49 @@ class Thread {
     void setJoinConsumed(bool value) { joinConsumed = value; }
     bool hasCleanup() const { return cleanupHead != nullptr; }
     ThreadCleanup*& cleanupList() { return cleanupHead; }
-    void setIpcWaitResult(int* result, bool immediate = false) { ipcWaitResult = result; ipcImmediate = immediate; }
+    void setIpcWaitResult(int* result, bool immediate = false) {
+        ipcWaitResult = result;
+        ipcImmediate  = immediate;
+    }
     int waitError() const {
-        const int result = ipcWaitResult ? __atomic_load_n(ipcWaitResult, __ATOMIC_ACQUIRE) : 0;
+        const int result =
+            ipcWaitResult ? __atomic_load_n(ipcWaitResult, __ATOMIC_ACQUIRE)
+                          : 0;
         return result < 0 ? result : (ipcImmediate ? -6 : 0);
     }
-    bool hasActiveIpcCall() const { return __atomic_load_n(&activeIpcCall, __ATOMIC_ACQUIRE); }
-    void setActiveIpcCall(bool active) { __atomic_store_n(&activeIpcCall, active, __ATOMIC_RELEASE); }
-    static void wake(Thread* thread);
-    static void sleepCurrent(uint64_t milliseconds);
+    bool hasActiveIpcCall() const {
+        return __atomic_load_n(&activeIpcCall, __ATOMIC_ACQUIRE);
+    }
+    void setActiveIpcCall(bool active) {
+        __atomic_store_n(&activeIpcCall, active, __ATOMIC_RELEASE);
+    }
+
     void switchTo(Thread* next);
     void resetFloatingPointState();
     void restoreFloatingPointState();
-    void saveFloatingPointState() { asm volatile("fxsave64 %0" : "=m"(floatingPointState) : : "memory"); }
+    void saveFloatingPointState() {
+        asm volatile("fxsave64 %0" : "=m"(floatingPointState) : : "memory");
+    }
     uint8_t* fpState() { return floatingPointState; }
     OsSignalStack signalStack{};
     uint64_t activeSignalFrame = 0;
-    uint32_t signalDepth = 0;
-    uint64_t signalGeneration = 0;
+    uint32_t signalDepth       = 0;
+    uint64_t signalGeneration  = 0;
     SyscallContext lastUserContext{};
     bool hasUserContext = false;
     FaultRecord lastFault{};
-    static Thread* getCurrent();
-    void bindSyscallContext(SyscallContext* context) { syscallContext_ = context; contextRestored_ = false; }
+
+    void bindSyscallContext(SyscallContext* context) {
+        syscallContext_  = context;
+        contextRestored_ = false;
+    }
     SyscallContext* syscallContext() const { return syscallContext_; }
     void markContextRestored() { contextRestored_ = true; }
     bool contextRestored() const { return contextRestored_; }
-    void clearSyscallContext() { syscallContext_ = nullptr; contextRestored_ = false; }
+    void clearSyscallContext() {
+        syscallContext_  = nullptr;
+        contextRestored_ = false;
+    }
 
     static void bootstrap();
 
@@ -265,7 +308,9 @@ class Thread {
         id = value;
         return id;
     }
-    ThreadState getState() const { return __atomic_load_n(&state, __ATOMIC_ACQUIRE); }
+    ThreadState getState() const {
+        return __atomic_load_n(&state, __ATOMIC_ACQUIRE);
+    }
     ThreadState setState(ThreadState value) {
         __atomic_store_n(&state, value, __ATOMIC_RELEASE);
         return value;
@@ -329,7 +374,9 @@ class Thread {
     }
     uint32_t getWeight() const { return weight; }
     int32_t getNice() const { return __atomic_load_n(&nice, __ATOMIC_RELAXED); }
-    void setNice(int32_t value) { __atomic_store_n(&nice, value, __ATOMIC_RELAXED); }
+    void setNice(int32_t value) {
+        __atomic_store_n(&nice, value, __ATOMIC_RELAXED);
+    }
     uint32_t setWeight(uint32_t value) {
         weight = value;
         return weight;
@@ -440,7 +487,8 @@ class Thread {
     }
 
    private:
-    static void clearThread(Thread* thread);
+    friend void initThreads();
+    void clearStorage();
     static uint64_t* buildInitialStack(void* stackTop);
     static void forkedUserEntry(void* argument);
 
@@ -506,21 +554,6 @@ extern "C" [[noreturn]] void resumeUserContext(SyscallContext* context);
 extern "C" void switchThreadContext(uint64_t* previousStackPointer,
                                     uint64_t nextStackPointer);
 
-}  // namespace kernel
-
-
-#include "kernel/elf.h"
-
-#include <os/ipc.h>
-#include <os/task.h>
-#include <os/mm.h>
-#include <os/device.h>
-#include <os/service.h>
-#include "kernel/spinlock.h"
-
-
-namespace kernel {
-
 class Thread;
 class Task;
 class TaskReference {
@@ -529,15 +562,16 @@ class TaskReference {
     TaskReference(TaskReference&& other);
     TaskReference& operator=(TaskReference&& other);
     ~TaskReference();
-    TaskReference(const TaskReference&) = delete;
+    TaskReference(const TaskReference&)            = delete;
     TaskReference& operator=(const TaskReference&) = delete;
     Task* operator->() const { return task_; }
     operator Task*() const { return task_; }
+
    private:
     Task* task_;
     ThreadCleanup cleanup_;
 };
-namespace task {
+
 uint64_t allocateId();
 void init();
 TaskReference find(uint64_t taskId);
@@ -545,7 +579,6 @@ TaskReference at(uint32_t index);
 TaskReference next(uint64_t minimumId);
 uint64_t terminalForeground(uint32_t kind, uint32_t index);
 bool setTerminalForeground(uint32_t kind, uint32_t index, uint64_t group);
-}  // namespace task
 
 enum class TaskState : uint8_t { Created, Running, Terminated, Stopped };
 
@@ -607,15 +640,24 @@ class HandleTable {
                    HandleType* type, uint32_t* rights);
 
    private:
-    struct Reference {
-        void* object;
-        HandleType type;
-        uint32_t count;
+    class Reference {
+        friend class HandleTable;
+
+       public:
+        Reference() = default;
+        Reference(void* value, HandleType kind, uint32_t references)
+            : object(value), type(kind), count(references) {}
+        void retain();
+        void release();
+
+       private:
+        void* object    = nullptr;
+        HandleType type = HandleType::None;
+        uint32_t count  = 0;
         uint32_t escrow = 0;
-        static void retain(Reference* reference);
-        static void release(Reference* reference);
     };
-    uint64_t installLocked(Reference* reference, uint32_t rights, uint32_t flags);
+    uint64_t installLocked(Reference* reference, uint32_t rights,
+                           uint32_t flags);
     bool validLocked(uint64_t handle) const;
     bool growLocked(uint32_t required);
     class HandleEntry {
@@ -660,20 +702,22 @@ class HandleTable {
     HandleEntry* entries_;
     uint32_t capacity_;
     SpinLock lock_;
-    Task* owner_ = nullptr;
+    Task* owner_   = nullptr;
     bool disposed_ = false;
-    bool escrow_ = false;
+    bool escrow_   = false;
 };
 
 class HandleTable::Pin {
    public:
     Pin(HandleTable& table, uint64_t handle, HandleType type, uint32_t rights);
     ~Pin();
-    Pin(const Pin&) = delete;
+    Pin(const Pin&)            = delete;
     Pin& operator=(const Pin&) = delete;
-    template <typename T> T* as() const {
+    template <typename T>
+    T* as() const {
         return reference_ ? static_cast<T*>(reference_->object) : nullptr;
     }
+
    private:
     Reference* reference_ = nullptr;
     ThreadCleanup cleanup_;
@@ -682,25 +726,26 @@ class HandleTable::Pin {
 // A queued message owns references, not handles in an endpoint owner's table.
 class HandleTable::Transfer {
    public:
-    bool capture(HandleTable& source, const os::IpcMessage& message, bool commitMove = true);
+    bool capture(HandleTable& source, const os::IpcMessage& message,
+                 bool commitMove = true);
     bool install(HandleTable& destination, os::IpcMessage& message);
     void clear();
 
    private:
     Reference* references_[4]{};
     uint32_t rights_[4]{};
-    uint32_t count_ = 0;
+    uint32_t count_          = 0;
     HandleTable* moveSource_ = nullptr;
     uint64_t moveHandles_[4]{};
     bool installLocked(HandleTable& destination, os::IpcMessage& message);
 };
 
-constexpr uint64_t taskCapabilityDevice  = 1ULL << 0;
-constexpr uint64_t taskCapabilitySpawn   = 1ULL << 1;
-constexpr uint64_t taskCapabilityDisplay = 1ULL << 2;
-constexpr uint64_t taskCapabilityUsers = 1ULL << 3;
-constexpr uint64_t taskCapabilityPci = 1ULL << 4;
-constexpr uint64_t taskCapabilityMemory = 1ULL << 5;
+constexpr uint64_t taskCapabilityDevice       = 1ULL << 0;
+constexpr uint64_t taskCapabilitySpawn        = 1ULL << 1;
+constexpr uint64_t taskCapabilityDisplay      = 1ULL << 2;
+constexpr uint64_t taskCapabilityUsers        = 1ULL << 3;
+constexpr uint64_t taskCapabilityPci          = 1ULL << 4;
+constexpr uint64_t taskCapabilityMemory       = 1ULL << 5;
 constexpr uint64_t taskCapabilityReadIdentity = 1ULL << 6;
 
 class Task {
@@ -719,36 +764,49 @@ class Task {
     uint64_t parentId();
     TaskReference parentReference();
     bool isTerminated();
-    bool resourcesReclaimed() const { return __atomic_load_n(&resourceState_, __ATOMIC_ACQUIRE) == 2U; }
+    bool resourcesReclaimed() const {
+        return __atomic_load_n(&resourceState_, __ATOMIC_ACQUIRE) == 2U;
+    }
     bool setMemoryFrozen(bool frozen);
-    bool memoryFrozen() const { return __atomic_load_n(&memoryFrozen_, __ATOMIC_ACQUIRE); }
+    bool memoryFrozen() const {
+        return __atomic_load_n(&memoryFrozen_, __ATOMIC_ACQUIRE);
+    }
     bool claimMemoryFreezeExpiry(uint64_t now);
     void authentication(uint64_t& session, uint32_t& uid, uint32_t& gid);
-    bool authenticate(uint32_t uid, uint32_t gid, bool preserveCredentials, uint32_t groupCount = 0, const uint32_t* groups = nullptr);
+    bool authenticate(uint32_t uid, uint32_t gid, bool preserveCredentials,
+                      uint32_t groupCount    = 0,
+                      const uint32_t* groups = nullptr);
     int exitCode();
     void recordSignalExit(uint32_t signal, const FaultRecord* fault = nullptr);
     void getExitInfo(os::wire::ExitInfo& info);
     OsSignalInfo childSignalInfo();
     void notifyChildExit(Task& child);
-    bool dumpable() const { return dumpable_ && !managedService_ && uid_ == effectiveUid_ && gid_ == effectiveGid_; }
+    bool dumpable() const {
+        return dumpable_ && !managedService_ && uid_ == effectiveUid_ &&
+               gid_ == effectiveGid_;
+    }
     uint64_t coreLimit() const { return coreLimit_; }
     uint64_t coreHardLimit() const { return coreHardLimit_; }
     bool setCoreLimit(uint64_t soft, uint64_t hard);
-    int resourceLimit(Task& caller, int resource, bool set, uint64_t& soft, uint64_t& hard);
+    int resourceLimit(Task& caller, int resource, bool set, uint64_t& soft,
+                      uint64_t& hard);
     int32_t mainNice();
     int32_t initialNice() const { return initialNice_; }
     uint64_t mainThreadId();
     uint32_t threadCount();
     bool threadInfo(uint64_t minimumTid, os::wire::ThreadInfo& info);
     void credentials(os::wire::CredentialInfo& info);
-    int changeCredentials(unsigned operation, uint32_t first, uint32_t second, uint32_t third, const uint32_t* groups = nullptr);
+    int changeCredentials(unsigned operation, uint32_t first, uint32_t second,
+                          uint32_t third, const uint32_t* groups = nullptr);
     bool recordImage(const os::wire::ImageMapping& mapping);
-    void recordAuxiliary(uint64_t headers, uint64_t count, uint64_t entry, uint64_t loader);
+    void recordAuxiliary(uint64_t headers, uint64_t count, uint64_t entry,
+                         uint64_t loader);
     bool inheritForFork(Task& parent);
     bool commitExec(uint64_t newRootPhysicalAddress, const char* name,
                     Thread* currentThread);
     int waitForChild(int64_t taskId, Thread* waiter, int& status,
-                     uint32_t options, uint64_t& childId, os::wire::ChildEvent* event = nullptr);
+                     uint32_t options, uint64_t& childId,
+                     os::wire::ChildEvent* event = nullptr);
     void notifyChildStateChange();
     bool attachThread(Thread* thread);
     void retireJoinedThread(Thread* thread);
@@ -762,7 +820,10 @@ class Task {
     bool isSystemService() const { return systemService_; }
     void setSystemService(bool value) { systemService_ = value; }
     os::ServiceRole serviceRole() const { return serviceRole_; }
-    void setServiceRole(os::ServiceRole role) { serviceRole_ = role; if (role != os::ServiceRole::None) managedService_ = true; }
+    void setServiceRole(os::ServiceRole role) {
+        serviceRole_ = role;
+        if (role != os::ServiceRole::None) managedService_ = true;
+    }
     bool managedService() const { return managedService_; }
     void setManagedService(bool value) { managedService_ = value; }
     uint32_t uid() const { return uid_; }
@@ -774,10 +835,17 @@ class Task {
     void setTerminalId(uint32_t value) { terminalId_ = value; }
     uint32_t terminalKind() const { return terminalKind_; }
     uint32_t terminalIndex() const { return terminalId_; }
-    void setTerminal(uint32_t kind, uint32_t index) { terminalKind_ = kind; terminalId_ = index; }
+    void setTerminal(uint32_t kind, uint32_t index) {
+        terminalKind_ = kind;
+        terminalId_   = index;
+    }
     uint64_t startedNanoseconds() const { return startedNanoseconds_; }
-    uint64_t cpuNanoseconds() const { return __atomic_load_n(&cpuNanoseconds_, __ATOMIC_RELAXED); }
-    void accountCpu(uint64_t elapsed) { __atomic_fetch_add(&cpuNanoseconds_, elapsed, __ATOMIC_RELAXED); }
+    uint64_t cpuNanoseconds() const {
+        return __atomic_load_n(&cpuNanoseconds_, __ATOMIC_RELAXED);
+    }
+    void accountCpu(uint64_t elapsed) {
+        __atomic_fetch_add(&cpuNanoseconds_, elapsed, __ATOMIC_RELAXED);
+    }
     const char* commandLine() const { return commandLine_; }
     uint32_t commandLineSize() const { return commandLineSize_; }
     void setCommandLine(uint32_t count, const char* const* arguments);
@@ -804,27 +872,30 @@ class Task {
     uint32_t uid_ = 0, gid_ = 0, effectiveUid_ = 0, effectiveGid_ = 0;
     uint32_t savedUid_ = 0, savedGid_ = 0, supplementaryCount_ = 0;
     uint32_t supplementaryGroups_[os::maximumSupplementaryGroups]{};
-    uint32_t terminalId_ = 0;
-    uint32_t terminalKind_ = 0;
+    uint32_t terminalId_         = 0;
+    uint32_t terminalKind_       = 0;
     uint64_t startedNanoseconds_ = 0, cpuNanoseconds_ = 0;
     char commandLine_[384]{};
-    uint32_t commandLineSize_ = 0;
-    bool systemService_ = false;
-    bool managedService_ = false;
+    uint32_t commandLineSize_    = 0;
+    bool systemService_          = false;
+    bool managedService_         = false;
     os::ServiceRole serviceRole_ = os::ServiceRole::None;
     friend void task::init();
     friend class TaskReclaimer;
     friend class CoreDump;
-    friend class TaskPriorities;
+    friend int applyTaskPriority(Task& caller, Thread& current,
+                                 unsigned operation, unsigned which,
+                                 uint64_t who, int value, int& result);
     friend class TaskLifecycleTest;
     friend TaskReference task::find(uint64_t taskId);
     friend TaskReference task::at(uint32_t index);
     friend TaskReference task::next(uint64_t minimumId);
-    friend bool signal::sendSignalToTaskGroup(uint64_t taskGroupId,
-                                              uint32_t signal, Task* caller);
+    friend bool task::sendSignalToTaskGroup(uint64_t taskGroupId,
+                                            uint32_t signal, Task* caller);
 
     bool init(const char* name, uint64_t rootPhysicalAddress, Task* parent);
     void adoptChildren();
+    void unlinkGlobal();
     bool destroyResources();
     void reapJoinedThreadLocked(Thread* thread);
 
@@ -841,14 +912,14 @@ class Task {
     Task* nextSibling_;
     Thread* childWaiters_;
     int exitCode_;
-    uint32_t exitSignal_ = 0;
+    uint32_t exitSignal_           = 0;
     os::wire::CoreState coreState_ = os::wire::CoreState::None;
-    uint64_t coreDeadline_ = 0;
+    uint64_t coreDeadline_         = 0;
     uint64_t coreLimit_ = 8 * 1024 * 1024, coreHardLimit_ = 8 * 1024 * 1024;
     uint64_t niceLimit_ = 0, niceHardLimit_ = 0;
     int32_t initialNice_ = 0;
-    bool dumpable_ = true;
-    bool exitNotified_ = false;
+    bool dumpable_       = true;
+    bool exitNotified_   = false;
     FaultRecord exitFault_{};
     OsSignalInfo childSignalInfo_{};
     os::wire::ImageMapping imageMappings_[64]{};
@@ -864,7 +935,7 @@ class Task {
     uint64_t authenticationSession_ = 0;
     uint32_t authenticationUid_ = 0, authenticationGid_ = 0;
     bool stopped_;
-    bool memoryFrozen_ = false;
+    bool memoryFrozen_             = false;
     uint64_t memoryFreezeDeadline_ = 0;
     uint32_t stopSignal_;
     bool stopReported_;
@@ -873,25 +944,40 @@ class Task {
     uint64_t pendingSignals_;
     Task* nextGlobal_;
     SpinLock lock_;
-    uint32_t references_ = 1;
+    uint32_t references_    = 1;
     uint32_t resourceState_ = 0;
-    Task* reclaimNext_ = nullptr;
+    Task* reclaimNext_      = nullptr;
 };
 
-namespace task {
+// The queue keeps its own task reference until resource cleanup completes.
+class TaskReclaimer {
+   public:
+    void init();
+    void submit(Task& task);
+
+   private:
+    void run();
+    SpinLock lock_;
+    Thread* worker_ = nullptr;
+    Task* head_     = nullptr;
+    Task* tail_     = nullptr;
+};
+TaskReclaimer& taskReclaimer();
+
 void init();
 Task* getCurrent();
 Task* getIdle();
 TaskReference find(uint64_t taskId);
 [[noreturn]] void exitCurrent(int exitCode);
-}  // namespace task
 
 class RunQueue {
    public:
-    static void clearRunQueue(RunQueue* queue);
+    void clear();
 
     void insertNode(Thread* thread);
     void removeNode(Thread* thread);
+    // Caller holds the run-queue lock.
+    bool accountTick(Thread* current, uint64_t elapsed);
 
     Thread* getRoot() const { return root; }
     Thread* setRoot(Thread* value) {
@@ -939,9 +1025,9 @@ class RunQueue {
     const SpinLock& getLock() const { return lock; }
 
    private:
-    static bool isRed(const Thread* node);
-    static bool comesBefore(const Thread* left, const Thread* right);
-    static Thread* minimum(Thread* node);
+    bool isRed(const Thread* node);
+    bool comesBefore(const Thread* left, const Thread* right);
+    Thread* minimum(Thread* node);
     void rotateLeft(Thread* node);
     void rotateRight(Thread* node);
     void insertFixup(Thread* node);
@@ -959,8 +1045,7 @@ class RunQueue {
     SpinLock lock;
 };
 
-namespace schedule {
-void init();
+void initScheduler();
 bool isSchedulerInitialized();
 bool enqueueThread(Thread* thread);
 void prepareCurrentWait();
@@ -978,79 +1063,123 @@ void schedulerTick();
 void sleepCurrentThread(uint64_t milliseconds);
 uint32_t getSchedulerWeight(int32_t nice);
 
-}  // namespace schedule
+bool serviceCapabilities(os::ServiceRole role, uint64_t& capabilities);
+kernel::elf::ElfLoadError buildUserStack(
+    uint64_t rootPhysicalAddress, const char* programName,
+    uint32_t argumentCount, const char* const* arguments,
+    uint32_t environmentCount, const char* const* environment,
+    uint64_t runtimeStateAddress, uint64_t& stackPointer,
+    const kernel::elf::ElfLoadResult* image = nullptr, Task* owner = nullptr);
 
-struct BootInfo;
+Task* startInitialProgram(const ::BootInfo* bootInfo);
 
-class UserProgramLoader {
-   public:
-    static bool serviceCapabilities(os::ServiceRole role, uint64_t& capabilities);
-    static ElfLoadError buildStack(
-        uint64_t rootPhysicalAddress, const char* programName,
-        uint32_t argumentCount, const char* const* arguments,
-        uint32_t environmentCount, const char* const* environment,
-        uint64_t runtimeStateAddress, uint64_t& stackPointer,
-        const ElfLoadResult* image = nullptr, Task* owner = nullptr);
+TaskReference loadProgram(os::ProgramId program, Task* parent,
+                          uint64_t bootstrapHandle             = 0,
+                          uint32_t argumentCount               = 0,
+                          const char* const* arguments         = nullptr,
+                          kernel::elf::ElfLoadError* loadError = nullptr);
+TaskReference loadProgramImage(
+    uint64_t sourceAddress, size_t imageSize, const char* name, Task* source,
+    Task* parent, uint64_t bootstrapHandle, uint64_t capabilities,
+    uint64_t standardInputHandle, uint64_t standardOutputHandle,
+    uint64_t standardErrorHandle, uint32_t argumentCount,
+    const char* const* arguments,
+    const kernel::elf::ElfSharedImage* sharedImages, uint32_t sharedImageCount,
+    kernel::elf::ElfLoadError* loadError = nullptr,
+    os::ServiceRole serviceRole          = os::ServiceRole::None,
+    bool newSession = false, bool managedService = false,
+    uint32_t terminalKind = 0, uint32_t terminalIndex = 0);
 
-    static Task* startInitial(const BootInfo* bootInfo);
-
-    static TaskReference load(os::ProgramId program, Task* parent,
-                      uint64_t bootstrapHandle = 0, uint32_t argumentCount = 0,
-                      const char* const* arguments = nullptr,
-                      ElfLoadError* loadError      = nullptr);
-    static TaskReference loadImage(uint64_t sourceAddress, size_t imageSize,
-                           const char* name, Task* source, Task* parent,
-                           uint64_t bootstrapHandle, uint64_t capabilities,
-                           uint64_t standardInputHandle,
-                           uint64_t standardOutputHandle,
-                           uint64_t standardErrorHandle, uint32_t argumentCount,
-                           const char* const* arguments,
-                           const ElfSharedImage* sharedImages,
-                           uint32_t sharedImageCount,
-                           ElfLoadError* loadError = nullptr,
-                             os::ServiceRole serviceRole = os::ServiceRole::None,
-                             bool newSession = false, bool managedService = false,
-                             uint32_t terminalKind = 0, uint32_t terminalIndex = 0);
-};
-
-}  // namespace kernel
-
-namespace kernel {
 class Task;
 class CoreDump {
- public:
-    static void init();
-    static void request(Task& task);
-    static void capture(Task& task);
-    static bool pending(Task& task);
-    static void query(os::wire::CorePolicy& result);
-    static int configure(Task& caller, const os::wire::CorePolicy& policy);
-    static int acquire(Task& caller, os::wire::CoreTicket& ticket);
-    static int read(Task& caller, uint64_t ticket, uint64_t offset, void* destination, uint64_t size);
-    static int finish(Task& caller, uint64_t ticket, bool success);
- private:
-    static void expire();
+   public:
+    void init();
+    void request(Task& task);
+    void capture(Task& task);
+    bool pending(Task& task);
+    void query(os::wire::CorePolicy& result);
+    int configure(Task& caller, const os::wire::CorePolicy& policy);
+    int acquire(Task& caller, os::wire::CoreTicket& ticket);
+    int read(Task& caller, uint64_t ticket, uint64_t offset, void* destination,
+             uint64_t size);
+    int finish(Task& caller, uint64_t ticket, bool success);
+
+   private:
+    void expire();
+    class Slot {
+        friend class CoreDump;
+
+       public:
+        bool occupied() const { return task != nullptr; }
+
+       private:
+        Task* task    = nullptr;
+        uint8_t* data = nullptr;
+        os::wire::CoreTicket ticket{};
+        uint64_t writer = 0;
+        bool capturing  = false;
+    };
+    SpinLock lock;
+    Slot slots[2]{};
+    os::wire::CorePolicy policy{0, 8 * 1024 * 1024, 2, 10000};
+    uint64_t nextTicket = 1;
+    bool watchdogReady  = false;
 };
-}
+CoreDump& coreDump();
 
-namespace kernel {
-class TaskPriorities {
- public:
-    static int apply(Task& caller, Thread& current, unsigned operation,
-                     unsigned which, uint64_t who, int value, int& result);
-};
-namespace schedule {
-int changeNice(Thread& thread, int64_t value, bool relative, bool privileged, uint64_t limit, int& result);
-}
-}
+int applyTaskPriority(Task& caller, Thread& current, unsigned operation,
+                      unsigned which, uint64_t who, int value, int& result);
 
-#include "kernel/ipc.h"
+int changeNice(Thread& thread, int64_t value, bool relative, bool privileged,
+               uint64_t limit, int& result);
 
-namespace kernel {
 class ServiceRecovery {
    public:
-    static void init();
-    static int call(Task& caller, const IpcMessage& request, IpcMessage& reply);
-    static bool current(const Task& caller);
+    void init();
+    int call(Task& caller, const IpcMessage& request, IpcMessage& reply);
+    bool current(const Task& caller);
+
+   private:
+    class Domain {
+        friend class ServiceRecovery;
+
+       public:
+        bool ownedBy(uint64_t id) const { return !owner || owner == id; }
+
+       private:
+        uint64_t owner = 0, epoch = 0, sequence = 0, bytes = 0,
+                 preparedBytes            = 0;
+        kernel::mm::PageObject* committed = nullptr;
+        kernel::mm::PageObject* prepared  = nullptr;
+        kernel::mm::PageObject* spare     = nullptr;
+        class Record {
+            friend class ServiceRecovery;
+
+           public:
+            Record() = default;
+            Record(kernel::mm::PageObject* object, uint64_t size,
+                   uint64_t serial)
+                : data(object), bytes(size), sequence(serial) {}
+            void clear() {
+                data  = nullptr;
+                bytes = sequence = 0;
+            }
+
+           private:
+            kernel::mm::PageObject* data = nullptr;
+            uint64_t bytes = 0, sequence = 0;
+        } records[128];
+        uint64_t snapshotSequence = 0, logBytes = 0;
+        uint32_t recordCount = 0;
+        bool preparedLog     = false;
+        HandleTable objects;
+        uint32_t objectCount = 0;
+        bool initialized     = false;
+    };
+
+    Domain domains[static_cast<uint32_t>(os::ServiceRole::MessageQueue) + 1]{};
+    SpinLock lock;
 };
-}
+ServiceRecovery& serviceRecovery();
+
+}  // namespace kernel::task

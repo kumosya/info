@@ -12,11 +12,16 @@
 #define GLOB_NOSPACE 1
 #define GLOB_ABORTED 2
 #define GLOB_NOMATCH 3
-typedef struct { size_t gl_pathc; char** gl_pathv; size_t gl_offs; } glob_t;
+typedef struct {
+    size_t gl_pathc;
+    char** gl_pathv;
+    size_t gl_offs;
+} glob_t;
 #ifdef __cplusplus
 extern "C" {
 #endif
-int glob(const char* __restrict, int, int (*)(const char*, int), glob_t* __restrict);
+int glob(const char* __restrict, int, int (*)(const char*, int),
+         glob_t* __restrict);
 void globfree(glob_t*);
 #ifdef __cplusplus
 }
@@ -25,4 +30,3 @@ void globfree(glob_t*);
 
 /* __OSINFO_TYPE_GUARDS: shared type requests. */
 #define __DEFINED_glob_t
-

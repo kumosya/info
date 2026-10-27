@@ -23,7 +23,7 @@ OS C++ 库头文件集中在`include/os-c++/os/`。除此之外，C++ 标准头�
 - [kernel](x86-64/overview.md): osinfo x86-64 内核本体。
   - [boot](x86-64/boot.md): 内核启动。
   - [cpu](x86-64/cpu/cpu.md): 处理器功能。
-    - [interrupt](x86-64/cpu/interrupt.md): 中断与 异常处理。
+    - [interrupt](x86-64/cpu/interrupt.md): 中断与异常处理。
     - [smp](x86-64/cpu/smp.md): 多处理器处理。
   - [device](x86-64/device/device.md): 内核设备管理。
     - [service](x86-64/device/service.md): `device.kernel` 服务。
@@ -32,6 +32,8 @@ OS C++ 库头文件集中在`include/os-c++/os/`。除此之外，C++ 标准头�
     - [time](x86-64/device/time.md): 硬件时钟与定时器。
     - [dmabuffer](x86-64/device/dmabuffer.md): DMA 缓冲区。
     - [storage](x86-64/device/storage.md): 存储设备管理。
+    - [ps2](x86-64/device/ps2.md): PS2 接口管理。
+    - [acpi](x86-64/device/acpi.md): ACPI 电源管理。
   - [memory](x86-64/memory/memory.md): 内核内存管理。
     - [service](x86-64/memory/service.md): `memory.kernel` 服务。
     - [object](x86-64/memory/object.md): 内存对象及其生命周期管理。
@@ -54,7 +56,7 @@ OS C++ 库头文件集中在`include/os-c++/os/`。除此之外，C++ 标准头�
 
 - [service](service/service.md): 服务框架与公共服务管理。
 
-- [task](service/task/): 任务管理服务。
+- [task](service/task/task.md): 任务管理服务。
   - [msgq](service/task/msgq.md): 消息队列通信服务。
   - [pipe](service/task/pipe.md): 管道通信服务。
 
@@ -62,9 +64,9 @@ OS C++ 库头文件集中在`include/os-c++/os/`。除此之外，C++ 标准头�
 
 - [fs](service/fs/fs.md): 文件系统服务。
   - [exfat](service/fs/exfat.md)
+  - [fat](service/fs/fat.md)
   - [ext3](service/fs/ext3.md)
   - [ext4](service/fs/ext4.md)
-  - [fat](service/fs/fat.md)
   - [iso](service/fs/iso.md)
   - [procfs](service/fs/procfs.md)
   - [sysfs](service/fs/sysfs.md)

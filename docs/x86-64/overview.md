@@ -1,161 +1,75 @@
-# osinfo 内核总览（x86-64）
+# x86-64 内核开发入口
 
-本文档描述 `src/kernel/` 下 x86-64 内核的总体结构。内核文档按源码目录组织，每个目录对应一份文档。
+内核实现位于 `src/kernel/`，声明位于 `include/kernel/`。本目录按实际执行过程说明：引导如何建立运行环境，内存与线程怎样互相依赖，用户请求怎样进入受控机制，以及资源何时才允许释放。
 
-## 1. 架构定位
+## 源文件和模块入口
 
-osinfo 运行在 x86-64 架构，采用混合内核架构：
+下表目录均相对于 `src/kernel/`。各模块页面继续列出内部文件、类状态和函数。
 
-- 内核直接提供：内存管理、线程/进程管理、调度、中断、系统调用、Endpoint 传输与共享内存机制、信号、时间与设备访问控制。
-- 所有服务进程运行于 Ring3，包括文件系统、终端、窗口、设备、存储、MM、pipe 和 msgq；Ring0 保留 task.kernel、pci.kernel、device.kernel、memory.kernel 等底层机制对象，通过现有 IPC 访问。
-- 用户态程序通过六个基础系统调用进入内核，使用`SYSCALL`进入、`IRET`返回；其余机制通过内核服务端点调用。
+| 文件或目录 | 负责的工作 | 文档 |
+| --- | --- | --- |
+| `main.cc` | 汇合初始化流程，建立机制对象并启动首个用户程序，最后退出引导线程。 | [启动](boot.md) |
+| `boot/` | 从 Multiboot2 进入长模式，构造 BootInfo。 | [启动](boot.md) |
+| `cpu/cpu.cc` | CPU 特性、GDT/TSS、当前 CPU 与本地 APIC。 | [CPU](cpu/cpu.md) |
+| `cpu/interrupt/` | IDT、入口现场、异常分派与 I/O APIC 路由。 | [中断](cpu/interrupt.md) |
+| `cpu/smp/` | 发现并启动 AP，协调跨 CPU TLB 失效与停止。 | [SMP](cpu/smp.md) |
+| `memory/` | 物理页、对象分配、页表、共享对象和内存机制服务。 | [内存总览](memory/memory.md) |
+| `task/` | Task/Thread、调度、同步、IPC、系统调用与任务机制服务。 | [任务总览](task/task.md) |
+| `device/` | 帧缓冲、PCI、MMIO/DMA、IRQ、引导块设备、时钟、PS/2 和 ACPI 表。 | [设备总览](device/device.md) |
+| `user/` | ELF 校验、装载、动态重定位和初始用户栈。 | [用户程序加载](user.md) |
 
-## 2. 源码目录与文档对应
+头文件的命名空间以当前声明为准：CPU、中断、SMP 使用 kernel::cpu；mm.h、page.h 使用 kernel::mm；任务、IPC、同步和 syscall 使用 kernel::task；设备、PCI 使用 kernel::device；时间和 ACPI 分别使用 kernel::time、kernel::acpi；BootInfo 的声明在全局。
 
-| 源码目录                       | 内容                              | 文档                           |
-| -------------------------- | ------------------------------- | ---------------------------- |
-| `src/kernel/boot/`         | Multiboot2 引导、长模式进入             | [boot.md](boot.md)           |
-| `src/kernel/cpu/`          | CPU 初始化、GDT/TSS、Local APIC、ACPI | [cpu.md](cpu/cpu.md)             |
-| `src/kernel/cpu/smp/`      | 多核与 AP 启动                     | [smp.md](cpu/smp.md)             |
-| `src/kernel/cpu/interrupt/` | IDT、异常、I/O APIC                 | [cpu.md](cpu/cpu.md) §7          |
-| `src/kernel/memory/`       | 物理页、页表、内核堆、缺页、共享内存          | [memory.md](memory/memory.md) |
-| `src/kernel/task/`         | 线程、进程、调度器、信号                    | [task.md](task/task.md)       |
-| `src/kernel/task/ipc/`     | 端点、管道、双向通道、消息队列                  | [ipc.md](task/ipc.md)         |
-| `src/kernel/task/sync/`    | 同步原语、用户态等待（futex）               | [sync.md](task/sync.md)       |
-| `src/kernel/task/syscall/` | 四个IPC入口及等待、唤醒地址               | [syscall.md](task/syscall.md) |
-| `src/kernel/device/`       | 串口、时间、PCI、端口、显存、中断绑定          | [time.md](device/time.md)、[device.md](device/device.md) |
-| `src/kernel/user/`         | ELF 加载、动态链接、用户态启动、POSIX 桩    | [user.md](user.md)           |
+## 启动为何按这个顺序
 
-## 3. 命名空间组织
+`kernelEntry` 先初始化串口并解析 Multiboot2，记录启动页表和引导区范围，再调用 `kernelMain`。
 
-内核代码使用 `kernel` 顶层命名空间，子系统按功能组织为子命名空间或类：
+kernelMain 先建立物理分配、页表管理和内核堆，因为 CPU、任务、端点等对象都需要内存；随后初始化 CPU、CPU 本地内存设施、时钟、IDT、中断控制器及引导设备信息。SMP 发现先于 AP 正式启动，线程、调度器、Task 和 syscall 环境准备好后，AP 才进入可调度状态。
 
-| 命名空间/类 | 职责 |
-|---|---|
-| `kernel::memory` | 物理页分配、虚拟内存管理 |
-| `kernel::heap` | 内核堆分配 |
-| `kernel::cpu` | CPU 特性检测、GDT/TSS、MSR、抢占控制 |
-| `kernel::localapic` | Local APIC 初始化与 IPI |
-| `kernel::interrupt` | IDT、中断/异常分发、I/O APIC |
-| `kernel::time` | TSC/RTC 时钟 |
-| `kernel::serial` | 串口输出 |
-| `kernel::acpi` | ACPI 表定位 |
-| `kernel::smp` | 多核发现与 AP 启动 |
-| `kernel::schedule` | CFS 调度器 |
-| `kernel::task` | 进程全局管理 |
-| `kernel::signal` | 信号投递 |
-| `kernel::sync` | 同步原语、用户态 futex |
-| `kernel::syscall` | 系统调用入口 |
-| `kernel::device` | 设备访问控制 |
-| `kernel::posix` | POSIX 未实现操作登记 |
-| `kernel::Thread` | 线程类（含静态工厂方法） |
-| `kernel::Task` | 进程类 |
-| `kernel::Endpoint` | IPC 端点类 |
-| `kernel::Pipe` | 管道与通用双向通道 |
-| `kernel::MessageQueue` | 消息队列类 |
-| `kernel::SharedMemory` | 共享内存类 |
-| `kernel::ElfLoader` | ELF 加载器类 |
-| `kernel::UserProgramLoader` | 用户程序加载器类 |
-| `kernel::RunQueue` | 运行队列类 |
-| `kernel::CpuLocalData` | 每 CPU 数据类 |
-| `kernel::CpuDescriptor` | CPU 描述符类 |
+端点和核心机制对象建立后，内核启用中断，通过 `startInitialProgram` 启动初始用户程序。地址空间、ELF、SMP 亲和性和 IPC 等启动检查也发生在这些阶段，具体位置见[启动流程](boot.md)。
 
-## 4. 全局约定
+最后由 `exitCurrentThread(0)` 结束引导线程。它不能作为无事可做但持续 Ready 的线程留在运行队列中，否则每次 I/O 唤醒都可能和空转引导线程争用时间片；真正无任务时由每 CPU 的 idle 线程执行休眠。
 
-以下常量贯穿整个内核，各子系统共同遵守：
+## 从用户请求到内核机制
 
-| 约定                   | 值                    | 说明                              |
-| -------------------- | -------------------- | ------------------------------- |
-| 直接映射基址               | `0xffff800000000000` | 前 64 GB 物理内存恒等映射到高半区            |
-| 内核堆基址                | `0xffff804000000000` | 直接映射基址 + 1 GB，大小 16 MB          |
-| 用户地址下限               | `0x10000`            | 低于此地址的映射一律拒绝                    |
-| 用户地址上限               | `0x0000800000000000` | 47 位规范地址分界（128 TiB）             |
-| 页大小                  | `0x1000`                 | 用户映射仅支持 4 KiB 页                  |
-| W^X 策略               | —                    | 可写页必须同时带 `pageNoExecute`，禁止写+执行 |
-| 内核代码段选择子             | `0x08`               | GDT 第 1 项                       |
-| 内核数据段选择子             | `0x10`               | GDT 第 2 项                       |
-| 用户数据段选择子             | `0x1b`               | GDT 第 3 项（DPL 3）                |
-| 用户代码段选择子             | `0x23`               | GDT 第 4 项（DPL 3）                |
-| TSS 选择子              | `0x28`               | GDT 第 5-6 项（64 位 TSS 占两槽）       |
-| 重调度 IPI 向量           | `0xf0`               | SMP 核间重调度请求                     |
-| TLB shootdown IPI 向量 | `0xf1`               | 跨核页表项失效                         |
-| 虚假中断向量               | `0xff`               | Local APIC spurious，不发 EOI      |
-| 定时器中断向量              | `32`                 | Local APIC Timer，1 ms 周期        |
-| IRQ 中断向量基址           | `64`                 | IRQ 0-15 → 向量 64-79             |
-| 系统调用起始编号            | `1`               | SendMessage = 1，顺序见 syscall ABI             |
+用户通过 syscall 进入内核；IPC 系统调用操作端点，端点再调用机制对象或把请求送到用户态服务。内核中的 task.kernel、memory.kernel、device.kernel、pci.kernel 等是受控机制入口，不是与同名用户态服务混在一起的进程。
 
-## 5. 启动初始化序列
+用户态 task 负责程序文件读取及启动协调，mm 负责 VMA 与缺页策略，device/storage 负责输入协调与存储驱动，FS 负责路径和文件系统。这些策略不因使用内核机制对象而转入内核；GUI 的窗口和桌面策略也不在内核内。
 
-`kernelEntry`（head.S 的 64 位入口）→ `kernelMain`，初始化顺序严格如下：
+权限需要同时考虑调用者角色、能力、对象类型和句柄权限。消息里的 PID、地址和自报身份不能代替内核确定的 caller。普通程序加载不能通过参数自行取得 boot 服务身份。
 
-```text
- 1. memory::initPhy              物理页位图
- 2. memory::initVir              移除低端恒等映射，保留高半直接映射
- 3. heap::init                   内核堆初始化
- 4. cpu::init                    CPUID/GDT/TSS/Local APIC
- 5. time::init                   TSC 校准 + RTC 墙钟
- 6. interrupt::initIdt           256 项 IDT
- 7. interrupt::initControllers   I/O APIC 发现与屏蔽
- 8. device::init                 帧缓冲信息记录
- 9. smp::initSmp                 MADT 解析、CPU 描述符
-10. Thread::init                 引导线程
-11. schedule::init               每 CPU 红黑树运行队列 + 1 ms 定时器
-12. task::init                   内核进程
-13. sync::runSynchronizationSelfTest  同步原语自检
-14. syscall::init                SYSCALL/SYSRET MSR
-15. smp::startApplicationTaskors INIT/SIPI 启动 AP
-16. SMP 调度探测（多核时）
-17. 地址空间探测 + ELF 校验自检（ElfLoader::runValidationSelfTest）
-18. Ring 3 系统调用探测进程
-19. Endpoint::init + IPC 收发探测线程
-20. 调度器探测线程 ×2
-21. interrupt::enable
-22. UserProgramLoader::startInitial  加载 init 进程
-23. Thread::exitCurrent(0)       引导线程退出
-```
+阅读入口是[系统调用](task/syscall.md)、[IPC](task/ipc.md)、[核心服务入口](task/service.md)、[内存机制服务](memory/service.md)和[设备机制服务](device/service.md)。
 
-任何一步失败都会打印串口诊断并停机（`cli; hlt`）。
+## 地址空间与内存的关系
 
-## 6. 能力
+用户映射使用 4 KiB 页，地址下界为 0x10000，上界为 0x0000800000000000，不含上界。内核直接映射基址是 0xffff800000000000，NX 堆别名从 0xffff804000000000 开始。普通用户页保护遵守 W^X。
 
-进程通过能力位（`Task::capabilities_`）获得特权操作资格：
+物理页由 Buddy 管理，小对象通过 Slab 和每 CPU 缓存分配；页对象、共享对象和页表各有不同引用。撤销 PTE 不总是释放物理页：共享页还可能有其他引用，external 页可能属于硬件或 DMA 资源域。
 
-| 能力                         | 值        | 用途                                  |
-| -------------------------- | -------- | ----------------------------------- |
-| `taskCapabilityDevice`  | `1 << 0` | PCI 枚举/配置、MMIO 映射、DMA、IRQ 绑定、I/O 端口 |
-| `taskCapabilitySpawn`   | `1 << 1` | SpawnProgram/SpawnImage 创建子进程       |
-| `taskCapabilityDisplay` | `1 << 2` | 帧缓冲映射                               |
-| `taskCapabilityUsers`   | `1 << 3` | 用户管理相关操作                           |
+页表修改还需要本地及远端 TLB 失效。只有旧地址不再被 CPU 使用后，才能归还其页表和物理存储。设备 DMA 则有额外停机条件，不能用 CPU TLB 失效代替。
 
-能力由内核在加载内置服务时授予（见 [user.md](user.md)），或由 `SpawnImage` 的父进程传递（仅允许 Display 位）。
+细节见[物理分配](memory/physical.md)、[内核对象](memory/object.md)、[虚拟映射](memory/virtual.md)、[共享对象](memory/shared.md)和[设备资源域](device/resource.md)。
 
-## 7. 句柄
+## 线程、等待与资源退出
 
-内核对象（端点、进程、页对象、共享内存、MMIO 区域、DMA 缓冲、中断绑定）通过每进程句柄表访问：
+Task 保存地址空间、句柄、凭据、服务身份与资源统计；Thread 保存执行现场和调度状态。每 CPU 的 RunQueue 选择线程，红黑树维护就绪线程的虚拟运行时间顺序。运行中的线程不同时留在就绪树内。
 
-- 句柄是 64 位值：高 16 位 generation（防悬空），低 32 位为槽位号（从 1 起）。
-- 权限位：`handleRightRead = 1<<0`、`handleRightWrite = 1<<1`、`handleRightManage = 1<<2`。
-- 关闭句柄时，Pipe/Channel/MessageQueue/SharedMemory 四类会释放底层对象引用；其余类型仅移除表项。
-- 每进程初始 64 个句柄槽，支持动态增长。
+等待路径要先在条件锁内登记等待，再释放锁并阻塞；唤醒可能先于真正阻塞，wakePending 用于衔接这个窗口。线程设为 Terminated 也不等于 CPU 已离开它的栈。
 
-详见 [task.md](task/task.md) 的句柄表章节。
+退出和 exec 要分别协调停止执行、退役栈、句柄引用、旧地址空间与设备停机。远端 CPU 停稳前不能释放旧线程栈和页表；设备复位失败时不能归还仍可能被 DMA 使用的内存。
 
-## 8. 锁与并发
+细节见[调度](task/sched.md)、[同步](task/sync.md)、[资源管理](task/resource.md)、[凭据](task/credentials.md)和[核心转储](task/core.md)。
 
-- `SpinLock`：test-and-set + `pause` 自旋，单字节。
-- `InterruptSpinLockGuard`：关中断 + 加锁的 RAII 守卫。
-- `PreemptionSpinLockGuard`：关抢占（`preemptionCount` 计数）+ 加锁的 RAII 守卫。
-- `Atomic<T>`：基于 GCC `__atomic_*` 内建，支持五种内存序。
-- 中断处理函数尾部检查 `rescheduleRequested` 并调用 `schedule()`，实现中断上下文延迟调度。
-- 内核堆与物理页分配器均为全局单锁。
+## 硬件入口的实现范围
 
-## 9. 诊断
+| 功能 | 当前范围 |
+| --- | --- |
+| PCI | segment 0、传统 256 字节配置空间，内存 BAR 探测和受限 command 写入。 |
+| DMA 域 | 当前可信复位流程针对现代 VirtIO block，失败保留页面并隔离。 |
+| IRQ 绑定 | 传统 IRQ 0～15，端点通知及电平触发确认。 |
+| PS/2 | 初始化控制器并读取原始字节，由用户态组包和解析。 |
+| 引导存储 | rootfs 模块的内存块读写，不向原始 ISO 持久化。 |
+| 时间 | TSC 单调时间与启动 RTC 墙钟基准。 |
+| ACPI | 表校验与查找，没有 AML、电源状态或休眠实现。 |
 
-所有早期与内核诊断输出走 COM1 串口（115200 8N1），通过 `kernel::serial` 命名空间函数，前缀约定：
-
-```text
-[BOOT] [CPU] [MEMORY] [SCHED] [SMP] [INTERRUPT] [IPC]
-[SYSCALL] [ELF] [USERLAND] [TIME] [DISPLAY] [SYNC]
-```
-
-内核架构、服务启动依赖、RPC 状态与 SMP 回收时序见[混合内核架构](architecture.md)。
+对应文档为[PCI](device/pci.md)、[DMA](device/dmabuffer.md)、[输入](device/ps2.md)、[存储](device/storage.md)、[时间](device/time.md)和[ACPI](device/acpi.md)。文件职责、调用顺序和当前限制应结合阅读，避免把声明存在误认为完整功能已经实现。

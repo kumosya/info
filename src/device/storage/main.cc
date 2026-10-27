@@ -1,52 +1,49 @@
+#include "service/common/kernel-requests.h"
 #include "service/common/queries.h"
 #include "service/common/records.h"
-#include "service/common/runtime.h"
-#include "service/common/kernel-requests.h"
 #include "service/common/requests.h"
+#include "service/common/runtime.h"
+#include "service/device/storage/boot_image.h"
+#include "service/device/storage/partition.h"
+#include <os/device.h>
 #include <os/ipc.h>
-#include <os/task.h>
 #include <os/mm.h>
-#include <os/device.h>
-#include <os/service.h>
-#include <os/device.h>
-#include <os/ipc.h>
 #include <os/service.h>
 #include <os/storage.h>
 #include <os/sync.h>
-#include "service/device/storage/partition.h"
-#include "service/device/storage/boot_image.h"
+#include <os/task.h>
 
 namespace {
 
-constexpr uint16_t virtioVendorId          = 0x1af4;
-constexpr uint16_t virtioBlockDeviceId     = 0x1042;
-constexpr uint8_t virtioCapabilityId       = 0x09;
-constexpr uint8_t commonConfigurationType  = 1;
-constexpr uint8_t notifyConfigurationType  = 2;
-constexpr uint8_t isrConfigurationType     = 3;
-constexpr uint8_t deviceConfigurationType  = 4;
-constexpr uint8_t statusAcknowledge        = 1;
-constexpr uint8_t statusDriver             = 2;
-constexpr uint8_t statusDriverOk           = 4;
-constexpr uint8_t statusFeaturesOk         = 8;
-constexpr uint64_t featureReadOnly         = 1ULL << 5;
-constexpr uint64_t featureFlush            = 1ULL << 9;
-constexpr uint64_t featureVersionOne       = 1ULL << 32;
-constexpr uint16_t descriptorNext          = 1;
-constexpr uint16_t descriptorWrite         = 2;
-constexpr uint32_t blockSize               = 512;
-constexpr uint32_t queueSize               = 32;
-constexpr uint32_t requestSlotCount        = 7;
-constexpr uint64_t ioTimeoutNanoseconds    = 2ULL * 1000 * 1000 * 1000;
-constexpr uint64_t irqNotification         = 0x495251;
-constexpr uint64_t queueDmaAddress         = 0x0000000031000000ULL;
-constexpr uint64_t irqStackAddress         = 0x0000000030010000ULL;
-constexpr uint64_t irqStackSize            = 64 * 1024;
-constexpr uint64_t workerStackAddress      = 0x0000000030020000ULL;
-constexpr uint64_t workerStackSize         = 64 * 1024;
-constexpr uint32_t workerThreadCount       = 3;
-constexpr uint64_t mmioBaseAddress         = 0x0000000040000000ULL;
-constexpr uint32_t maximumCapabilityWalk   = 48;
+constexpr uint16_t virtioVendorId         = 0x1af4;
+constexpr uint16_t virtioBlockDeviceId    = 0x1042;
+constexpr uint8_t virtioCapabilityId      = 0x09;
+constexpr uint8_t commonConfigurationType = 1;
+constexpr uint8_t notifyConfigurationType = 2;
+constexpr uint8_t isrConfigurationType    = 3;
+constexpr uint8_t deviceConfigurationType = 4;
+constexpr uint8_t statusAcknowledge       = 1;
+constexpr uint8_t statusDriver            = 2;
+constexpr uint8_t statusDriverOk          = 4;
+constexpr uint8_t statusFeaturesOk        = 8;
+constexpr uint64_t featureReadOnly        = 1ULL << 5;
+constexpr uint64_t featureFlush           = 1ULL << 9;
+constexpr uint64_t featureVersionOne      = 1ULL << 32;
+constexpr uint16_t descriptorNext         = 1;
+constexpr uint16_t descriptorWrite        = 2;
+constexpr uint32_t blockSize              = 512;
+constexpr uint32_t queueSize              = 32;
+constexpr uint32_t requestSlotCount       = 7;
+constexpr uint64_t ioTimeoutNanoseconds   = 2ULL * 1000 * 1000 * 1000;
+constexpr uint64_t irqNotification        = 0x495251;
+constexpr uint64_t queueDmaAddress        = 0x0000000031000000ULL;
+constexpr uint64_t irqStackAddress        = 0x0000000030010000ULL;
+constexpr uint64_t irqStackSize           = 64 * 1024;
+constexpr uint64_t workerStackAddress     = 0x0000000030020000ULL;
+constexpr uint64_t workerStackSize        = 64 * 1024;
+constexpr uint32_t workerThreadCount      = 3;
+constexpr uint64_t mmioBaseAddress        = 0x0000000040000000ULL;
+constexpr uint32_t maximumCapabilityWalk  = 48;
 
 struct VirtioPciCapability {
     bool present;
@@ -74,10 +71,11 @@ struct VirtioBlockRequest {
     uint64_t sector;
 } __attribute__((packed));
 
-class DmaLayout { public:
-static uint32_t alignUp(uint32_t value, uint32_t alignment) {
-    return (value + alignment - 1) & ~(alignment - 1);
-}
+class DmaLayout {
+   public:
+    static uint32_t alignUp(uint32_t value, uint32_t alignment) {
+        return (value + alignment - 1) & ~(alignment - 1);
+    }
 };
 
 class PciConfiguration {
@@ -86,7 +84,8 @@ class PciConfiguration {
         : function_(function) {}
 
     bool read32(uint16_t offset, uint32_t& value) const {
-        os::Device::Pci function=function_;return function.readConfig(offset,value)==0;
+        os::Device::Pci function = function_;
+        return function.readConfig(offset, value) == 0;
     }
 
     bool read8(uint16_t offset, uint8_t& value) const {
@@ -100,31 +99,33 @@ class PciConfiguration {
 
     bool writeCommand(uint16_t flags) const {
         uint32_t command;
-        os::Device::Pci function=function_;return read32(4,command) && function.writeConfig(4,(command|flags)&0xffff)==0;
+        os::Device::Pci function = function_;
+        return read32(4, command) &&
+               function.writeConfig(4, (command | flags) & 0xffff) == 0;
     }
 
    private:
     const os::Device::Pci& function_;
 };
 
-class MmioAccess { public:
-template <typename Type>
-static Type readMmio(volatile uint8_t* base, uint32_t offset) {
-    return *reinterpret_cast<volatile Type*>(base + offset);
-}
+class MmioAccess {
+   public:
+    template <typename Type>
+    static Type readMmio(volatile uint8_t* base, uint32_t offset) {
+        return *reinterpret_cast<volatile Type*>(base + offset);
+    }
 
-template <typename Type>
-static void writeMmio(volatile uint8_t* base, uint32_t offset, Type value) {
-    *reinterpret_cast<volatile Type*>(base + offset) = value;
-}
-
+    template <typename Type>
+    static void writeMmio(volatile uint8_t* base, uint32_t offset, Type value) {
+        *reinterpret_cast<volatile Type*>(base + offset) = value;
+    }
 };
 
 class VirtioPciTransport {
    public:
     bool init(const os::Device::Pci& function, os::Device& owner) {
         function_ = function;
-        owner_=&owner;
+        owner_    = &owner;
         PciConfiguration configuration(function_);
         uint32_t statusCommand;
         uint8_t capabilityOffset;
@@ -138,7 +139,8 @@ class VirtioPciTransport {
             return false;
         }
         if (!scanCapabilities(configuration, capabilityOffset)) {
-            os::Sys().log("[STORAGE] required VirtIO PCI capabilities are missing\n");
+            os::Sys().log(
+                "[STORAGE] required VirtIO PCI capabilities are missing\n");
             return false;
         }
         if (!mapBars()) {
@@ -160,7 +162,8 @@ class VirtioPciTransport {
     volatile uint8_t* device() const { return device_; }
 
     void notifyQueue(uint16_t queue, uint16_t notifyOffset) {
-        MmioAccess::writeMmio<uint16_t>(notify_, notifyOffset * notifyMultiplier_, queue);
+        MmioAccess::writeMmio<uint16_t>(
+            notify_, notifyOffset * notifyMultiplier_, queue);
     }
 
     void acknowledgeInterrupt() {
@@ -263,7 +266,8 @@ class VirtioPciTransport {
         if (end > 64 * 1024) {
             return false;
         }
-        const uint32_t required = DmaLayout::alignUp(static_cast<uint32_t>(end), 4096);
+        const uint32_t required =
+            DmaLayout::alignUp(static_cast<uint32_t>(end), 4096);
         if (required > requiredBarSize_[bar]) {
             requiredBarSize_[bar] = required;
         }
@@ -275,8 +279,11 @@ class VirtioPciTransport {
             if (requiredBarSize_[bar] == 0) {
                 continue;
             }
-            if(!owner_ || barMappings_[bar].open(*owner_,bar,0,requiredBarSize_[bar]))return false;
-            mappedBars_[bar]=reinterpret_cast<volatile uint8_t*>(barMappings_[bar].getAddress());
+            if (!owner_ ||
+                barMappings_[bar].open(*owner_, bar, 0, requiredBarSize_[bar]))
+                return false;
+            mappedBars_[bar] = reinterpret_cast<volatile uint8_t*>(
+                barMappings_[bar].getAddress());
         }
         return true;
     }
@@ -303,28 +310,35 @@ class VirtioBlockDriver {
               os::Ipc& irqEndpoint, os::Device::Irq (&boundIrqs)[16]) {
         function_    = function;
         deviceIndex_ = deviceIndex;
-        const uint64_t claimDeadline = os::Sys().readMonotonicTime() + 2000000000ULL;
+        const uint64_t claimDeadline =
+            os::Sys().readMonotonicTime() + 2000000000ULL;
         do {
-            if(device_.open(function_))os::sleep(10);
-        } while (!device_.getValid() && os::Sys().readMonotonicTime() < claimDeadline);
+            if (device_.open(function_)) os::sleep(10);
+        } while (!device_.getValid() &&
+                 os::Sys().readMonotonicTime() < claimDeadline);
         if (!device_.getValid()) return false;
-        if (!transport_.init(function_,device_)) {
+        if (!transport_.init(function_, device_)) {
             os::Sys().log("[STORAGE] VirtIO PCI capability/BAR setup failed\n");
             fail();
             return false;
         }
         volatile uint8_t* common = transport_.common();
         MmioAccess::writeMmio<uint8_t>(common, 20, 0);
-        const uint64_t resetDeadline = os::Sys().readMonotonicTime() + ioTimeoutNanoseconds;
+        const uint64_t resetDeadline =
+            os::Sys().readMonotonicTime() + ioTimeoutNanoseconds;
         while (MmioAccess::readMmio<uint8_t>(common, 20) != 0) {
-            if (os::Sys().readMonotonicTime() >= resetDeadline) { fail(); return false; }
+            if (os::Sys().readMonotonicTime() >= resetDeadline) {
+                fail();
+                return false;
+            }
             os::yield();
         }
-        MmioAccess::writeMmio<uint8_t>(common, 20, statusAcknowledge | statusDriver);
+        MmioAccess::writeMmio<uint8_t>(common, 20,
+                                       statusAcknowledge | statusDriver);
         MmioAccess::writeMmio<uint32_t>(common, 0, 0);
         const uint64_t lowFeatures = MmioAccess::readMmio<uint32_t>(common, 4);
         MmioAccess::writeMmio<uint32_t>(common, 0, 1);
-        const uint64_t highFeatures   = MmioAccess::readMmio<uint32_t>(common, 4);
+        const uint64_t highFeatures = MmioAccess::readMmio<uint32_t>(common, 4);
         const uint64_t deviceFeatures = lowFeatures | (highFeatures << 32);
         if ((deviceFeatures & featureVersionOne) == 0) {
             os::Sys().log("[STORAGE] VirtIO 1.0 feature is unavailable\n");
@@ -335,15 +349,17 @@ class VirtioBlockDriver {
             featureVersionOne |
             (deviceFeatures & (featureReadOnly | featureFlush));
         MmioAccess::writeMmio<uint32_t>(common, 8, 0);
-        MmioAccess::writeMmio<uint32_t>(common, 12,
-                            static_cast<uint32_t>(negotiatedFeatures_));
+        MmioAccess::writeMmio<uint32_t>(
+            common, 12, static_cast<uint32_t>(negotiatedFeatures_));
         MmioAccess::writeMmio<uint32_t>(common, 8, 1);
-        MmioAccess::writeMmio<uint32_t>(common, 12,
-                            static_cast<uint32_t>(negotiatedFeatures_ >> 32));
-        MmioAccess::writeMmio<uint8_t>(common, 20,
-                           statusAcknowledge | statusDriver | statusFeaturesOk);
-        if ((MmioAccess::readMmio<uint8_t>(common, 20) & statusFeaturesOk) == 0) {
-            os::Sys().log("[STORAGE] VirtIO feature negotiation was rejected\n");
+        MmioAccess::writeMmio<uint32_t>(
+            common, 12, static_cast<uint32_t>(negotiatedFeatures_ >> 32));
+        MmioAccess::writeMmio<uint8_t>(
+            common, 20, statusAcknowledge | statusDriver | statusFeaturesOk);
+        if ((MmioAccess::readMmio<uint8_t>(common, 20) & statusFeaturesOk) ==
+            0) {
+            os::Sys().log(
+                "[STORAGE] VirtIO feature negotiation was rejected\n");
             fail();
             return false;
         }
@@ -352,8 +368,8 @@ class VirtioBlockDriver {
             fail();
             return false;
         }
-        blockCount_       = MmioAccess::readMmio<uint64_t>(transport_.device(), 0);
-        readOnly_         = (negotiatedFeatures_ & featureReadOnly) != 0;
+        blockCount_ = MmioAccess::readMmio<uint64_t>(transport_.device(), 0);
+        readOnly_   = (negotiatedFeatures_ & featureReadOnly) != 0;
         const uint8_t irq = transport_.interruptLine();
         if (blockCount_ == 0) {
             os::Sys().log("[STORAGE] VirtIO Block reports zero capacity\n");
@@ -364,15 +380,16 @@ class VirtioBlockDriver {
             fail();
             return false;
         }
-        if (!boundIrqs[irq].getValid()) boundIrqs[irq].create(device_,irq,irqEndpoint,true);
+        if (!boundIrqs[irq].getValid())
+            boundIrqs[irq].create(device_, irq, irqEndpoint, true);
         if (!boundIrqs[irq].getValid()) {
             os::Sys().log("[STORAGE] VirtIO Block IRQ binding failed\n");
             fail();
             return false;
         }
         MmioAccess::writeMmio<uint8_t>(common, 20,
-                           statusAcknowledge | statusDriver | statusFeaturesOk |
-                               statusDriverOk);
+                                       statusAcknowledge | statusDriver |
+                                           statusFeaturesOk | statusDriverOk);
         online_ = true;
         return true;
     }
@@ -381,14 +398,16 @@ class VirtioBlockDriver {
         return submit(0, block, buffer, true);
     }
 
-    os::Storage::Error readBlocks(uint64_t block, uint32_t count, void* buffer) {
+    os::Storage::Error readBlocks(uint64_t block, uint32_t count,
+                                  void* buffer) {
         return submit(0, block, buffer, true, count);
     }
 
     os::Storage::Error writeBlocks(uint64_t block, uint32_t count,
-                                  const void* buffer) {
-        return readOnly_ ? os::Storage::Error::ReadOnly
-                         : submit(1, block, const_cast<void*>(buffer), false, count);
+                                   const void* buffer) {
+        return readOnly_
+                   ? os::Storage::Error::ReadOnly
+                   : submit(1, block, const_cast<void*>(buffer), false, count);
     }
 
     os::Storage::Error writeBlock(uint64_t block, const void* buffer) {
@@ -417,18 +436,26 @@ class VirtioBlockDriver {
 
    private:
     bool initializeQueue() {
-        if(queueDma_.create(device_,4096) || queueDma_.getSize()<4096)return false;
-        queuePhysical_=queueDma_.getDeviceAddress();queueMemory_=reinterpret_cast<uint8_t*>(queueDma_.getVirtualAddress());
-        os::Runtime::clearMemory(queueMemory_,4096);
-        for(uint32_t slot=0;slot<requestSlotCount;++slot) {
-            if(requestDma_[slot].create(device_,4096) || requestDma_[slot].getSize()<4096)return false;
-            requestPhysical_[slot]=requestDma_[slot].getDeviceAddress();requestMemory_[slot]=reinterpret_cast<uint8_t*>(requestDma_[slot].getVirtualAddress());
-            os::Runtime::clearMemory(requestMemory_[slot],4096);
+        if (queueDma_.create(device_, 4096) || queueDma_.getSize() < 4096)
+            return false;
+        queuePhysical_ = queueDma_.getDeviceAddress();
+        queueMemory_ =
+            reinterpret_cast<uint8_t*>(queueDma_.getVirtualAddress());
+        os::Runtime::clearMemory(queueMemory_, 4096);
+        for (uint32_t slot = 0; slot < requestSlotCount; ++slot) {
+            if (requestDma_[slot].create(device_, 4096) ||
+                requestDma_[slot].getSize() < 4096)
+                return false;
+            requestPhysical_[slot] = requestDma_[slot].getDeviceAddress();
+            requestMemory_[slot]   = reinterpret_cast<uint8_t*>(
+                requestDma_[slot].getVirtualAddress());
+            os::Runtime::clearMemory(requestMemory_[slot], 4096);
         }
 
         volatile uint8_t* common = transport_.common();
         MmioAccess::writeMmio<uint16_t>(common, 22, 0);
-        const uint16_t availableSize = MmioAccess::readMmio<uint16_t>(common, 24);
+        const uint16_t availableSize =
+            MmioAccess::readMmio<uint16_t>(common, 24);
         if (availableSize < queueSize) {
             return false;
         }
@@ -437,27 +464,32 @@ class VirtioBlockDriver {
         const uint32_t descriptorBytes =
             sizeof(VirtQueueDescriptor) * queueSize;
         availableOffset_ = descriptorBytes;
-        usedOffset_      = DmaLayout::alignUp(availableOffset_ + 6 + 2 * queueSize, 4);
+        usedOffset_ =
+            DmaLayout::alignUp(availableOffset_ + 6 + 2 * queueSize, 4);
         if (usedOffset_ + 6 + 8 * queueSize > 4096) {
             return false;
         }
         MmioAccess::writeMmio<uint64_t>(common, 32, queuePhysical_);
-        MmioAccess::writeMmio<uint64_t>(common, 40, queuePhysical_ + availableOffset_);
-        MmioAccess::writeMmio<uint64_t>(common, 48, queuePhysical_ + usedOffset_);
+        MmioAccess::writeMmio<uint64_t>(common, 40,
+                                        queuePhysical_ + availableOffset_);
+        MmioAccess::writeMmio<uint64_t>(common, 48,
+                                        queuePhysical_ + usedOffset_);
         notifyOffset_ = MmioAccess::readMmio<uint16_t>(common, 30);
         MmioAccess::writeMmio<uint16_t>(common, 28, 1);
         return MmioAccess::readMmio<uint16_t>(common, 28) == 1;
     }
 
     os::Storage::Error submit(uint32_t type, uint64_t block, void* buffer,
-                            bool deviceWrites, uint32_t count = 1) {
-        if (type != 4 && (block >= blockCount_ || buffer == nullptr ||
-                          count == 0 || count > os::maximumStorageTransferBlocks ||
-                          count > blockCount_ - block)) {
+                              bool deviceWrites, uint32_t count = 1) {
+        if (type != 4 &&
+            (block >= blockCount_ || buffer == nullptr || count == 0 ||
+             count > os::maximumStorageTransferBlocks ||
+             count > blockCount_ - block)) {
             return os::Storage::Error::InvalidBlock;
         }
-        const uint64_t deadline = os::Sys().readMonotonicTime() + ioTimeoutNanoseconds;
-        uint32_t slot           = requestSlotCount;
+        const uint64_t deadline =
+            os::Sys().readMonotonicTime() + ioTimeoutNanoseconds;
+        uint32_t slot = requestSlotCount;
         while (slot == requestSlotCount) {
             {
                 os::SpinLock::Guard guard(requestLock_);
@@ -472,7 +504,8 @@ class VirtioBlockDriver {
                     }
                 }
                 if (slot != requestSlotCount) {
-                    submitLocked(slot, type, block, buffer, deviceWrites, count);
+                    submitLocked(slot, type, block, buffer, deviceWrites,
+                                 count);
                 }
             }
             if (slot == requestSlotCount) {
@@ -488,7 +521,7 @@ class VirtioBlockDriver {
                 os::SpinLock::Guard guard(requestLock_);
                 taskUsedLocked();
                 if (slots_[slot].completed) {
-                    uint8_t* memory = requestMemory_[slot];
+                    uint8_t* memory      = requestMemory_[slot];
                     const uint32_t bytes = count * blockSize;
                     const uint8_t status = memory[16 + bytes];
                     if (status == 0 && type == 0) {
@@ -548,8 +581,7 @@ class VirtioBlockDriver {
                                       (deviceWrites ? descriptorWrite : 0)),
                 static_cast<uint16_t>(head + 2)};
         }
-        descriptors[head + 2]  = {physical + 16 + bytes, 1, descriptorWrite,
-                                  0};
+        descriptors[head + 2]  = {physical + 16 + bytes, 1, descriptorWrite, 0};
         slots_[slot].active    = true;
         slots_[slot].completed = false;
 
@@ -595,9 +627,9 @@ class VirtioBlockDriver {
     };
     os::SpinLock requestLock_;
     RequestSlot slots_[requestSlotCount]{};
-    uint8_t* queueMemory_        = nullptr;
+    uint8_t* queueMemory_ = nullptr;
     uint8_t* requestMemory_[requestSlotCount]{};
-    uint64_t queuePhysical_      = 0;
+    uint64_t queuePhysical_ = 0;
     uint64_t requestPhysical_[requestSlotCount]{};
     uint64_t negotiatedFeatures_ = 0;
     uint64_t blockCount_         = 0;
@@ -614,42 +646,72 @@ class BlockDriver {
     VirtioBlockDriver virtio_;
     storage::BootImageDriver boot_;
     bool bootImage_ = false;
- public:
-    bool initBoot() { bootImage_ = boot_.init(); return bootImage_; }
+
+   public:
+    bool initBoot() {
+        bootImage_ = boot_.init();
+        return bootImage_;
+    }
     bool isBootImage() const { return bootImage_; }
-    bool init(const os::Device::Pci& function, uint32_t index, os::Ipc& endpoint, os::Device::Irq (&irqs)[16]) { return virtio_.init(function, index, endpoint, irqs); }
-    uint64_t blockCount() const { return bootImage_ ? boot_.blockCount() : virtio_.blockCount(); }
+    bool init(const os::Device::Pci& function, uint32_t index,
+              os::Ipc& endpoint, os::Device::Irq (&irqs)[16]) {
+        return virtio_.init(function, index, endpoint, irqs);
+    }
+    uint64_t blockCount() const {
+        return bootImage_ ? boot_.blockCount() : virtio_.blockCount();
+    }
     bool readOnly() const { return bootImage_ ? false : virtio_.readOnly(); }
-    void handleInterrupt() { if (!bootImage_) virtio_.handleInterrupt(); }
-    os::Storage::Error flush() { return bootImage_ ? os::Storage::Error::Success : virtio_.flush(); }
-    os::Storage::Error readBlocks(uint64_t block, uint32_t count, void* data) { return bootImage_ ? boot_.transfer(block, count, data, false) : virtio_.readBlocks(block, count, data); }
-    os::Storage::Error writeBlocks(uint64_t block, uint32_t count, const void* data) { return bootImage_ ? boot_.transfer(block, count, const_cast<void*>(data), true) : virtio_.writeBlocks(block, count, data); }
-    os::Storage::Error readBlock(uint64_t block, void* data) { return readBlocks(block, 1, data); }
-    os::Storage::Error writeBlock(uint64_t block, const void* data) { return writeBlocks(block, 1, data); }
+    void handleInterrupt() {
+        if (!bootImage_) virtio_.handleInterrupt();
+    }
+    os::Storage::Error flush() {
+        return bootImage_ ? os::Storage::Error::Success : virtio_.flush();
+    }
+    os::Storage::Error readBlocks(uint64_t block, uint32_t count, void* data) {
+        return bootImage_ ? boot_.transfer(block, count, data, false)
+                          : virtio_.readBlocks(block, count, data);
+    }
+    os::Storage::Error writeBlocks(uint64_t block, uint32_t count,
+                                   const void* data) {
+        return bootImage_
+                   ? boot_.transfer(block, count, const_cast<void*>(data), true)
+                   : virtio_.writeBlocks(block, count, data);
+    }
+    os::Storage::Error readBlock(uint64_t block, void* data) {
+        return readBlocks(block, 1, data);
+    }
+    os::Storage::Error writeBlock(uint64_t block, const void* data) {
+        return writeBlocks(block, 1, data);
+    }
 };
 
 class StorageService {
    public:
     int startup();
-    static void workerMain(void* self) { static_cast<StorageService*>(self)->run(); }
-    static void irqMain(void* self) { static_cast<StorageService*>(self)->runIrq(); }
+    static void workerMain(void* self) {
+        static_cast<StorageService*>(self)->run();
+    }
+    static void irqMain(void* self) {
+        static_cast<StorageService*>(self)->runIrq();
+    }
     void runIrq() {
         while (true) {
             os::IpcMessage notification{};
-            if (os::receiveMessage(irqEndpoint(), notification) == 0 && notification.type == irqNotification)
+            if (os::receiveMessage(irqEndpoint(), notification) == 0 &&
+                notification.type == irqNotification)
                 handleInterrupt(static_cast<uint32_t>(notification.data[0]));
         }
     }
 
     bool init(uint64_t registry) {
-        endpoint_    = os::detail::EndpointControl().create();
-        const int irqStatus=irqEndpoint_.create();
+        endpoint_           = os::detail::EndpointControl().create();
+        const int irqStatus = irqEndpoint_.create();
         if (endpoint_ == 0 || irqStatus) {
             return false;
         }
         if (drivers_[driverCount_].initBoot()) ++driverCount_;
         os::Device::Pci functions[64]{};
-        const int count    = os::Device::Pci().enumerate(functions, 64);
+        const int count = os::Device::Pci().enumerate(functions, 64);
         for (int index = 0; index < count && driverCount_ < deviceCapacity;
              ++index) {
             if (functions[index].getVendorId() != virtioVendorId ||
@@ -664,10 +726,13 @@ class StorageService {
             ++driverCount_;
         }
         // Partition discovery already performs I/O. Drain level-triggered
-        // interrupts before the first request, not after publishing the service.
+        // interrupts before the first request, not after publishing the
+        // service.
         if (driverCount_ == 0 ||
-            os::mapMemory(irqStackAddress, irqStackSize, 1) != irqStackAddress ||
-            os::createThread(irqMain, irqStackAddress + irqStackSize, this) == 0)
+            os::mapMemory(irqStackAddress, irqStackSize, 1) !=
+                irqStackAddress ||
+            os::createThread(irqMain, irqStackAddress + irqStackSize, this) ==
+                0)
             return false;
         for (uint32_t driver = 0; driver < driverCount_; ++driver) {
             if (deviceCount_ == os::maximumStorageDevices) return false;
@@ -684,7 +749,8 @@ class StorageService {
                     addDevice(driver, parent, partitions[index]);
             }
         }
-        if (!os::detail::RegistryClient(registry).registerName(os::storageServiceName, endpoint_)) {
+        if (!os::detail::RegistryClient(registry).registerName(
+                os::storageServiceName, endpoint_)) {
             return false;
         }
         return true;
@@ -695,7 +761,8 @@ class StorageService {
         for (uint32_t index = 0; index < driverCount_; ++index) {
             drivers_[index].handleInterrupt();
         }
-        if (irq < 16 && irqBindings_[irq].getValid()) irqBindings_[irq].acknowledge();
+        if (irq < 16 && irqBindings_[irq].getValid())
+            irqBindings_[irq].acknowledge();
     }
 
     [[noreturn]] void run() {
@@ -716,27 +783,27 @@ class StorageService {
         const auto type = static_cast<os::StorageRequest>(request.type);
         if (type == os::StorageRequest::ReadRange ||
             type == os::StorageRequest::WriteRange) {
-            const uint32_t id = request.data[0] >> os::storageDeviceShift;
+            const uint32_t id    = request.data[0] >> os::storageDeviceShift;
             const uint64_t block = request.data[0] & os::storageBlockMask;
             const uint64_t count = request.data[1];
-            const bool write = type == os::StorageRequest::WriteRange;
-            reply.data[0] = encode(os::Storage::Error::InvalidArgument);
-            reply.length = 1;
+            const bool write     = type == os::StorageRequest::WriteRange;
+            reply.data[0]        = encode(os::Storage::Error::InvalidArgument);
+            reply.length         = 1;
             if (request.length < 2 || id >= deviceCount_ || count == 0 ||
                 count > os::maximumStorageTransferBlocks ||
                 block >= devices_[id].getBlockCount() ||
                 count > devices_[id].getBlockCount() - block ||
                 (write && request.length < 2 + count * blockSize / 8))
                 return true;
-            auto& driver = drivers_[driverIndex(id)];
+            auto& driver            = drivers_[driverIndex(id)];
             const uint64_t physical = devices_[id].getStartBlock() + block;
-            const os::Storage::Error error = write
-                ? driver.writeBlocks(physical, count, &request.data[2])
-                : driver.readBlocks(physical, count, &reply.data[2]);
+            const os::Storage::Error error =
+                write ? driver.writeBlocks(physical, count, &request.data[2])
+                      : driver.readBlocks(physical, count, &reply.data[2]);
             reply.data[0] = encode(error);
             if (error == os::Storage::Error::Success) {
                 reply.data[1] = count * blockSize;
-                reply.length = write ? 2 : 2 + count * blockSize / 8;
+                reply.length  = write ? 2 : 2 + count * blockSize / 8;
             }
             return true;
         }
@@ -759,16 +826,18 @@ class StorageService {
                 return true;
             }
             BlockDriver& selected = drivers_[driverIndex(deviceId)];
-            reply.data[0]               = 0;
-            reply.data[1]               = devices_[deviceId].getBlockCount();
-            reply.data[2]               = blockSize;
-            reply.data[3]               = 1;
-            reply.data[4] =
-                static_cast<uint64_t>(selected.isBootImage() ? os::Storage::Device::Type::BootImage : os::Storage::Device::Type::VirtioBlock);
+            reply.data[0]         = 0;
+            reply.data[1]         = devices_[deviceId].getBlockCount();
+            reply.data[2]         = blockSize;
+            reply.data[3]         = 1;
+            reply.data[4]         = static_cast<uint64_t>(
+                selected.isBootImage()
+                    ? os::Storage::Device::Type::BootImage
+                    : os::Storage::Device::Type::VirtioBlock);
             reply.data[5] = selected.readOnly() ? 1 : 0;
             os::Runtime::copyBytes(&reply.data[os::storageIdentityWord],
-                          &identities_[deviceId],
-                          sizeof(os::wire::StorageDeviceIdentity));
+                                   &identities_[deviceId],
+                                   sizeof(os::wire::StorageDeviceIdentity));
             reply.length = os::storageIdentityWord +
                            (sizeof(os::wire::StorageDeviceIdentity) + 7) / 8;
             return true;
@@ -799,9 +868,10 @@ class StorageService {
             return true;
         }
         uint8_t data[blockSize]{};
-        BlockDriver& selected  = drivers_[driverIndex(deviceId)];
-        const uint64_t physicalBlock = devices_[deviceId].getStartBlock() + block;
-        os::Storage::Error result      = os::Storage::Error::Success;
+        BlockDriver& selected = drivers_[driverIndex(deviceId)];
+        const uint64_t physicalBlock =
+            devices_[deviceId].getStartBlock() + block;
+        os::Storage::Error result = os::Storage::Error::Success;
         if (type == os::StorageRequest::ReadBlocks) {
             result        = selected.readBlock(physicalBlock, data);
             reply.data[0] = encode(result);
@@ -854,7 +924,8 @@ class StorageService {
         const uint64_t requestId = request.data[1];
         uint8_t data[blockSize]{};
         os::Storage::Error result = os::Storage::Error::InvalidArgument;
-        if (deviceId < deviceCount_ && block < devices_[deviceId].getBlockCount() &&
+        if (deviceId < deviceCount_ &&
+            block < devices_[deviceId].getBlockCount() &&
             (!write || (request.data[2] == blockSize &&
                         request.length == os::ipcDataWordCount))) {
             if (write) {
@@ -891,7 +962,7 @@ class StorageService {
         return static_cast<uint64_t>(static_cast<int64_t>(error));
     }
 
-    uint64_t endpoint_    = 0;
+    uint64_t endpoint_ = 0;
     os::Ipc irqEndpoint_;
     uint32_t driverIndex(uint32_t deviceId) const {
         return deviceDrivers_[deviceId];
@@ -916,40 +987,46 @@ class StorageService {
 
     void addDevice(uint32_t driver, uint32_t parent,
                    const os::Storage::Part& partition) {
-        const uint32_t id                   = deviceCount_++;
-        devices_[id]                        = partition;
-        deviceDrivers_[id]                  = driver;
+        const uint32_t id                         = deviceCount_++;
+        devices_[id]                              = partition;
+        deviceDrivers_[id]                        = driver;
         os::wire::StorageDeviceIdentity& identity = identities_[id];
-        identity.id                         = id;
-        identity.major                      = 252;
-        identity.minor                      = driver * 256 + partition.getNumber();
-        identity.parentId                   = parent;
-        identity.partitionNumber            = partition.getNumber();
-        identity.startBlock                 = partition.getStartBlock();
+        identity.id                               = id;
+        identity.major                            = 252;
+        identity.minor           = driver * 256 + partition.getNumber();
+        identity.parentId        = parent;
+        identity.partitionNumber = partition.getNumber();
+        identity.startBlock      = partition.getStartBlock();
         os::Runtime::copyString(identity.partitionUuid, partition.getUuid(),
-                       sizeof(identity.partitionUuid));
+                                sizeof(identity.partitionUuid));
         os::Runtime::copyString(identity.name, "vda", sizeof(identity.name));
         identity.name[2] = static_cast<char>('a' + driver);
-        if (partition.getNumber() != 0) decimal(identity.name + 3, partition.getNumber());
+        if (partition.getNumber() != 0)
+            decimal(identity.name + 3, partition.getNumber());
         os::Runtime::copyString(identity.hardwarePath, "pci-0000:00:00.0",
-                       sizeof(identity.hardwarePath));
+                                sizeof(identity.hardwarePath));
         const os::Device::Pci& function = driverFunctions_[driver];
         hexByte(identity.hardwarePath + 9, function.getBus());
         hexByte(identity.hardwarePath + 12, function.getDevice());
-        identity.hardwarePath[15] = static_cast<char>('0' + function.getFunction());
+        identity.hardwarePath[15] =
+            static_cast<char>('0' + function.getFunction());
         if (partition.getNumber() != 0) {
             os::Runtime::copyString(identity.hardwarePath + 16, "-part",
-                           sizeof(identity.hardwarePath) - 16);
+                                    sizeof(identity.hardwarePath) - 16);
             decimal(identity.hardwarePath + 21, partition.getNumber());
         }
         if (drivers_[driver].isBootImage()) {
-            os::Runtime::copyString(identity.name, "ram0", sizeof(identity.name));
-            os::Runtime::copyString(identity.hardwarePath, "boot-rootfs", sizeof(identity.hardwarePath));
+            os::Runtime::copyString(identity.name, "ram0",
+                                    sizeof(identity.name));
+            os::Runtime::copyString(identity.hardwarePath, "boot-rootfs",
+                                    sizeof(identity.hardwarePath));
             identity.major = 1;
             identity.minor = partition.getNumber();
             if (partition.getNumber()) {
-                identity.name[4] = 'p'; decimal(identity.name + 5, partition.getNumber());
-                os::Runtime::copyString(identity.hardwarePath + 11, "-part", sizeof(identity.hardwarePath) - 11);
+                identity.name[4] = 'p';
+                decimal(identity.name + 5, partition.getNumber());
+                os::Runtime::copyString(identity.hardwarePath + 11, "-part",
+                                        sizeof(identity.hardwarePath) - 11);
                 decimal(identity.hardwarePath + 16, partition.getNumber());
             }
         }
@@ -993,4 +1070,7 @@ int StorageService::startup() {
 }
 
 }  // namespace
-int main(int, char**) { static StorageService service; return service.startup(); }
+int main(int, char**) {
+    static StorageService service;
+    return service.startup();
+}

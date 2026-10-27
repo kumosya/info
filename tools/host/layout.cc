@@ -96,7 +96,7 @@ void layout(const Context& context) {
                 std::stoul(row[row[0] == "copy" ? 3 : 2], nullptr, 8);
     for (const auto& service : table(context.build / "config/services.conf"))
         if (service[1] == "3") {
-            modes["boot/" + service[0] + ".elf"] = 0755;
+            modes["boot/" + service[0] + ".elf"]     = 0755;
             modes["sbin/sys/" + service[0] + ".elf"] = 0755;
         }
     // Package declarations are authoritative for payload permissions.
@@ -146,10 +146,11 @@ void deploy(const Context& context) {
     if (context.root.empty() || !fs::is_directory(context.root) ||
         fs::canonical(context.root) == "/")
         throw std::runtime_error("deploy requires non-host --root");
-    auto root = fs::canonical(context.root);
+    auto root                = fs::canonical(context.root);
     const auto legacyConsole = inside(root, "etc/console.conf");
-    const auto console = inside(root, "etc/console");
-    if (fs::exists(legacyConsole) && !fs::exists(console)) host::copy(legacyConsole, console);
+    const auto console       = inside(root, "etc/console");
+    if (fs::exists(legacyConsole) && !fs::exists(console))
+        host::copy(legacyConsole, console);
     for (const auto& row : table(context.build / "config/layout.conf")) {
         if (row[0] == "copy") {
             auto destination = inside(root, row.at(2));
@@ -160,15 +161,20 @@ void deploy(const Context& context) {
             for (const auto& entry :
                  fs::recursive_directory_iterator(row.at(1)))
                 if (entry.is_regular_file()) {
-                    const auto target = inside(root, fs::path(row.at(2)) / entry.path().lexically_relative(row[1]));
-                    if (row[2] != "etc" || !fs::exists(target)) host::copy(entry.path(), target);
+                    const auto target = inside(
+                        root, fs::path(row.at(2)) /
+                                  entry.path().lexically_relative(row[1]));
+                    if (row[2] != "etc" || !fs::exists(target))
+                        host::copy(entry.path(), target);
                 }
         } else if (row[0] == "external-runtime") {
-            const auto installed = inside(root, fs::path("usr/lib") / row.at(2));
+            const auto installed =
+                inside(root, fs::path("usr/lib") / row.at(2));
             // deploy runs before and after the package installation. Only the
             // latter pass has external runtime payloads available to stage.
             if (fs::exists(installed))
-                host::copy(installed, inside(root, fs::path("boot") / row.at(2)));
+                host::copy(installed,
+                           inside(root, fs::path("boot") / row.at(2)));
         } else if (row[0] == "runtime") {
             auto name = row.at(2);
             host::copy(context.packages / row.at(1) / name,
@@ -184,11 +190,14 @@ void deploy(const Context& context) {
             if (!fs::exists(source) && row[8] == "external") continue;
             if (row[15] == "boot") {
                 host::copy(source, inside(root, fs::path("boot") / name));
-                fs::permissions(inside(root, fs::path("boot") / name), static_cast<fs::perms>(0755));
-            } else fs::remove(inside(root, fs::path("boot") / name));
+                fs::permissions(inside(root, fs::path("boot") / name),
+                                static_cast<fs::perms>(0755));
+            } else
+                fs::remove(inside(root, fs::path("boot") / name));
             if (row[8] != "external") {
                 host::copy(source, inside(root, fs::path("sbin/sys") / name));
-                fs::permissions(inside(root, fs::path("sbin/sys") / name), static_cast<fs::perms>(0755));
+                fs::permissions(inside(root, fs::path("sbin/sys") / name),
+                                static_cast<fs::perms>(0755));
             }
         }
     for (const auto& row : table(context.build / "config/layout.conf"))

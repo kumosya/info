@@ -1,13 +1,13 @@
-#include "service/common/runtime.h"
 #include "service/common/kernel-requests.h"
 #include "service/common/requests.h"
+#include "service/common/runtime.h"
 #include "service/fs/ext4/filesystem.h"
 #include "service/fs/ext4/internal.h"
-#include <os/ipc.h>
-#include <os/task.h>
-#include <os/mm.h>
 #include <os/device.h>
+#include <os/ipc.h>
+#include <os/mm.h>
 #include <os/service.h>
+#include <os/task.h>
 
 namespace fs::ext4 {
 
@@ -23,7 +23,8 @@ bool Filesystem::readInode(uint32_t number, uint8_t* inode) {
     }
     uint64_t inodeTable = DiskEncoding::read32(descriptor + 8);
     if (descriptorSize_ >= 64) {
-        inodeTable |= static_cast<uint64_t>(DiskEncoding::read32(descriptor + 40)) << 32;
+        inodeTable |=
+            static_cast<uint64_t>(DiskEncoding::read32(descriptor + 40)) << 32;
     }
     const uint64_t offset = static_cast<uint64_t>(local) * inodeSize_;
     if (!readBlock(inodeTable + offset / blockSize_, blockBuffer_)) {
@@ -49,7 +50,8 @@ bool Filesystem::writeInode(uint32_t number, const uint8_t* inode) {
     }
     uint64_t inodeTable = DiskEncoding::read32(descriptor + 8);
     if (descriptorSize_ >= 64) {
-        inodeTable |= static_cast<uint64_t>(DiskEncoding::read32(descriptor + 40)) << 32;
+        inodeTable |=
+            static_cast<uint64_t>(DiskEncoding::read32(descriptor + 40)) << 32;
     }
     const uint64_t offset = static_cast<uint64_t>(local) * inodeSize_;
     if (!readBlock(inodeTable + offset / blockSize_, blockBuffer_)) {
@@ -63,7 +65,8 @@ bool Filesystem::writeInode(uint32_t number, const uint8_t* inode) {
 }
 
 uint64_t Filesystem::getDataBlock(const uint8_t* inode, uint32_t logical) {
-    if (inode == nullptr || (DiskEncoding::read32(inode + 32) & 0x00080000U) == 0) {
+    if (inode == nullptr ||
+        (DiskEncoding::read32(inode + 32) & 0x00080000U) == 0) {
         return 0;
     }
     const uint8_t* root = inode + 40;
@@ -96,7 +99,8 @@ uint64_t Filesystem::findExtent(const uint8_t* node, uint32_t logical,
                 if (encodedLength > 32768) return 0;
                 const uint64_t physical =
                     static_cast<uint64_t>(DiskEncoding::read32(entry + 8)) |
-                    (static_cast<uint64_t>(DiskEncoding::read16(entry + 6)) << 32);
+                    (static_cast<uint64_t>(DiskEncoding::read16(entry + 6))
+                     << 32);
                 const uint64_t block = physical + (logical - first);
                 return block < blocksCount_ ? block : 0;
             }
@@ -128,10 +132,13 @@ uint64_t Filesystem::ensureDataBlock(uint8_t* inode, uint32_t logical) {
         DiskEncoding::write16(root, 0xf30a);
         DiskEncoding::write16(root + 4, 4);
         DiskEncoding::write16(root + 6, 0);
-        DiskEncoding::write32(inode + 32, DiskEncoding::read32(inode + 32) | 0x00080000U);
+        DiskEncoding::write32(inode + 32,
+                              DiskEncoding::read32(inode + 32) | 0x00080000U);
     }
-    if (DiskEncoding::read16(root) != 0xf30a || DiskEncoding::read16(root + 6) != 0 ||
-        DiskEncoding::read16(root + 2) >= 4 || DiskEncoding::read16(root + 4) > 4) {
+    if (DiskEncoding::read16(root) != 0xf30a ||
+        DiskEncoding::read16(root + 6) != 0 ||
+        DiskEncoding::read16(root + 2) >= 4 ||
+        DiskEncoding::read16(root + 4) > 4) {
         return 0;
     }
 
@@ -140,18 +147,22 @@ uint64_t Filesystem::ensureDataBlock(uint8_t* inode, uint32_t logical) {
     const uint16_t count = DiskEncoding::read16(root + 2);
     uint8_t entries[4 * 12]{};
     for (uint16_t index = 0; index < count; ++index) {
-        os::Runtime::copyBytes(entries + index * 12, root + 12 + index * 12, 12);
+        os::Runtime::copyBytes(entries + index * 12, root + 12 + index * 12,
+                               12);
     }
     uint16_t insert = 0;
-    while (insert < count && DiskEncoding::read32(entries + insert * 12) < logical) {
+    while (insert < count &&
+           DiskEncoding::read32(entries + insert * 12) < logical) {
         ++insert;
     }
-    if (insert < count && DiskEncoding::read32(entries + insert * 12) == logical) {
+    if (insert < count &&
+        DiskEncoding::read32(entries + insert * 12) == logical) {
         freeBlock(allocated);
         return 0;
     }
     for (uint16_t index = count; index > insert; --index) {
-        os::Runtime::copyBytes(entries + index * 12, entries + (index - 1) * 12, 12);
+        os::Runtime::copyBytes(entries + index * 12, entries + (index - 1) * 12,
+                               12);
     }
     DiskEncoding::setExtent(entries + insert * 12, logical, allocated, 1);
 
@@ -160,20 +171,25 @@ uint64_t Filesystem::ensureDataBlock(uint8_t* inode, uint32_t logical) {
     for (uint16_t index = 0; index <= count; ++index) {
         const uint8_t* current = entries + index * 12;
         if (mergedCount != 0) {
-            uint8_t* previous             = merged + (mergedCount - 1) * 12;
-            const uint32_t previousLength = DiskEncoding::extentLength(previous);
-            const uint32_t currentLength  = DiskEncoding::extentLength(current);
+            uint8_t* previous = merged + (mergedCount - 1) * 12;
+            const uint32_t previousLength =
+                DiskEncoding::extentLength(previous);
+            const uint32_t currentLength = DiskEncoding::extentLength(current);
             const uint64_t previousPhysical =
                 static_cast<uint64_t>(DiskEncoding::read32(previous + 8)) |
-                (static_cast<uint64_t>(DiskEncoding::read16(previous + 6)) << 32);
+                (static_cast<uint64_t>(DiskEncoding::read16(previous + 6))
+                 << 32);
             const uint64_t currentPhysical =
                 static_cast<uint64_t>(DiskEncoding::read32(current + 8)) |
-                (static_cast<uint64_t>(DiskEncoding::read16(current + 6)) << 32);
-            if (DiskEncoding::read32(previous) + previousLength == DiskEncoding::read32(current) &&
+                (static_cast<uint64_t>(DiskEncoding::read16(current + 6))
+                 << 32);
+            if (DiskEncoding::read32(previous) + previousLength ==
+                    DiskEncoding::read32(current) &&
                 previousPhysical + previousLength == currentPhysical &&
                 previousLength + currentLength <= 32767) {
-                DiskEncoding::write16(previous + 4,
-                        static_cast<uint16_t>(previousLength + currentLength));
+                DiskEncoding::write16(
+                    previous + 4,
+                    static_cast<uint16_t>(previousLength + currentLength));
                 continue;
             }
         }
@@ -189,13 +205,15 @@ uint64_t Filesystem::ensureDataBlock(uint8_t* inode, uint32_t logical) {
     DiskEncoding::write16(root + 2, mergedCount);
 
     const uint32_t sectorsPerBlock = blockSize_ / 512;
-    DiskEncoding::write32(inode + 28, DiskEncoding::read32(inode + 28) + sectorsPerBlock);
+    DiskEncoding::write32(inode + 28,
+                          DiskEncoding::read32(inode + 28) + sectorsPerBlock);
     return allocated;
 }
 
 bool Filesystem::clearInodeBlocks(uint8_t* inode) {
     uint8_t* root = inode + 40;
-    if (DiskEncoding::read16(root) == 0xf30a && DiskEncoding::read16(root + 6) == 0) {
+    if (DiskEncoding::read16(root) == 0xf30a &&
+        DiskEncoding::read16(root + 6) == 0) {
         const uint16_t count = DiskEncoding::read16(root + 2);
         if (count > 4) return false;
         for (uint16_t index = 0; index < count; ++index) {
@@ -209,7 +227,8 @@ bool Filesystem::clearInodeBlocks(uint8_t* inode) {
                 freeBlock(static_cast<uint32_t>(first + block));
             }
         }
-    } else if (DiskEncoding::read16(root) == 0xf30a && DiskEncoding::read16(root + 6) != 0) {
+    } else if (DiskEncoding::read16(root) == 0xf30a &&
+               DiskEncoding::read16(root + 6) != 0) {
         return false;
     }
     os::Runtime::clearMemory(root, 60);

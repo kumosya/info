@@ -1,7 +1,6 @@
 #ifndef _POSIX_SYS_TIME_H
 #define _POSIX_SYS_TIME_H
 
-
 #include <sys/types.h>
 
 #ifndef __DEFINED_struct_timeval
@@ -28,7 +27,7 @@ int gettimeofday(struct timeval* value, void* timezone);
 #ifdef __cplusplus
 extern "C" {
 #endif
-int utimes(const char *, const struct timeval [2]);
+int utimes(const char*, const struct timeval[2]);
 #ifdef __cplusplus
 }
 #endif

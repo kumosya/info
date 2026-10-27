@@ -28,7 +28,6 @@ typedef struct OsDirectoryEntry {
     uint64_t nextOffset;
 } OsDirectoryEntry;
 
-
 typedef struct OsFileOperationResult {
     uint64_t requestId;
     int64_t status;

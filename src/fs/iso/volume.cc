@@ -5,11 +5,11 @@ namespace {
 constexpr uint32_t isoBlockSize = 2048;
 
 class IsoNames {
- public:
+   public:
     static uint32_t readLe32(const uint8_t* value);
     static char lower(char value);
-    static bool sameName(const uint8_t* raw, uint32_t rawLength, const char* name,
-              size_t nameLength);
+    static bool sameName(const uint8_t* raw, uint32_t rawLength,
+                         const char* name, size_t nameLength);
 };
 
 uint32_t IsoNames::readLe32(const uint8_t* value) {
@@ -23,8 +23,8 @@ char IsoNames::lower(char value) {
     return value >= 'A' && value <= 'Z' ? static_cast<char>(value + 32) : value;
 }
 
-bool IsoNames::sameName(const uint8_t* raw, uint32_t rawLength, const char* name,
-              size_t nameLength) {
+bool IsoNames::sameName(const uint8_t* raw, uint32_t rawLength,
+                        const char* name, size_t nameLength) {
     uint32_t length = rawLength;
     for (uint32_t index = 0; index < rawLength; ++index) {
         if (raw[index] == ';') {
@@ -35,7 +35,8 @@ bool IsoNames::sameName(const uint8_t* raw, uint32_t rawLength, const char* name
     if (length > 0 && raw[length - 1] == '.') --length;
     if (length != nameLength) return false;
     for (uint32_t index = 0; index < length; ++index) {
-        if (IsoNames::lower(static_cast<char>(raw[index])) != IsoNames::lower(name[index])) {
+        if (IsoNames::lower(static_cast<char>(raw[index])) !=
+            IsoNames::lower(name[index])) {
             return false;
         }
     }
@@ -103,8 +104,8 @@ bool Iso9660FileSystem::findInDirectory(const Node& directory, const char* name,
         const uint8_t length = record[32];
         if (length == 1 && (record[33] == 0 || record[33] == 1)) continue;
         if (IsoNames::sameName(record + 33, length, name, nameLength)) {
-            status = {IsoNames::readLe32(record + 2), IsoNames::readLe32(record + 10),
-                      (record[25] & 2U) != 0};
+            status = {IsoNames::readLe32(record + 2),
+                      IsoNames::readLe32(record + 10), (record[25] & 2U) != 0};
             return true;
         }
     }
@@ -115,7 +116,8 @@ bool Iso9660FileSystem::lookup(const char* path, vfs::FileStatus& status) {
     Node node{};
     if (!resolve(path, node)) return false;
     status.inode = node.extent;
-    status.mode  = node.directory ? vfs::modeDirectory | 0555 : vfs::modeRegular | 0444;
+    status.mode =
+        node.directory ? vfs::modeDirectory | 0555 : vfs::modeRegular | 0444;
     status.size  = node.size;
     status.links = node.directory ? 2 : 1;
     return true;
@@ -186,7 +188,8 @@ int Iso9660FileSystem::readDirectory(const char* path, uint32_t index,
         uint32_t outputLength = 0;
         while (outputLength < length && outputLength + 1 < sizeof(entry.name) &&
                record[33 + outputLength] != ';') {
-            entry.name[outputLength] = IsoNames::lower(record[33 + outputLength]);
+            entry.name[outputLength] =
+                IsoNames::lower(record[33 + outputLength]);
             ++outputLength;
         }
         if (outputLength != 0 && entry.name[outputLength - 1] == '.')

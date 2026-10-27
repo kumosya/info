@@ -1,12 +1,5 @@
-#include <os/task.h>
-
 #include <new>
 
-#include <os/console.h>
-#include <os/device.h>
-#include <os/ipc.h>
-#include <os/mm.h>
-#include <os/service.h>
 #include "service/common/channel.h"
 #include "service/common/entry.h"
 #include "service/common/kernel-requests.h"
@@ -15,6 +8,12 @@
 #include "service/common/requests.h"
 #include "service/common/runtime.h"
 #include "service/console/client.h"
+#include <os/console.h>
+#include <os/device.h>
+#include <os/ipc.h>
+#include <os/mm.h>
+#include <os/service.h>
+#include <os/task.h>
 
 namespace os {
 int detail::TaskQuery::credentials(uint64_t taskId,
@@ -1215,13 +1214,18 @@ int Task::open(uint64_t id) {
     if (getValid()) return error_ = static_cast<int>(ErrorCode::Busy);
     if (!id) return error_ = static_cast<int>(ErrorCode::InvalidArgument);
     IpcMessage reply{};
-    const int64_t handle =
+    const int status =
         taskAttribute(TaskOperation::OpenTask, id, 0, 0, 0, 0, reply);
-    if (handle <= 0)
-        return error_ =
-                   handle ? handle : static_cast<int>(ErrorCode::InvalidHandle);
-    handle_.adopt(handle);
-    return error_ = refreshHandle(handle);
+    if (status) return error_ = status;
+    if (reply.handleCount != 1 || !reply.handles[0]) {
+        for (uint32_t index = 0; index < reply.handleCount && index < 4;
+             ++index) {
+            Ipc::Handle unexpected(reply.handles[index]);
+        }
+        return error_ = static_cast<int>(ErrorCode::IoError);
+    }
+    handle_.adopt(reply.handles[0]);
+    return error_ = refreshHandle(handle_.getValue());
 }
 int Task::openCurrent() {
     const auto id = readId();

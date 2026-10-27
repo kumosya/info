@@ -2,8 +2,8 @@
 #define _POSIX_SPAWN_H
 
 #include <sched.h>
-
 #include <signal.h>
+
 #include <sys/types.h>
 
 #define POSIX_SPAWN_RESETIDS 0x01
@@ -40,12 +40,12 @@ extern "C" {
 
 int posix_spawn(pid_t* task_id, const char* path,
                 const posix_spawn_file_actions_t* file_actions,
-                const posix_spawnattr_t* attributes,
-                char* const arguments[], char* const environment[]);
+                const posix_spawnattr_t* attributes, char* const arguments[],
+                char* const environment[]);
 int posix_spawnp(pid_t* task_id, const char* file,
                  const posix_spawn_file_actions_t* file_actions,
-                 const posix_spawnattr_t* attributes,
-                 char* const arguments[], char* const environment[]);
+                 const posix_spawnattr_t* attributes, char* const arguments[],
+                 char* const environment[]);
 
 int posix_spawn_file_actions_init(posix_spawn_file_actions_t* actions);
 int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t* actions);
@@ -60,13 +60,11 @@ int posix_spawn_file_actions_addopen(posix_spawn_file_actions_t* actions,
 
 int posix_spawnattr_init(posix_spawnattr_t* attributes);
 int posix_spawnattr_destroy(posix_spawnattr_t* attributes);
-int posix_spawnattr_getflags(const posix_spawnattr_t* attributes,
-                             short* flags);
+int posix_spawnattr_getflags(const posix_spawnattr_t* attributes, short* flags);
 int posix_spawnattr_setflags(posix_spawnattr_t* attributes, short flags);
 int posix_spawnattr_getpgroup(const posix_spawnattr_t* attributes,
                               pid_t* task_group);
-int posix_spawnattr_setpgroup(posix_spawnattr_t* attributes,
-                              pid_t task_group);
+int posix_spawnattr_setpgroup(posix_spawnattr_t* attributes, pid_t task_group);
 int posix_spawnattr_getsigdefault(const posix_spawnattr_t* attributes,
                                   sigset_t* signals);
 int posix_spawnattr_setsigdefault(posix_spawnattr_t* attributes,
@@ -90,12 +88,16 @@ int posix_spawnattr_setsigmask(posix_spawnattr_t* attributes,
 #ifdef __cplusplus
 extern "C" {
 #endif
-int posix_spawn_file_actions_addchdir(posix_spawn_file_actions_t *__restrict, const char *__restrict);
-int posix_spawn_file_actions_addfchdir(posix_spawn_file_actions_t *, int);
-int posix_spawnattr_getschedparam(const posix_spawnattr_t *__restrict, struct sched_param *__restrict);
-int posix_spawnattr_getschedpolicy(const posix_spawnattr_t *__restrict, int *__restrict);
-int posix_spawnattr_setschedparam(posix_spawnattr_t *__restrict, const struct sched_param *__restrict);
-int posix_spawnattr_setschedpolicy(posix_spawnattr_t *, int);
+int posix_spawn_file_actions_addchdir(posix_spawn_file_actions_t* __restrict,
+                                      const char* __restrict);
+int posix_spawn_file_actions_addfchdir(posix_spawn_file_actions_t*, int);
+int posix_spawnattr_getschedparam(const posix_spawnattr_t* __restrict,
+                                  struct sched_param* __restrict);
+int posix_spawnattr_getschedpolicy(const posix_spawnattr_t* __restrict,
+                                   int* __restrict);
+int posix_spawnattr_setschedparam(posix_spawnattr_t* __restrict,
+                                  const struct sched_param* __restrict);
+int posix_spawnattr_setschedpolicy(posix_spawnattr_t*, int);
 #ifdef __cplusplus
 }
 #endif

@@ -1,21 +1,39 @@
 #pragma once
-#include "service/common/runtime.h"
-#include "service/common/kernel-requests.h"
 #include <cstdint>
 
+#include "service/common/kernel-requests.h"
+#include "service/common/runtime.h"
+
 namespace os {
-enum class ServiceOperation : uint64_t { List = 1, Status, Start, Stop, Restart, Enable, Disable };
+enum class ServiceOperation : uint64_t {
+    List = 1,
+    Status,
+    Start,
+    Stop,
+    Restart,
+    Enable,
+    Disable
+};
 constexpr uint32_t serviceNameCapacity = 24;
 
-enum class RegistryRequest : uint64_t { Register = 1, Lookup = 2, Unregister = 3 };
-constexpr uint64_t serviceControlMessage = 0x535643;
+enum class RegistryRequest : uint64_t {
+    Register   = 1,
+    Lookup     = 2,
+    Unregister = 3
+};
+constexpr uint64_t serviceControlMessage  = 0x535643;
 constexpr uint64_t serviceAccessOwnerOnly = 1U;
 enum class TaskRequest : uint64_t { Wait = 2, Execute = 3, ExecuteService = 6 };
 constexpr uint64_t taskExecuteHasStdin  = 1ULL << 40;
 constexpr uint64_t taskExecuteHasStdout = 1ULL << 41;
 constexpr uint64_t taskExecuteHasStderr = 1ULL << 42;
 enum class DeviceRequest : uint64_t { List = 1, ListNode, ReadNode };
-enum class PciServiceRequest : uint64_t { Enumerate = 1, ReadConfig, WriteConfig, Query };
+enum class PciServiceRequest : uint64_t {
+    Enumerate = 1,
+    ReadConfig,
+    WriteConfig,
+    Query
+};
 enum class TerminalRequest : uint64_t {
     Write = 0x300,
     Read,
@@ -54,15 +72,16 @@ enum class StorageRequest : uint64_t {
     WriteRange
 };
 constexpr uint64_t storageCompletionNotification = 0x53544f52414745ULL;
-constexpr uint64_t storageDeviceShift = 56;
+constexpr uint64_t storageDeviceShift            = 56;
 constexpr uint64_t storageBlockMask = (1ULL << storageDeviceShift) - 1;
 
 class StorageProtocol {
- public:
-static constexpr uint64_t encodeStorageBlock(uint32_t deviceId, uint64_t block) {
-    return (static_cast<uint64_t>(deviceId) << storageDeviceShift) |
-           (block & storageBlockMask);
-}
+   public:
+    static constexpr uint64_t encodeStorageBlock(uint32_t deviceId,
+                                                 uint64_t block) {
+        return (static_cast<uint64_t>(deviceId) << storageDeviceShift) |
+               (block & storageBlockMask);
+    }
 };
 enum class FsRequest : uint64_t {
     Open = 1,
@@ -99,7 +118,17 @@ enum class FsRequest : uint64_t {
     ReleaseMapping,
     ListMappings,
     CancelMapping,
-    DirOpen, DirClose, DirRead, DirCreate, DirRemove, DirRename, Ftruncate, RemoveFile, Fchmod, Fchown, Ftimes
+    DirOpen,
+    DirClose,
+    DirRead,
+    DirCreate,
+    DirRemove,
+    DirRename,
+    Ftruncate,
+    RemoveFile,
+    Fchmod,
+    Fchown,
+    Ftimes
 };
 constexpr uint64_t fsCompletionNotification = 0x4653434f4d504cULL;
 
@@ -112,18 +141,36 @@ constexpr const char* terminalServiceName = "terminal";
 constexpr const char* consoleServiceName  = "console";
 constexpr const char* ttyServiceName      = "tty";
 
-
-
-
-}
+}  // namespace os
 
 namespace os {
-enum class InputRequest : uint64_t {GetEvent=0x200,GetState,Subscribe,Unsubscribe};
-constexpr const char* inputServiceName="input";
-constexpr uint64_t inputEventNotification=0x494e505554;
-}
+enum class InputRequest : uint64_t {
+    GetEvent = 0x200,
+    GetState,
+    Subscribe,
+    Unsubscribe
+};
+constexpr const char* inputServiceName    = "input";
+constexpr uint64_t inputEventNotification = 0x494e505554;
+}  // namespace os
 
 namespace os {
-enum class MmOperation : uint64_t {MapAnonymous=1,MapFile,MapShared,Unmap,Protect,Fault,Usage,Reclaim,SharedOpen,SharedUnlink,Fork,Sync,UnmapOwned,ProtectOwned,SyncOwned};
-constexpr uint64_t mmFlagEager=1,mmFlagShared=2;
-}
+enum class MmOperation : uint64_t {
+    MapAnonymous = 1,
+    MapFile,
+    MapShared,
+    Unmap,
+    Protect,
+    Fault,
+    Usage,
+    Reclaim,
+    SharedOpen,
+    SharedUnlink,
+    Fork,
+    Sync,
+    UnmapOwned,
+    ProtectOwned,
+    SyncOwned
+};
+constexpr uint64_t mmFlagEager = 1, mmFlagShared = 2;
+}  // namespace os

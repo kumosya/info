@@ -1,4 +1,9 @@
 #include "loader-api.h"
+#include "service/common/kernel-requests.h"
+#include "service/common/queries.h"
+#include "service/common/records.h"
+#include "service/common/requests.h"
+#include "service/common/runtime.h"
 #include <os/device.h>
 #include <os/elf.h>
 #include <os/file.h>
@@ -6,11 +11,6 @@
 #include <os/mm.h>
 #include <os/service.h>
 #include <os/task.h>
-#include "service/common/kernel-requests.h"
-#include "service/common/queries.h"
-#include "service/common/records.h"
-#include "service/common/requests.h"
-#include "service/common/runtime.h"
 
 namespace {
 intptr_t recovery[5];
@@ -143,11 +143,12 @@ class DynamicLinker {
         const uint64_t handle = os::getStandardHandle(2);
         if (handle) {
             os::detail::PipeClient(handle).write("ld-osinfo: ", 11);
-            os::detail::PipeClient(handle).write(reason, os::Runtime::stringLength(reason));
+            os::detail::PipeClient(handle).write(
+                reason, os::Runtime::stringLength(reason));
             if (detail) {
                 os::detail::PipeClient(handle).write(": ", 2);
-                os::detail::PipeClient(handle).write(detail,
-                                       os::Runtime::stringLength(detail));
+                os::detail::PipeClient(handle).write(
+                    detail, os::Runtime::stringLength(detail));
             }
             os::detail::PipeClient(handle).write("\n", 1);
         }
@@ -863,7 +864,8 @@ class DynamicLinker {
             fail("missing application auxiliary data");
         os::Runtime::runtimeInit(0, nullptr, environment_);
         os::wire::TaskInfo task{};
-        if (os::detail::TaskQuery().query(os::detail::TaskControl().getId(), task))
+        if (os::detail::TaskQuery().query(os::detail::TaskControl().getId(),
+                                          task))
             fail("cannot query process credentials");
         secure_ =
             task.uid != task.effectiveUid || task.gid != task.effectiveGid;

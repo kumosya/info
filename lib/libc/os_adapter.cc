@@ -1,11 +1,18 @@
-#include "internal.h"
-
 #include <cerrno>
 #include <cstdlib>
 #include <new>
 #include <termios.h>
 #include <unistd.h>
 
+#include "internal.h"
+#include "service/common/channel.h"
+#include "service/common/kernel-requests.h"
+#include "service/common/queries.h"
+#include "service/common/records.h"
+#include "service/common/requests.h"
+#include "service/common/runtime.h"
+#include "service/task/msgq-records.h"
+#include "service/tty/records.h"
 #include <os/console.h>
 #include <os/device.h>
 #include <os/elf.h>
@@ -15,14 +22,6 @@
 #include <os/pty.h>
 #include <os/service.h>
 #include <os/task.h>
-#include "service/common/channel.h"
-#include "service/common/kernel-requests.h"
-#include "service/common/queries.h"
-#include "service/common/records.h"
-#include "service/common/requests.h"
-#include "service/common/runtime.h"
-#include "service/task/msgq-records.h"
-#include "service/tty/records.h"
 #include <sys/stat.h>
 extern "C" {
 #include "internal.h"
@@ -315,7 +314,7 @@ int __libc_os_truncate_file(uint64_t fs, const char* path) {
     return filePathCall(fs, os::FsRequest::Truncate, path);
 }
 
-int __libc_os_stat_file(uint64_t fs, const char* path, OsFileStat* status) {
+int __libc_os_stat_file(const char* path, OsFileStat* status) {
     if (status == nullptr) return 0;
     os::File value;
     if (!(value.refresh(path) == 0)) return 0;
@@ -400,7 +399,9 @@ int64_t __libc_os_read_directory_batch(uint64_t fs, const char* path,
     return reply.data[1];
 }
 
-uint64_t __libc_os_create_endpoint() { return os::detail::EndpointControl().create(); }
+uint64_t __libc_os_create_endpoint() {
+    return os::detail::EndpointControl().create();
+}
 
 int __libc_os_read_file_async(uint64_t fs, uint64_t descriptor, uint64_t offset,
                               size_t size, uint64_t completionEndpoint,
@@ -508,7 +509,8 @@ uint64_t __libc_os_create_thread(void (*entry)(void*), void* argument,
 }
 int __libc_os_wait_thread(uint64_t threadId, int* exitCode, int noHang) {
     if (exitCode == nullptr) return -1;
-    return os::detail::TaskControl().waitThread(threadId, *exitCode, noHang != 0);
+    return os::detail::TaskControl().waitThread(threadId, *exitCode,
+                                                noHang != 0);
 }
 int __libc_os_wait_address(volatile uint32_t* address, uint32_t expected) {
     return os::waitAddress(address, expected);
@@ -530,13 +532,17 @@ int __libc_os_get_pending_signals(uint64_t* mask) {
     if (mask == nullptr) return -1;
     return os::detail::TaskControl().getPendingSignals(*mask);
 }
-int __libc_os_wait_signal(uint64_t mask) { return os::detail::TaskControl().waitSignal(mask); }
+int __libc_os_wait_signal(uint64_t mask) {
+    return os::detail::TaskControl().waitSignal(mask);
+}
 int __libc_os_signal_stack(const void* stack, void* oldStack) {
-    return os::detail::TaskControl().signalStack(static_cast<const OsSignalStack*>(stack),
-                                  static_cast<OsSignalStack*>(oldStack));
+    return os::detail::TaskControl().signalStack(
+        static_cast<const OsSignalStack*>(stack),
+        static_cast<OsSignalStack*>(oldStack));
 }
 int __libc_os_core_limit(int set, uint64_t* soft, uint64_t* hard) {
-    return soft && hard ? os::detail::TaskControl().coreLimit(set, *soft, *hard) : -1;
+    return soft && hard ? os::detail::TaskControl().coreLimit(set, *soft, *hard)
+                        : -1;
 }
 int __libc_os_credentials(unsigned operation, uint32_t first, uint32_t second,
                           uint32_t third, const uint32_t* groups,
@@ -604,7 +610,9 @@ uint64_t __libc_os_signal_generation(void) {
     services::RequestChannel(os::CoreServiceKind::Task).result(request, reply);
     return reply.data[1];
 }
-void __libc_os_signal_return(void* frame) { os::detail::TaskControl().signalReturn(frame); }
+void __libc_os_signal_return(void* frame) {
+    os::detail::TaskControl().signalReturn(frame);
+}
 uint64_t __libc_os_open_message_queue(const char* name, int flags,
                                       uint32_t maximumMessages,
                                       uint32_t messageSize) {
@@ -654,8 +662,8 @@ int __libc_os_resize_shared_memory(uint64_t handle, uint64_t size) {
 uint64_t __libc_os_map_shared_memory(uint64_t handle, uint64_t address,
                                      uint64_t size, uint64_t offset,
                                      uint64_t protection) {
-    return os::detail::MemoryControl().mapSharedMemory(handle, address, size, offset,
-                                               protection);
+    return os::detail::MemoryControl().mapSharedMemory(handle, address, size,
+                                                       offset, protection);
 }
 int __libc_os_send_thread_signal(uint64_t threadId, uint32_t signal) {
     return os::detail::TaskControl().sendThreadSignal(threadId, signal);
@@ -678,13 +686,11 @@ int __libc_os_fork_notify(uint64_t endpoint, int status) {
     os::IpcMessage message{};
     message.length  = 1;
     message.data[0] = status;
-    return os::sendMessage(
-        endpoint, message,
-        os::Sys().readMonotonicTime() + 10000000000ULL);
+    return os::sendMessage(endpoint, message,
+                           os::Sys().readMonotonicTime() + 10000000000ULL);
 }
 int __libc_os_fork_receive(uint64_t endpoint, uint64_t child) {
-    const uint64_t deadline =
-        os::Sys().readMonotonicTime() + 10000000000ULL;
+    const uint64_t deadline = os::Sys().readMonotonicTime() + 10000000000ULL;
     for (;;) {
         os::IpcMessage message{};
         const int status = os::receiveMessage(endpoint, message, deadline);
@@ -737,10 +743,13 @@ int __libc_os_query_task(uint64_t taskId, OsTaskInfo* info) {
 int __libc_os_set_credentials(uint64_t taskId, uint32_t uid, uint32_t gid,
                               int effectiveOnly) {
     if (effectiveOnly < 0 || effectiveOnly > 1) return -1;
-    return os::detail::TaskControl().setCredentials(taskId, uid, gid, effectiveOnly);
+    return os::detail::TaskControl().setCredentials(taskId, uid, gid,
+                                                    effectiveOnly);
 }
 uint64_t __libc_os_get_task_id() { return os::detail::TaskControl().getId(); }
-uint64_t __libc_os_get_thread_id() { return os::detail::TaskControl().getThreadId(); }
+uint64_t __libc_os_get_thread_id() {
+    return os::detail::TaskControl().getThreadId();
+}
 void __libc_os_exit_task(int status) { os::exitTask(status); }
 void* __libc_os_allocate_memory(size_t size) {
     return os::Runtime::allocateMemory(size);
@@ -790,15 +799,17 @@ int __libc_os_set_task_group(uint64_t taskGroupId, uint64_t taskId) {
     return os::detail::TaskControl().setGroup(taskGroupId, taskId);
 }
 
-int64_t __libc_os_create_session() { return os::detail::TaskControl().createSession(); }
+int64_t __libc_os_create_session() {
+    return os::detail::TaskControl().createSession();
+}
 
 uint64_t __libc_os_execute_task(const char* path, int argumentCount,
                                 const char* const* arguments,
                                 uint64_t standardInput, uint64_t standardOutput,
                                 uint64_t standardError) {
-    return os::detail::TaskControl().executeWithIo(path, argumentCount, arguments,
-                                    standardInput, standardOutput,
-                                    standardError);
+    return os::detail::TaskControl().executeWithIo(
+        path, argumentCount, arguments, standardInput, standardOutput,
+        standardError);
 }
 
 int __libc_os_get_task_state(uint64_t handle, int* exitCode) {
@@ -869,12 +880,14 @@ extern "C" uint64_t __libc_os_mm_anonymous(uint64_t size, uint32_t protection,
 extern "C" uint64_t __libc_os_mm_shared(uint64_t handle, uint64_t size,
                                         uint32_t protection, uint64_t offset,
                                         uint64_t hint) {
-    return os::detail::MappingClient().shared(handle, size, protection, offset, hint);
+    return os::detail::MappingClient().shared(handle, size, protection, offset,
+                                              hint);
 }
 extern "C" uint64_t __libc_os_mm_file(uint64_t descriptor, uint64_t size,
                                       uint32_t protection, uint64_t offset,
                                       uint64_t hint) {
-    return os::detail::MappingClient().file(descriptor, size, protection, offset, hint);
+    return os::detail::MappingClient().file(descriptor, size, protection,
+                                            offset, hint);
 }
 extern "C" int __libc_os_mm_unmap(uint64_t address, uint64_t size) {
     return os::detail::MappingClient().unmap(address, size);

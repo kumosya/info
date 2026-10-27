@@ -1,182 +1,59 @@
-# 用户程序加载（src/kernel/user/）
+# ELF 程序加载与用户入口
 
-本文档描述 `src/kernel/user/` 的映射与引导实现。普通磁盘应用使用独立 [Ring3 ELF 解释器](dynamic-linker.md)；以下内核动态链接节仅用于文件系统可用前的 boot 模块。对应头文件为 `include/kernel/elf.h`、`task.h`。
+实现位于 `src/kernel/user/elf.cc`、`dynamic_linker.cc` 和 `loader.cc`。ELF 类型声明位于 `include/kernel/elf.h` 的 `kernel::elf`；Task 启动和栈构造声明位于 `kernel/task.h` 的 `kernel::task`。本目录处理程序映像，不是账户或 UID 数据库。
 
-## 1. 静态 ELF 加载器（elf.cc）
+## 文件和类型
 
-### 支持范围
+| 文件或类型 | 作用 |
+| --- | --- |
+| `elf.cc` | 静态 ELF 验证、分段权限、普通加载及错误名称。 |
+| `dynamic_linker.cc` | 受支持的动态映像集合、符号与 RELA 重定位，或解释器入口准备。 |
+| `loader.cc` | 固定模块识别、角色能力、初始句柄、用户栈、子 Task 启动与 init。 |
+| Loader | 保存目标 root 或 Task，提供不同来源映像的加载方法。 |
+| ElfLoadResult | 入口、映像区间、程序头、应用入口和 bias、解释器基址等结果数据。 |
+| ElfSharedImage | 源地址、字节数、名称及可选源 root。 |
+| ElfLoadError | 格式、范围、权限、分配、映射、入口和符号错误分类。 |
 
-仅支持 **ELF64、小端、ET_EXEC（静态可执行文件）、EM_X86_64**。拒绝 PT_DYNAMIC 与 PT_INTERP（动态文件由动态链接器路径处理）。
+ELF 头与程序头使用固定格式，内核对象不能按自身内存布局代替它们。加载错误返回分类，不直接把文件字节当作已验证代码。
 
-### 错误码
+## 静态映像
 
-```cpp
-enum class ElfLoadError : uint8_t {
-    None, InvalidArgument, InvalidMagic, UnsupportedClass, UnsupportedEndian,
-    UnsupportedVersion, UnsupportedMachine, UnsupportedType, InvalidHeader,
-    InvalidProgramHeader, UnsupportedProgramHeader, InvalidSegment,
-    InvalidAddress, OverlappingSegments, InvalidPermissions, OutOfMemory,
-    MappingFailed, InvalidEntryPoint, UndefinedSymbol
-};
-struct ElfLoadResult { uint64_t entryPoint, imageBase, imageEnd; };
-struct ElfSharedImage { uint64_t sourceAddress, size; const char* name; };
-```
+| 成员函数 | 功能与参数 |
+| --- | --- |
+| `Loader(task)` | 以 Task 作为目标，调用时按其地址空间锁稳定 root。 |
+| `Loader(destinationRoot)` | 面向已准备的新根，由上层负责生命期。 |
+| `load(image, size, result)` | 从内核可访问的映像字节加载，result 接收区间与入口。 |
+| `loadFromAddressSpace(sourceRoot, sourceAddress, size, result)` | 从指定源地址空间取字节，避免用当前 CR3 误解另一个进程的地址。 |
+| `loadDynamicSetFromAddressSpace(sourceRoot, executableAddress, executableSize, sharedImages, sharedImageCount, result, trustedImports)` | 加载主程序与提供的运行时映像，或准备解释器启动；trustedImports 只用于受控内核导入兼容路径。 |
 
-### 校验规则
+普通静态入口要求 ELF64、小端、当前版本、x86-64、ET_EXEC，程序头最多 128 个，段内存预算有界。验证文件区间、内存区间、对齐、溢出、段重叠和入口确实落在可执行段。
 
-**头部校验**：魔数 `\x7fELF`；ELF64；小端；版本 1；ET_EXEC；EM_X86_64；头尺寸与程序头表范围合法；入口点在 `[0x10000, 2^47)`。
+权限还需要按页合并检查：两个不同段即使字节不重叠，若共享同一页且合并后需要 write+execute，也不能仅按段各自合法就接受。映射先取得清零页，复制文件部分，剩余 BSS 保持零；最终用户权限由段要求生成。
 
-**段校验**（每个 PT_LOAD）：
+准备失败不能让半成品 Task 运行。原始 root 形式的调用者负责回收部分目标根，启动层统一通过 Task 销毁清理已建立资源。
 
-- `fileSize <= memorySize`，文件区间在镜像内；
-- 无未知标志位；**禁止可写+可执行**（W^X）；
-- alignment > 1 时须为 2 的幂且 `vaddr & (align-1) == offset & (align-1)`；
-- vaddr 区间在用户半区内；累计映射量 ≤ 256 MiB；
-- 与其他可加载段不重叠；
-- 入口点必须落在某个可执行段内；
-- 第二遍逐页检查：任何页聚合出可写+可执行 → 拒绝（跨段共享页的 W^X）。
+## 动态集合和解释器
 
-### 接口
+内核动态集合路径最多保存主程序加 4 个附加映像，验证各自 ELF 和动态表。支持的内核 RELA 类型为 R_X86_64_64、GLOB_DAT、JUMP_SLOT、RELATIVE；符号解析处理已定义、绝对和受支持的 weak 情况，找不到必需符号返回 UndefinedSymbol，未知重定位明确失败。
 
-```cpp
-class ElfLoader {
-   public:
-    static const char* errorName(ElfLoadError error);
-    static bool runValidationSelfTest(Task& task);
+这是有界的加载机制，不等同于把用户动态链接器的全部策略搬到内核。trustedImports 只有显式受控入口才可向 serviceResolve 白名单查询，普通程序不能据符号名取得任意内核地址。
 
-    static ElfLoadError load(Task& task, const void* image, size_t size,
-                             ElfLoadResult& result);
-    static ElfLoadError loadFromAddressSpace(Task& task, uint64_t sourceRoot,
-                                             uint64_t sourceAddress,
-                                             size_t size,
-                                             ElfLoadResult& result);
-    static ElfLoadError loadFromAddressSpace(uint64_t destinationRoot,
-                                             uint64_t sourceRoot,
-                                             uint64_t sourceAddress,
-                                             size_t size,
-                                             ElfLoadResult& result);
-    static ElfLoadError loadDynamicSetFromAddressSpace(
-        uint64_t destinationRoot, uint64_t sourceRoot,
-        uint64_t executableAddress, size_t executableSize,
-        const ElfSharedImage* sharedImages, uint32_t sharedImageCount,
-        ElfLoadResult& result);
-};
-```
+主映像存在 PT_INTERP 时，校验解释器路径字符串，并要求提供一个解释器映像。内核映射应用和自包含解释器，准备程序头元数据，将实际启动入口设为解释器，同时单独保留应用入口、bias 和解释器基址。它不自行按路径调用 FS 打开解释器；所需字节由上层提供。后续运行时链接由 `lib/ld-x86-64/` 完成。
 
-加载流程：校验 → 持地址空间锁预检目标页空闲 → 逐页 `memory::allocateUserPageInAddressSpace`（按段权限设置 `pageUser`/`pageWritable`/`pageNoExecute`）→ 复制 `fileSize` 内容 → 失败完整回滚。
+## 用户栈与辅助向量
 
-自检（内核启动时运行）：用合成镜像验证 InvalidMagic、InvalidPermissions（W+X）、OverlappingSegments、InvalidEntryPoint、跨页 W^X 等用例，最后验证一个合法镜像加载成功且页表标志正确。
+`buildUserStack(root, programName, argumentCount, arguments, environmentCount, environment, runtimeStateAddress, stackPointer, image, owner)` 在新根中准备用户栈。参数与环境均最多 64 项，每字符串最多 383 字节；固定用户栈为 64 页，栈顶 0x00007ffffff00000，16 字节对齐。
 
-## 2. 引导模块链接器（dynamic_linker.cc）
+先复制字符串并记录其新地址，再写 argc、argv、envp、结束零和 auxv。旧空间中的字符串指针不能原样带进新空间。参数为空时使用 programName 作为默认 argv[0]。
 
-固定 boot ProgramId 在内核内完成加载时链接。对于有 PT_INTERP 的普通应用，同一入口只映射主程序和独立解释器，随后由 Ring3 处理 DT_NEEDED、符号和重定位，不使用下面的固定引导库集合。
+辅助信息包括程序头、条目大小和数量、页大小、解释器基址、应用入口、执行名、运行时状态、应用 bias，以及 OS_AUX_KERNEL_HANDLE、OS_AUX_REGISTRY_HANDLE。前者指内核 IPC 端点，后者指用户注册中心；buildUserStack 会为 owner 确认真实初始内核句柄。失败时不能把空句柄包装为可启动结果。
 
-### 加载布局
+## 固定服务与普通映像启动
 
-| 镜像 | 基址 |
-|---|---|
-| 可执行文件 | `0x400000`（ET_EXEC 固定链接地址时 bias=0） |
-| 共享库 1 | `0x0000001000000000` |
-| 共享库 2 | `0x0000001400000000` |
-| 共享库 3 | `0x0000001800000000` |
-| 共享库 4 | `0x0000001c00000000` |
+`loadProgram(program, parent, bootstrapHandle, argumentCount, arguments, loadError)` 按受控 ProgramId 查找引导模块，建立 Task、角色与能力，复制并限制注册中心句柄，加载运行时和栈，最后创建 User 线程。固定服务身份不使线程进入 Ring0，加载路径显式保持普通用户执行。
 
-最多 1 个可执行文件 + 4 个共享库（`maximumImages = 5`）。共享库必须为 `ET_SHARED`，按 `bias = preferredBase - minimum` 平移重定位。
+`loadProgramImage` 区分提供映像及句柄的 source 与逻辑 parent，可转交三条标准端点、终端关联和新会话。设置服务角色前的身份检查在 task.kernel 请求层执行，不能把这个内核内部函数当成应用自由授予能力的入口。
 
-### 动态节解析
+`serviceCapabilities(role, capabilities)` 查受控角色配置。`startInitialProgram(boot)` 初始化模块集合，加载 init 并登记为孤儿进程接收者。
 
-处理的标签：`DT_HASH`、`DT_STRTAB`、`DT_STRSZ`、`DT_SYMTAB`、`DT_SYMENT`、`DT_RELA`、`DT_RELASZ`、`DT_RELAENT`、`DT_JMPREL`、`DT_PLTRELSZ`、`DT_PLTREL`。一致性要求：`DT_SYMENT == 24`、`DT_RELAENT == 24`、PLT 重定位格式必须为 RELA、strtab/symtab/hash 必须存在。**符号数量从经典 DT_HASH 表的 nchain 读取**（≤65536），不支持 DT_GNU_HASH。
-
-### 符号解析
-
-按镜像顺序（可执行文件在前）计算请求名称的经典 ELF 哈希，查询 DT_HASH 的 bucket/chain。候选条件仍为非 `SHN_UNDEF`、绑定为全局或弱、名字一致；名称按小块读取，避免逐字节反复遍历页表。校验完整哈希表范围、bucket 数、符号索引，并以 nchain 限制链遍历次数，损坏或环形链不能无限循环。命中值 = `SHN_ABS ? value : bias + value`。未命中但请求方为弱绑定 → 值 0；否则 `UndefinedSymbol`。
-
-### 重定位
-
-支持 4 种类型（全部加载时立即处理，含 JMPREL）：
-
-| 类型 | 值 | 写入值 |
-|---|---|---|
-| `R_X86_64_RELATIVE` | 8 | `bias + addend` |
-| `R_X86_64_64` | 1 | `symbolValue + addend` |
-| `R_X86_64_GLOB_DAT` | 6 | `symbolValue` |
-| `R_X86_64_JUMP_SLOT` | 7 | `symbolValue` |
-
-不支持符号版本控制与惰性 PLT。
-
-## 3. 用户程序加载器（loader.cc）
-
-### 内置程序表
-
-与 `os::ProgramId` 一一对应，镜像来自 Multiboot2 引导模块：
-
-| ProgramId | 模块 | 权限 | 运行级别 |
-|---|---|---|---|
-| Init | init | Spawn | Ring3 |
-| TaskServer | task | Spawn | Ring3 |
-| FsServer | fs | 无 | Ring3 |
-| PciServer | pci | Pci | Ring3 |
-| DeviceServer | device | Device | Ring3 |
-| StorageServer | storage | Device | Ring3 |
-| TtyServer | tty | 无 | Ring3 |
-| ConsoleServer | console | Display | Ring3 |
-| WindowServer | guiw | Display | Ring3 |
-| UsersServer | users | Users | Ring3 |
-| MemoryManager | mm | Memory | Ring3 |
-| PipeServer | pipe | 无 | Ring3 |
-| MessageQueueServer | msgq | 无 | Ring3 |
-
-四个共享库以 boot 模块提供：libos-c++.so、libc.so、libc++.so、libosgui-c++.so。所有服务入口检查 CS，启动加载器不启用 SystemService/Ring0 映像模式。普通磁盘镜像不能请求固定 boot 角色或能力。
-
-### 用户栈构建 `UserProgramLoader::buildStack`
-
-```cpp
-class UserProgramLoader {
-   public:
-    static ElfLoadError buildStack(
-        uint64_t rootPhysicalAddress, const char* programName,
-        uint32_t argumentCount, const char* const* arguments,
-        uint32_t environmentCount, const char* const* environment,
-        uint64_t runtimeStateAddress, uint64_t& stackPointer);
-    // ...
-};
-```
-
-- 栈顶 `0x00007ffffff00000`，64 页（256 KiB），页标志 `pageUser | pageWritable | pageNoExecute`。
-- 参数 ≤64、环境变量 ≤64，每个字符串 ≤383 字节。
-- 从栈顶向下：先逆序压入环境变量字符串，再逆序压入参数字符串；16 字节对齐后布置启动字：
-
-```text
-[argc][argv[0..argc-1]][NULL][envp[0..envc-1]][NULL][auxv type/value pairs][AT_NULL,0]
-```
-
-- 无参数时默认 `argv = {programName}`。
-- 辅助向量传递程序头、主程序入口、解释器地址、实际路径和 exec 运行时状态，详见 [动态链接](dynamic-linker.md)。
-
-### 加载流程
-
-**`UserProgramLoader::load(program, parent, bootstrapHandle, argc, argv, loadError)`**（内置程序）：
-
-1. 校验索引、父进程、引导模块就绪；
-2. `Task::create`；按固定 boot ProgramId 授予服务角色与受限能力；
-3. `bootstrapHandle != 0` 时复制端点句柄到子进程（`Endpoint::duplicateHandle`）；
-4. `ElfLoader::loadDynamicSetFromAddressSpace`（与 `libos-c++.so`）；
-5. `buildStack`；`Thread::createUser` 创建 Ring3 线程；失败销毁进程。
-
-**`UserProgramLoader::loadImage(...)`**（SpawnImage 通用路径）：
-
-1. 创建进程、授予调用方指定能力；复制引导句柄（`Endpoint::duplicateHandle`）；
-2. 通过 HandleTable 复制三个标准句柄；请求新会话时创建 session；
-3. `sharedImageCount == 0` 用静态加载；有 PT_INTERP 时只传入该解释器，由 Ring3 加载依赖；
-4. 构建用户栈、创建用户线程。
-
-### 用户态启动 `UserProgramLoader::startInitial(bootInfo)`
-
-1. `initializeBootPrograms`：定位 13 个内置模块及四个引导共享库，记录镜像地址与大小，任一缺失失败；
-2. 以内核进程（`task::getIdle()`）为父加载 `ProgramId::Init`；
-3. 返回 init 进程。失败打印错误名并返回 nullptr（内核停机）。
-
-## 4. POSIX 库与系统调用
-
-POSIX 库与 OS 库共用 `include/os-c++/os/syscall.h` 定义的系统调用号。编号从 1 开始，0 无效。参数布局相同的 POSIX `SYS_*` 宏在 `include/posix/sys/syscall.h` 中直接引用对应 OS 编号；其他 POSIX 函数由 libc 按 OS ABI 适配，不存在独立的内核 POSIX 分发入口。
-固定 boot ProgramId 决定可信服务身份：所有 boot 服务进程为 Ring3；服务经现有 IPC 请求 .kernel 机制对象。磁盘 ELF 不能自行申请 capabilities 或 ServiceRole。MM 模块路径为 src/mm，guiw 来自独立项目 D:/osinfo/guiw 的软件包。详见[架构](../architecture.md)。
+所有路径都应在映像、参数、句柄、凭据和首线程现场准备完成后才开放执行。失败返回的 loadError 与 TaskReference 分别负责错误说明和对象生命期；已建 Task 的根、句柄和线程由正常回收路径处理。exec 的旧根提交及兄弟线程停止另见 [任务管理](task/task.md)。

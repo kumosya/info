@@ -3,13 +3,6 @@
 #pragma once
 #include <mutex>
 
-#include <os/device.h>
-#include <os/file.h>
-#include <os/ipc.h>
-#include <os/mm.h>
-#include <os/service.h>
-#include <os/storage.h>
-#include <os/task.h>
 #include "service/common/kernel-requests.h"
 #include "service/common/requests.h"
 #include "service/common/runtime.h"
@@ -23,6 +16,13 @@
 #include "service/fs/procfs/filesystem.h"
 #include "service/fs/sysfs/filesystem.h"
 #include "service/fs/vfs.h"
+#include <os/device.h>
+#include <os/file.h>
+#include <os/ipc.h>
+#include <os/mm.h>
+#include <os/service.h>
+#include <os/storage.h>
+#include <os/task.h>
 
 namespace vfs::server {
 
@@ -70,7 +70,8 @@ class PathText {
 class BlockDeviceClient final : public vfs::SectorDevice {
    public:
     bool init(uint64_t endpoint, uint32_t id) {
-        if (!os::detail::StorageClient().open(device_, id, endpoint)) return false;
+        if (!os::detail::StorageClient().open(device_, id, endpoint))
+            return false;
         identity_.id              = device_.getId();
         identity_.major           = device_.getMajor();
         identity_.minor           = device_.getMinor();
@@ -88,24 +89,32 @@ class BlockDeviceClient final : public vfs::SectorDevice {
         return true;
     }
     bool readSector(uint64_t block, void* buffer) override {
-        uint32_t done = 0; return device_.read(block, 1, buffer, 512, done) == 0;
+        uint32_t done = 0;
+        return device_.read(block, 1, buffer, 512, done) == 0;
     }
     bool writeSector(uint64_t block, const void* buffer) override {
-        uint32_t done = 0; return device_.write(block, 1, buffer, 512, done) == 0;
+        uint32_t done = 0;
+        return device_.write(block, 1, buffer, 512, done) == 0;
     }
     bool readSectors(uint64_t block, uint32_t count, void* buffer) override {
-        uint32_t done = 0; return device_.read(block, count, buffer, uint64_t(count) * 512, done) == 0;
+        uint32_t done = 0;
+        return device_.read(block, count, buffer, uint64_t(count) * 512,
+                            done) == 0;
     }
     bool writeSectors(uint64_t block, uint32_t count,
                       const void* buffer) override {
-        uint32_t done = 0; return device_.write(block, count, buffer, uint64_t(count) * 512, done) == 0;
+        uint32_t done = 0;
+        return device_.write(block, count, buffer, uint64_t(count) * 512,
+                             done) == 0;
     }
     bool flush() override { return device_.flush(); }
     uint64_t sectorCount() const override { return device_.getBlockCount(); }
     bool readOnly() const override { return device_.getReadOnly(); }
     bool probe() {
         uint8_t block[512]{};
-        uint32_t done = 0; return device_.getBlockCount() && device_.read(0, 1, block, sizeof(block), done) == 0;
+        uint32_t done = 0;
+        return device_.getBlockCount() &&
+               device_.read(0, 1, block, sizeof(block), done) == 0;
     }
     const os::wire::StorageDeviceIdentity& identity() const {
         return identity_;

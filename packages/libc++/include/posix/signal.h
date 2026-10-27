@@ -1,14 +1,18 @@
 #ifndef _POSIX_SIGNAL_H
 #define _POSIX_SIGNAL_H
 
-
 #include <stdint.h>
-#include <sys/types.h>
 #include <time.h>
+
+#include <sys/types.h>
 
 typedef uint64_t sigset_t;
 typedef int sig_atomic_t;
-typedef struct { void *ss_sp; int ss_flags; size_t ss_size; } stack_t;
+typedef struct {
+    void* ss_sp;
+    int ss_flags;
+    size_t ss_size;
+} stack_t;
 #define SS_ONSTACK 1
 #define SS_DISABLE 2
 #define MINSIGSTKSZ 2048
@@ -92,7 +96,7 @@ struct sigaction {
 
 #define SIG_DFL ((sighandler_t)0)
 #define SIG_IGN ((sighandler_t)1)
-#define SIG_ERR ((sighandler_t)-1)
+#define SIG_ERR ((sighandler_t) - 1)
 
 #define SIG_BLOCK 0
 #define SIG_UNBLOCK 1
@@ -133,6 +137,7 @@ struct sigaction {
 #define CLD_CONTINUED 6
 
 #include <features.h>
+
 #include <bits/signal.h>
 
 #ifdef __cplusplus
@@ -171,19 +176,22 @@ pid_t setsid(void);
 #define __DEFINED_siginfo_t
 
 /* Additional POSIX types. */
-union sigval { int sival_int; void *sival_ptr; };
+union sigval {
+    int sival_int;
+    void* sival_ptr;
+};
 
 /* POSIX.1-2024 declarations. */
 #ifdef __cplusplus
 extern "C" {
 #endif
 int killpg(pid_t, int);
-void psiginfo(const siginfo_t *, const char *);
-void psignal(int, const char *);
-int sig2str(int, char *);
-int sigaltstack(const stack_t *__restrict, stack_t *__restrict);
+void psiginfo(const siginfo_t*, const char*);
+void psignal(int, const char*);
+int sig2str(int, char*);
+int sigaltstack(const stack_t* __restrict, stack_t* __restrict);
 int sigqueue(pid_t, int, union sigval);
-int str2sig(const char *__restrict, int *__restrict);
+int str2sig(const char* __restrict, int* __restrict);
 #ifdef __cplusplus
 }
 #endif

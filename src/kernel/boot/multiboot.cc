@@ -1,5 +1,5 @@
 #include "kernel/boot.h"
-#include "kernel/serial.h"
+#include "kernel/device.h"
 
 namespace {
 
@@ -43,8 +43,8 @@ struct [[gnu::packed]] MultibootFramebufferTag {
 constexpr uint32_t maxMemoryRegions = 128;
 constexpr uint32_t maxModules       = 32;
 constexpr uint64_t directMapBase    = 0xffff800000000000ULL;
-kernel::MemoryRegion memoryRegions[maxMemoryRegions];
-kernel::BootModule bootModules[maxModules];
+::MemoryRegion memoryRegions[maxMemoryRegions];
+::BootModule bootModules[maxModules];
 
 const char* stringAfterHeader(const MultibootTag* tag) {
     return reinterpret_cast<const char*>(reinterpret_cast<uint64_t>(tag) + 8 +
@@ -53,47 +53,45 @@ const char* stringAfterHeader(const MultibootTag* tag) {
 
 }  // namespace
 
-namespace kernel {
-
 bool parseMultibootInfo(uint64_t address, BootInfo* bootInfo) {
-    // serial::serialWrite("[BOOT] Multiboot2 address=");
-    // serial::serialWriteHex(address);
-    serial::serialWrite("\n");
+    // device::serialWrite("[BOOT] Multiboot2 address=");
+    // device::serialWriteHex(address);
+    kernel::device::serialWrite("\n");
     if (bootInfo == nullptr || address == 0) {
         return false;
     }
 
-    bootInfo->memoryMap        = memoryRegions;
-    bootInfo->memoryMapCount   = 0;
-    bootInfo->modules          = bootModules;
-    bootInfo->moduleCount      = 0;
-    bootInfo->commandLine      = nullptr;
-    bootInfo->bootLoaderName   = nullptr;
-    bootInfo->acpiRoot         = nullptr;
-    bootInfo->elfSections      = nullptr;
-    bootInfo->framebuffer      = {};
-    bootInfo->multibootAddress = address;
-    bootInfo->multibootSize    = 0;
+    bootInfo->setMemoryMap(memoryRegions);
+    bootInfo->setMemoryMapCount(0);
+    bootInfo->setModules(bootModules);
+    bootInfo->setModuleCount(0);
+    bootInfo->setCommandLine(nullptr);
+    bootInfo->setBootLoaderName(nullptr);
+    bootInfo->setAcpiRoot(nullptr);
+    bootInfo->setElfSections(nullptr);
+    bootInfo->setFramebuffer({});
+    bootInfo->setMultibootAddress(address);
+    bootInfo->setMultibootSize(0);
 
     const uint32_t* header   = reinterpret_cast<const uint32_t*>(address);
     const uint32_t totalSize = header[0];
-    /*serial::serialWrite("[BOOT] Multiboot2 size=");
-    serial::serialWriteDecimal(totalSize);
-    serial::serialWrite("\n");*/
+    /*device::serialWrite("[BOOT] Multiboot2 size=");
+    device::serialWriteDecimal(totalSize);
+    device::serialWrite("\n");*/
     if (totalSize < 16 || totalSize > (16 * 1024 * 1024)) {
         return false;
     }
-    bootInfo->multibootSize = totalSize;
+    bootInfo->setMultibootSize(totalSize);
 
     const uint8_t* cursor = reinterpret_cast<const uint8_t*>(address) + 8;
     const uint8_t* end = reinterpret_cast<const uint8_t*>(address) + totalSize;
     while (cursor + sizeof(MultibootTag) <= end) {
         const MultibootTag* tag = reinterpret_cast<const MultibootTag*>(cursor);
-        /*serial::serialWrite("[BOOT] tag type=");
-        serial::serialWriteDecimal(tag->type);
-        serial::serialWrite(" size=");
-        serial::serialWriteDecimal(tag->size);
-        serial::serialWrite("\n");*/
+        /*device::serialWrite("[BOOT] tag type=");
+        device::serialWriteDecimal(tag->type);
+        device::serialWrite(" size=");
+        device::serialWriteDecimal(tag->size);
+        device::serialWrite("\n");*/
         if (tag->size < 8 || cursor + tag->size > end) {
             return false;
         }
@@ -101,9 +99,9 @@ bool parseMultibootInfo(uint64_t address, BootInfo* bootInfo) {
             break;
         }
         if (tag->type == multibootTagBootCommandLine) {
-            bootInfo->commandLine = stringAfterHeader(tag);
+            bootInfo->setCommandLine(stringAfterHeader(tag));
         } else if (tag->type == multibootTagBootLoaderName) {
-            bootInfo->bootLoaderName = stringAfterHeader(tag);
+            bootInfo->setBootLoaderName(stringAfterHeader(tag));
         } else if (tag->type == multibootTagMemoryMap &&
                    tag->size >= sizeof(MultibootMemoryMapTag)) {
             const MultibootMemoryMapTag* mapTag =
@@ -114,62 +112,67 @@ bool parseMultibootInfo(uint64_t address, BootInfo* bootInfo) {
             const uint8_t* entryCursor = cursor + sizeof(MultibootMemoryMapTag);
             const uint8_t* entryEnd    = cursor + tag->size;
             while (entryCursor + mapTag->entrySize <= entryEnd &&
-                   bootInfo->memoryMapCount < maxMemoryRegions) {
+                   bootInfo->getMemoryMapCount() < maxMemoryRegions) {
                 const MultibootMemoryMapEntry* entry =
                     reinterpret_cast<const MultibootMemoryMapEntry*>(
                         entryCursor);
                 MemoryRegion& region =
-                    memoryRegions[bootInfo->memoryMapCount++];
-                region.base   = entry->base;
-                region.length = entry->length;
-                region.type   = entry->type;
+                    memoryRegions[bootInfo->getMemoryMapCount()];
+                bootInfo->setMemoryMapCount(bootInfo->getMemoryMapCount() + 1);
+                region.setBase(entry->base);
+                region.setLength(entry->length);
+                region.setType(entry->type);
                 entryCursor += mapTag->entrySize;
             }
         } else if (tag->type == multibootTagModule && tag->size >= 16 &&
-                   bootInfo->moduleCount < maxModules) {
+                   bootInfo->getModuleCount() < maxModules) {
             const uint32_t* module = reinterpret_cast<const uint32_t*>(tag);
-            BootModule& bootModule = bootModules[bootInfo->moduleCount++];
-            bootModule.start       = module[2];
-            bootModule.end         = module[3];
-            bootModule.commandLine = reinterpret_cast<const char*>(
-                reinterpret_cast<uint64_t>(module + 4) + directMapBase);
+            BootModule& bootModule = bootModules[bootInfo->getModuleCount()];
+            bootInfo->setModuleCount(bootInfo->getModuleCount() + 1);
+            bootModule.setStart(module[2]);
+            bootModule.setEnd(module[3]);
+            bootModule.setCommandLine(reinterpret_cast<const char*>(
+                reinterpret_cast<uint64_t>(module + 4) + directMapBase));
         } else if (tag->type == multibootTagFramebuffer &&
                    tag->size >= sizeof(MultibootFramebufferTag)) {
             const MultibootFramebufferTag* framebuffer =
                 reinterpret_cast<const MultibootFramebufferTag*>(tag);
-            bootInfo->framebuffer.address      = framebuffer->address;
-            bootInfo->framebuffer.pitch        = framebuffer->pitch;
-            bootInfo->framebuffer.width        = framebuffer->width;
-            bootInfo->framebuffer.height       = framebuffer->height;
-            bootInfo->framebuffer.bitsPerPixel = framebuffer->bitsPerPixel;
-            bootInfo->framebuffer.type         = framebuffer->framebufferType;
+            bootInfo->getFramebuffer().setAddress(framebuffer->address);
+            bootInfo->getFramebuffer().setPitch(framebuffer->pitch);
+            bootInfo->getFramebuffer().setWidth(framebuffer->width);
+            bootInfo->getFramebuffer().setHeight(framebuffer->height);
+            bootInfo->getFramebuffer().setBitsPerPixel(
+                framebuffer->bitsPerPixel);
+            bootInfo->getFramebuffer().setType(framebuffer->framebufferType);
             if (framebuffer->framebufferType == 1 &&
                 tag->size >= sizeof(MultibootFramebufferTag)) {
-                bootInfo->framebuffer.redPosition = framebuffer->redPosition;
-                bootInfo->framebuffer.redMaskSize = framebuffer->redMaskSize;
-                bootInfo->framebuffer.greenPosition =
-                    framebuffer->greenPosition;
-                bootInfo->framebuffer.greenMaskSize =
-                    framebuffer->greenMaskSize;
-                bootInfo->framebuffer.bluePosition = framebuffer->bluePosition;
-                bootInfo->framebuffer.blueMaskSize = framebuffer->blueMaskSize;
+                bootInfo->getFramebuffer().setRedPosition(
+                    framebuffer->redPosition);
+                bootInfo->getFramebuffer().setRedMaskSize(
+                    framebuffer->redMaskSize);
+                bootInfo->getFramebuffer().setGreenPosition(
+                    framebuffer->greenPosition);
+                bootInfo->getFramebuffer().setGreenMaskSize(
+                    framebuffer->greenMaskSize);
+                bootInfo->getFramebuffer().setBluePosition(
+                    framebuffer->bluePosition);
+                bootInfo->getFramebuffer().setBlueMaskSize(
+                    framebuffer->blueMaskSize);
             }
         } else if (tag->type == multibootTagElfSections) {
-            bootInfo->elfSections = reinterpret_cast<const void*>(
-                reinterpret_cast<uint64_t>(tag) + directMapBase);
+            bootInfo->setElfSections(reinterpret_cast<const void*>(
+                reinterpret_cast<uint64_t>(tag) + directMapBase));
         } else if (tag->type == multibootTagAcpiOld ||
                    tag->type == multibootTagAcpiNew) {
-            bootInfo->acpiRoot = reinterpret_cast<const void*>(
-                reinterpret_cast<uint64_t>(tag) + 8 + directMapBase);
+            bootInfo->setAcpiRoot(reinterpret_cast<const void*>(
+                reinterpret_cast<uint64_t>(tag) + 8 + directMapBase));
         }
         cursor += (tag->size + 7) & ~7U;
     }
 
-    if (bootInfo->memoryMapCount == 0) {
-        serial::serialWrite("[BOOT] memory map tag missing\n");
+    if (bootInfo->getMemoryMapCount() == 0) {
+        kernel::device::serialWrite("[BOOT] memory map tag missing\n");
         return false;
     }
     return true;
 }
-
-}  // namespace kernel

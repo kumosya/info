@@ -1,60 +1,67 @@
-# 内存管理
+# 内核内存管理
 
-内存管理只公开 mm.h 和 page.h 两种头文件名：内核位于 include/kernel/，MM 内部位于 src/mm/，OS 客户端位于 include/os-c++/os/mm.h。实现继续按 physical、object、virtual、service 子目录拆分。
+实现位于 `src/kernel/memory/`，声明集中在 `include/kernel/mm.h`、`page.h`，命名空间为 `kernel::mm`。缺页异常入口 `handlePageFault` 位于 `kernel::cpu`，汇编内存原语保留 C 链接名。
 
-## Ring 0 机制
+内核维护物理页、对象引用和页表，用户态 MM 负责 VMA、文件后备、缺页与回收策略。`memory.kernel` 是在调用线程内执行的内核机制端点，不能与 Ring3 的 mm 进程混为一体。
 
-| 路径 | 职责 |
-|---|---|
-| physical/buddy.cc | 按阶连续物理页块，分裂/合并、引用、owner、node 与地址上限 |
-| physical/topology.cc | ACPI SRAT 内存域及 CPU 域，首选 NUMA 节点和回退 |
-| physical.cc | 引导可用内存、PageFrame 元数据保留及物理分配入口 |
-| object/slab.cc | 固定大小 ObjectCache，空 Slab 回收 |
-| object/per_cpu.cc | 每 CPU magazine，减少共享缓存争用 |
-| object/pool.cc | 外部存储 FixedPool，容量与重复释放检查 |
-| object/mapping.cc | 高地址 NX 内核堆别名与清零 |
-| object/page_object.cc | PageObject 构造、有效性、引用及最终物理块释放 |
-| virtual.cc | 四级页表、保护、地址翻译、地址空间复制与销毁 |
-| virtual/page_mappings.cc | 页面对象映射引用、拆分、fork 登记和 COW 写权限限制 |
-| virtual/operations.cc |  Task 参数的 map/unmap/protect 机制 |
-| shared.cc | 命名共享对象、映射引用及最后释放 |
-| service/service.cc | memory 驻留服务与跨任务授权 |
-| service/pager.cc | Ring 3 pager 绑定、缺页 RPC、fork 元数据交接及缓冲区 fault-in |
+## 源文件分工
 
-Buddy 使用实际 RAM 对应的 PageFrame 元数据，不线性扫描位图。小块堆走 Slab/Per-CPU Cache，大块堆走 Buddy；FixedPool 用于有明确容量的映射记录。NUMA 最多 16 节点，当前按 SRAT 首选与回退分配，未实现 SLIT 距离排序。
+| 文件 | 实现内容 |
+| --- | --- |
+| `physical/physical.cc` | PhyAlloc 的引导可用页筛选、元数据保留和物理分配入口。 |
+| `physical/buddy.cc` | BuddyAlloc 的按阶分配、分裂、合并、引用计数及所有者检查。 |
+| `physical/topology.cc` | MemoryTopology 从 ACPI SRAT 建立内存和 CPU 的 NUMA 归属。 |
+| `heap.cc` | 内核堆大小分类、分配头、普通释放与缓存回收。 |
+| `object/slab.cc` | ObjectCache 的页内对象槽、空闲链和空 slab 回收。 |
+| `object/per_cpu.cc` | PerCpuObjectCache 的本 CPU 暂存和共享缓存退回。 |
+| `object/pool.cc` | FixedPool 的固定容量槽位、空闲索引和重复释放检查。 |
+| `object/mapping.cc` | 物理块的稳定堆别名、清零和别名地址换算。 |
+| `object/page_object.cc` | PageObject 的页块分配、对象引用与物理引用配对。 |
+| `virtual/virtual.cc` | 四级页表、地址翻译、跨地址空间复制、根创建、克隆和销毁。 |
+| `virtual/page_mappings.cc` | Maps 的 PageObject 区间记录、引用、拆分和 COW 权限限制。 |
+| `virtual/operations.cc` | 面向 Task 的匿名映射、解除映射和保护操作。 |
+| `shared/shared.cc` | SharedMemory 的名称、打开包装、共享页和映射记录。 |
+| `service/mapping.cc` | 映射请求授权、目标 Task 查找和不同后备类型分派。 |
+| `service/pager.cc` | PagerBridge 绑定用户态 MM、转交缺页与同步 fork 状态。 |
+| `service/service.cc` | 内存端点请求、页状态和统计查询、冻结恢复及页对象分配。 |
+| `fault.cc` | 读取 CR2、尝试 Pager 恢复、转换用户信号或进入内核应急诊断。 |
+| `memory.S` | 内核独立链接所需的 memset、memcpy 和 memmove。 |
 
-PageObject(order, owner, node) 直接构造并清零物理块。调用者先分配对象存储，再 placement-new；必须检查 valid()。order 超限或分配失败得到无效对象，release() 仍能安全释放元数据。最后一个对象引用消失才析构并释放物理块；没有静态 create 工厂。
+## 分配层次和依赖
 
-memory 服务提供页对象分配、共享对象管理、usage、cache reclaim、pager 绑定和页状态查询。map/unmap/protect 全部使用 syscall 8–10，不提供同类服务 RPC；页对象和共享对象映射也走 MapMemory。跨任务操作要求同时具有固定 boot MM 角色和 Memory 能力；客户端传入 PID 不能自行获得权限。内核内部复用具名机制方法，参数见 [syscall ABI](../task/syscall.md)。
+```mermaid
+flowchart TD
+    Boot[引导内存与保留范围] --> Phy[PhyAlloc / BuddyAlloc]
+    Phy --> Obj[PageObject 与共享对象]
+    Phy --> Slab[ObjectCache]
+    Slab --> Cpu[PerCpuObjectCache]
+    Cpu --> Heap[小块内核堆]
+    Phy --> Large[大块内核堆]
+    Obj --> Map[用户映射与独立对象引用]
+```
 
-用户地址范围为 [0x10000, 2^47)，页大小 4096。内核直接映射从 0xffff800000000000 开始，NX 堆别名从 0xffff804000000000 开始。所有用户写入与执行权限遵守 W^X。
+物理分配先于堆，因此引导元数据不能依赖尚未初始化的堆。CPU 本地状态建立后，才启用 NUMA 当前节点选择和每 CPU 对象缓存，早期分配使用回退节点和缓存槽。
 
-解除映射先预留共享对象和 PageObject 的拆分记录，再撤销 PTE、完成 TLB shootdown，最后释放映射引用；元数据耗尽不会留下半拆分记录。修改页权限保留硬件 Accessed/Dirty 位。
+`initPhy(boot)`、`initVir(boot)`、`initHeap()` 依次建立物理资源、采用引导页表和初始化堆。具体过程见 [物理内存](physical.md)、[虚拟内存](virtual.md) 和 [对象分配](object.md)。
 
-## Ring 3 MM 策略
+## 地址、权限和所有权
 
-MM 是固定 boot 模块，注册名 mm；驻留机制服务名称为 memory.kernel，二者职责不同。
+普通页大小为 4096 字节。用户机制范围为 `[0x10000, 0x0000800000000000)`；直接映射基址为 `0xffff800000000000`，NX 堆别名基址为 `0xffff804000000000`。物理地址、内核别名和用户地址不是可互换的参数。
 
-| 对象 | 职责 |
-|---|---|
-| RegionTable | gap 查找，重叠/溢出检查，插入、移除、分裂、合并、权限上限 |
-| MemoryState | 进程代际、VMA、resident 页与 backing 引用；退出和 exec 清理 |
-| PageAllocator | 按进程配额请求零页，失败时请求 reclaim 后重试 |
-| Pager | 匿名零填充、共享映射、文件偏移读取、重复缺页检查及 COW |
-| ReclaimManager | cache 回收、Accessed/Dirty 分类、跳过 pinned/I/O/COW/私有脏页 |
-| SharedMemoryManager | 句柄权限校验、共享 backing 引用和映射最大权限 |
-| MemoryManager | IPC 协议及 VMA/PTE 事务协调 |
+pagePresent、pageWritable、pageUser、pageWriteThrough、pageCacheDisable、pageGlobal、pageNoExecute 表示页表属性；pageExternal 是软件所有权标记，表示页表不独立拥有该叶子的物理页。删除 external PTE 后，底层页是否释放由页对象、共享对象或设备资源域决定。
 
-RegionTable 容量 512，resident 记录 8192，backing 记录 256，domain 记录 128。容量耗尽明确返回错误。MM 单线程串行处理请求，重复缺页检查已有 PTE；不会重复分配同一已就绪页面。
+用户映射机制拒绝同时可写和可执行。硬件页表中存在某个映射，并不自动授权另一个进程访问或重新映射它。
 
-内核把用户缺页转为认证 senderPid 的 RPC，恢复等待上限为 20 秒；MM 回复成功后再次校验实际 PTE。MM 自身缺页禁止递归。syscall 的用户缓冲区先 fault-in，再持地址空间锁校验并复制。
+## 服务和缺页
 
-匿名页延迟申请清零 PageObject。文件映射使用已打开描述符的 FS 委托：FS 保留原 OpenFileDescription，记录 issuer 和一次性 Token；只有可信 MM 能按原 senderPid 兑换。MM 不以自身权限重新按路径打开文件。关闭原 fd 后 backing 仍持引用。
+映射、解除映射和权限修改通过 CallService 进入 memory.kernel，操作码为 Map、Unmap、Protect，没有对应的独立 syscall 8～10。取得服务端点只允许调用，跨进程操作仍要求当前 Memory 角色、Memory 能力和恢复域所有权。
 
-fork 在子线程可运行前复制 MM VMA 与 resident 引用；私有页面在父子两侧清 Write，写缺页复制到新对象后替换映射。普通非 external 页仍深拷贝，共享对象保持共享。内核映射记录阻止直接 ProtectMemory 绕过 COW。
+用户态合法缺页经 PagerBridge 转成带真实发送者身份的 RPC。内核不在持目标地址空间锁时等待用户 Pager；回复成功后还要重新检查实际 PTE。具体函数、请求和期限见 [内存机制服务](service.md)。
 
-PROT_NONE 撤销 PTE 并保留 backing；恢复权限后缺页重建。munmap/mprotect 在暂存 RegionTable 上完成预检，失败不提交元数据；PTE 修改失败时尝试恢复先前状态。
+## 并发与回收关系
 
-libc 的 mmap/munmap/mprotect/msync 调用 os::VirtualMemory，区域状态由 MM 统一管理。支持私有匿名、私有文件和共享内存对象映射，以及部分区域保护/解除。MAP_FIXED、文件 MAP_SHARED、匿名 MAP_SHARED 当前明确返回 ENOTSUP；私有 msync 和共享内存同步不写回源文件。没有 Swap Manager，不会丢弃不可重建的私有脏页；内存不足明确失败。
+目标地址空间锁稳定页表根和代数；全局页表锁串行化实际表项访问；映射注册表和物理分配器各有自己的锁。映射路径按地址空间、注册表、低层页表的关系进入，不能持地址空间锁等待需要向该目标映射页面的 Pager。
 
-MM 服务通过恢复域保存 VMA、resident/backing 元数据和能力托管；重启按检查点与页表对账恢复旧 VMA，详见 [MM 服务](../../service/mm/README.md)。进程退出或 exec 后，MM 按 Task 状态及地址空间 generation 回收旧记录。v0.1.3 中不可恢复缺页产生故障线程定向的 SIGSEGV/SIGBUS，默认动作终止整个进程；普通坏用户缓冲区返回 BadAddress/EFAULT，不按内核非法解引用处理。具体分类与 core 策略见[用户态异常与 core](../task/exceptions-and-core.md)。
+解除映射先确认范围并准备可能需要的拆分记录，再撤销 PTE、完成必要的 TLB 失效，最后提交记录更新并释放相应引用。进程退出或 exec 还必须先等待远端 CPU 离开旧地址空间；设备 DMA 停止是另一项前提，不能由 CPU 停稳替代。
+
+本目录实现当前的有界机制，不据此承诺完整 mmap、文件写回、换页或任意硬件内存管理。用户态 MM 的策略说明位于 [MM 服务](../../service/mm.md)。

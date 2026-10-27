@@ -1,12 +1,12 @@
-#include <os/file.h>
-#include <os/mm.h>
-#include <os/task.h>
 #include "service/common/kernel-requests.h"
 #include "service/common/queries.h"
 #include "service/common/records.h"
 #include "service/common/requests.h"
 #include "service/common/runtime.h"
 #include "service/mm/mm.h"
+#include <os/file.h>
+#include <os/mm.h>
+#include <os/task.h>
 namespace mm {
 ResidentPage* MemoryState::page(uint64_t task, uint64_t address) {
     for (auto& p : pages)

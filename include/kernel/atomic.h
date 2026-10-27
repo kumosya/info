@@ -1,4 +1,4 @@
-#pragma once
+
 /*
  * Copyright (c) 2026, Kumosya
  * SPDX-License-Identifier: BSD-2-Clause
@@ -10,8 +10,6 @@
 #define _KERNEL_ATOMIC_H_
 
 #include <cstdint>
-
-namespace kernel {
 
 enum class MemoryOrder : int {
     Relaxed        = __ATOMIC_RELAXED,
@@ -62,7 +60,5 @@ class Atomic {
    private:
     alignas(sizeof(Type)) Type value_;
 };
-
-}  // namespace kernel
 
 #endif  // _KERNEL_ATOMIC_H_

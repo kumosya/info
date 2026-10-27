@@ -1,11 +1,13 @@
 #include "kernel/interrupt.h"
 
 #include "kernel/cpu.h"
+#include "kernel/device.h"
 #include "kernel/mm.h"
-#include "kernel/serial.h"
-#include "kernel/spinlock.h"
-#include "kernel/task.h"
+#include "kernel/sync.h"
 #include "kernel/syscall.h"
+#include "kernel/task.h"
+
+namespace kernel::cpu {
 
 namespace {
 
@@ -25,8 +27,8 @@ struct [[gnu::packed]] IdtPointer {
 };
 
 alignas(16) IdtEntry bootstrapIdt[256];
-kernel::interrupt::Handler handlers[256];
-kernel::SpinLock handlerLock;
+Handler handlers[256];
+kernel::task::SpinLock handlerLock;
 extern "C" void* isrStubTable[];
 
 void writePort(uint16_t port, uint8_t value) {
@@ -50,29 +52,39 @@ void setIdtEntry(uint8_t vector, void* entry, uint8_t ist, uint8_t privilege) {
     descriptor.reserved     = 0;
 }
 
-void printException(const kernel::interrupt::Context* context) {
+void printException(const Context* context) {
     static constexpr const char* names[32] = {
-        "#DE", "#DB", "NMI", "#BP", "#OF", "#BR", "#UD", "#NM",
-        "#DF", "legacy coprocessor overrun", "#TS", "#NP", "#SS", "#GP", "#PF", "reserved 15",
-        "#MF", "#AC", "#MC", "#XM", "#VE", "#CP", "reserved 22", "reserved 23",
-        "reserved 24", "reserved 25", "reserved 26", "reserved 27", "#HV", "#VC", "#SX", "reserved 31"
-    };
-    kernel::serial::emergencyWrite("[INTERRUPT] ");
-    kernel::serial::emergencyWrite(context->vector < 32 ? names[context->vector] : "unexpected vector");
-    kernel::serial::emergencyWrite(" exception vector=");
-    kernel::serial::emergencyHex(context->vector);
-    kernel::serial::emergencyWrite(" error=");
-    kernel::serial::emergencyHex(context->errorCode);
-    kernel::serial::emergencyWrite(" rip=");
-    kernel::serial::emergencyHex(context->rip);
-    kernel::serial::emergencyWrite(" rsp=");
-    kernel::serial::emergencyHex(context->rsp);
-    kernel::serial::emergencyWrite("\n");
+        "#DE",         "#DB",
+        "NMI",         "#BP",
+        "#OF",         "#BR",
+        "#UD",         "#NM",
+        "#DF",         "legacy coprocessor overrun",
+        "#TS",         "#NP",
+        "#SS",         "#GP",
+        "#PF",         "reserved 15",
+        "#MF",         "#AC",
+        "#MC",         "#XM",
+        "#VE",         "#CP",
+        "reserved 22", "reserved 23",
+        "reserved 24", "reserved 25",
+        "reserved 26", "reserved 27",
+        "#HV",         "#VC",
+        "#SX",         "reserved 31"};
+    kernel::device::emergencyWrite("[INTERRUPT] ");
+    kernel::device::emergencyWrite(context->vector < 32 ? names[context->vector]
+                                                        : "unexpected vector");
+    kernel::device::emergencyWrite(" exception vector=");
+    kernel::device::emergencyHex(context->vector);
+    kernel::device::emergencyWrite(" error=");
+    kernel::device::emergencyHex(context->errorCode);
+    kernel::device::emergencyWrite(" rip=");
+    kernel::device::emergencyHex(context->rip);
+    kernel::device::emergencyWrite(" rsp=");
+    kernel::device::emergencyHex(context->rsp);
+    kernel::device::emergencyWrite("\n");
 }
 
 }  // namespace
-
-namespace kernel::interrupt {
 
 void initIdt() {
     maskLegacyPic();
@@ -92,16 +104,16 @@ void initIdt() {
     }
     cpu::getCurrent()->setIdt(bootstrapIdt);
     loadIdt();
-    serial::serialWrite("[INTERRUPT] IDT initialized with 256 vectors\n");
+    device::serialWrite("[INTERRUPT] IDT initialized with 256 vectors\n");
 }
 
 void loadIdt() {
     CpuLocalData* cpu = cpu::getCurrent();
     if (cpu->getIdt() == nullptr) {
         IdtEntry* idt = static_cast<IdtEntry*>(
-            kernel::heap::kernelAllocate(sizeof(bootstrapIdt)));
+            kernel::mm::allocateHeap(sizeof(bootstrapIdt)));
         if (idt == nullptr) {
-            serial::serialWrite("[INTERRUPT] unable to allocate per-CPU IDT\n");
+            device::serialWrite("[INTERRUPT] unable to allocate per-CPU IDT\n");
             cpu::halt();
         }
         for (uint32_t index = 0; index < 256; ++index) {
@@ -115,7 +127,7 @@ void loadIdt() {
 }
 
 bool registerHandler(uint8_t vector, Handler handler) {
-    InterruptSpinLockGuard guard(handlerLock);
+    ::kernel::task::InterruptSpinLockGuard guard(handlerLock);
     if (handler == nullptr || handlers[vector] != nullptr) {
         return false;
     }
@@ -124,12 +136,13 @@ bool registerHandler(uint8_t vector, Handler handler) {
 }
 
 void unregisterHandler(uint8_t vector) {
-    InterruptSpinLockGuard guard(handlerLock);
+    ::kernel::task::InterruptSpinLockGuard guard(handlerLock);
     __atomic_store_n(&handlers[vector], nullptr, __ATOMIC_RELEASE);
 }
 
 void handleException(Context* context) {
-    if (context->vector == 2 || context->vector == 8 || context->vector == 18) panic(context);
+    if (context->vector == 2 || context->vector == 8 || context->vector == 18)
+        panic(context);
     if (context->vector == 14) {
         handlePageFault(context);
         return;
@@ -139,47 +152,46 @@ void handleException(Context* context) {
 }
 
 [[noreturn]] void panic(Context* context) {
-    interrupt::disable();
+    cpu::disableInterrupts();
     static bool panicking = false;
     if (__atomic_exchange_n(&panicking, true, __ATOMIC_ACQ_REL)) cpu::halt();
-    localapic::stopOtherCpus();
+    cpu::stopOtherCpus();
     printException(context);
-    serial::emergencyWrite("[INTERRUPT] unrecoverable kernel exception\n");
+    device::emergencyWrite("[INTERRUPT] unrecoverable kernel exception\n");
     cpu::halt();
 }
 
-}  // namespace kernel::interrupt
-
-namespace kernel::interrupt {
 extern "C" void interruptDispatch(Context* context) {
     if (context->vector < 32) {
-        kernel::interrupt::handleException(context);
-        kernel::signal::returnToUser(context);
+        handleException(context);
+        kernel::task::returnToUser(context);
         return;
     }
-    kernel::signal::captureUserContext(context);
-    kernel::interrupt::Handler handler =
+    kernel::task::captureUserContext(context);
+    Handler handler =
         __atomic_load_n(&handlers[context->vector], __ATOMIC_ACQUIRE);
     if (handler != nullptr) {
         handler(context);
     } else if (context->vector != 0xff) {
         static uint64_t reported[4]{};
         const auto index = context->vector / 64;
-        const auto bit = 1ULL << (context->vector % 64);
-        if (!(__atomic_fetch_or(&reported[index], bit, __ATOMIC_RELAXED) & bit)) {
-            serial::serialWrite("[INTERRUPT] unregistered vector acknowledged: ");
-            serial::serialWriteDecimal(context->vector); serial::serialWrite("\n");
+        const auto bit   = 1ULL << (context->vector % 64);
+        if (!(__atomic_fetch_or(&reported[index], bit, __ATOMIC_RELAXED) &
+              bit)) {
+            device::serialWrite(
+                "[INTERRUPT] unregistered vector acknowledged: ");
+            device::serialWriteDecimal(context->vector);
+            device::serialWrite("\n");
         }
     }
     if (context->vector != 0xff) {
-        kernel::localapic::sendEndOfInterrupt();
+        sendEndOfInterrupt();
     }
-    if (kernel::schedule::isSchedulerInitialized() &&
-        kernel::cpu::isPreemptionEnabled() &&
-        kernel::cpu::getCurrent()->isRescheduleRequested()) {
-        kernel::schedule::schedule();
+    if (kernel::task::isSchedulerInitialized() && isPreemptionEnabled() &&
+        getCurrent()->isRescheduleRequested()) {
+        kernel::task::schedule();
     }
-    kernel::signal::returnToUser(context);
+    kernel::task::returnToUser(context);
 }
 
-}  // namespace kernel::interrupt
+}  // namespace kernel::cpu

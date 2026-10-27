@@ -1,6 +1,6 @@
 #pragma once
-#include <os/input.h>
 #include <os/device.h>
+#include <os/input.h>
 #include <os/storage.h>
 #include <os/task.h>
 namespace os::wire {
@@ -211,18 +211,41 @@ static_assert(sizeof(CoreTicket) == 48);
 }  // namespace os::wire
 
 namespace os::wire {
-struct DirectoryEntry {uint64_t type;char name[256];uint64_t inode,nextOffset;};
-static_assert(sizeof(DirectoryEntry)==280);
-}
+struct DirectoryEntry {
+    uint64_t type;
+    char name[256];
+    uint64_t inode, nextOffset;
+};
+static_assert(sizeof(DirectoryEntry) == 280);
+}  // namespace os::wire
 
 namespace os::wire {
-struct KeyEvent {Input::Key keyCode;uint32_t modifiers;uint8_t pressed;uint8_t reserved[3];};
-struct MouseEvent {int32_t deltaX,deltaY,wheel;uint32_t buttons;};
-struct InputEvent {Input::Event::Type type;uint32_t reserved;uint64_t timestamp;union {KeyEvent key;MouseEvent mouse;};};
-struct InputState {uint32_t modifiers,buttons;uint8_t keys[128];};
-static_assert(sizeof(InputEvent)==32);
-static_assert(sizeof(InputState)==136);
-}
+struct KeyEvent {
+    Input::Key keyCode;
+    uint32_t modifiers;
+    uint8_t pressed;
+    uint8_t reserved[3];
+};
+struct MouseEvent {
+    int32_t deltaX, deltaY, wheel;
+    uint32_t buttons;
+};
+struct InputEvent {
+    Input::Event::Type type;
+    uint32_t reserved;
+    uint64_t timestamp;
+    union {
+        KeyEvent key;
+        MouseEvent mouse;
+    };
+};
+struct InputState {
+    uint32_t modifiers, buttons;
+    uint8_t keys[128];
+};
+static_assert(sizeof(InputEvent) == 32);
+static_assert(sizeof(InputState) == 136);
+}  // namespace os::wire
 
 namespace os::wire {
 struct ServiceStatus {
@@ -234,4 +257,4 @@ struct ServiceStatus {
     char blockedBy[24]{};
 };
 static_assert(sizeof(wire::ServiceStatus) == 232);
-}
+}  // namespace os::wire

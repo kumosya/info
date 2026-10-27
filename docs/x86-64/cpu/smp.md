@@ -1,127 +1,49 @@
-# SMP 多核（src/kernel/cpu/smp/）
+# 多处理器启动与协作
 
-本文档描述 `src/kernel/cpu/smp/smp.cc` 与 `trampoline.S`：多核发现（MADT）、AP 启动、核间重调度与 TLB shootdown。对应头文件 `include/kernel/smp.h`。
+实现位于 `src/kernel/cpu/smp/smp.cc` 和 `trampoline.S`，声明在 `include/kernel/smp.h`，命名空间为 `kernel::cpu`。此模块负责 CPU 发现、AP 启动和 IPI，不替代 task 的调度策略。
 
-## 1. CPU 描述符
+## CPU 描述与发现
 
-```cpp
-enum class CpuState : uint8_t { Offline, Starting, Online, Stopping, Failed };
+CpuDescriptor 私有保存逻辑 cpuId、固件处理器标识、硬件 apicId、启用状态、原子 CpuState、startupStage 和 CpuLocalData 指针。getter/setter 涉及这些数据。CpuState 包含 Offline、Starting、Online、Stopping、Failed；有枚举值不代表所有热插拔状态转换都已实现。
 
-class CpuDescriptor {
-   public:
-    uint32_t getCpuId() const;
-    uint32_t getApicId() const;
-    Atomic<CpuState>& getState();
-    Atomic<uint32_t>& getStartupStage();
-    CpuLocalData* getLocalData() const;
-    // setter ...
-   private:
-    uint32_t cpuId;
-    uint32_t taskorId;
-    uint32_t apicId;
-    bool enabled;
-    Atomic<CpuState> state;
-    Atomic<uint32_t startupStage>;   // AP 启动进度（诊断用）
-    CpuLocalData* localData;
-};
-```
+`initSmp(boot)` 从 ACPI MADT 读取已启用的 Local APIC/x2APIC 条目，为 BSP 建立编号 0，并在上限 64 个 CPU 内记录 AP。无可用表时保留 BSP 单核环境。逻辑编号用于掩码和数组，APIC ID 用于实际 IPI 目的地，不能相互代换。
 
-- 最多支持 64 个 CPU（`maximumSupportedCpus = 64`）。
-- `startupStage` 含义：1 = 已发 SIPI；2 = 进入 C 入口；3 = CPU 初始化完成；4 = 调度器就绪。启动失败时串口打印该值定位卡点。
+`getDiscoveredCpuCount()` 与 `getOnlineCpuCount()` 分别表示记录的处理器数和已经完成启动的数量；只有后者及每个描述符状态能证明 CPU 可以接收工作。
 
-查询接口：
+## AP trampoline
 
-```cpp
-namespace kernel::smp {
-uint32_t getDiscoveredCpuCount();
-uint32_t getOnlineCpuCount();
-CpuDescriptor* getCpuDescriptor(uint32_t cpuId);
-CpuLocalData* getCpuLocalData(uint32_t cpuId);
-}
-```
+trampolineAddress 为物理 0x8000，启动向量由其页号得到。startApplicationTaskors 在内核根中临时建立所需低地址映射，把不超过一页的 trampoline 复制过去，然后逐个启动 AP。
 
-## 2. 多核发现 `smp::initSmp(const BootInfo*)`
+共享启动槽保存目标 CR3、栈、CpuLocalData 和 C++ 入口。AP 从 16 位实模式进入保护模式，再开启 PAE、长模式/NX 和分页；进入 64 位后装载专用栈及 GS，调用 applicationTaskorEntry。
 
-1. `acpi::findAcpiTable(bootInfo, "APIC")` 获取 MADT。不可用则打印 `[SMP] ACPI MADT unavailable; using BSP only`，`discoveredCpuCount = 1`。
-2. 统计 MADT 中 enabled 的 Local APIC（type 0）与 Local x2APIC（type 9）条目，钳制到 `[1, 64]`。
-3. 分配描述符数组；描述符 0 = BSP（`CpuState::Online`，`localData = cpu::getCurrent()`）。
-4. 遍历 MADT 填充 AP 描述符（初始 `Offline`）。**仅接受 `apicId <= 0xff` 的 AP**（xAPIC IPI 寻址限制）。
-5. `onlineCpuCount = 1`；注册两个 IPI 处理函数（向量 0xf0 重调度、0xf1 TLB shootdown）。
+必须在发布这些参数后再发送 INIT/SIPI；当前串行启动并等待每个 AP 的结果，避免第二个 AP 覆盖第一个尚未读取的共享槽。BSP 使用有界忙等待和 startupStage 报告失败，不把未完成启动的 AP 算作 Online。结束后解除临时低地址映射。
 
-## 3. AP 启动 `smp::startApplicationTaskors()`
+## C++ 启动握手
 
-1. 单核直接返回。
-2. 校验 trampoline 代码 ≤ 4096 字节；`memory::mapPage(0x8000, 0x8000, pageWritable)` 建立低端单页恒等映射，把 `apTrampolineStart..End` 复制到物理 `0x8000`。
-3. 对每个 AP：
-   - `CpuLocalData::prepare`（失败置 `Failed`）；
-   - 状态 `Starting`、`startupStage = 1`；
-   - 向 trampoline 参数槽写入：CR3 = 内核页表根、栈顶、`CpuLocalData*`、入口 = `applicationTaskorEntry`；
-   - 发送 INIT IPI → 延时 → 第一次 SIPI（向量 8 = `0x8000 >> 12`）→ 延时 → 第二次 SIPI；
-   - 自旋等待状态脱离 `Starting`（超时 100,000,000 次）；未达 `Online` 则置 `Failed` 并打印 cpu/apic/stage 诊断。
-4. 全部完成后 `memory::unmapPage(0x8000)`，打印在线 CPU 数。
+`applicationTaskorEntry(cpu)` 依次建立该 CPU 的 GDT/TSS、本地 APIC、IDT、syscall MSR、引导 Thread 和 RunQueue。直到这些可供调度设施存在，才以 Release 发布 Online 并增加在线计数。
 
-### trampoline（trampoline.S）
+读取方以 Acquire 观察状态，再使用已发布 localData。提前把 CPU 标为 Online 会让远端把线程入队到尚不存在的队列。AP 引导线程随后退出，空闲由该 CPU 的 idle 线程承担。
 
-复制到物理 0x8000 执行的三段跳板：
+源码保留 `startApplicationTaskors`、`initApplicationTaskorCpu` 等现有拼写，文档按实际符号查找，不另行创造 API 名。
 
-- **16 位段**：`cli; cld`，`sp = 0x7c00`，加载 trampoline 自带 GDT，CR0 置 PE，远跳 32 位入口。
-- **32 位段**：段寄存器 = 0x10；CR4 置 PAE|OSFXSR|OSXMMEXCPT；从 `apStartupCr3` 槽加载 CR3；EFER 置 LME|NXE；CR0 置 PG|PE，远跳 64 位入口。
-- **64 位段**：段寄存器 = 0x10；`rsp = apStartupStack`；`rdi = apStartupCpuLocal`；把 CpuLocalData 指针写入 `IA32_KERNEL_GS_BASE`；`call *apStartupEntry`。
+## 远端调度与亲和性
 
-参数槽为四个全局 `.quad` 符号：`apStartupCr3`、`apStartupStack`、`apStartupCpuLocal`、`apStartupEntry`。
+| 函数 | 功能与参数 |
+| --- | --- |
+| `getCpuDescriptor(cpuId)`、`getCpuLocalData(cpuId)` | 按逻辑编号取得描述或本地数据，越界返回空。 |
+| `requestRemoteReschedule(cpuId)` | 仅向非本 CPU 且 Online 的目标发送向量 0xf0。 |
+| rescheduleIpiHandler | 设置目标 CPU 的重调度请求，由允许抢占的返回路径完成切换。 |
 
-### AP 的 C 入口 `applicationTaskorEntry(CpuLocalData*)`
+亲和掩码的位表示逻辑 CPU。Thread::migrate 检查目标位并在重新入队前保存目标编号；不能检查刚被新掩码排除的旧 CPU 位。
 
-```text
-startupStage = 2
-cpu->initApplicationTaskorCpu()  // GS 基址、GDT/TSS、Local APIC
-startupStage = 3
-interrupt::loadIdt()             // 分配每 CPU IDT 副本
-syscall::init()
-Thread::init()
-schedule::init()
-startupStage = 4
-state = Online; onlineCpuCount++
-Thread::exitCurrent(0)           // 进入调度（作为空闲上下文）
-```
+启动亲和性探针先创建 detached Ready 线程，再 setAffinity 到 CPU 1，迁移完成其首次入队；入口再核对实际 CPU。否则默认掩码下提前入队的探针可能在配置前已经执行或结束。调度细节见 [调度器](../task/sched.md)。
 
-## 4. 核间重调度
+## TLB shootdown
 
-```cpp
-namespace kernel::smp {
-void requestRemoteReschedule(uint32_t cpuId);
-}
-```
+`requestTlbShootdown(virtualAddress)` 在多核环境下串行发布一个失效地址、清确认计数，向其他 Online CPU 发送向量 0xf1，并等待全部确认。接收处理器 invlpg 后增加确认计数；向量与计数不是用户可修改的消息状态。
 
-目标 CPU 非本机且状态 `Online` 时，发送向量 `0xf0` 的 Fixed IPI。接收方处理函数调用 `schedule::requestReschedule()`（置 `rescheduleRequested` 标志），随后在中断返回路径由 `interruptDispatch` 触发 `schedule()`。
+申请全局 shootdown 锁前禁止本线程抢占，但保持中断可达；若先关中断再争锁，两个 CPU 可能各自等待对方处理 IPI。取得锁后才保存并关闭本地中断，完成发布、发送及确认，再解锁并恢复状态。
 
-`schedule::enqueueThread` 把线程入队到非当前 CPU 的队列时会调用本函数。
+当前实现等待全部目标确认，没有把超时当作“远端翻译已消失”的回退。调用者必须避免持远端完成路径必需的锁，并保持 CPU 在线协议前提。页表锁应在等待前释放，物理页面不能在失效完成前复用。
 
-## 5. TLB shootdown
-
-```cpp
-namespace kernel::smp {
-void requestTlbShootdown(uint64_t virtualAddress);
-}
-```
-
-协议（一次只处理一个地址）：
-
-1. 在线 CPU ≤ 1 直接返回。
-2. 获取全局 `tlbShootdownLock` 并关中断。
-3. 把地址存入 `tlbShootdownAddress`（Release），应答计数清零。
-4. 向所有其他在线 CPU 发送向量 `0xf1` IPI，统计目标数。
-5. 自旋等待 `tlbShootdownAcknowledgements >= targets`（pause）。
-6. 恢复中断、解锁。
-
-接收方处理函数：读地址（Acquire）→ `invlpg` → 应答计数 +1（Release）。
-
-`memory::unmapPageInAddressSpace` 与 `memory::protectPageInAddressSpace` 在修改页表后调用本函数。
-
-## 6. IPI 向量汇总
-
-| 向量 | 用途 |
-|---|---|
-| `0xf0` | 请求目标 CPU 重调度 |
-| `0xf1` | TLB shootdown（单地址） |
-| `0xff` | Local APIC 虚假中断（不发 EOI） |
+TLB 确认只说明该地址翻译失效，不代表目标 Task 已完全离开 CPU。旧线程栈和整个根释放仍需要 task::quiesceTask，也不能由此证明设备 DMA 已停止。

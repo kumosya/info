@@ -1,10 +1,10 @@
 #include "service/fs/ext3/filesystem.h"
 #include "service/fs/ext3/internal.h"
-#include <os/ipc.h>
-#include <os/task.h>
-#include <os/mm.h>
 #include <os/device.h>
+#include <os/ipc.h>
+#include <os/mm.h>
 #include <os/service.h>
+#include <os/task.h>
 
 namespace fs::ext3 {
 
@@ -19,7 +19,7 @@ bool Filesystem::mount(SectorDevice& device) {
     for (uint32_t bucket = 0; bucket < cacheHashBuckets; ++bucket) {
         cacheHash_[bucket] = cacheNoSlot;
     }
-    cacheClock_      = 0;
+    cacheClock_           = 0;
     readaheadInode_       = 0;
     readaheadLastLogical_ = 0;
     if (!readSuperblock() || superblock_.magic != superMagic ||

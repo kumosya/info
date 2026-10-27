@@ -2,7 +2,9 @@
 #define _POSIX_SYS_MMAN_H
 
 #include <stddef.h>
-struct posix_typed_mem_info { size_t posix_tmi_length; };
+struct posix_typed_mem_info {
+    size_t posix_tmi_length;
+};
 
 #include <sys/types.h>
 
@@ -16,7 +18,7 @@ struct posix_typed_mem_info { size_t posix_tmi_length; };
 #define MAP_FIXED 0x10
 #define MAP_ANONYMOUS 0x20
 #define MAP_ANON MAP_ANONYMOUS
-#define MAP_FAILED ((void*)-1)
+#define MAP_FAILED ((void *)-1)
 
 #define MS_ASYNC 1
 #define MS_INVALIDATE 2
@@ -26,13 +28,13 @@ struct posix_typed_mem_info { size_t posix_tmi_length; };
 extern "C" {
 #endif
 
-void* mmap(void* address, size_t length, int protection, int flags,
+void *mmap(void *address, size_t length, int protection, int flags,
            int file_descriptor, off_t offset);
-int munmap(void* address, size_t length);
-int mprotect(void* address, size_t length, int protection);
-int msync(void* address, size_t length, int flags);
-int shm_open(const char* name, int flags, mode_t mode);
-int shm_unlink(const char* name);
+int munmap(void *address, size_t length);
+int mprotect(void *address, size_t length, int protection);
+int msync(void *address, size_t length, int flags);
+int shm_open(const char *name, int flags, mode_t mode);
+int shm_unlink(const char *name);
 
 #ifdef __cplusplus
 }
@@ -48,7 +50,8 @@ int mlockall(int);
 int munlock(const void *, size_t);
 int munlockall(void);
 int posix_madvise(void *, size_t, int);
-int posix_mem_offset(const void *__restrict, size_t, off_t *__restrict, size_t *__restrict, int *__restrict);
+int posix_mem_offset(const void *__restrict, size_t, off_t *__restrict,
+                     size_t *__restrict, int *__restrict);
 int posix_typed_mem_get_info(int, struct posix_typed_mem_info *);
 int posix_typed_mem_open(const char *, int, int);
 #ifdef __cplusplus

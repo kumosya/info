@@ -107,7 +107,9 @@ class Filesystem final : public vfs::FileSystem {
     bool lookup(const char* path, FileStatus& status) override;
     bool statInode(uint32_t inode, FileStatus& status) override;
     bool retainOpenFile(uint32_t inode) override { return retainInode(inode); }
-    bool releaseOpenFile(uint32_t inode) override { return releaseInode(inode); }
+    bool releaseOpenFile(uint32_t inode) override {
+        return releaseInode(inode);
+    }
     int64_t read(const FileStatus& status, uint64_t offset, void* buffer,
                  size_t size) override;
     int64_t read(uint32_t inode, uint64_t offset, void* buffer, size_t size);
@@ -188,7 +190,7 @@ class Filesystem final : public vfs::FileSystem {
 
 namespace vfs::ext3 {
 class Probe {
- public:
+   public:
     bool detect(const uint8_t* data, size_t size);
 };
-}
+}  // namespace vfs::ext3

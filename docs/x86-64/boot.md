@@ -1,165 +1,58 @@
-# 内核启动（src/kernel/boot/）
+# 内核启动与引导信息
 
-本文档描述 `src/kernel/boot/` 的实现：Multiboot2 引导头、32→64 位引导跳板（`head.S`）、Multiboot2 信息解析（`multiboot.cc`）与串口驱动（`serial.cc`，位于 `src/kernel/device/`）。对应头文件 `include/kernel/boot.h`、`include/kernel/serial.h`。
+入口实现为 `src/kernel/boot/head.S`、`boot/multiboot.cc` 和 `src/kernel/main.cc`。声明位于 `include/kernel/boot.h`，BootInfo 等类型及 parseMultibootInfo 保持在全局作用域，kernelEntry 使用 C 链接，kernelMain 位于 kernel。
 
-## 1. Multiboot2 引导头（head.S `.multiboot` 节）
+## 文件与阶段
 
-引导头 8 字节对齐，字段：
+| 文件 | 内容 |
+| --- | --- |
+| `boot/head.S` | Multiboot2 头、32 位入口、能力检查、临时页表、长模式切换和引导栈。 |
+| `boot/multiboot.cc` | 解析引导 tag，保存内存区、模块、帧缓冲、ACPI 及字符串引用。 |
+| `main.cc` | 建立各内核模块的初始化依赖，创建初始执行环境并启动 init。 |
 
-| 字段 | 值 | 说明 |
-|---|---|---|
-| magic | `0xe85250d6` | Multiboot2 魔数 |
-| arch | `0` | i386（32 位保护模式入口） |
-| header_length | 头实际长度 | |
-| checksum | `-(magic + arch + length)` | |
+启动汇编使用独立临时 GDT，不能把其中选择子值直接当作运行时 CPU GDT 的选择子。CPU 初始化后会安装正式 GDT/TSS，见 [CPU](cpu/cpu.md)。
 
-标签（tag）：
+## 从 _start 到 kernelEntry
 
-- **Tag 1（信息请求，必需）**：请求 tag 8（framebuffer 信息）。
-- **Tag 5（framebuffer，可选）**：请求 1024×768×32 bpp 图形模式。
-- **Tag 0（结束）**。
+引导器按 Multiboot2 约定提供 EAX magic 和 EBX 信息地址。`_start` 关中断、保存信息地址、使用引导栈，并检查 CPUID、SSE/SSE2、长模式和 NX。无法满足要求时通过低层串口字符和停机路径结束，不依赖尚未建立的堆。
 
-## 2. 32 位引导流程（`_start`，`.code32`）
+`setupPageTables` 建立一张 PML4、一张 PDPT 和 64 张页目录，用 2 MiB 页覆盖低端 64 GiB，同时提供低地址 identity 和高半区直接映射。identity 是过渡工具；完成高地址运行后由 initVir 删除低半区根项。
 
-GRUB 以 32 位保护模式进入 `_start`，`eax = 0x36d76289`（Multiboot2 引导魔数），`ebx` = Multiboot 信息结构物理地址。
+汇编设置 PAE、浮点控制和 EFER.LME/NXE，装入 CR3 后启用分页，通过远跳转进入 64 位代码。start64 清 DF、初始化浮点环境，把引导栈转换为直接映射地址，再调用 kernelEntry。传入参数依次是 Multiboot 地址、引导页表根、引导区域起点和内核加载终点。
 
-流程：
+先有临时页表和栈，才能执行依赖指针访问的 C++；先采用高半区，才能安全移除低 identity。这里不涉及用户 GUI、窗口或服务启动策略。
 
-1. `cli`；保存 `ebx` 到 `multibootAddress`。
-2. 校验 `eax == 0x36d76289`，否则跳 `bootFailure`（向 COM1 输出 `'B'` 后 `cli; hlt`）。
-3. 设置引导栈 `esp = bootStackTop`（16 KB 静态栈）。
-4. `checkLongMode`：
-   - 用 EFLAGS ID 位（bit 21）翻转测试 CPUID 可用性；
-   - CPUID leaf 1：要求 SSE（EDX bit 25）与 SSE2（EDX bit 26）；
-   - CPUID `0x80000000`：最大扩展叶 ≥ `0x80000001`；
-   - CPUID `0x80000001`：要求 Long Mode（EDX bit 29）与 NX（EDX bit 20）。
-   - 任一失败跳 `bootFailure`。
-5. `setupPageTables`（见下）。
-6. `lgdt gdtPointer`。
-7. CR0：清 EM（bit 2）、置 MP（bit 1）。
-8. CR4：置 PAE（bit 5）、OSFXSR（bit 9）、OSXMMEXCPT（bit 10）。
-9. CR3 = `pageMapPml4`。
-10. EFER MSR（`0xc0000080`）：置 LME（bit 8）与 NXE（bit 11）。
-11. CR0 置 PG（bit 31），`ljmp $0x10, $start64` 进入 64 位。
+## 引导信息对象
 
-### 引导页表（`setupPageTables`）
+| 类 | 保存的数据 |
+| --- | --- |
+| MemoryRegion | 物理 base、length 和固件 type。 |
+| BootModule | 模块物理 start/end 和命令行引用。 |
+| FramebufferInfo | 物理地址、pitch、宽高、bpp、类型及颜色位分布。 |
+| BootInfo | 上述数组和数量、引导字符串、ACPI/ELF 引用、Multiboot 范围、页表根及引导保留范围。 |
 
-- 清零 66 个页表页：1 个 PML4 + 1 个 PDPT + 64 个 PD。
-- `PML4[0]` 与 `PML4[256]` 都指向同一个 PDPT（标志 `0x3`）——低端恒等映射与高半直接映射（`0xffff800000000000`）双重映射。
-- `PDPT[0..63]` 指向 64 个页目录。
-- 填充 64×512 = 32768 个 **2 MB 大页**表项（标志 `0x83` = Present|Writable|PS），恒等映射前 64 GB 物理内存。
+getter/setter 分别读取和设置这些数据。数组记录由解析器的有界静态存储提供；命令行和 ACPI 等仍引用引导信息对应的存储，不是独立复制的任意长度对象。
 
-### 引导 GDT（4 项）
+`parseMultibootInfo(address, bootInfo)` 输入引导信息地址和结果对象，失败返回 false。它检查总长、tag 长度和边界，按 8 字节对齐推进；内存记录最多 128 项、模块最多 32 项，超过记录容量的条目不继续保存。成功还要求取得内存表。
 
-| 选择子 | 内容 | 含义 |
-|---|---|---|
-| 0x00 | 0 | 空 |
-| 0x08 | `0x00cf9a000000ffff` | 32 位代码段 |
-| 0x10 | `0x00af9a000000ffff` | 64 位代码段（L=1） |
-| 0x18 | `0x00af92000000ffff` | 64 位数据段 |
+解析涵盖命令行、引导器名称、模块、内存表、帧缓冲、ELF section 信息及新旧 ACPI 根。帧缓冲 tag 只有匹配类型和足够长度时读取颜色字段；ACPI 的签名和校验和由 Tables 使用时进一步验证。
 
-## 3. 64 位入口（`start64`，`.code64`）
+## kernelMain 的依赖关系
 
-1. `cld`、`fninit`。
-2. `ds/es/ss = 0x18`。
-3. `rsp = bootStackTop + 0xffff800000000000`（切换到高半栈）。
-4. 传参调用 `kernelEntry`：
-   - `edi` = Multiboot 信息物理地址；
-   - `rsi` = CR3（页表根物理地址）；
-   - `rdx` = `__bootStart`（引导映像起始，链接脚本符号）；
-   - `rcx` = `__kernelLoadEnd`（内核加载结束）。
-5. `kernelEntry` 返回后 `cli; hlt` 死循环。
+内存阶段调用 initPhy、initVir、initHeap。物理页元数据不能从未初始化的堆申请；堆依赖物理分配和内核页表。
 
-`kernelEntry`（`multiboot.cc`）先 `kernel::serial::initSerial()`，再 `kernel::parseMultibootInfo`，把 `pageTableRoot`、`bootstrapStart`、`bootstrapEnd` 填入 `BootInfo`，最后进入 `kernelMain`（见 [overview.md](overview.md) 的初始化序列）。
+CPU 阶段建立 GDT/TSS、GS 和本地 APIC，随后启用依赖每 CPU 数据的 NUMA 选择和对象缓存，初始化时间、IDT、I/O APIC、帧缓冲信息和 BootImage。
 
-## 4. Multiboot2 信息解析（multiboot.cc）
+并发阶段发现 SMP、登记引导 Thread、建立每 CPU 调度设施及 kernel Task，再设置系统调用入口和启动 AP。需要中断和调度的工作不能提前放在这些设施尚未就绪的位置。
 
-### BootInfo 结构（boot.h）
+机制阶段建立 Endpoint 和 CoreServices，准备隔离地址空间与基本执行路径，然后 startInitialProgram 加载 init。首个用户进程需要自己的页表、用户栈和初始内核服务句柄，不能直接跳到某个模块字节执行。
 
-```cpp
-namespace kernel {
+启动完成后引导线程通过 exitCurrentThread 退出；每 CPU 的 idle 线程负责空闲等待，避免一个无实际工作的引导线程持续占用调度份额。
 
-struct BootInfo {
-    const MemoryRegion* memoryMap;   // 内存映射数组
-    uint32_t memoryMapCount;
-    const BootModule* modules;       // 引导模块数组
-    uint32_t moduleCount;
-    const char* commandLine;
-    const char* bootLoaderName;
-    const void* acpiRoot;            // RSDP 指针
-    const void* elfSections;
-    FramebufferInfo framebuffer;
-    uint64_t multibootAddress;
-    uint32_t multibootSize;
-    uint32_t reserved;
-    uint64_t pageTableRoot;          // 由 kernelEntry 填入
-    uint64_t bootstrapStart;         // 由 kernelEntry 填入
-    uint64_t bootstrapEnd;           // 由 kernelEntry 填入
-};
+## 初次可运行与清理
 
-}  // namespace kernel
-```
+需要固定 CPU 的启动探针先以 makeRunnable=false 创建，再配置亲和性；迁移会将它交给目标运行队列。若先按默认掩码入队，线程可能已经运行甚至结束，后续设置无法再假定它是 Ready。探针在执行入口核对实际 CPU，而不只相信入队返回值。
 
-辅助结构：
+新用户线程同样应在映像、栈、身份、初始句柄准备完成后才开放执行。加载失败走 Task 销毁和回收路径，不能只释放 Task 指针而留下地址空间或线程。
 
-```cpp
-struct MemoryRegion { uint64_t base; uint64_t length; uint32_t type; };
-struct BootModule { uint32_t start; uint32_t end; const char* commandLine; };
-struct FramebufferInfo {
-    uint64_t address; uint32_t pitch, width, height;
-    uint8_t bitsPerPixel, type;
-    uint8_t redPosition, redMaskSize, greenPosition, greenMaskSize,
-            bluePosition, blueMaskSize;
-};
-```
-
-tag 类型常量：`multibootTagEnd=0`、`multibootTagBootCommandLine=1`、`multibootTagBootLoaderName=2`、`multibootTagModule=3`、`multibootTagMemoryMap=6`、`multibootTagFramebuffer=8`、`multibootTagElfSections=9`、`multibootTagAcpiOld=14`、`multibootTagAcpiNew=15`；`memoryAvailable = 1`。
-
-### 解析规则 `parseMultibootInfo(uint64_t address, BootInfo*)`
-
-1. 结构总大小必须落在 `[16, 16 MB]`，否则失败。
-2. 从 `address + 8` 起按 8 字节对齐遍历 tag；每个 tag 校验 `size >= 8` 且不越界。
-3. 处理的 tag：
-   - **1（命令行）** → `commandLine`；
-   - **2（引导加载器名）** → `bootLoaderName`；
-   - **6（内存映射）**：校验 `entrySize >= 24`，逐条复制（最多 128 条）；
-   - **3（模块）**：最多 32 个；取 start、end 与命令行字符串；
-   - **8（framebuffer）**：复制全部字段；仅当类型为 1（RGB）时复制颜色掩码；
-   - **9（ELF 节）** → `elfSections`；
-   - **14/15（ACPI RSDP）** → `acpiRoot`；
-   - **0（结束）**：退出循环。
-4. 所有指针都换算为直接映射虚拟地址（`物理地址 + 0xffff800000000000`）。
-5. 若最终没有内存映射（`memoryMapCount == 0`），打印 `[BOOT] memory map tag missing` 并返回 false。
-
-静态存储：`memoryRegions[128]` 与 `bootModules[32]` 为匿名命名空间静态数组，`BootInfo` 指向它们。
-
-## 5. 串口驱动（serial.cc）
-
-COM1（`0x3f8`），8250/16550，115200 波特、8 数据位、无校验、1 停止位。
-
-所有函数位于 `namespace kernel::serial`：
-
-`initSerial()` 初始化序列：
-
-1. IER（+1）= 0x00（关中断）；
-2. LCR（+3）= 0x80（使能 DLAB）；
-3. DLL（+0）= 0x01、DLM（+1）= 0x00（分频 1 → 115200）；
-4. LCR = 0x03（8N1）；
-5. FCR（+2）= 0xc7（使能并清空 FIFO，14 字节触发）；
-6. MCR（+4）= 0x0b（DTR + RTS + OUT2）。
-
-输出接口（`serial.h`）：
-
-```cpp
-namespace kernel::serial {
-
-void initSerial();
-void serialWrite(char value);          // 轮询 THR 空，最多 100000 次
-void serialWrite(const char* value);   // \n 自动转 \r\n
-void serialWriteHex(uint64_t value);   // 0x 前缀 + 16 位十六进制
-void serialWriteDecimal(uint64_t value);
-
-}  // namespace kernel::serial
-```
-
-串口是内核唯一的早期诊断通道，在帧缓冲控制台可用之前以及内核 panic 路径上使用。
+引导模块、Multiboot 信息和引导页表的物理范围由物理初始化保留。高半区地址别名本身不代表这些内存可以归还；必须先确认没有仍在使用的引导引用。程序映像装载细节见 [程序加载](user.md)，AP 启动见 [SMP](cpu/smp.md)。

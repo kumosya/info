@@ -1,6 +1,6 @@
 #pragma once
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 namespace mm {
 enum class BackingKind : uint8_t { Anonymous, File, Shared };
 struct Region {
@@ -16,14 +16,17 @@ class RegionTable {
     static bool validRange(uint64_t address, uint64_t size);
     const Region* find(uint64_t task, uint64_t address) const;
     Region* find(uint64_t task, uint64_t address);
-    uint64_t findGap(uint64_t task, uint64_t size, uint64_t hint = 0x50000000) const;
+    uint64_t findGap(uint64_t task, uint64_t size,
+                     uint64_t hint = 0x50000000) const;
     bool insert(const Region& region);
     bool remove(uint64_t task, uint64_t address, uint64_t size);
-    bool protect(uint64_t task, uint64_t address, uint64_t size, uint32_t protection);
+    bool protect(uint64_t task, uint64_t address, uint64_t size,
+                 uint32_t protection);
     bool covered(uint64_t task, uint64_t address, uint64_t size) const;
     void removeTask(uint64_t task);
     size_t references(uint64_t backing) const;
     const Region& at(size_t index) const { return regions_[index]; }
+
    private:
     Region regions_[capacity]{};
     Region* vacant();

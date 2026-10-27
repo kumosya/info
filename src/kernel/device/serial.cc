@@ -1,10 +1,12 @@
-#include "kernel/serial.h"
-#include "kernel/spinlock.h"
+#include "kernel/device.h"
+#include "kernel/sync.h"
+
+namespace kernel::device {
 
 namespace {
 
 constexpr uint16_t serialPort = 0x3f8;
-kernel::SpinLock outputLock;
+kernel::task::SpinLock outputLock;
 
 inline void writePort(uint16_t port, uint8_t value) {
     asm volatile("outb %0, %1" : : "a"(value), "Nd"(port));
@@ -25,8 +27,6 @@ void writeCharacter(char value) {
 
 }  // namespace
 
-namespace kernel::serial {
-
 void initSerial() {
     writePort(serialPort + 1, 0x00);
     writePort(serialPort + 3, 0x80);
@@ -38,7 +38,7 @@ void initSerial() {
 }
 
 void serialWrite(char value) {
-    InterruptSpinLockGuard guard(outputLock);
+    ::kernel::task::InterruptSpinLockGuard guard(outputLock);
     writeCharacter(value);
 }
 
@@ -46,7 +46,7 @@ void serialWrite(const char* value) {
     if (value == nullptr) {
         return;
     }
-    InterruptSpinLockGuard guard(outputLock);
+    ::kernel::task::InterruptSpinLockGuard guard(outputLock);
     while (*value != '\0') {
         if (*value == '\n') {
             writeCharacter('\r');
@@ -57,19 +57,19 @@ void serialWrite(const char* value) {
 
 void serialWriteHex(uint64_t value) {
     static constexpr char digits[] = "0123456789abcdef";
-    char text[19] = "0x";
-    uint32_t index = 2;
+    char text[19]                  = "0x";
+    uint32_t index                 = 2;
     for (int shift = 60; shift >= 0; shift -= 4) {
         text[index++] = digits[(value >> shift) & 0xf];
     }
-    serial::serialWrite(text);
+    device::serialWrite(text);
 }
 
 void serialWriteDecimal(uint64_t value) {
     char digits[20];
     uint32_t count = 0;
     if (value == 0) {
-        serial::serialWrite('0');
+        device::serialWrite('0');
         return;
     }
     while (value != 0 && count < sizeof(digits)) {
@@ -77,11 +77,12 @@ void serialWriteDecimal(uint64_t value) {
         value /= 10;
     }
     while (count != 0) {
-        serial::serialWrite(digits[--count]);
+        device::serialWrite(digits[--count]);
     }
 }
 
-// Emergency diagnostics must also work when an NMI interrupted outputLock's owner.
+// Emergency diagnostics must also work when an NMI interrupted outputLock's
+// owner.
 void emergencyWrite(const char* value) {
     if (!value) return;
     while (*value) {
@@ -91,9 +92,10 @@ void emergencyWrite(const char* value) {
 }
 void emergencyHex(uint64_t value) {
     constexpr char digits[] = "0123456789abcdef";
-    char text[19] = "0x";
-    for (unsigned i = 0; i < 16; ++i) text[i + 2] = digits[(value >> (60 - i * 4)) & 15];
+    char text[19]           = "0x";
+    for (unsigned i = 0; i < 16; ++i)
+        text[i + 2] = digits[(value >> (60 - i * 4)) & 15];
     emergencyWrite(text);
 }
 
-}  // namespace kernel::serial
+}  // namespace kernel::device

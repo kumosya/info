@@ -1,18 +1,18 @@
-#include "service/common/runtime.h"
-#include "service/common/kernel-requests.h"
-#include "service/common/requests.h"
 #include "service/fs/fstab.h"
 
-#include <os/ipc.h>
-#include <os/task.h>
-#include <os/mm.h>
+#include "service/common/kernel-requests.h"
+#include "service/common/requests.h"
+#include "service/common/runtime.h"
 #include <os/device.h>
+#include <os/ipc.h>
+#include <os/mm.h>
 #include <os/service.h>
+#include <os/task.h>
 
 namespace vfs::server {
 namespace {
 class FstabFields {
- public:
+   public:
     static bool space(char c);
     static bool field(const char*& cursor, char* output, size_t capacity);
     static bool number(const char* text, uint32_t& value);
@@ -22,7 +22,8 @@ bool FstabFields::space(char c) { return c == ' ' || c == '\t' || c == '\r'; }
 bool FstabFields::field(const char*& cursor, char* output, size_t capacity) {
     while (FstabFields::space(*cursor)) ++cursor;
     size_t length = 0;
-    while (*cursor && *cursor != '\n' && *cursor != '#' && !FstabFields::space(*cursor)) {
+    while (*cursor && *cursor != '\n' && *cursor != '#' &&
+           !FstabFields::space(*cursor)) {
         char value = *cursor++;
         if (value == '\\') {
             uint32_t decoded = 0;
@@ -89,7 +90,8 @@ bool Fstab::next(const char*& text, MountSpec& spec, bool& present) {
             while (FstabFields::space(*cursor)) ++cursor;
             if (!*cursor || *cursor == '\n' || *cursor == '#') break;
             uint32_t count = 0;
-            if (!FstabFields::field(cursor, value, sizeof(value)) || !FstabFields::number(value, count) ||
+            if (!FstabFields::field(cursor, value, sizeof(value)) ||
+                !FstabFields::number(value, count) ||
                 count > (index == 0 ? 1U : 2U))
                 return false;
             if (index == 0)

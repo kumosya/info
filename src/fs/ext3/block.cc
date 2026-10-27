@@ -1,14 +1,13 @@
-#include "service/common/runtime.h"
 #include "service/common/kernel-requests.h"
 #include "service/common/requests.h"
+#include "service/common/runtime.h"
 #include "service/fs/ext3/filesystem.h"
 #include "service/fs/ext3/internal.h"
-
-#include <os/ipc.h>
-#include <os/task.h>
-#include <os/mm.h>
 #include <os/device.h>
+#include <os/ipc.h>
+#include <os/mm.h>
 #include <os/service.h>
+#include <os/task.h>
 
 namespace fs::ext3 {
 
@@ -16,7 +15,7 @@ using namespace detail;
 
 uint32_t Filesystem::findCachedBlock(uint32_t block) const {
     const uint32_t bucket = block & (cacheHashBuckets - 1);
-    uint32_t slot = cacheHash_[bucket];
+    uint32_t slot         = cacheHash_[bucket];
     while (slot != cacheNoSlot) {
         if (cacheValid_[slot] && cachedBlocks_[slot] == block) return slot;
         slot = cacheNext_[slot];
@@ -26,16 +25,16 @@ uint32_t Filesystem::findCachedBlock(uint32_t block) const {
 
 void Filesystem::insertCacheSlot(uint32_t slot, uint32_t block) {
     const uint32_t bucket = block & (cacheHashBuckets - 1);
-    cachedBlocks_[slot] = block;
-    cacheValid_[slot] = true;
-    cacheNext_[slot] = cacheHash_[bucket];
-    cacheHash_[bucket] = slot;
+    cachedBlocks_[slot]   = block;
+    cacheValid_[slot]     = true;
+    cacheNext_[slot]      = cacheHash_[bucket];
+    cacheHash_[bucket]    = slot;
 }
 
 void Filesystem::removeCacheSlot(uint32_t slot) {
     if (!cacheValid_[slot]) return;
     const uint32_t bucket = cachedBlocks_[slot] & (cacheHashBuckets - 1);
-    uint32_t* link = &cacheHash_[bucket];
+    uint32_t* link        = &cacheHash_[bucket];
     while (*link != cacheNoSlot) {
         if (*link == slot) {
             *link = cacheNext_[slot];
@@ -43,7 +42,7 @@ void Filesystem::removeCacheSlot(uint32_t slot) {
         }
         link = &cacheNext_[*link];
     }
-    cacheNext_[slot] = cacheNoSlot;
+    cacheNext_[slot]  = cacheNoSlot;
     cacheValid_[slot] = false;
 }
 
@@ -75,7 +74,7 @@ bool Filesystem::readBlock(uint32_t block, void* buffer) {
 
 bool Filesystem::fetchBlock(uint32_t block, void* buffer) {
     const uint32_t selected = evictCacheSlot();
-    const uint32_t sectors = blockSize_ / sectorSize;
+    const uint32_t sectors  = blockSize_ / sectorSize;
     if (!device_->readSectors(static_cast<uint64_t>(block) * sectors, sectors,
                               blockCache_[selected])) {
         return false;
@@ -92,7 +91,7 @@ void Filesystem::prefetchBlock(uint32_t block) {
         return;
     }
     const uint32_t selected = evictCacheSlot();
-    const uint32_t sectors = blockSize_ / sectorSize;
+    const uint32_t sectors  = blockSize_ / sectorSize;
     if (!device_->readSectors(static_cast<uint64_t>(block) * sectors, sectors,
                               blockCache_[selected])) {
         return;
@@ -105,7 +104,7 @@ void Filesystem::prefetchAhead(uint32_t inodeNumber, const Inode& inode,
                                uint32_t logical) {
     if (readaheadInode_ != inodeNumber ||
         readaheadLastLogical_ + 1 != logical) {
-        readaheadInode_ = inodeNumber;
+        readaheadInode_       = inodeNumber;
         readaheadLastLogical_ = logical;
         return;
     }

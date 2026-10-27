@@ -31,5 +31,4 @@ int fegetexcept(void);
 #endif
 #endif
 
-
 #endif

@@ -1,7 +1,6 @@
 #ifndef _POSIX_SYS_WAIT_H
 #define _POSIX_SYS_WAIT_H
 
-
 #include <sys/types.h>
 
 #define WNOHANG 1
@@ -38,7 +37,7 @@ typedef enum { P_ALL, P_PID, P_PGID } idtype_t;
 #ifdef __cplusplus
 extern "C" {
 #endif
-int waitid(idtype_t, id_t, siginfo_t *, int);
+int waitid(idtype_t, id_t, siginfo_t*, int);
 #ifdef __cplusplus
 }
 #endif

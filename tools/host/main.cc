@@ -95,7 +95,7 @@ void run(const std::vector<std::string>& arguments, const fs::path& output) {
 }
 std::string capture(const std::vector<std::string>& arguments) {
     char temporary[] = "/tmp/osinfo-host-output.XXXXXX";
-    int descriptor = mkstemp(temporary);
+    int descriptor   = mkstemp(temporary);
     if (descriptor < 0) throw std::runtime_error("cannot create tool output");
     close(descriptor);
     try {
@@ -103,18 +103,27 @@ std::string capture(const std::vector<std::string>& arguments) {
         auto result = read(temporary);
         fs::remove(temporary);
         return result;
-    } catch (...) { fs::remove(temporary); throw; }
+    } catch (...) {
+        fs::remove(temporary);
+        throw;
+    }
 }
 PackageMetadata packageMetadata(const fs::path& path, bool manifest) {
-    std::istringstream output(capture({"tools/inpkg", manifest ? "inspect-manifest" : "inspect", path.string()}));
+    std::istringstream output(
+        capture({"tools/inpkg", manifest ? "inspect-manifest" : "inspect",
+                 path.string()}));
     PackageMetadata result;
     std::string line;
     while (std::getline(output, line)) {
         auto columns = split(line, '\t');
-        if (columns.size() != 2) throw std::runtime_error("invalid inpkg metadata output");
-        if (columns[0] == "name") result.name = columns[1];
-        else if (columns[0] == "bin" || columns[0] == "file") result.files.emplace_back(columns[1], columns[0] == "bin");
-        else throw std::runtime_error("unknown inpkg metadata row");
+        if (columns.size() != 2)
+            throw std::runtime_error("invalid inpkg metadata output");
+        if (columns[0] == "name")
+            result.name = columns[1];
+        else if (columns[0] == "bin" || columns[0] == "file")
+            result.files.emplace_back(columns[1], columns[0] == "bin");
+        else
+            throw std::runtime_error("unknown inpkg metadata row");
     }
     if (result.name.empty()) throw std::runtime_error("missing inpkg metadata");
     return result;
@@ -148,7 +157,8 @@ void copy(const fs::path& source, const fs::path& destination) {
         fs::copy_file(source, temporary);
         fs::rename(temporary, destination);
     } catch (...) {
-        if (fs::is_regular_file(temporary) && !fs::is_symlink(temporary)) fs::remove(temporary);
+        if (fs::is_regular_file(temporary) && !fs::is_symlink(temporary))
+            fs::remove(temporary);
         throw;
     }
 }
@@ -158,7 +168,8 @@ int main(int argc, char** argv) {
         if (argc < 2)
             throw std::runtime_error(
                 "usage: osinfo-host "
-                "prepare|generate|sdk|layout|deploy|audit|image|input|accounts [options]");
+                "prepare|generate|sdk|layout|deploy|audit|image|input|accounts "
+                "[options]");
         host::Context context;
         for (int i = 2; i < argc; ++i) {
             std::string key = argv[i];
@@ -179,17 +190,18 @@ int main(int argc, char** argv) {
             else if (key == "--argument")
                 context.argument = value;
             else if (key == "--clicks") {
-                size_t used = 0;
+                size_t used      = 0;
                 const auto count = std::stoul(value, &used);
                 if (used != value.size() || count == 0 || count > 100000)
                     throw std::runtime_error("clicks must be 1..100000");
                 context.clicks = static_cast<unsigned>(count);
-            }
-            else if (key == "--pattern") {
-                if (value != "stationary" && value != "windows" && value != "pressure") throw std::runtime_error("pattern must be stationary, windows or pressure");
+            } else if (key == "--pattern") {
+                if (value != "stationary" && value != "windows" &&
+                    value != "pressure")
+                    throw std::runtime_error(
+                        "pattern must be stationary, windows or pressure");
                 context.pattern = value;
-            }
-            else
+            } else
                 throw std::runtime_error("unknown option " + key);
         }
         std::string command = argv[1];

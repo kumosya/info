@@ -1,12 +1,12 @@
 #include <fcntl.h>
 
-#include <os/task.h>
 #include "service/common/kernel-requests.h"
 #include "service/common/queries.h"
 #include "service/common/records.h"
 #include "service/common/requests.h"
 #include "service/common/runtime.h"
 #include "service/fs/server.h"
+#include <os/task.h>
 
 namespace vfs::server {
 namespace {

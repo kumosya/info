@@ -1,7 +1,6 @@
 #ifndef _POSIX_SYS_STAT_H
 #define _POSIX_SYS_STAT_H
 
-
 #include <time.h>
 
 #include <sys/types.h>
@@ -14,9 +13,9 @@
 #define S_IFIFO 0010000
 #define S_IFLNK 0120000
 #define S_IFSOCK 0140000
-#define S_ISFIFO(mode) (((mode)&S_IFMT)==S_IFIFO)
-#define S_ISLNK(mode) (((mode)&S_IFMT)==S_IFLNK)
-#define S_ISSOCK(mode) (((mode)&S_IFMT)==S_IFSOCK)
+#define S_ISFIFO(mode) (((mode) & S_IFMT) == S_IFIFO)
+#define S_ISLNK(mode) (((mode) & S_IFMT) == S_IFLNK)
+#define S_ISSOCK(mode) (((mode) & S_IFMT) == S_IFSOCK)
 #define S_ISUID 04000
 #define S_ISGID 02000
 #define S_ISVTX 01000
@@ -80,14 +79,14 @@ int utimensat(int directory, const char* path, const struct timespec times[2],
 #ifdef __cplusplus
 extern "C" {
 #endif
-int fchmodat(int, const char *, mode_t, int);
-int futimens(int, const struct timespec [2]);
-int lstat(const char *__restrict, struct stat *__restrict);
-int mkdirat(int, const char *, mode_t);
-int mkfifo(const char *, mode_t);
-int mkfifoat(int, const char *, mode_t);
-int mknod(const char *, mode_t, dev_t);
-int mknodat(int, const char *, mode_t, dev_t);
+int fchmodat(int, const char*, mode_t, int);
+int futimens(int, const struct timespec[2]);
+int lstat(const char* __restrict, struct stat* __restrict);
+int mkdirat(int, const char*, mode_t);
+int mkfifo(const char*, mode_t);
+int mkfifoat(int, const char*, mode_t);
+int mknod(const char*, mode_t, dev_t);
+int mknodat(int, const char*, mode_t, dev_t);
 mode_t umask(mode_t);
 #ifdef __cplusplus
 }

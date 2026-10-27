@@ -19,7 +19,7 @@ struct Context {
     fs::path repository = fs::current_path(), build = "build",
              packages = "packages", objects = "obj", root, output, image;
     std::string argument;
-    unsigned clicks = 100;
+    unsigned clicks     = 100;
     std::string pattern = "stationary";
     std::string expand(std::string value) const;
 };

@@ -54,7 +54,8 @@ class Fat32FileSystem final : public vfs::FileSystem {
                        size_t capacity);
     bool findFreeEntry(uint32_t directoryCluster, uint32_t& sector,
                        uint16_t& offset);
-    bool findFreeEntries(uint32_t directoryCluster, uint32_t count, uint32_t& index);
+    bool findFreeEntries(uint32_t directoryCluster, uint32_t count,
+                         uint32_t& index);
     bool releaseChain(uint32_t first);
     bool directoryLocation(uint32_t directoryCluster, uint32_t index,
                            uint32_t& sector, uint16_t& offset);
@@ -81,8 +82,9 @@ class Fat32FileSystem final : public vfs::FileSystem {
 
 namespace vfs::fat {
 class Probe {
- public:
+   public:
     bool detect(const uint8_t* data, size_t size);
-    uint64_t blockOffset(uint32_t cluster, uint32_t sectorsPerCluster, uint32_t firstDataSector, uint32_t bytesPerSector);
+    uint64_t blockOffset(uint32_t cluster, uint32_t sectorsPerCluster,
+                         uint32_t firstDataSector, uint32_t bytesPerSector);
 };
-}
+}  // namespace vfs::fat

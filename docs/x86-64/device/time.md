@@ -1,73 +1,39 @@
-# 时间支持（src/kernel/device/time.cc）
+# 时间与时钟
 
-本文档描述 `src/kernel/device/time.cc` 的实现：TSC 频率探测、RTC 墙钟读取与单调/墙钟时间接口。对应头文件 `include/kernel/time.h`。
+实现位于 `src/kernel/device/time/time.cc`，声明在 `include/kernel/time.h`，命名空间为 `kernel::time`。Clock 保存 TSC 频率、启动 TSC、RTC 墙钟基准、上一次单调时间的原子值和 RTC 锁。`clock()` 返回共用时钟对象。
 
-## 1. 接口
+## 初始化与时间来源
 
-所有函数位于 `namespace kernel::time`：
+`initClock()` 调用 `Clock::init()`。初始化要求 CPU 支持 TSC，先确定频率，再记录启动计数并读取 RTC 作为墙钟基准。TSC 不存在或频率探测失败会输出诊断并停止启动。
 
-```cpp
-namespace kernel::time {
+频率优先使用 CPUID 0x15 的晶振频率与分子、分母计算；不具备有效数据时尝试 0x16 的基础 MHz，再回退到 PIT 通道 2 约 10 ms 的校准。`calibrateTscWithPit()` 保存并恢复控制端口，轮询有次数上限，校准失败返回零。
 
-void init();
-uint64_t getMonotonicTime();      // 单调时钟，纳秒
-uint64_t getWallClockTime();      // 墙钟（Unix epoch 起），纳秒
-uint64_t getClockResolution();    // 时钟分辨率，纳秒
-uint64_t milliseconds2Nanoseconds(uint64_t milliseconds);
-uint64_t microseconds2Nanoseconds(uint64_t microseconds);
-uint64_t getCpuRuntime(const Thread* thread);
-bool deadlineReached(uint64_t now, uint64_t deadline);
+内部 `readTsc()` 使用 lfence 后接 rdtsc 读取计数，使读数与此前指令顺序更明确。`Clock::scaleTsc(cycles)` 将计数按整秒和余数换算为纳秒，避免把整个累计计数直接乘以十亿。
 
-}  // namespace kernel::time
-```
+## RTC 墙钟基准
 
-## 2. 时钟源
+`Clock::readWallClockSeconds()` 在关闭本地中断并持 RTC 锁后访问 CMOS 索引和数据端口。它等待 RTC 更新标志清除，读取秒、分、时、日、月、年，并根据状态寄存器处理 BCD 和 12 小时制，最后换算为 Unix 秒。
 
-单调时钟基于 **TSC**（`lfence; rdtsc` 序列化读取）。`init()` 要求 CPU 具备 TSC 特性，否则停机。
+`fromBcd(value)` 处理十进制编码，`isLeapYear(year)` 和 `daysBeforeYear(year)` 处理日历换算。当前年份按 2000 加两位年份解释，没有读取世纪寄存器；等待 RTC 更新结束也没有独立超时。实现不能被描述为适用于任意世纪或异常 RTC 的完整日历驱动。
 
-### TSC 频率探测（三级回退）
+RTC 只在初始化时取得墙钟基准；之后读取墙钟使用单调时间增量，不会每次重新访问 RTC。
 
-1. **CPUID leaf 0x15**（TSC/晶振比）：`crystalFrequency * numerator / denominator`。
-2. **CPUID leaf 0x16**（处理器基频）：`baseMegahertz * 1,000,000`。
-3. **PIT 校准**（`calibrateTscWithPit`）：用 PIT 通道 2（端口 0x42/0x43，门控端口 0x61）计时约 10 ms（计数值 11932），测量 TSC 增量后 ×100 得每秒频率。超时返回 0。
+## 公共函数
 
-频率为 0 则停机。日志区分 `invariant TSC`（CPUID 0x80000007 EDX bit 8）与 calibrated TSC。
+| 函数 | 作用与参数 |
+| --- | --- |
+| `Clock::getMonotonicTime()`、`getMonotonicTime()` | 返回从启动基准开始的纳秒数，以原子最大值防止返回值倒退。 |
+| `Clock::getWallClockTime()`、`getWallClockTime()` | 返回墙钟基准加单调增量，溢出时饱和为最大值。 |
+| `Clock::getClockResolution()`、`getClockResolution()` | 返回由 TSC 频率推算的纳秒分辨率，最小为 1 ns。 |
+| `milliseconds2Nanoseconds(milliseconds)` | 毫秒到纳秒的饱和转换。 |
+| `microseconds2Nanoseconds(microseconds)` | 微秒到纳秒的饱和转换。 |
+| `getCpuRuntime(thread)` | 读取线程累计运行纳秒，空指针返回零。 |
+| `deadlineReached(now, deadline)` | 用有符号差值比较当前时刻与截止时刻，要求两者差值处于可判定的半个计数范围内。 |
 
-### 墙钟基准（RTC）
+Clock 成员与同名独立函数使用同一对象，不是两套时钟。原子最大值能避免观察到时间倒退，但不证明不同 CPU 的硬件 TSC 完全同步；落后的读数可能暂时返回此前较大的值。
 
-启动时通过 CMOS RTC（端口 0x70/0x71，读时禁 NMI）读取一次墙钟：
+分辨率是计数换算粒度，不是线程调度周期，也不是定时唤醒精度。deadlineReached 只做判断，不登记定时器；实际超时必须由调度器或相应等待队列处理。
 
-- 等待更新中标志（寄存器 0x0a bit 7）清零；
-- 读秒/分/时/日/月/年（寄存器 0x00/0x02/0x04/0x07/0x08/0x09）与状态寄存器 0x0b；
-- 非二进制模式做 BCD 转换；12 小时制转 24 小时制；
-- 年份按 `2000 + year` 解释；按闰年规则累加天数，换算为 Unix epoch 秒数。
+## 与调度和系统服务的关系
 
-结果存入 `wall_clock_base_nanoseconds`，此后墙钟 = 基准 + 单调时间。
-
-## 3. 时间计算
-
-- `scaleTsc(cycles)`：先整除得秒，余数用 `remainder * 1e9 / tsc_frequency` 计算，避免溢出。
-- `getMonotonicTime`：`scaleTsc(readTsc() - boot_tsc)`；用原子 CAS 循环（`last_monotonic_nanoseconds`）保证全局返回值单调不减，返回 `max(current, previous)`。
-- `getWallClockTime`：`wall_clock_base_nanoseconds + getMonotonicTime()`，溢出饱和到 `~0ULL`。
-- `getClockResolution`：`tsc_frequency >= 1e9` 时为 1 ns，否则 `ceil(1e9 / tsc_frequency)`。
-- `milliseconds2Nanoseconds`/`microseconds2Nanoseconds`：带溢出饱和。
-- `getCpuRuntime(thread)`：返回 `thread->getRuntime()`（调度器累计的实际运行纳秒数）。
-- `deadlineReached(now, deadline)`：以有符号差值判断 `(int64_t)(now - deadline) >= 0`，安全处理回绕。睡眠唤醒（`schedulerTick`）使用此函数。
-
-## 4. 内部变量
-
-匿名命名空间中的静态变量使用 snake_case：
-
-| 变量名 | 类型 | 说明 |
-|---|---|---|
-| `tsc_frequency` | `uint64_t` | TSC 每秒频率 |
-| `boot_tsc` | `uint64_t` | 启动时 TSC 基准值 |
-| `wall_clock_base_nanoseconds` | `uint64_t` | RTC 墙钟基准（纳秒） |
-| `last_monotonic_nanoseconds` | `Atomic<uint64_t>` | 单调时钟 CAS 保护 |
-| `rtc_lock` | `SpinLock` | RTC 寄存器访问锁 |
-
-## 5. 使用者
-
-- 调度器：运行队列时钟、vruntime 计算、睡眠截止时间（见 [task.md](../task/task.md)）。
-- 系统调用：GetMonotonicTime（61）、GetWallClockTime（62）、GetClockResolution（63）（见 [syscall.md](../task/syscall.md)）。
-- POSIX 时间函数由 libc 使用相同的 OS 系统调用接口实现。
+调度器使用单调时间结算运行时长、管理睡眠和 IPC 截止时间。system.kernel 提供用户态读取的桥接入口，见[系统信息服务](../task/sys.md)。这里没有设置系统时间、NTP 校时、时区管理或通用定时器对象。

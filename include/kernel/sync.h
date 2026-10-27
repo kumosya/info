@@ -2,9 +2,72 @@
 
 #include <cstdint>
 
-#include "kernel/spinlock.h"
+#include "kernel/cpu.h"
 
-namespace kernel {
+namespace kernel::task {
+
+class SpinLock {
+   public:
+    constexpr SpinLock()                 = default;
+    SpinLock(const SpinLock&)            = delete;
+    SpinLock& operator=(const SpinLock&) = delete;
+
+    void init() { locked_ = 0; }
+
+    void lock() {
+        while (__atomic_test_and_set(&locked_, __ATOMIC_ACQUIRE)) {
+            asm volatile("pause");
+        }
+    }
+
+    void unlock() { __atomic_clear(&locked_, __ATOMIC_RELEASE); }
+
+    bool tryLock() {
+        return !__atomic_test_and_set(&locked_, __ATOMIC_ACQUIRE);
+    }
+
+   private:
+    uint8_t locked_ = 0;
+};
+
+class InterruptSpinLockGuard {
+   public:
+    explicit InterruptSpinLockGuard(SpinLock& lock)
+        : lock_(lock), interruptFlags_(cpu::disableInterrupts()) {
+        lock_.lock();
+    }
+
+    ~InterruptSpinLockGuard() {
+        lock_.unlock();
+        cpu::restoreInterrupts(interruptFlags_);
+    }
+
+    InterruptSpinLockGuard(const InterruptSpinLockGuard&)            = delete;
+    InterruptSpinLockGuard& operator=(const InterruptSpinLockGuard&) = delete;
+
+   private:
+    SpinLock& lock_;
+    uint64_t interruptFlags_;
+};
+
+class PreemptionSpinLockGuard {
+   public:
+    explicit PreemptionSpinLockGuard(SpinLock& lock) : lock_(lock) {
+        cpu::disablePreemption();
+        lock_.lock();
+    }
+
+    ~PreemptionSpinLockGuard() {
+        lock_.unlock();
+        cpu::enablePreemption();
+    }
+
+    PreemptionSpinLockGuard(const PreemptionSpinLockGuard&)            = delete;
+    PreemptionSpinLockGuard& operator=(const PreemptionSpinLockGuard&) = delete;
+
+   private:
+    SpinLock& lock_;
+};
 
 class Thread;
 
@@ -63,11 +126,9 @@ class Once {
     Thread* waitersTail_ = nullptr;
 };
 
-namespace sync {
 void runSynchronizationSelfTest();
 
 int waitOnUserAddress(volatile uint32_t* address, uint32_t expected);
 uint32_t wakeUserAddress(volatile uint32_t* address, uint32_t count);
 
-}  // namespace sync
-}  // namespace kernel
+}  // namespace kernel::task

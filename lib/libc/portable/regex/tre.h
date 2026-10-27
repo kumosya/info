@@ -34,7 +34,7 @@
 #include <wchar.h>
 #include <wctype.h>
 
-#undef  TRE_MBSTATE
+#undef TRE_MBSTATE
 
 #define NDEBUG
 
@@ -43,9 +43,11 @@ typedef int reg_errcode_t;
 
 typedef wchar_t tre_char_t;
 
-#define DPRINT(msg) do { } while(0)
+#define DPRINT(msg) \
+    do {            \
+    } while (0)
 
-#define elementsof(x)	( sizeof(x) / sizeof(x[0]) )
+#define elementsof(x) (sizeof(x) / sizeof(x[0]))
 
 #define tre_mbrtowc(pwc, s, n, ps) (mbtowc((pwc), (s), (n)))
 
@@ -68,19 +70,19 @@ typedef wint_t tre_cint_t;
 
 #define tre_tolower towlower
 #define tre_toupper towupper
-#define tre_strlen  wcslen
+#define tre_strlen wcslen
 
 /* Use system provided iswctype() and wctype(). */
 typedef wctype_t tre_ctype_t;
 #define tre_isctype iswctype
-#define tre_ctype   wctype
+#define tre_ctype wctype
 
 /* Returns number of bytes to add to (char *)ptr to make it
    properly aligned for the type. */
-#define ALIGN(ptr, type) \
-  ((((long)ptr) % sizeof(type)) \
-   ? (sizeof(type) - (((long)ptr) % sizeof(type))) \
-   : 0)
+#define ALIGN(ptr, type)                                 \
+    ((((long)ptr) % sizeof(type))                        \
+         ? (sizeof(type) - (((long)ptr) % sizeof(type))) \
+         : 0)
 
 #undef MAX
 #undef MIN
@@ -92,82 +94,77 @@ typedef wctype_t tre_ctype_t;
 typedef struct tnfa_transition tre_tnfa_transition_t;
 
 struct tnfa_transition {
-  /* Range of accepted characters. */
-  tre_cint_t code_min;
-  tre_cint_t code_max;
-  /* Pointer to the destination state. */
-  tre_tnfa_transition_t *state;
-  /* ID number of the destination state. */
-  int state_id;
-  /* -1 terminated array of tags (or NULL). */
-  int *tags;
-  /* Assertion bitmap. */
-  int assertions;
-  /* Assertion parameters. */
-  union {
-    /* Character class assertion. */
-    tre_ctype_t class;
-    /* Back reference assertion. */
-    int backref;
-  } u;
-  /* Negative character class assertions. */
-  tre_ctype_t *neg_classes;
+    /* Range of accepted characters. */
+    tre_cint_t code_min;
+    tre_cint_t code_max;
+    /* Pointer to the destination state. */
+    tre_tnfa_transition_t *state;
+    /* ID number of the destination state. */
+    int state_id;
+    /* -1 terminated array of tags (or NULL). */
+    int *tags;
+    /* Assertion bitmap. */
+    int assertions;
+    /* Assertion parameters. */
+    union {
+        /* Character class assertion. */
+        tre_ctype_t class;
+        /* Back reference assertion. */
+        int backref;
+    } u;
+    /* Negative character class assertions. */
+    tre_ctype_t *neg_classes;
 };
 
-
 /* Assertions. */
-#define ASSERT_AT_BOL		  1   /* Beginning of line. */
-#define ASSERT_AT_EOL		  2   /* End of line. */
-#define ASSERT_CHAR_CLASS	  4   /* Character class in `class'. */
-#define ASSERT_CHAR_CLASS_NEG	  8   /* Character classes in `neg_classes'. */
-#define ASSERT_AT_BOW		 16   /* Beginning of word. */
-#define ASSERT_AT_EOW		 32   /* End of word. */
-#define ASSERT_AT_WB		 64   /* Word boundary. */
-#define ASSERT_AT_WB_NEG	128   /* Not a word boundary. */
-#define ASSERT_BACKREF		256   /* A back reference in `backref'. */
-#define ASSERT_LAST		256
+#define ASSERT_AT_BOL 1         /* Beginning of line. */
+#define ASSERT_AT_EOL 2         /* End of line. */
+#define ASSERT_CHAR_CLASS 4     /* Character class in `class'. */
+#define ASSERT_CHAR_CLASS_NEG 8 /* Character classes in `neg_classes'. */
+#define ASSERT_AT_BOW 16        /* Beginning of word. */
+#define ASSERT_AT_EOW 32        /* End of word. */
+#define ASSERT_AT_WB 64         /* Word boundary. */
+#define ASSERT_AT_WB_NEG 128    /* Not a word boundary. */
+#define ASSERT_BACKREF 256      /* A back reference in `backref'. */
+#define ASSERT_LAST 256
 
 /* Tag directions. */
-typedef enum {
-  TRE_TAG_MINIMIZE = 0,
-  TRE_TAG_MAXIMIZE = 1
-} tre_tag_direction_t;
+typedef enum { TRE_TAG_MINIMIZE = 0, TRE_TAG_MAXIMIZE = 1 } tre_tag_direction_t;
 
 /* Instructions to compute submatch register values from tag values
    after a successful match.  */
 struct tre_submatch_data {
-  /* Tag that gives the value for rm_so (submatch start offset). */
-  int so_tag;
-  /* Tag that gives the value for rm_eo (submatch end offset). */
-  int eo_tag;
-  /* List of submatches this submatch is contained in. */
-  int *parents;
+    /* Tag that gives the value for rm_so (submatch start offset). */
+    int so_tag;
+    /* Tag that gives the value for rm_eo (submatch end offset). */
+    int eo_tag;
+    /* List of submatches this submatch is contained in. */
+    int *parents;
 };
 
 typedef struct tre_submatch_data tre_submatch_data_t;
-
 
 /* TNFA definition. */
 typedef struct tnfa tre_tnfa_t;
 
 struct tnfa {
-  tre_tnfa_transition_t *transitions;
-  unsigned int num_transitions;
-  tre_tnfa_transition_t *initial;
-  tre_tnfa_transition_t *final;
-  tre_submatch_data_t *submatch_data;
-  char *firstpos_chars;
-  int first_char;
-  unsigned int num_submatches;
-  tre_tag_direction_t *tag_directions;
-  int *minimal_tags;
-  int num_tags;
-  int num_minimals;
-  int end_tag;
-  int num_states;
-  int cflags;
-  int have_backrefs;
-  int have_approx;
+    tre_tnfa_transition_t *transitions;
+    unsigned int num_transitions;
+    tre_tnfa_transition_t *initial;
+    tre_tnfa_transition_t *final;
+    tre_submatch_data_t *submatch_data;
+    char *firstpos_chars;
+    int first_char;
+    unsigned int num_submatches;
+    tre_tag_direction_t *tag_directions;
+    int *minimal_tags;
+    int num_tags;
+    int num_minimals;
+    int end_tag;
+    int num_states;
+    int cflags;
+    int have_backrefs;
+    int have_approx;
 };
 
 /* from tre-mem.h: */
@@ -175,29 +172,29 @@ struct tnfa {
 #define TRE_MEM_BLOCK_SIZE 1024
 
 typedef struct tre_list {
-  void *data;
-  struct tre_list *next;
+    void *data;
+    struct tre_list *next;
 } tre_list_t;
 
 typedef struct tre_mem_struct {
-  tre_list_t *blocks;
-  tre_list_t *current;
-  char *ptr;
-  size_t n;
-  int failed;
-  void **provided;
+    tre_list_t *blocks;
+    tre_list_t *current;
+    char *ptr;
+    size_t n;
+    int failed;
+    void **provided;
 } *tre_mem_t;
 
-#define tre_mem_new_impl   __tre_mem_new_impl
+#define tre_mem_new_impl __tre_mem_new_impl
 #define tre_mem_alloc_impl __tre_mem_alloc_impl
-#define tre_mem_destroy    __tre_mem_destroy
+#define tre_mem_destroy __tre_mem_destroy
 
 hidden tre_mem_t tre_mem_new_impl(int provided, void *provided_block);
-hidden void *tre_mem_alloc_impl(tre_mem_t mem, int provided, void *provided_block,
-                                int zero, size_t size);
+hidden void *tre_mem_alloc_impl(tre_mem_t mem, int provided,
+                                void *provided_block, int zero, size_t size);
 
 /* Returns a new memory allocator or NULL if out of memory. */
-#define tre_mem_new()  tre_mem_new_impl(0, NULL)
+#define tre_mem_new() tre_mem_new_impl(0, NULL)
 
 /* Allocates a block of `size' bytes from `mem'.  Returns a pointer to the
    allocated block or NULL if an underlying malloc() failed. */
@@ -213,14 +210,14 @@ hidden void *tre_mem_alloc_impl(tre_mem_t mem, int provided, void *provided_bloc
    instead of malloc(). */
 
 #define tre_mem_newa() \
-  tre_mem_new_impl(1, alloca(sizeof(struct tre_mem_struct)))
+    tre_mem_new_impl(1, alloca(sizeof(struct tre_mem_struct)))
 
-#define tre_mem_alloca(mem, size)					      \
-  ((mem)->n >= (size)							      \
-   ? tre_mem_alloc_impl((mem), 1, NULL, 0, (size))			      \
-   : tre_mem_alloc_impl((mem), 1, alloca(TRE_MEM_BLOCK_SIZE), 0, (size)))
+#define tre_mem_alloca(mem, size)                                      \
+    ((mem)->n >= (size)                                                \
+         ? tre_mem_alloc_impl((mem), 1, NULL, 0, (size))               \
+         : tre_mem_alloc_impl((mem), 1, alloca(TRE_MEM_BLOCK_SIZE), 0, \
+                              (size)))
 #endif /* TRE_USE_ALLOCA */
-
 
 /* Frees the memory allocator and all memory allocated with it. */
 hidden void tre_mem_destroy(tre_mem_t mem);
@@ -229,4 +226,3 @@ hidden void tre_mem_destroy(tre_mem_t mem);
 #define xcalloc calloc
 #define xfree free
 #define xrealloc realloc
-

@@ -1,21 +1,23 @@
-#include "service/common/runtime.h"
 #include "service/common/kernel-requests.h"
 #include "service/common/requests.h"
+#include "service/common/runtime.h"
 #include "service/fs/server.h"
 #include "service/fs/sysfs/filesystem.h"
 
 namespace vfs::server {
 namespace {
 class MountPolicy {
- public:
+   public:
     static bool typeMatches(const MountSpec& spec, const DeviceRecord& device);
     static bool bounded(const char* text, size_t length);
     static void failure(const char* text, const char* source);
 };
 
-bool MountPolicy::typeMatches(const MountSpec& spec, const DeviceRecord& device) {
+bool MountPolicy::typeMatches(const MountSpec& spec,
+                              const DeviceRecord& device) {
     return os::Runtime::stringsEqual(spec.type, "auto") ||
-           os::Runtime::stringsEqual(spec.type, FormatProbe().formatName(device.format));
+           os::Runtime::stringsEqual(spec.type,
+                                     FormatProbe().formatName(device.format));
 }
 bool MountPolicy::bounded(const char* text, size_t length) {
     for (size_t i = 0; i < length; ++i)
@@ -86,7 +88,8 @@ bool FsServer::init(uint64_t storageEndpoint, uint64_t deviceEndpoint) {
                     valid = false;
                     break;
                 }
-                if (!present || !os::Runtime::stringsEqual(spec.target, "/")) continue;
+                if (!present || !os::Runtime::stringsEqual(spec.target, "/"))
+                    continue;
                 if (root) {
                     valid = false;
                     break;
@@ -94,10 +97,11 @@ bool FsServer::init(uint64_t storageEndpoint, uint64_t deviceEndpoint) {
                 root               = true;
                 const int resolved = catalog_.resolve(spec.source);
                 if (resolved == DeviceCatalog::ambiguous)
-                    MountPolicy::failure("ambiguous root identifier", spec.source);
+                    MountPolicy::failure("ambiguous root identifier",
+                                         spec.source);
                 if (resolved != static_cast<int>(index) ||
-                    !MountPolicy::typeMatches(spec, record) || !spec.automatic ||
-                    !spec.required)
+                    !MountPolicy::typeMatches(spec, record) ||
+                    !spec.automatic || !spec.required)
                     valid = false;
             }
         }
@@ -106,7 +110,8 @@ bool FsServer::init(uint64_t storageEndpoint, uint64_t deviceEndpoint) {
             continue;
         }
         if (selected != os::maximumStorageDevices) {
-            MountPolicy::failure("multiple root filesystems match their fstab", "/");
+            MountPolicy::failure("multiple root filesystems match their fstab",
+                                 "/");
             FileSystemFactory::destroyFileSystem(candidate, type);
             return false;
         }
@@ -115,7 +120,8 @@ bool FsServer::init(uint64_t storageEndpoint, uint64_t deviceEndpoint) {
         os::Runtime::copyString(fstabText_, text, sizeof(fstabText_));
     }
     if (selected == os::maximumStorageDevices) {
-        MountPolicy::failure("no uniquely identified root filesystem", "/etc/fstab");
+        MountPolicy::failure("no uniquely identified root filesystem",
+                             "/etc/fstab");
         return false;
     }
     mountTable_[0].deviceIndex = selected;
@@ -151,7 +157,8 @@ bool FsServer::loadMountTable() {
         if (!Fstab::next(cursor, spec, present)) return false;
         if (!present) continue;
         if (PathText::startsWithPath(spec.target, "/dev")) return false;
-        const uint32_t index = os::Runtime::stringsEqual(spec.target, "/") ? 0 : next++;
+        const uint32_t index =
+            os::Runtime::stringsEqual(spec.target, "/") ? 0 : next++;
         if (index >= mountCapacity) return false;
         for (const MountEntry& prior : mountTable_)
             if (prior.configured &&
@@ -176,9 +183,9 @@ bool FsServer::attachMount(uint32_t index) {
     const int device  = catalog_.resolve(entry.spec.source);
     if (device < 0) {
         MountPolicy::failure(device == DeviceCatalog::ambiguous
-                    ? "ambiguous device identifier"
-                    : "device not found",
-                entry.spec.source);
+                                 ? "ambiguous device identifier"
+                                 : "device not found",
+                             entry.spec.source);
         return false;
     }
     const DeviceRecord& record = *catalog_.get(static_cast<uint32_t>(device));
@@ -194,7 +201,8 @@ bool FsServer::attachMount(uint32_t index) {
         return false;
     entry.deviceIndex = static_cast<uint32_t>(device);
     const char* type  = FormatProbe().formatName(record.format);
-    if (!fileSystems_[index]) fileSystems_[index] = FileSystemFactory::createFileSystem(type);
+    if (!fileSystems_[index])
+        fileSystems_[index] = FileSystemFactory::createFileSystem(type);
     if (!fileSystems_[index] || !fileSystems_[index]->mount(devices_[device]))
         return false;
     if (fileSystems_[index]->readOnly()) entry.spec.readOnly = true;
@@ -218,7 +226,8 @@ bool FsServer::mount(const os::IpcMessage& request) {
     const char* source = reinterpret_cast<const char*>(request.data);
     const char* target = source + 64;
     const char* type   = source + 128;
-    if (!MountPolicy::bounded(source, 64) || !MountPolicy::bounded(target, 64) || !MountPolicy::bounded(type, 16) ||
+    if (!MountPolicy::bounded(source, 64) ||
+        !MountPolicy::bounded(target, 64) || !MountPolicy::bounded(type, 16) ||
         target[0] != '/' || PathText::startsWithPath(target, "/dev") ||
         os::Runtime::stringsEqual(target, "/"))
         return false;
@@ -272,7 +281,8 @@ bool FsServer::mount(const os::IpcMessage& request) {
     }
     const bool attached = attachMount(slot);
     if (!attached && fresh) {
-        const char* actualType = FormatProbe().formatName(catalog_.get(device)->format);
+        const char* actualType =
+            FormatProbe().formatName(catalog_.get(device)->format);
         FileSystemFactory::destroyFileSystem(fileSystems_[slot], actualType);
         fileSystems_[slot] = nullptr;
         entry              = {};
@@ -322,13 +332,15 @@ void FsServer::listMount(uint32_t requested, os::IpcMessage& reply) const {
         const MountEntry& entry    = mountTable_[index];
         const DeviceRecord& device = *catalog_.get(entry.deviceIndex);
         char path[64]              = "/dev/";
-        os::Runtime::copyString(path + 5, device.identity.name, sizeof(path) - 5);
+        os::Runtime::copyString(path + 5, device.identity.name,
+                                sizeof(path) - 5);
         reply.data[0] = 0;
-        os::Runtime::copyString(reinterpret_cast<char*>(&reply.data[1]), path, 64);
+        os::Runtime::copyString(reinterpret_cast<char*>(&reply.data[1]), path,
+                                64);
         os::Runtime::copyString(reinterpret_cast<char*>(&reply.data[9]),
-                       entry.spec.target, 64);
+                                entry.spec.target, 64);
         os::Runtime::copyString(reinterpret_cast<char*>(&reply.data[17]),
-                       FormatProbe().formatName(device.format), 16);
+                                FormatProbe().formatName(device.format), 16);
         reply.data[19] = readOnly(static_cast<PathBackend>(index));
         reply.length   = 20;
         return;
@@ -338,13 +350,16 @@ void FsServer::listMount(uint32_t requested, os::IpcMessage& reply) const {
 
 PathBackend FsServer::pathBackend(const char* path) const {
     if (!path || path[0] != '/') return PathBackend::Invalid;
-    if (PathText::startsWithPath(path, "/sys") || PathText::startsWithPath(path, "/proc")) return PathBackend::Invalid;
+    if (PathText::startsWithPath(path, "/sys") ||
+        PathText::startsWithPath(path, "/proc"))
+        return PathBackend::Invalid;
     std::lock_guard<std::mutex> guard(mountStateLock_);
     PathBackend result = PathBackend::Root;
     size_t length      = 0;
     for (uint32_t index = 1; index < mountCapacity; ++index) {
         const MountEntry& entry = mountTable_[index];
-        if (entry.configured && PathText::startsWithPath(path, entry.spec.target)) {
+        if (entry.configured &&
+            PathText::startsWithPath(path, entry.spec.target)) {
             const size_t size = os::Runtime::stringLength(entry.spec.target);
             if (size > length) {
                 // An unmounted mountpoint exposes its directory on the parent
@@ -362,7 +377,8 @@ const char* FsServer::relativePath(const char* path,
                                    PathBackend backend) const {
     if (backend == PathBackend::Root) return path;
     const MountEntry* entry = mountEntry(backend);
-    if (!entry || !PathText::startsWithPath(path, entry->spec.target)) return path;
+    if (!entry || !PathText::startsWithPath(path, entry->spec.target))
+        return path;
     const char* relative = path + os::Runtime::stringLength(entry->spec.target);
     return *relative ? relative : "/";
 }

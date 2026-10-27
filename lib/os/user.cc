@@ -1,7 +1,6 @@
-#include <os/user.h>
-
 #include "service/common/runtime.h"
 #include "service/users/messages.h"
+#include <os/user.h>
 
 namespace os {
 namespace {

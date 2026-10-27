@@ -1,57 +1,86 @@
-#include "kernel/page.h"
-#include "kernel/task.h"
+/*
+ * Copyright (c) 2026, Kumosya
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * src/kernel/memory/virtual/operations.cc
+ * Checked user mapping, protection, unmapping, and split preparation.
+ */
+
 #include "kernel/mm.h"
+#include "kernel/page.h"
 #include "kernel/syscall.h"
-namespace kernel::memory {
+#include "kernel/task.h"
+
+namespace kernel::mm {
+
 namespace {
-constexpr uint64_t pageSize = 4096, maximumMapSize = 64ULL * 1024 * 1024, directMapBase = 0xffff800000000000ULL;
-uint64_t error(SyscallError value) { return static_cast<uint64_t>(static_cast<int64_t>(value)); }
-bool validUserRange(uint64_t address, uint64_t size) { return size && address >= 0x10000 && address + size > address && address + size <= 0x0000800000000000ULL; }
+// Eager mechanisms accept aligned ranges up to 64 MiB. User MM retains VMA,
+// file-backed and lazy-allocation policy above these PTE operations.
+constexpr uint64_t pageSize = 4096, maximumMapSize = 64ULL * 1024 * 1024,
+                   directMapBase = 0xffff800000000000ULL;
+// Native negative error encoded in the unsigned mechanism result.
+uint64_t error(::kernel::task::SyscallError value) {
+    return static_cast<uint64_t>(static_cast<int64_t>(value));
 }
-uint64_t MappingOperations::map(Task& target, uint64_t address, uint64_t size, uint64_t protection) {
-    kernel::Task* task = &target;
+// Reject empty, low-guard, wrapping or high-half extents before touching
+// tables.
+bool validUserRange(uint64_t address, uint64_t size) {
+    return size && address >= 0x10000 && address + size > address &&
+           address + size <= 0x0000800000000000ULL;
+}
+}  // namespace
+// Keep the target root stable, reject write+execute, then allocate/map eager
+// anonymous pages. Failure unwinds only this operation's installed prefix,
+// leaving occupied preexisting leaves untouched.
+uint64_t mapUserPages(::kernel::task::Task& target, uint64_t address,
+                      uint64_t size, uint64_t protection) {
+    kernel::task::Task* task = &target;
     if (task == nullptr || task == kernel::task::getIdle() ||
         (address & (pageSize - 1)) != 0 || (size & (pageSize - 1)) != 0 ||
         size > maximumMapSize || !validUserRange(address, size) ||
         (protection & ~3ULL) != 0) {
-        return error(kernel::SyscallError::InvalidArgument);
+        return error(kernel::task::SyscallError::InvalidArgument);
     }
     if ((protection & 3) == 3) {
-        return error(kernel::SyscallError::PermissionDenied);
+        return error(kernel::task::SyscallError::PermissionDenied);
     }
 
-    kernel::PreemptionSpinLockGuard addressGuard(task->addressSpace().lock());
-    if (!task->addressSpace().rootPhysicalAddress()) return error(kernel::SyscallError::NotFound);
-    uint64_t flags = kernel::pageUser;
+    kernel::task::PreemptionSpinLockGuard addressGuard(
+        task->addressSpace().lock());
+    if (!task->addressSpace().rootPhysicalAddress())
+        return error(kernel::task::SyscallError::NotFound);
+    uint64_t flags = pageUser;
     if ((protection & 1) != 0) {
-        flags |= kernel::pageWritable;
+        flags |= pageWritable;
     }
     if ((protection & 2) == 0) {
-        flags |= kernel::pageNoExecute;
+        flags |= pageNoExecute;
     }
 
     uint64_t mappedSize = 0;
     while (mappedSize < size) {
-        const uint64_t physicalAddress = kernel::memory::allocatePhysicalPage();
+        const uint64_t physicalAddress = allocatePhysicalPage();
         if (physicalAddress == 0 ||
-            !kernel::memory::mapPageInAddressSpace(
-                task->addressSpace().rootPhysicalAddress(),
-                address + mappedSize, physicalAddress, flags)) {
+            !mapPageInAddressSpace(task->addressSpace().rootPhysicalAddress(),
+                                   address + mappedSize, physicalAddress,
+                                   flags)) {
             if (physicalAddress != 0) {
-                kernel::memory::freePhysicalPage(physicalAddress);
+                freePhysicalPage(physicalAddress);
             }
+            // Unmap and finish shootdown before freeing each privately owned
+            // page, so remote stale translations cannot reach a frame after
+            // allocator reuse.
             while (mappedSize != 0) {
                 mappedSize -= pageSize;
-                const uint64_t physical =
-                    kernel::memory::getPhysicalAddressInAddressSpace(
-                        task->addressSpace().rootPhysicalAddress(),
-                        address + mappedSize);
-                kernel::memory::unmapPageInAddressSpace(
+                const uint64_t physical = getPhysicalAddressInAddressSpace(
                     task->addressSpace().rootPhysicalAddress(),
                     address + mappedSize);
-                kernel::memory::freePhysicalPage(physical & ~(pageSize - 1));
+                unmapPageInAddressSpace(
+                    task->addressSpace().rootPhysicalAddress(),
+                    address + mappedSize);
+                freePhysicalPage(physical & ~(pageSize - 1));
             }
-            return error(kernel::SyscallError::OutOfMemory);
+            return error(kernel::task::SyscallError::OutOfMemory);
         }
         uint8_t* page =
             reinterpret_cast<uint8_t*>(directMapBase + physicalAddress);
@@ -63,77 +92,101 @@ uint64_t MappingOperations::map(Task& target, uint64_t address, uint64_t size, u
     return address;
 }
 
-uint64_t MappingOperations::unmap(Task& target, uint64_t address, uint64_t size) {
-    kernel::Task* task = &target;
+// Preflight all leaves and reserve split records in both registries before any
+// destructive PTE edit. Ordinary backing releases pages; external backing
+// releases object references through the completed record updates.
+uint64_t unmapUserPages(::kernel::task::Task& target, uint64_t address,
+                        uint64_t size) {
+    kernel::task::Task* task = &target;
     if (task == nullptr || task == kernel::task::getIdle() ||
         (address & (pageSize - 1)) != 0 || (size & (pageSize - 1)) != 0 ||
         size > maximumMapSize || !validUserRange(address, size)) {
-        return error(kernel::SyscallError::InvalidArgument);
+        return error(kernel::task::SyscallError::InvalidArgument);
     }
-    kernel::PreemptionSpinLockGuard addressGuard(task->addressSpace().lock());
-    if (!task->addressSpace().rootPhysicalAddress()) return error(kernel::SyscallError::NotFound);
+    kernel::task::PreemptionSpinLockGuard addressGuard(
+        task->addressSpace().lock());
+    if (!task->addressSpace().rootPhysicalAddress())
+        return error(kernel::task::SyscallError::NotFound);
     for (uint64_t offset = 0; offset < size; offset += pageSize) {
-        uint64_t flags = 0;
-        const uint64_t physical =
-            kernel::memory::getPhysicalAddressInAddressSpace(
-                task->addressSpace().rootPhysicalAddress(), address + offset,
-                &flags);
-        if (physical == 0 || (flags & kernel::pageUser) == 0) {
-            return error(kernel::SyscallError::NotFound);
+        uint64_t flags          = 0;
+        const uint64_t physical = getPhysicalAddressInAddressSpace(
+            task->addressSpace().rootPhysicalAddress(), address + offset,
+            &flags);
+        if (physical == 0 || (flags & pageUser) == 0) {
+            return error(kernel::task::SyscallError::NotFound);
         }
     }
-    void* reservation = nullptr; void* sharedReservation = nullptr;
-    if (!SharedMemory::prepareUnmap(*task, address, size, sharedReservation)) return error(kernel::SyscallError::OutOfMemory);
-    if (!PageMappings::prepareUnmap(*task, address, size, reservation)) {
-        SharedMemory::cancelUnmap(sharedReservation); return error(kernel::SyscallError::OutOfMemory);
+    void* reservation       = nullptr;
+    void* sharedReservation = nullptr;
+    if (!sharedMemory().prepareUnmap(*task, address, size, sharedReservation))
+        return error(kernel::task::SyscallError::OutOfMemory);
+    // Cancel the already prepared shared split if page-object preparation
+    // fails; no PTE has changed yet, so both mappings and record state remain
+    // intact.
+    if (!maps().prepareUnmap(*task, address, size, reservation)) {
+        sharedMemory().cancelUnmap(sharedReservation);
+        return error(kernel::task::SyscallError::OutOfMemory);
     }
     for (uint64_t offset = 0; offset < size; offset += pageSize) {
-        uint64_t flags = 0;
-        const uint64_t physical =
-            kernel::memory::getPhysicalAddressInAddressSpace(
-                task->addressSpace().rootPhysicalAddress(), address + offset,
-                &flags);
-        kernel::memory::unmapPageInAddressSpace(
-            task->addressSpace().rootPhysicalAddress(), address + offset);
-        if ((flags & kernel::pageExternal) == 0) {
-            kernel::memory::freePhysicalPage(physical & ~(pageSize - 1));
+        uint64_t flags          = 0;
+        const uint64_t physical = getPhysicalAddressInAddressSpace(
+            task->addressSpace().rootPhysicalAddress(), address + offset,
+            &flags);
+        unmapPageInAddressSpace(task->addressSpace().rootPhysicalAddress(),
+                                address + offset);
+        if ((flags & pageExternal) == 0) {
+            freePhysicalPage(physical & ~(pageSize - 1));
         }
     }
-    PageMappings::completeUnmap(*task, address, size, reservation);
-    kernel::SharedMemory::releaseMapping(*task, address, size, sharedReservation);
+    // Commit whole removal, boundary trimming or middle splitting using
+    // prepared metadata. No post-removal allocation should now be needed for a
+    // split.
+    maps().completeUnmap(*task, address, size, reservation);
+    sharedMemory().releaseMapping(*task, address, size, sharedReservation);
     return 0;
 }
 
-uint64_t MappingOperations::protect(Task& target, uint64_t address, uint64_t size,
-                           uint64_t protection) {
-    kernel::Task* task = &target;
+// Check every leaf and original object permission ceiling before changing
+// PTEs. COW records cannot regain write through ordinary mprotect; trusted
+// pager resolution must establish writable backing first.
+uint64_t protectUserPages(::kernel::task::Task& target, uint64_t address,
+                          uint64_t size, uint64_t protection) {
+    kernel::task::Task* task = &target;
     if (task == nullptr || task == kernel::task::getIdle() ||
         (address & (pageSize - 1)) != 0 || (size & (pageSize - 1)) != 0 ||
         size > maximumMapSize || !validUserRange(address, size) ||
         (protection & ~3ULL) != 0 || (protection & 3) == 3) {
-        return error(kernel::SyscallError::InvalidArgument);
+        return error(kernel::task::SyscallError::InvalidArgument);
     }
-    kernel::PreemptionSpinLockGuard addressGuard(task->addressSpace().lock());
-    if (!task->addressSpace().rootPhysicalAddress()) return error(kernel::SyscallError::NotFound);
-    if (!kernel::SharedMemory::protectionAllowed(*task, address, size, protection) ||
-        !PageMappings::protectionAllowed(*task, address, size, protection)) {
-        return error(kernel::SyscallError::PermissionDenied);
+    kernel::task::PreemptionSpinLockGuard addressGuard(
+        task->addressSpace().lock());
+    if (!task->addressSpace().rootPhysicalAddress())
+        return error(kernel::task::SyscallError::NotFound);
+    if (!sharedMemory().protectionAllowed(*task, address, size, protection) ||
+        !maps().protectionAllowed(*task, address, size, protection)) {
+        return error(kernel::task::SyscallError::PermissionDenied);
     }
     for (uint64_t offset = 0; offset < size; offset += pageSize) {
         uint64_t existing = 0;
-        if (!kernel::memory::getPhysicalAddressInAddressSpace(task->addressSpace().rootPhysicalAddress(), address + offset, &existing) || !(existing & kernel::pageUser))
-            return error(kernel::SyscallError::NotFound);
+        if (!getPhysicalAddressInAddressSpace(
+                task->addressSpace().rootPhysicalAddress(), address + offset,
+                &existing) ||
+            !(existing & pageUser))
+            return error(kernel::task::SyscallError::NotFound);
     }
-    uint64_t flags = kernel::pageUser;
-    if ((protection & 1) != 0) flags |= kernel::pageWritable;
-    if ((protection & 2) == 0) flags |= kernel::pageNoExecute;
+    // Translate public write/execute into PTE bits; low-level protection
+    // retains physical ownership markers and hardware accessed/dirty state.
+    uint64_t flags = pageUser;
+    if ((protection & 1) != 0) flags |= pageWritable;
+    if ((protection & 2) == 0) flags |= pageNoExecute;
     for (uint64_t offset = 0; offset < size; offset += pageSize) {
-        if (!kernel::memory::protectPageInAddressSpace(
+        if (!protectPageInAddressSpace(
                 task->addressSpace().rootPhysicalAddress(), address + offset,
                 flags)) {
-            return error(kernel::SyscallError::InvalidArgument);
+            return error(kernel::task::SyscallError::InvalidArgument);
         }
     }
     return 0;
 }
-}  // namespace kernel::memory
+
+}  // namespace kernel::mm

@@ -1,9 +1,9 @@
 #ifndef _STDC_STDATOMIC_H
 #define _STDC_STDATOMIC_H
 
-#include <stdint.h>
-#include <stddef.h>
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 typedef enum {
     memory_order_relaxed = __ATOMIC_RELAXED,
@@ -53,10 +53,10 @@ typedef _Atomic(size_t) atomic_size_t;
 typedef _Atomic(ptrdiff_t) atomic_ptrdiff_t;
 typedef _Atomic(intmax_t) atomic_intmax_t;
 typedef _Atomic(uintmax_t) atomic_uintmax_t;
-#define __ATOMIC_INTEGER_TYPES(bits) \
-    typedef _Atomic(int_least##bits##_t) atomic_int_least##bits##_t; \
+#define __ATOMIC_INTEGER_TYPES(bits)                                   \
+    typedef _Atomic(int_least##bits##_t) atomic_int_least##bits##_t;   \
     typedef _Atomic(uint_least##bits##_t) atomic_uint_least##bits##_t; \
-    typedef _Atomic(int_fast##bits##_t) atomic_int_fast##bits##_t; \
+    typedef _Atomic(int_fast##bits##_t) atomic_int_fast##bits##_t;     \
     typedef _Atomic(uint_fast##bits##_t) atomic_uint_fast##bits##_t;
 __ATOMIC_INTEGER_TYPES(8)
 __ATOMIC_INTEGER_TYPES(16)
@@ -64,36 +64,53 @@ __ATOMIC_INTEGER_TYPES(32)
 __ATOMIC_INTEGER_TYPES(64)
 #undef __ATOMIC_INTEGER_TYPES
 
-typedef struct { atomic_bool value; } atomic_flag;
+typedef struct {
+    atomic_bool value;
+} atomic_flag;
 #define ATOMIC_FLAG_INIT {false}
-#define atomic_init(p,v) (*(p) = (v))
+#define atomic_init(p, v) (*(p) = (v))
 #define atomic_is_lock_free(p) __atomic_is_lock_free(sizeof(*(p)), (p))
-#define atomic_store_explicit(p,v,m) __atomic_store_n((p),(v),(m))
-#define atomic_store(p,v) atomic_store_explicit((p),(v),memory_order_seq_cst)
-#define atomic_load_explicit(p,m) __atomic_load_n((p),(m))
-#define atomic_load(p) atomic_load_explicit((p),memory_order_seq_cst)
-#define atomic_exchange_explicit(p,v,m) __atomic_exchange_n((p),(v),(m))
-#define atomic_exchange(p,v) atomic_exchange_explicit((p),(v),memory_order_seq_cst)
-#define atomic_compare_exchange_strong_explicit(p,e,v,s,f) __atomic_compare_exchange_n((p),(e),(v),false,(s),(f))
-#define atomic_compare_exchange_weak_explicit(p,e,v,s,f) __atomic_compare_exchange_n((p),(e),(v),true,(s),(f))
-#define atomic_compare_exchange_strong(p,e,v) atomic_compare_exchange_strong_explicit((p),(e),(v),memory_order_seq_cst,memory_order_seq_cst)
-#define atomic_compare_exchange_weak(p,e,v) atomic_compare_exchange_weak_explicit((p),(e),(v),memory_order_seq_cst,memory_order_seq_cst)
-#define atomic_fetch_add_explicit(p,v,m) __atomic_fetch_add((p),(v),(m))
-#define atomic_fetch_sub_explicit(p,v,m) __atomic_fetch_sub((p),(v),(m))
-#define atomic_fetch_or_explicit(p,v,m) __atomic_fetch_or((p),(v),(m))
-#define atomic_fetch_xor_explicit(p,v,m) __atomic_fetch_xor((p),(v),(m))
-#define atomic_fetch_and_explicit(p,v,m) __atomic_fetch_and((p),(v),(m))
-#define atomic_fetch_add(p,v) atomic_fetch_add_explicit((p),(v),memory_order_seq_cst)
-#define atomic_fetch_sub(p,v) atomic_fetch_sub_explicit((p),(v),memory_order_seq_cst)
-#define atomic_fetch_or(p,v) atomic_fetch_or_explicit((p),(v),memory_order_seq_cst)
-#define atomic_fetch_xor(p,v) atomic_fetch_xor_explicit((p),(v),memory_order_seq_cst)
-#define atomic_fetch_and(p,v) atomic_fetch_and_explicit((p),(v),memory_order_seq_cst)
+#define atomic_store_explicit(p, v, m) __atomic_store_n((p), (v), (m))
+#define atomic_store(p, v) atomic_store_explicit((p), (v), memory_order_seq_cst)
+#define atomic_load_explicit(p, m) __atomic_load_n((p), (m))
+#define atomic_load(p) atomic_load_explicit((p), memory_order_seq_cst)
+#define atomic_exchange_explicit(p, v, m) __atomic_exchange_n((p), (v), (m))
+#define atomic_exchange(p, v) \
+    atomic_exchange_explicit((p), (v), memory_order_seq_cst)
+#define atomic_compare_exchange_strong_explicit(p, e, v, s, f) \
+    __atomic_compare_exchange_n((p), (e), (v), false, (s), (f))
+#define atomic_compare_exchange_weak_explicit(p, e, v, s, f) \
+    __atomic_compare_exchange_n((p), (e), (v), true, (s), (f))
+#define atomic_compare_exchange_strong(p, e, v) \
+    atomic_compare_exchange_strong_explicit(    \
+        (p), (e), (v), memory_order_seq_cst, memory_order_seq_cst)
+#define atomic_compare_exchange_weak(p, e, v)                                  \
+    atomic_compare_exchange_weak_explicit((p), (e), (v), memory_order_seq_cst, \
+                                          memory_order_seq_cst)
+#define atomic_fetch_add_explicit(p, v, m) __atomic_fetch_add((p), (v), (m))
+#define atomic_fetch_sub_explicit(p, v, m) __atomic_fetch_sub((p), (v), (m))
+#define atomic_fetch_or_explicit(p, v, m) __atomic_fetch_or((p), (v), (m))
+#define atomic_fetch_xor_explicit(p, v, m) __atomic_fetch_xor((p), (v), (m))
+#define atomic_fetch_and_explicit(p, v, m) __atomic_fetch_and((p), (v), (m))
+#define atomic_fetch_add(p, v) \
+    atomic_fetch_add_explicit((p), (v), memory_order_seq_cst)
+#define atomic_fetch_sub(p, v) \
+    atomic_fetch_sub_explicit((p), (v), memory_order_seq_cst)
+#define atomic_fetch_or(p, v) \
+    atomic_fetch_or_explicit((p), (v), memory_order_seq_cst)
+#define atomic_fetch_xor(p, v) \
+    atomic_fetch_xor_explicit((p), (v), memory_order_seq_cst)
+#define atomic_fetch_and(p, v) \
+    atomic_fetch_and_explicit((p), (v), memory_order_seq_cst)
 #define atomic_thread_fence(m) __atomic_thread_fence(m)
 #define atomic_signal_fence(m) __atomic_signal_fence(m)
-#define atomic_flag_test_and_set_explicit(p,m) __atomic_test_and_set(&(p)->value,(m))
-#define atomic_flag_test_and_set(p) atomic_flag_test_and_set_explicit((p),memory_order_seq_cst)
-#define atomic_flag_clear_explicit(p,m) __atomic_clear(&(p)->value,(m))
-#define atomic_flag_clear(p) atomic_flag_clear_explicit((p),memory_order_seq_cst)
+#define atomic_flag_test_and_set_explicit(p, m) \
+    __atomic_test_and_set(&(p)->value, (m))
+#define atomic_flag_test_and_set(p) \
+    atomic_flag_test_and_set_explicit((p), memory_order_seq_cst)
+#define atomic_flag_clear_explicit(p, m) __atomic_clear(&(p)->value, (m))
+#define atomic_flag_clear(p) \
+    atomic_flag_clear_explicit((p), memory_order_seq_cst)
 
 #endif
 

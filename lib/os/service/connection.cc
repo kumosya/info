@@ -1,9 +1,9 @@
-#include <os/mm.h>
-#include <os/service.h>
 #include "service/common/kernel-requests.h"
 #include "service/common/queries.h"
 #include "service/common/requests.h"
 #include "service/common/runtime.h"
+#include <os/mm.h>
+#include <os/service.h>
 
 namespace os {
 bool Sys::Connection::connect(const char* name, uint64_t registry) {

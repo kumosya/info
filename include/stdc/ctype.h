@@ -1,7 +1,6 @@
 #ifndef _STDC_CTYPE_H
 #define _STDC_CTYPE_H
 
-
 #ifdef __cplusplus
 extern "C" {
 #endif

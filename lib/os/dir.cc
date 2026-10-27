@@ -1,17 +1,16 @@
-#include <os/dir.h>
-
+#include "service/common/kernel-requests.h"
+#include "service/common/queries.h"
+#include "service/common/records.h"
+#include "service/common/requests.h"
+#include "service/common/runtime.h"
 #include <os/device.h>
+#include <os/dir.h>
 #include <os/file.h>
 #include <os/ipc.h>
 #include <os/mm.h>
 #include <os/service.h>
 #include <os/task.h>
 #include <os/user.h>
-#include "service/common/kernel-requests.h"
-#include "service/common/queries.h"
-#include "service/common/records.h"
-#include "service/common/requests.h"
-#include "service/common/runtime.h"
 
 namespace os {
 Dir::Dir() = default;
@@ -286,7 +285,8 @@ Dir& Dir::operator=(Dir&& other) noexcept {
     return *this;
 }
 uint64_t Dir::service() {
-    if (!service_) service_ = detail::RegistryClient().lookup(fsServiceName, 1000);
+    if (!service_)
+        service_ = detail::RegistryClient().lookup(fsServiceName, 1000);
     return service_;
 }
 int Dir::open(const char* path) {

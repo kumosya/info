@@ -1,4 +1,3 @@
-#include <os/task.h>
 #include "service/common/kernel-requests.h"
 #include "service/common/queries.h"
 #include "service/common/records.h"
@@ -6,6 +5,7 @@
 #include "service/common/runtime.h"
 #include "service/fs/procfs/process_object.h"
 #include "service/fs/server.h"
+#include <os/task.h>
 
 namespace vfs::server {
 
@@ -458,9 +458,9 @@ void FsServer::descriptorStat(uint64_t ownerPid, uint64_t descriptor,
         const auto* device = catalog_.get(
             mountTable_[static_cast<uint32_t>(entry->mountIndex)].deviceIndex);
         if (device)
-            reply.data[11] =
-                os::Storage::Number(device->identity.major, device->identity.minor)
-                    .getValue();
+            reply.data[11] = os::Storage::Number(device->identity.major,
+                                                 device->identity.minor)
+                                 .getValue();
     }
     releaseDescription(entry);
 }
@@ -786,9 +786,9 @@ void FsServer::stat(const char* path, os::IpcMessage& reply, uint64_t caller) {
                 *catalog_.get(static_cast<uint32_t>(index));
             setStat(reply, os::File::Type::File,
                     devices_[index].sectorCount() * 512, 0x6000U | 0660);
-            reply.data[4] =
-                os::Storage::Number(device.identity.major, device.identity.minor)
-                    .getValue();
+            reply.data[4] = os::Storage::Number(device.identity.major,
+                                                device.identity.minor)
+                                .getValue();
             reply.data[11] = os::Storage::Number(0, 1).getValue();
             reply.data[12] = reply.data[4];
             reply.length   = 13;

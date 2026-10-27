@@ -11,10 +11,10 @@
 #define LOG2F_TABLE_BITS 4
 #define LOG2F_POLY_ORDER 4
 extern hidden const struct log2f_data {
-	struct {
-		double invc, logc;
-	} tab[1 << LOG2F_TABLE_BITS];
-	double poly[LOG2F_POLY_ORDER];
+    struct {
+        double invc, logc;
+    } tab[1 << LOG2F_TABLE_BITS];
+    double poly[LOG2F_POLY_ORDER];
 } __log2f_data;
 
 #endif

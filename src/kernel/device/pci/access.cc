@@ -1,15 +1,21 @@
-#include "service/common/records.h"
 #include "kernel/device.h"
-#include "kernel/spinlock.h"
+#include "kernel/pci.h"
+#include "kernel/sync.h"
+#include "service/common/records.h"
+
+namespace kernel::device {
+
 namespace {
-kernel::SpinLock pciLock;
-uint32_t pciAddress(const os::wire::PciFunctionInfo& function, uint16_t offset) {
+PciBus configurationBus;
+uint32_t pciAddress(const os::wire::PciFunctionInfo& function,
+                    uint16_t offset) {
     return 0x80000000U | (static_cast<uint32_t>(function.bus) << 16) |
            (static_cast<uint32_t>(function.device) << 11) |
            (static_cast<uint32_t>(function.function) << 8) | (offset & 0xfc);
 }
 
-uint32_t readConfigRaw(const os::wire::PciFunctionInfo& function, uint16_t offset) {
+uint32_t readConfigRaw(const os::wire::PciFunctionInfo& function,
+                       uint16_t offset) {
     const uint32_t address = pciAddress(function, offset);
     asm volatile("outl %0, %1" : : "a"(address), "Nd"(0xcf8));
     uint32_t value;
@@ -30,9 +36,10 @@ bool validFunction(const os::wire::PciFunctionInfo& function) {
 }
 
 }  // namespace
-namespace kernel::device {
-uint32_t PciAccess::enumerate(os::wire::PciFunctionInfo* functions,
-                              uint32_t capacity) {
+
+PciBus& pciBus() { return configurationBus; }
+uint32_t PciBus::enumerate(os::wire::PciFunctionInfo* functions,
+                           uint32_t capacity) {
     if (functions == nullptr || capacity == 0) {
         return 0;
     }
@@ -61,45 +68,45 @@ uint32_t PciAccess::enumerate(os::wire::PciFunctionInfo* functions,
                 read(probe, 8, classValue);
                 read(probe, 0x0c, header);
                 os::wire::PciFunctionInfo& result = functions[count++];
-                result                      = probe;
-                result.vendorId             = identity & 0xffff;
-                result.deviceId             = identity >> 16;
-                result.classCode            = classValue >> 24;
-                result.subclass             = classValue >> 16;
-                result.programmingInterface = classValue >> 8;
-                result.headerType           = header >> 16;
+                result                            = probe;
+                result.vendorId                   = identity & 0xffff;
+                result.deviceId                   = identity >> 16;
+                result.classCode                  = classValue >> 24;
+                result.subclass                   = classValue >> 16;
+                result.programmingInterface       = classValue >> 8;
+                result.headerType                 = header >> 16;
             }
         }
     }
     return count;
 }
 
-bool PciAccess::read(const os::wire::PciFunctionInfo& function, uint16_t offset,
-                     uint32_t& value) {
+bool PciBus::read(const os::wire::PciFunctionInfo& function, uint16_t offset,
+                  uint32_t& value) {
     if (!validFunction(function) || offset >= 256 || (offset & 3) != 0) {
         return false;
     }
-    InterruptSpinLockGuard guard(pciLock);
+    ::kernel::task::InterruptSpinLockGuard guard(lock_);
     value = readConfigRaw(function, offset);
     return true;
 }
 
-bool PciAccess::write(const os::wire::PciFunctionInfo& function, uint16_t offset,
-                      uint32_t value) {
+bool PciBus::write(const os::wire::PciFunctionInfo& function, uint16_t offset,
+                   uint32_t value) {
     if (!validFunction(function) || offset >= 256 || (offset & 3) != 0) {
         return false;
     }
-    InterruptSpinLockGuard guard(pciLock);
+    ::kernel::task::InterruptSpinLockGuard guard(lock_);
     writeConfigRaw(function, offset, value);
     return true;
 }
 
-bool PciAccess::getMemoryBar(const os::wire::PciFunctionInfo& function,
-                             uint8_t barIndex, uint64_t& base, uint64_t& size) {
+bool PciBus::getMemoryBar(const os::wire::PciFunctionInfo& function,
+                          uint8_t barIndex, uint64_t& base, uint64_t& size) {
     if (!validFunction(function) || barIndex >= 6) {
         return false;
     }
-    InterruptSpinLockGuard guard(pciLock);
+    ::kernel::task::InterruptSpinLockGuard guard(lock_);
     const uint16_t offset      = static_cast<uint16_t>(0x10 + barIndex * 4);
     const uint32_t originalLow = readConfigRaw(function, offset);
     if ((originalLow & 1) != 0) {

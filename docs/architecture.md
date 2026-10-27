@@ -4,6 +4,8 @@
 
 Ring0 只有基础内核机制及 task.kernel、pci.kernel、device.kernel、memory.kernel、system.kernel 等机制对象。Ring3 服务进程是不能直接操作 I/O 端口的，只会向对应 Ring0 进程发送 I/O 请求。
 
+## 结构
+
 ~~~mermaid
 flowchart TB
     subgraph R3["Ring 3 · 用户空间"]
@@ -117,3 +119,7 @@ flowchart LR
 普通磁盘程序通过 Ring3 `/lib/ld-osinfo-x86-64.so` 加载 `DT_NEEDED` 依赖。内核只验证、映射主 ELF 与 `PT_INTERP` 解释器；文件搜索、符号查找、重定位和共享库初始化不进入内核。文件系统可用之前的 boot 模块保留封闭的引导链接路径。开发环境 Info IDE 的仓库在 [这里](https://github.com/kumosya/infoide)。infoide 通过由 osinfo 导出的 SDK 交叉编译和打包。
 
 guiw 服务、osgui 库与图形界面的实现位于 [GUI Window](https://github.com/kumosya/guiw) 项目的 `server/`、`src/`；inpkg 位于 [这里](https://github.com/kumosya/inpkg)。
+
+## 相关架构的文档
+
+- [x86-64](x86-64/overview.md)

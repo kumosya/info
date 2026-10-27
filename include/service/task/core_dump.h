@@ -1,2 +1,4 @@
 #pragma once
-namespace taskCore { bool start(); }
+namespace taskCore {
+bool start();
+}

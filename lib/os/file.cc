@@ -1,13 +1,12 @@
-#include "service/common/queries.h"
-#include <os/file.h>
-
 #include <cerrno>
 #include <unistd.h>
 
-#include <os/console.h>
-#include <os/service.h>
+#include "service/common/queries.h"
 #include "service/common/requests.h"
 #include "service/common/runtime.h"
+#include <os/console.h>
+#include <os/file.h>
+#include <os/service.h>
 #include <sys/stat.h>
 namespace os {
 namespace {
@@ -630,7 +629,8 @@ const void* File::Opt::getData() const {
 Fs::Fs() = default;
 Fs::~Fs() { closeEndpoint(service_); }
 uint64_t Fs::service() {
-    if (!service_) service_ = detail::RegistryClient().lookup(fsServiceName, 1000);
+    if (!service_)
+        service_ = detail::RegistryClient().lookup(fsServiceName, 1000);
     return service_;
 }
 int Fs::open(const char* path, int flags, mode_t mode, File& file) {

@@ -1,10 +1,3 @@
-#include <os/device.h>
-#include <os/input.h>
-#include <os/ipc.h>
-#include <os/mm.h>
-#include <os/service.h>
-#include <os/sync.h>
-#include <os/task.h>
 #include "service/common/channel.h"
 #include "service/common/kernel-requests.h"
 #include "service/common/lifecycle.h"
@@ -12,6 +5,13 @@
 #include "service/common/records.h"
 #include "service/common/requests.h"
 #include "service/common/runtime.h"
+#include <os/device.h>
+#include <os/input.h>
+#include <os/ipc.h>
+#include <os/mm.h>
+#include <os/service.h>
+#include <os/sync.h>
+#include <os/task.h>
 
 namespace {
 
@@ -97,7 +97,8 @@ class InputQueue {
         if (taskId == 0 || wakeEndpoint == 0) {
             return false;
         }
-        const uint64_t identity = os::Ipc::Handle(wakeEndpoint, false).queryIdentity();
+        const uint64_t identity =
+            os::Ipc::Handle(wakeEndpoint, false).queryIdentity();
         if (!identity || static_cast<int64_t>(identity) < 0) return false;
         os::SpinLock::Guard guard(lock_);
         Subscriber* existing = findSubscriber(taskId);
@@ -577,8 +578,8 @@ class InputService {
         irqEndpoint_     = os::detail::EndpointControl().create();
         if (requestEndpoint_ == 0 || irqEndpoint_ == 0 || !controller_.init() ||
             !bindInputIrq(1) || !bindInputIrq(12) ||
-            !os::detail::RegistryClient(registry).registerName(os::inputServiceName,
-                                                        requestEndpoint_)) {
+            !os::detail::RegistryClient(registry).registerName(
+                os::inputServiceName, requestEndpoint_)) {
             return false;
         }
         mouse_.init(controller_.mousePacketSize());
@@ -588,9 +589,9 @@ class InputService {
     [[noreturn]] void run() {
         while (true) {
             os::IpcMessage request{};
-            if (os::receiveMessage(
-                    requestEndpoint_, request,
-                    os::Sys().readMonotonicTime() + 10000000) != 0) {
+            if (os::receiveMessage(requestEndpoint_, request,
+                                   os::Sys().readMonotonicTime() + 10000000) !=
+                0) {
                 notifySubscribers();
                 continue;
             }
@@ -649,7 +650,8 @@ class InputService {
                     static_cast<int64_t>(os::ErrorCode::InvalidArgument);
                 if (request.handleCount == 1) {
                     const uint64_t identity =
-                        os::Ipc::Handle(request.handles[0], false).queryIdentity();
+                        os::Ipc::Handle(request.handles[0], false)
+                            .queryIdentity();
                     if (identity && static_cast<int64_t>(identity) > 0) {
                         const uint64_t endpoint = queue_.removeSubscription(
                             request.senderPid, identity);
@@ -890,8 +892,8 @@ class DeviceApplication {
             return 1;
         const uint64_t endpoint = os::detail::EndpointControl().create();
         if (registry == 0 || endpoint == 0 ||
-            !os::detail::RegistryClient(registry).registerName(os::deviceServiceName,
-                                                        endpoint)) {
+            !os::detail::RegistryClient(registry).registerName(
+                os::deviceServiceName, endpoint)) {
             os::Sys().log("[DEVICE] registration failed\n");
             return 1;
         }
@@ -901,8 +903,7 @@ class DeviceApplication {
             os::Sys().log("[DEVICE] driver initialization failed\n");
             return 2;
         }
-        os::Sys().log(
-            "[DEVICE] PCI discovery and driver matching complete\n");
+        os::Sys().log("[DEVICE] PCI discovery and driver matching complete\n");
         os::Sys().log("[DEVICE] drivers entered Running state\n");
 
         constexpr uint64_t inputStackBase    = 0x0000000060000000ULL;
@@ -917,12 +918,10 @@ class DeviceApplication {
                              &inputService) == 0 ||
             os::createThread(inputIrqMain, inputIrqStackBase + inputStackSize,
                              &inputService) == 0) {
-            os::Sys().log(
-                "[INPUT] unable to start PS/2 input service\n");
+            os::Sys().log("[INPUT] unable to start PS/2 input service\n");
             return 3;
         }
-        os::Sys().log(
-            "[INPUT] PS/2 keyboard and mouse service online\n");
+        os::Sys().log("[INPUT] PS/2 keyboard and mouse service online\n");
 
         while (true) {
             os::IpcMessage request{};
