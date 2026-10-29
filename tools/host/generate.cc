@@ -120,7 +120,7 @@ void generate(const Context& context) {
     images << "};\n";
     images << "static constexpr const char* configuredRuntimeLibraries[] = {\n";
     for (const auto& row : table(context.build / "config/layout.conf"))
-        if ((row[0] == "runtime" || row[0] == "external-runtime"))
+        if (row[0] == "runtime")
             images << "    " << quote(row.at(2)) << ",\n";
     images << "};\nstatic constexpr uint32_t configuredRuntimeCount = "
               "sizeof(configuredRuntimeLibraries) / "
@@ -139,7 +139,7 @@ void generate(const Context& context) {
                     << quote(service[16]) << "},\n";
     startup << "};\n";
     for (const auto& row : table(context.build / "config/layout.conf"))
-        if ((row[0] == "runtime" || row[0] == "external-runtime")) {
+        if (row[0] == "runtime") {
             grub << "    module2 /boot/" << row.at(2) << ' ' << row[2] << '\n';
         }
     grub << "    boot\n}\n";

@@ -62,7 +62,7 @@ uint32_t getOnlineCpuCount();
 CpuDescriptor* getCpuDescriptor(uint32_t cpuId);
 CpuLocalData* getCpuLocalData(uint32_t cpuId);
 void requestRemoteReschedule(uint32_t cpuId);
-void requestTlbShootdown(uint64_t virtualAddress);
+void requestTlbShootdown(uint64_t virtualAddress, uint64_t size = 4096);
 
 extern "C" [[noreturn]] void applicationTaskorEntry(CpuLocalData* cpu);
 

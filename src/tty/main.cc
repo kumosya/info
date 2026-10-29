@@ -1,4 +1,6 @@
 #include <csignal>
+#include <cerrno>
+#include <devctl.h>
 
 #include "service/common/channel.h"
 #include "service/common/kernel-requests.h"
@@ -140,15 +142,17 @@ class TtyServer {
                         }
                     }
                 }
-                writeAll(state, state.masterServer, echo, echoLength);
-                writeAll(state, state.slaveServer, delivery, deliveryLength);
-                if (endOfFile)
-                    os::detail::PipeClient(state.slaveServer).signalEof();
+                // Job-control signals must not wait for space in the output
+                // pipe: a flooding foreground command may have filled it.
                 if (signalGroup)
                     os::detail::TaskControl().sendSignal(
                         static_cast<uint64_t>(
                             -static_cast<int64_t>(signalGroup)),
                         signalNumber);
+                writeAll(state, state.masterServer, echo, echoLength);
+                writeAll(state, state.slaveServer, delivery, deliveryLength);
+                if (endOfFile)
+                    os::detail::PipeClient(state.slaveServer).signalEof();
             }
         }
         __atomic_store_n(&state.closing, 1, __ATOMIC_RELEASE);
@@ -275,6 +279,44 @@ class TtyServer {
         }
         const auto operation = static_cast<os::TtyRequest>(request.type);
         switch (operation) {
+            case os::TtyRequest::DeviceControl: {
+                // Possession of the transferred PTY endpoint identifies the device;
+                // clients cannot select another terminal by its numeric index.
+                reply.length = 4;
+                reply.data[0] = EINVAL;
+                if (request.length < 2) break;
+                const auto command = request.data[0], length = request.data[1];
+                if (command != OSINFO_DEVCTL_TTY_GET_SIZE &&
+                    command != OSINFO_DEVCTL_TTY_SET_SIZE) {
+                    reply.data[0] = ENOTTY;
+                    break;
+                }
+                if (length != sizeof(os::wire::TerminalWindowSize) ||
+                    request.length != (command == OSINFO_DEVCTL_TTY_SET_SIZE ? 4U : 2U))
+                    break;
+                const unsigned required = command == OSINFO_DEVCTL_TTY_SET_SIZE ? 2U : 1U;
+                if (!(request.handleRights[0] & required)) {
+                    reply.data[0] = EACCES;
+                    break;
+                }
+                os::SpinLock::Guard guard(state->lock);
+                reply.data[0] = 0;
+                reply.data[1] = 0;
+                if (__atomic_load_n(&state->closing, __ATOMIC_ACQUIRE)) {
+                    reply.data[1] = EIO;
+                    break;
+                }
+                if (command == OSINFO_DEVCTL_TTY_SET_SIZE) {
+                    os::wire::TerminalWindowSize size{};
+                    copyRaw(&size, &request.data[2], sizeof(size));
+                    if (!size.rows || !size.columns || size.rows > 65535 || size.columns > 65535) {
+                        reply.data[1] = EINVAL;
+                        break;
+                    }
+                    state->windowSize = size;
+                } else copyRaw(&reply.data[2], &state->windowSize, sizeof(state->windowSize));
+                break;
+            }
             case os::TtyRequest::GetForegroundGroup: {
                 os::SpinLock::Guard guard(state->lock);
                 reply.data[0] = 0;

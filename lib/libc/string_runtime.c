@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 void* memchr(const void* memory, int value, size_t size) {
     const unsigned char* bytes = memory;
@@ -8,11 +9,19 @@ void* memchr(const void* memory, int value, size_t size) {
 }
 
 void* memcpy(void* destination, const void* source, size_t size) {
+#if defined(__x86_64__)
+    void* result = destination;
+    size_t words = size / 8, tail = size % 8;
+    __asm__ volatile("rep movsq" : "+D"(destination), "+S"(source), "+c"(words) : : "memory");
+    __asm__ volatile("rep movsb" : "+D"(destination), "+S"(source), "+c"(tail) : : "memory");
+    return result;
+#else
     unsigned char* target = destination;
     const unsigned char* input = source;
     size_t index;
     for (index = 0; index < size; ++index) target[index] = input[index];
     return destination;
+#endif
 }
 
 void* memmove(void* destination, const void* source, size_t size) {
@@ -31,10 +40,19 @@ void* memmove(void* destination, const void* source, size_t size) {
 }
 
 void* memset(void* destination, int value, size_t size) {
+#if defined(__x86_64__)
+    void* result = destination;
+    const uint64_t pattern = UINT64_C(0x0101010101010101) * (unsigned char)value;
+    size_t words = size / 8, tail = size % 8;
+    __asm__ volatile("rep stosq" : "+D"(destination), "+c"(words) : "a"(pattern) : "memory");
+    __asm__ volatile("rep stosb" : "+D"(destination), "+c"(tail) : "a"(pattern) : "memory");
+    return result;
+#else
     unsigned char* target = destination;
     size_t index;
     for (index = 0; index < size; ++index) target[index] = (unsigned char)value;
     return destination;
+#endif
 }
 
 int memcmp(const void* left, const void* right, size_t size) {

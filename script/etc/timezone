@@ -1,0 +1,2 @@
+# System timezone: fixed UTC offset in minutes, from -720 to 840.
+offset_minutes=480

@@ -15,6 +15,7 @@ namespace vfs::server {
 bool FsServer::handle(const os::IpcMessage& original, os::IpcMessage& reply) {
     os::IpcMessage request = original;
     const auto operation   = static_cast<os::FsRequest>(request.type);
+    if(operation==os::FsRequest::ReadBuffer){readBuffer(request,reply);return true;}
     if (operation == os::FsRequest::Fchmod ||
         operation == os::FsRequest::Fchown ||
         operation == os::FsRequest::Ftimes) {

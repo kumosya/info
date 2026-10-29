@@ -15,7 +15,7 @@ uint64_t ReclaimManager::reclaim(uint64_t bytes) {
             if (!backing || backing->kind != BackingKind::File) continue;
             const uint64_t flags = KernelMemory::pageState(p.task, p.address);
             // Private dirty pages cannot be reconstructed from the source file.
-            if ((flags & (1ULL << 6)) || (!pass && (flags & (1ULL << 5))))
+            if ((flags & ((1ULL << 6) | (1ULL << 10))) || (!pass && (flags & (1ULL << 5))))
                 continue;
             if (os::detail::MemoryControl().unmapTarget(p.address, 4096,
                                                         p.task))

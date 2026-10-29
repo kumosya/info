@@ -112,6 +112,7 @@ void Task::setInitTask(Task* task) {
 void AddressSpace::init(uint64_t rootPhysicalAddress) {
     rootPhysicalAddress_ = rootPhysicalAddress;
     generation_          = 1;
+    residency_={};lockFuture_=false;
     lock_.init();
 }
 
@@ -122,6 +123,7 @@ void AddressSpace::init(uint64_t rootPhysicalAddress) {
 uint64_t AddressSpace::replaceRoot(uint64_t rootPhysicalAddress) {
     const uint64_t previous = rootPhysicalAddress_;
     rootPhysicalAddress_    = rootPhysicalAddress;
+    if(previous!=rootPhysicalAddress){residency_={};lockFuture_=false;}
     if (previous != rootPhysicalAddress && ++generation_ == 0) ++generation_;
     return previous;
 }
@@ -167,6 +169,7 @@ bool Task::init(const char* name, uint64_t rootPhysicalAddress, Task* parent) {
     gid_ = effectiveGid_ = parent ? parent->effectiveGid() : 0;
     if (parent) {
         InterruptSpinLockGuard guard(parent->lock_);
+        memlockLimit_=parent->memlockLimit_;memlockHardLimit_=parent->memlockHardLimit_;
         coreLimit_          = parent->coreLimit_;
         coreHardLimit_      = parent->coreHardLimit_;
         uid_                = parent->uid_;
@@ -327,6 +330,7 @@ bool Task::inheritForFork(Task& parent) {
         supplementaryCount_ = parent.supplementaryCount_;
         for (uint32_t i = 0; i < supplementaryCount_; ++i)
             supplementaryGroups_[i] = parent.supplementaryGroups_[i];
+        memlockLimit_=parent.memlockLimit_;memlockHardLimit_=parent.memlockHardLimit_;
         coreLimit_         = parent.coreLimit_;
         coreHardLimit_     = parent.coreHardLimit_;
         niceLimit_         = parent.niceLimit_;

@@ -80,7 +80,13 @@ enum class MemoryOperation : uint64_t {
     Protect,
     SharedInfo,
     AnonymousShared,
-    UnlinkSharedHandle
+    UnlinkSharedHandle,
+    TypedOpen,
+    TypedAllocate,
+    TypedInfo,
+    LockRange,
+    LockAll,
+    LockState
 };
 enum class DeviceOperation : uint64_t {
     MapMmio,

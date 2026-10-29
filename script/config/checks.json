@@ -49,6 +49,9 @@
     "protectMemory",
     "__osinfo_runtime_allocate",
     "__osinfo_runtime_free",
+    "__osinfo_runtime_fork_prepare",
+    "__osinfo_runtime_fork_parent",
+    "__osinfo_runtime_fork_child",
     "atexit"
   ]
 }

@@ -47,7 +47,14 @@ void* mmap(void* address, size_t length, int protection, int flags,
         OpenDescription* description = libcDescriptor(descriptor);
         if (!description) { errno = EBADF; return MAP_FAILED; }
         if ((description->flags & O_ACCMODE) == O_WRONLY) { errno = EACCES; return MAP_FAILED; }
-        if (description->kind == DESCRIPTOR_SHARED_MEMORY) {
+        if (description->kind == DESCRIPTOR_TYPED_MEMORY) {
+            if(type!=MAP_SHARED || offset) {errno=EINVAL;return MAP_FAILED;}
+            if((protection&PROT_WRITE) && (description->flags&O_ACCMODE)!=O_RDWR) {errno=EACCES;return MAP_FAILED;}
+            const int64_t backing=__libc_os_typed_allocate(description->handle,size);
+            if(backing<=0) {mapping_error(backing);return MAP_FAILED;}
+            result=__libc_os_mm_shared(backing,size,protection,0,hint);
+            __libc_os_close_handle(backing);
+        } else if (description->kind == DESCRIPTOR_SHARED_MEMORY) {
             if (type != MAP_SHARED || ((protection & PROT_WRITE) && (description->flags & O_ACCMODE) != O_RDWR)) {
                 errno = EACCES; return MAP_FAILED;
             }
@@ -127,4 +134,78 @@ int shm_unlink(const char* name) {
         return -1;
     }
     return 0;
+}
+
+static int residency_range(const void* address,size_t length,unsigned operation,int advice) {
+    const uint64_t begin=(uint64_t)(uintptr_t)address;
+    if(!length)return 0;
+    if(begin>UINT64_MAX-length || begin+length>UINT64_MAX-4095)return EINVAL;
+    const uint64_t first=begin&~4095ULL,end=(begin+length+4095)&~4095ULL;
+    return __libc_os_mm_policy(operation,first,end-first,(uint64_t)advice);
+}
+int mlock(const void* address,size_t size) {
+    const int error=residency_range(address,size,0,0);
+    if(error){errno=error;return -1;}return 0;
+}
+int munlock(const void* address,size_t size) {
+    const int error=residency_range(address,size,1,0);
+    if(error){errno=error;return -1;}return 0;
+}
+int mlockall(int flags) {
+    if(!flags || (flags&~(MCL_CURRENT|MCL_FUTURE))){errno=EINVAL;return -1;}
+    const int error=__libc_os_mm_policy(2,flags,0,0);
+    if(error){errno=error;return -1;}return 0;
+}
+int munlockall(void) {
+    const int error=__libc_os_mm_policy(3,0,0,0);
+    if(error){errno=error;return -1;}return 0;
+}
+int posix_madvise(void* address,size_t length,int advice) {
+    const int saved=errno;
+    int error;
+    if(advice<POSIX_MADV_NORMAL || advice>POSIX_MADV_DONTNEED || ((uintptr_t)address&4095))error=EINVAL;
+    else error=residency_range(address,length,4,advice);
+    errno=saved;return error;
+}
+
+int posix_mem_offset(const void* address,size_t length,off_t* offset,
+                        size_t* contiguous,int* descriptor) {
+    const int saved=errno;
+    if(!offset || !contiguous || !descriptor || !__libc_os_accessible(offset,sizeof(*offset),1) ||
+       !__libc_os_accessible(contiguous,sizeof(*contiguous),1) || !__libc_os_accessible(descriptor,sizeof(*descriptor),1))return EFAULT;
+    const uint64_t begin=(uint64_t)(uintptr_t)address;
+    if(!length || begin>UINT64_MAX-length)return EINVAL;
+    uint64_t objectOffset=0,bytes=0;unsigned rights=0;
+    const int64_t handle=__libc_os_mm_offset(begin,length,&objectOffset,&bytes,&rights);
+    if(handle<=0) {mapping_error(handle);const int error=errno;errno=saved;return error;}
+    if(objectOffset>INT64_MAX) {__libc_os_close_handle(handle);errno=saved;return EOVERFLOW;}
+    const int result=libcAllocateDescriptor(handle,"",(rights&2)?O_RDWR:O_RDONLY,DESCRIPTOR_SHARED_MEMORY);
+    if(result<0) {const int error=errno;__libc_os_close_handle(handle);errno=saved;return error;}
+    libcDescriptors[result].closeOnExec=1;
+    *offset=(off_t)objectOffset;*contiguous=(size_t)bytes;*descriptor=result;
+    errno=saved;return 0;
+}
+
+int posix_typed_mem_open(const char* name,int flags,int policy) {
+    if(!name || (flags&~(O_ACCMODE|O_CLOEXEC)) ||
+       ((flags&O_ACCMODE)!=O_RDONLY && (flags&O_ACCMODE)!=O_RDWR) ||
+       (policy&~(POSIX_TYPED_MEM_ALLOCATE|POSIX_TYPED_MEM_ALLOCATE_CONTIG|POSIX_TYPED_MEM_MAP_ALLOCATABLE)) ||
+       ((policy&POSIX_TYPED_MEM_ALLOCATE) && (policy&POSIX_TYPED_MEM_ALLOCATE_CONTIG))) {
+        errno=EINVAL;return -1;
+    }
+    const int64_t handle=__libc_os_typed_open(name,flags,policy);
+    if(handle<=0)return mapping_error(handle);
+    const int descriptor=libcAllocateDescriptor(handle,name,flags,DESCRIPTOR_TYPED_MEMORY);
+    if(descriptor<0) {__libc_os_close_handle(handle);return -1;}
+    libcDescriptors[descriptor].closeOnExec=(flags&O_CLOEXEC)!=0;
+    return descriptor;
+}
+int posix_typed_mem_get_info(int descriptor,struct posix_typed_mem_info* info) {
+    if(!info || !__libc_os_accessible(info,sizeof(*info),1)) {errno=EFAULT;return -1;}
+    OpenDescription* description=libcDescriptor(descriptor);
+    if(!description) {errno=EBADF;return -1;}
+    if(description->kind!=DESCRIPTOR_TYPED_MEMORY) {errno=EINVAL;return -1;}
+    uint64_t available=0;const int status=__libc_os_typed_info(description->handle,&available);
+    if(status)return mapping_error(status);
+    info->posix_tmi_length=available;return 0;
 }

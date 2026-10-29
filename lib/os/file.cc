@@ -7,11 +7,43 @@
 #include <os/console.h>
 #include <os/file.h>
 #include <os/service.h>
+#include <os/mm.h>
 #include <sys/stat.h>
 namespace os {
 namespace {
 constexpr size_t asyncCapacity = 4088;
 uint64_t nextOperation         = 1;
+int64_t bufferedRead(uint64_t endpoint,uint64_t descriptor,void* output,size_t size,int64_t offset) {
+    constexpr uint64_t capacity=65536,base=0x3000000000ULL;
+    static uint32_t slots=0;
+    const auto unsupported=static_cast<int>(ErrorCode::NotSupported);
+    IpcMessage probe{},features{};probe.type=uint64_t(FsRequest::ReadBuffer);
+    if(callService(endpoint,probe,features) || features.length!=2 || features.data[1]!=0x4653425546464552ULL)return unsupported;
+    unsigned slot=16;
+    for(unsigned i=0;i<16;++i)if(!(__atomic_fetch_or(&slots,1U<<i,__ATOMIC_ACQ_REL)&(1U<<i))){slot=i;break;}
+    if(slot==16)return unsupported;
+    struct Mapping {unsigned slot;uint64_t address=0;uint32_t* slots;~Mapping(){if(address)detail::MemoryControl().unmapTarget(address,65536);__atomic_fetch_and(slots,~(1U<<slot),__ATOMIC_RELEASE);}} mapping{slot,0,&slots};
+    Mem::Page page;
+    if(page.create(4,0))return unsupported;
+    const uint64_t address=base+slot*capacity;
+    if(detail::MemoryControl().mapPages(page.getHandle(),address,capacity,0,1)!=address)return unsupported;
+    mapping.address=address;
+    size_t total=0;
+    while(total<size) {
+        const auto chunk=size-total<capacity?size-total:capacity;
+        IpcMessage request{},reply{};request.type=uint64_t(FsRequest::ReadBuffer);request.length=3;
+        request.data[0]=descriptor;request.data[1]=offset<0?UINT64_MAX:uint64_t(offset)+total;request.data[2]=chunk;
+        request.handleCount=1;request.handles[0]=page.getHandle();
+        const auto status=callService(endpoint,request,reply);
+        if(status)return total?int64_t(total):status;
+        const auto count=int64_t(reply.data[0]);
+        if(reply.length!=2 || reply.data[1]!=0x4653425546464552ULL || count>int64_t(chunk))return total?int64_t(total):static_cast<int>(ErrorCode::IoError);
+        if(count<0)return total?int64_t(total):count;
+        Runtime::copyBytes(static_cast<uint8_t*>(output)+total,reinterpret_cast<const void*>(address),size_t(count));
+        total+=size_t(count);if(size_t(count)<chunk)break;
+    }
+    return int64_t(total);
+}
 int error(ErrorCode value) { return static_cast<int>(value); }
 int result(uint64_t endpoint, IpcMessage& request, IpcMessage& reply) {
     if (!endpoint) return error(ErrorCode::NotFound);
@@ -268,6 +300,10 @@ ssize_t File::transfer(void* buffer, size_t size, off_t offset, bool writing) {
     }
     if (metadataValid_ && type_ == Type::Directory)
         return error_ = error(ErrorCode::InvalidArgument);
+    if(!writing && size>=16384) {
+        const auto count=bufferedRead(service_,handle_,buffer,size,offset);
+        if(count!=static_cast<int>(ErrorCode::NotSupported)){error_=count<0?int(count):0;return count;}
+    }
     if (writing && offset < 0 && (flags_ & O_APPEND) && seek(0, SEEK_END) < 0)
         return error_;
     size_t total = 0;

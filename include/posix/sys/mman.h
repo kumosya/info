@@ -20,6 +20,18 @@ struct posix_typed_mem_info {
 #define MAP_ANON MAP_ANONYMOUS
 #define MAP_FAILED ((void *)-1)
 
+#define POSIX_TYPED_MEM_ALLOCATE 1
+#define POSIX_TYPED_MEM_ALLOCATE_CONTIG 2
+#define POSIX_TYPED_MEM_MAP_ALLOCATABLE 4
+
+#define MCL_CURRENT 1
+#define MCL_FUTURE 2
+#define POSIX_MADV_NORMAL 0
+#define POSIX_MADV_RANDOM 1
+#define POSIX_MADV_SEQUENTIAL 2
+#define POSIX_MADV_WILLNEED 3
+#define POSIX_MADV_DONTNEED 4
+
 #define MS_ASYNC 1
 #define MS_INVALIDATE 2
 #define MS_SYNC 4

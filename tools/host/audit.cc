@@ -185,7 +185,10 @@ void audit(const Context& context) {
                             {"lib/os/mm.cc",
                              {"mapMemory", "unmapMemory", "protectMemory",
                               "__osinfo_runtime_allocate",
-                              "__osinfo_runtime_free"}},
+                              "__osinfo_runtime_free",
+                              "__osinfo_runtime_fork_prepare",
+                              "__osinfo_runtime_fork_parent",
+                              "__osinfo_runtime_fork_child"}},
                             {"lib/os/service/runtime.cc",
                              {"getBootstrapHandle", "atexit"}}};
                     const auto bridge = bridges.find(entry.path());

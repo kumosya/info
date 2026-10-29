@@ -207,24 +207,15 @@ void Runtime::copyString(char* destination, const char* source,
 }
 
 void Runtime::clearMemory(void* destination, size_t size) {
-    uint8_t* bytes = static_cast<uint8_t*>(destination);
-    for (size_t index = 0; index < size; ++index) {
-        bytes[index] = 0;
-    }
+    size_t words=size/8,tail=size%8;
+    asm volatile("rep stosq" : "+D"(destination), "+c"(words) : "a"(uint64_t(0)) : "memory");
+    asm volatile("rep stosb" : "+D"(destination), "+c"(tail) : "a"(uint64_t(0)) : "memory");
 }
 
 void Runtime::copyBytes(void* destination, const void* source, size_t size) {
-    uint8_t* output      = static_cast<uint8_t*>(destination);
-    const uint8_t* input = static_cast<const uint8_t*>(source);
-    size_t index         = 0;
-    for (; index + sizeof(uint64_t) <= size; index += sizeof(uint64_t)) {
-        uint64_t word;
-        __builtin_memcpy(&word, input + index, sizeof(word));
-        __builtin_memcpy(output + index, &word, sizeof(word));
-    }
-    for (; index < size; ++index) {
-        output[index] = input[index];
-    }
+    size_t words=size/8,tail=size%8;
+    asm volatile("rep movsq" : "+D"(destination), "+S"(source), "+c"(words) : : "memory");
+    asm volatile("rep movsb" : "+D"(destination), "+S"(source), "+c"(tail) : : "memory");
 }
 
 uint64_t Runtime::kernelBootstrapHandle() { return startupKernelHandle; }

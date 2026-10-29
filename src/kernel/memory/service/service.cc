@@ -57,6 +57,26 @@ int MemoryService::call(::kernel::task::Task& caller,
     const auto* args = request.data;
     const char* name = nullptr;
     switch (static_cast<os::MemoryOperation>(request.type)) {
+        case os::MemoryOperation::LockRange:
+        case os::MemoryOperation::LockAll:
+        case os::MemoryOperation::LockState: {
+            if(!requestAuthorized(caller,args[0]))return -3;
+            auto target=task::find(args[0]?args[0]:caller.id());if(!target)return -4;
+            if(request.type==uint64_t(os::MemoryOperation::LockRange)) {
+                if(args[3]>7)return -1;
+                if((args[3]&6) && caller.serviceRole()!=os::ServiceRole::Memory)return -3;
+                reply.data[1]=lockUserPages(*target,args[1],args[2],args[3]&1,args[3]&2,args[3]&4);
+            } else if(request.type==uint64_t(os::MemoryOperation::LockAll)) {
+                if(args[1]>3 || args[2]>128 || (args[2] && (caller.serviceRole()!=os::ServiceRole::Memory || request.length<3+args[2]*2)))return -1;
+                reply.data[1]=lockAllUserPages(*target,unsigned(args[1]),args+3,unsigned(args[2]));
+            } else {
+                ::kernel::task::PreemptionSpinLockGuard guard(target->addressSpace().lock());
+                reply.data[1]=target->addressSpace().lockedBytes();
+                reply.data[2]=target->addressSpace().lockFuture();
+                reply.data[3]=target->memlockLimit();
+            }
+            break;
+        }
         case os::MemoryOperation::Map:
             if (request.length < 6) return -1;
             reply.data[0] =
@@ -83,7 +103,7 @@ int MemoryService::call(::kernel::task::Task& caller,
                 return -1;
             reply.data[0] = protectOperation
                                 ? protect(args[0], args[1], args[2], target)
-                                : unmap(args[0], args[1], target);
+                                : unmap(args[0], args[1], target,args[3]!=0);
             break;
         }
 
@@ -181,8 +201,9 @@ int MemoryService::call(::kernel::task::Task& caller,
             if (root &&
                 mm::getPhysicalAddressInAddressSpace(root, args[1], &flags))
                 reply.data[1] = flags & (pagePresent | pageWritable | pageUser |
-                                         pageExternal | pageNoExecute |
+                                         pageExternal | pageLocked | pageNoExecute |
                                          (1ULL << 5) | (1ULL << 6));
+            if(target->addressSpace().residency().contains(args[1]))reply.data[1]|=pageLocked;
             break;
         }
         // Check a bounded aligned extent while holding the root lock. The
@@ -227,6 +248,24 @@ int MemoryService::call(::kernel::task::Task& caller,
             reply.data[0] =
                 sharedMemory().resize(caller, args[0], args[1]) ? 0 : -1;
             break;
+        case os::MemoryOperation::TypedOpen: {
+            if(!readRequestName(request,5,name))return -1;
+            const char expected[]="/memory/ram";
+            unsigned i=0;while(expected[i] && name[i]==expected[i])++i;
+            if(name[i]!=expected[i])return -4;
+            const int64_t handle=sharedMemory().openTyped(caller,int(args[0]),unsigned(args[1]));
+            if(handle<=0)return int(handle);
+            reply.data[0]=handle;reply.handles[reply.handleCount++]=handle;
+            break;
+        }
+        case os::MemoryOperation::TypedAllocate: {
+            const int64_t handle=sharedMemory().allocateTyped(caller,args[0],args[1]);
+            if(handle<=0)return int(handle);
+            reply.data[0]=handle;reply.handles[reply.handleCount++]=handle;
+            break;
+        }
+        case os::MemoryOperation::TypedInfo:
+            return sharedMemory().typedInfo(caller,args[0],reply.data[1]);
         case os::MemoryOperation::SharedInfo:
             if (!sharedMemory().querySize(caller, args[0], reply.data[1]))
                 return -2;

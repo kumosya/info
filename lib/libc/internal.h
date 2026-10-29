@@ -25,7 +25,8 @@ typedef enum DescriptorKind {
     DESCRIPTOR_PIPE_WRITE,
     DESCRIPTOR_TERMINAL_READ,
     DESCRIPTOR_TERMINAL_WRITE,
-    DESCRIPTOR_SHARED_MEMORY
+    DESCRIPTOR_SHARED_MEMORY,
+    DESCRIPTOR_TYPED_MEMORY
 } DescriptorKind;
 
 typedef struct OpenDescription {
@@ -247,6 +248,11 @@ uint64_t __libc_os_mm_shared(uint64_t handle, uint64_t size,
                              uint64_t hint);
 uint64_t __libc_os_mm_file(uint64_t descriptor, uint64_t size,
                            uint32_t protection, uint64_t offset, uint64_t hint);
+int64_t __libc_os_typed_open(const char* name,int flags,unsigned policy);
+int64_t __libc_os_typed_allocate(uint64_t handle,uint64_t size);
+int __libc_os_typed_info(uint64_t handle,uint64_t* available);
+int64_t __libc_os_mm_offset(uint64_t address,uint64_t size,uint64_t* offset,uint64_t* contiguous,unsigned* rights);
+int __libc_os_mm_policy(unsigned operation,uint64_t address,uint64_t size,uint64_t argument);
 int __libc_os_mm_unmap(uint64_t address, uint64_t size);
 int __libc_os_mm_protect(uint64_t address, uint64_t size, uint32_t protection);
 int __libc_os_mm_sync(uint64_t address, uint64_t size);

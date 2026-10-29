@@ -68,7 +68,7 @@ void initScheduler() {
     cpu->setIdleThread(idle);
 
     cpu::registerHandler(32, timerHandler);
-    cpu::initTimer(32, 1000000);
+    cpu::initTimer(32, 1000);
     device::serialWrite("[SCHED] per-CPU CFS run queue initialized\n");
 }
 

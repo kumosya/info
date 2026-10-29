@@ -28,16 +28,25 @@ class RuntimeHeap {
        public:
         uint64_t getAddress() const { return address_; }
         uint64_t getSize() const { return size_; }
+        uint64_t capacity() const { return capacity_; }
+        uint64_t cached() const { return cached_; }
+        void cache() { cached_=size_;size_=0; }
+        void activate() { size_=cached_;cached_=0; }
+        void discardCache() { cached_=0; }
         void assign(uint64_t address, uint64_t size) {
             address_ = address;
             size_    = size;
+            if(capacity_<size)capacity_=size;
         }
-        void clear() { address_ = size_ = 0; }
+        void clear() { address_ = size_ = capacity_ = cached_ = 0; }
+        void released() { size_=0; }
 
        private:
-        uint64_t address_{}, size_{};
+        uint64_t address_{}, size_{},capacity_{},cached_{};
     } allocations_[4096];
     uint64_t nextAddress_ = 0x10000000;
+    uint64_t cachedBytes_=0;
+    static constexpr uint64_t cacheLimit=1024*1024,cacheAllocationLimit=64*1024;
     uint8_t lock_{};
     void lock() {
         while (__atomic_test_and_set(&lock_, __ATOMIC_ACQUIRE))
@@ -46,25 +55,51 @@ class RuntimeHeap {
     void unlock() { __atomic_clear(&lock_, __ATOMIC_RELEASE); }
 
    public:
+    void forkPrepare() { lock(); }
+    void forkParent() { unlock(); }
+    void forkChild() { lock_ = 0; }
     void initialize() {
         lock_        = 0;
         nextAddress_ = 0x10000000;
+        cachedBytes_=0;
         for (auto& allocation : allocations_) allocation.clear();
     }
     void* allocate(size_t size) {
         if (!size || size > UINT64_MAX - 4095) return nullptr;
         const uint64_t aligned = (size + 4095) & ~4095ULL;
         lock();
-        for (auto& allocation : allocations_)
-            if (!allocation.getAddress()) {
-                const uint64_t address = nextAddress_;
+        Allocation* cached=nullptr;
+        for(auto& allocation:allocations_)if(!allocation.getSize() && allocation.cached()>=aligned &&
+           (!cached || allocation.cached()<cached->cached())) {
+            cached=&allocation;
+            if(cached->cached()==aligned)break;
+        }
+        if(cached) {
+            const auto address=cached->getAddress(),bytes=cached->cached();
+            cachedBytes_-=bytes;cached->activate();
+            Runtime::clearMemory(reinterpret_cast<void*>(address),bytes);
+            unlock();return reinterpret_cast<void*>(address);
+        }
+        Allocation* available=nullptr;
+        for(auto& allocation:allocations_)if(!allocation.getSize()) {
+            if(allocation.getAddress() && allocation.capacity()>=aligned){available=&allocation;break;}
+            if(!available)available=&allocation;
+        }
+        if(available) {
+                auto& allocation=*available;
+                if(allocation.cached()) {
+                    if(!unmapMemory(allocation.getAddress(),allocation.cached())){unlock();return nullptr;}
+                    cachedBytes_-=allocation.cached();allocation.discardCache();
+                }
+                const bool reused=allocation.getAddress() && allocation.capacity()>=aligned;
+                const uint64_t address = reused?allocation.getAddress():nextAddress_;
                 if (aligned > UINT64_MAX - 4096 - address ||
                     mapMemory(address, aligned, 1) != address) {
                     unlock();
                     return nullptr;
                 }
                 allocation.assign(address, aligned);
-                nextAddress_ += aligned + 4096;
+                if(!reused)nextAddress_ += aligned + 4096;
                 unlock();
                 return reinterpret_cast<void*>(address);
             }
@@ -76,9 +111,12 @@ class RuntimeHeap {
         const auto address = reinterpret_cast<uint64_t>(pointer);
         lock();
         for (auto& allocation : allocations_)
-            if (allocation.getAddress() == address) {
+            if (allocation.getAddress() == address && allocation.getSize()) {
+                if(allocation.getSize()<=cacheAllocationLimit && cachedBytes_+allocation.getSize()<=cacheLimit) {
+                    cachedBytes_+=allocation.getSize();allocation.cache();unlock();return true;
+                }
                 const bool success = unmapMemory(address, allocation.getSize());
-                if (success) allocation.clear();
+                if (success) allocation.released();
                 unlock();
                 return success;
             }
@@ -95,7 +133,14 @@ class VirtualMemoryClient {
     uint8_t lock_      = 0;
 
    public:
-    int64_t call(IpcMessage& request, uint64_t* identity = nullptr) {
+    void forkPrepare() { while (__atomic_test_and_set(&lock_,__ATOMIC_ACQUIRE)) yield(); }
+    void forkParent() { __atomic_clear(&lock_,__ATOMIC_RELEASE); }
+    void forkChild() {
+        lock_=0;
+        if(endpoint_)closeHandle(endpoint_);
+        endpoint_=sequence_=0;
+    }
+    int64_t call(IpcMessage& request, uint64_t* identity = nullptr, IpcMessage* resultReply = nullptr) {
         while (__atomic_test_and_set(&lock_, __ATOMIC_ACQUIRE)) yield();
         if (request.length > ipcDataWordCount - 3) {
             __atomic_clear(&lock_, __ATOMIC_RELEASE);
@@ -145,6 +190,7 @@ class VirtualMemoryClient {
         }
         if (identity)
             *identity = (!status && reply.length >= 2) ? reply.data[1] : 0;
+        if (resultReply) *resultReply = reply;
         request.length = original;
         __atomic_clear(&lock_, __ATOMIC_RELEASE);
         return status              ? status
@@ -153,6 +199,9 @@ class VirtualMemoryClient {
     }
 } virtualMemoryClient;
 }  // namespace
+extern "C" void __osinfo_runtime_fork_prepare() { runtimeHeap.forkPrepare(); virtualMemoryClient.forkPrepare(); }
+extern "C" void __osinfo_runtime_fork_parent() { virtualMemoryClient.forkParent(); runtimeHeap.forkParent(); }
+extern "C" void __osinfo_runtime_fork_child() { virtualMemoryClient.forkChild(); runtimeHeap.forkChild(); }
 uint64_t detail::MemoryControl::allocatePages(uint32_t order, uint16_t node,
                                               uint64_t owner) {
     IpcMessage request{}, reply{};
@@ -212,13 +261,14 @@ int64_t detail::MemoryControl::reclaimCaches() {
 }
 
 int detail::MemoryControl::unmapTarget(uint64_t address, uint64_t size,
-                                       uint64_t target) {
+                                       uint64_t target,bool preserveLocks) {
     IpcMessage request{}, reply{};
     request.type    = static_cast<uint64_t>(MemoryOperation::Unmap);
     request.length  = 5;
     request.data[0] = address;
     request.data[1] = size;
     request.data[2] = target;
+    request.data[3] = preserveLocks;
     return this->result(request, reply);
 }
 
@@ -286,6 +336,45 @@ void* Runtime::allocateMemory(size_t size) {
 }
 bool Runtime::freeMemory(void* pointer) { return runtimeHeap.free(pointer); }
 
+int64_t detail::MappingClient::openTyped(const char* name,int flags,unsigned policy) {
+    if(!name || Runtime::stringLength(name)>=64)return static_cast<int>(ErrorCode::InvalidArgument);
+    IpcMessage request{},reply{};request.type=uint64_t(MemoryOperation::TypedOpen);request.length=13;
+    request.data[0]=flags;request.data[1]=policy;
+    Runtime::copyString(reinterpret_cast<char*>(&request.data[5]),name,64);
+    return services::RequestChannel(CoreServiceKind::Memory).result(request,reply);
+}
+int64_t detail::MappingClient::allocateTyped(uint64_t handle,uint64_t size) {
+    IpcMessage request{},reply{};request.type=uint64_t(MemoryOperation::TypedAllocate);request.length=5;
+    request.data[0]=handle;request.data[1]=size;
+    return services::RequestChannel(CoreServiceKind::Memory).result(request,reply);
+}
+int detail::MappingClient::typedInfo(uint64_t handle,uint64_t& available) {
+    IpcMessage request{},reply{};request.type=uint64_t(MemoryOperation::TypedInfo);request.length=5;request.data[0]=handle;
+    const int status=services::RequestChannel(CoreServiceKind::Memory).result(request,reply);
+    if(!status)available=reply.data[1];
+    return status;
+}
+int64_t detail::MappingClient::memoryOffset(uint64_t address,uint64_t size,
+                                              uint64_t& offset,uint64_t& contiguous,unsigned& rights) {
+    IpcMessage request{},reply{};
+    request.type=uint64_t(MmOperation::MemoryOffset);request.length=2;
+    request.data[0]=address;request.data[1]=size;
+    const int64_t handle=virtualMemoryClient.call(request,nullptr,&reply);
+    if(handle<=0)return handle;
+    if(reply.handleCount!=1 || reply.length<4) {
+        if(reply.handleCount)closeHandle(reply.handles[0]);
+        return static_cast<int>(ErrorCode::IoError);
+    }
+    offset=reply.data[1];contiguous=reply.data[2];rights=reply.data[3];
+    return handle;
+}
+int detail::MappingClient::policy(unsigned operation,uint64_t address,uint64_t size,uint64_t argument) {
+    if(operation>4)return 22;
+    IpcMessage request{};request.type=uint64_t(MmOperation::Lock)+operation;request.length=3;
+    request.data[0]=address;request.data[1]=size;request.data[2]=argument;
+    uint64_t result=0;const auto status=virtualMemoryClient.call(request,&result);
+    return status?int(status):int(result);
+}
 uint64_t detail::MappingClient::anonymous(uint64_t size, uint32_t protection,
                                           bool lazy, uint64_t hint,
                                           uint64_t* identity) {

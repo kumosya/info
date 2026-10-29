@@ -16,6 +16,27 @@ namespace {
 intptr_t recovery[5];
 bool recovering = false;
 char failureText[192];
+struct LinkMetrics {uint64_t started=0,readNs=0,mapNs=0,relocateNs=0,protectNs=0,queryNs=0,locateNs=0,dependencyNs=0,recordNs=0,prepareNs=0,importNs=0,initNs=0,bytes=0,reads=0,maps=0,protects=0;} metrics;
+void reportLinkMetrics(const char* path,char** environment) {
+    bool enabled=false;
+    for(auto** e=environment;e && *e;++e) {
+        const char* prefix="GUIW_LAUNCH_ID=";size_t n=0;
+        while(prefix[n] && (*e)[n]==prefix[n])++n;
+        if(os::Runtime::stringsEqual(*e,"OSINFO_LD_PROFILE=1") || (!prefix[n] && (*e)[n]))enabled=true;
+    }
+    if(!enabled)return;
+    char line[768]{};size_t used=0;
+    auto text=[&](const char* s){while(*s && used+1<sizeof(line))line[used++]=*s++;};
+    auto number=[&](uint64_t v){char digits[24];unsigned n=0;do{digits[n++]=char('0'+v%10);v/=10;}while(v);while(n && used+1<sizeof(line))line[used++]=digits[--n];};
+    text("[LD-PROFILE] path=");text(path);text(" total_ns=");number(os::Sys().readMonotonicTime()-metrics.started);
+    text(" read_ns=");number(metrics.readNs);text(" map_ns=");number(metrics.mapNs);
+    text(" relocate_ns=");number(metrics.relocateNs);text(" protect_ns=");number(metrics.protectNs);
+    text(" locate_ns=");number(metrics.locateNs);text(" query_ns=");number(metrics.queryNs);text(" dependency_ns=");number(metrics.dependencyNs);
+    text(" record_ns=");number(metrics.recordNs);text(" prepare_ns=");number(metrics.prepareNs);
+    text(" import_ns=");number(metrics.importNs);text(" init_ns=");number(metrics.initNs);
+    text(" bytes=");number(metrics.bytes);text(" reads=");number(metrics.reads);
+    text(" maps=");number(metrics.maps);text(" protects=");number(metrics.protects);text("\n");os::Sys().log(line);
+}
 class SourceAllocator {
    public:
     void* allocate(size_t bytes) {
@@ -67,6 +88,8 @@ class DynamicLinker {
         Function *initializers = nullptr, *finalizers = nullptr;
         uint64_t initializerSize = 0, finalizerSize = 0;
     } images_[imageLimit];
+    struct SearchProbe { char path[512]{}; bool exists=false; } searchProbes_[64];
+    uint32_t searchProbeCount_=0;
     uint32_t imageCount_ = 1, initialized_[imageLimit]{}, initializedCount_ = 0;
     uint64_t* stack_        = nullptr;
     char** environment_     = nullptr;
@@ -348,19 +371,16 @@ class DynamicLinker {
             return nullptr;
         void* buffer = sourceAllocator.allocate(bytes);
         if (!buffer) return nullptr;
-        uint64_t offset = 0;
-        while (offset < bytes) {
-            const auto count = file.read(static_cast<uint8_t*>(buffer) + offset,
-                                         bytes - offset);
-            if (count <= 0) {
-                sourceAllocator.release(buffer);
-                return nullptr;
-            }
-            offset += count;
+        uint64_t offset=0;
+        while(offset<bytes) {
+            const auto count=file.read(static_cast<uint8_t*>(buffer)+offset,bytes-offset);
+            ++metrics.reads;
+            if(count<=0){sourceAllocator.release(buffer);return nullptr;}
+            offset+=uint64_t(count);
         }
         return buffer;
     }
-    static bool candidate(char* path, size_t capacity, const char* directory,
+    bool candidate(char* path, size_t capacity, const char* directory,
                           size_t length, const char* name) {
         const size_t suffix = os::Runtime::stringLength(name);
         if (!length || directory[0] != '/' || length + suffix + 2 > capacity)
@@ -368,11 +388,22 @@ class DynamicLinker {
         os::Runtime::copyBytes(path, directory, length);
         path[length] = '/';
         os::Runtime::copyBytes(path + length + 1, name, suffix + 1);
+        // An already mapped exact path needs no repeated filesystem stat.
+        // Keep search order and requester-specific RUNPATH resolution intact.
+        for (uint32_t i = 1; i < imageCount_; ++i)
+            if (os::Runtime::stringsEqual(images_[i].path, path)) return true;
+        for (uint32_t i=0;i<searchProbeCount_;++i)
+            if (os::Runtime::stringsEqual(searchProbes_[i].path,path))
+                return searchProbes_[i].exists;
         os::File file;
-        return file.refresh(path) == 0 &&
-               file.getType() == os::File::Type::File;
+        const bool exists=file.refresh(path)==0 && file.getType()==os::File::Type::File;
+        if(searchProbeCount_<64) {
+            auto& probe=searchProbes_[searchProbeCount_++];
+            copy(probe.path,sizeof(probe.path),path);probe.exists=exists;
+        }
+        return exists;
     }
-    static bool search(char* path, const char* entries, const char* name,
+    bool search(char* path, const char* entries, const char* name,
                        const Image* origin = nullptr) {
         if (!entries) return false;
         while (*entries) {
@@ -429,8 +460,10 @@ class DynamicLinker {
         fail("library not found", name);
     }
     void load(Image& image) {
+        auto phase = os::Sys().readMonotonicTime();
         uint64_t bytes = 0;
         void* source   = readFile(image.path, bytes);
+        metrics.readNs+=os::Sys().readMonotonicTime()-phase;metrics.bytes+=bytes;
         if (!source) fail("cannot read library", image.path);
         loadingBuffer_ = source;
         char interpreter[256];
@@ -480,15 +513,20 @@ class DynamicLinker {
         image.begin = 0x1000000000ULL + (&image - images_) * 0x40000000ULL;
         image.bias  = image.begin - minimum;
         image.end   = image.bias + maximum;
+        phase=os::Sys().readMonotonicTime();
         // Map each page once, writable and NX during relocation. No RWX stage.
-        for (uint64_t address = minimum; address < maximum; address += page) {
+        for (uint64_t address = minimum; address < maximum;) {
             uint32_t flags = pageFlags(image, address);
-            if (!flags) continue;
+            if (!flags) { address += page; continue; }
             if ((flags & 3) == 3) fail("library page violates W^X", image.path);
-            if (os::mapMemory(image.bias + address, page, 1) !=
-                image.bias + address)
+            const auto begin = address;
+            do { address += page; flags = address < maximum ? pageFlags(image,address) : 0;
+                if ((flags & 3) == 3) fail("library page violates W^X",image.path);
+            } while(flags);
+            if (os::mapMemory(image.bias + begin, address - begin, 1) != image.bias + begin)
                 fail("library mapping failed", image.path);
-            image.mappedEnd = image.bias + address + page;
+            ++metrics.maps;
+            image.mappedEnd = image.bias + address;
         }
         for (uint32_t i = 0; i < image.programCount; ++i) {
             const auto& segment = image.programs[i];
@@ -499,6 +537,7 @@ class DynamicLinker {
                     segment.fileSize);
         }
         sourceAllocator.release(source);
+        metrics.mapNs+=os::Sys().readMonotonicTime()-phase;
         loadingBuffer_ = nullptr;
         segments(image);
     }
@@ -555,12 +594,17 @@ class DynamicLinker {
         return false;
     }
     void dependencies(uint32_t first) {
+        // Search results are scoped to this load transaction; a later dlopen
+        // must see libraries installed since the previous transaction.
+        searchProbeCount_=0;
         for (uint32_t i = first; i < imageCount_; ++i) {
             auto& image = images_[i];
             for (uint32_t n = 0; n < image.neededCount; ++n) {
                 const char* name = string(image, image.needed[n]);
                 char path[512];
+                const auto begin=os::Sys().readMonotonicTime();
                 locate(image, name, path);
+                metrics.locateNs+=os::Sys().readMonotonicTime()-begin;
                 uint32_t found = 1;
                 for (; found < imageCount_; ++found)
                     if (os::Runtime::stringsEqual(images_[found].path, path))
@@ -634,6 +678,7 @@ class DynamicLinker {
             return nullptr;
         }
         if (!acquire(error, size)) return nullptr;
+        searchProbeCount_=0;
         const uint32_t first = imageCount_;
         if (__builtin_setjmp(recovery)) {
             recovering = false;
@@ -760,6 +805,7 @@ class DynamicLinker {
         fail("undefined symbol", string(image, entry.name));
     }
     void relocate(Image& image, os::ElfRela* table, uint64_t bytes) {
+        const auto phase=os::Sys().readMonotonicTime();
         for (uint64_t i = 0; i < bytes / sizeof(os::ElfRela); ++i) {
             const auto relocation = table[i];
             const uint32_t type   = relocation.info,
@@ -779,17 +825,22 @@ class DynamicLinker {
             os::Runtime::copyBytes(reinterpret_cast<void*>(target), &value,
                                    sizeof(value));
         }
+        metrics.relocateNs+=os::Sys().readMonotonicTime()-phase;
     }
     static void protect(Image& image) {
-        for (uint64_t address = image.begin; address < image.end;
-             address += page) {
+        const auto phase=os::Sys().readMonotonicTime();
+        for (uint64_t address = image.begin; address < image.end;) {
             const uint32_t flags = pageFlags(image, address - image.bias);
-            if (!flags) continue;
+            if (!flags) {address += page;continue;}
             const uint64_t protection =
                 ((flags & 2) ? 1 : 0) | ((flags & 1) ? 2 : 0);
-            if (!os::protectMemory(address, page, protection))
+            const auto begin=address;
+            do {address+=page;}while(address<image.end && pageFlags(image,address-image.bias)==flags);
+            if (!os::protectMemory(begin, address-begin, protection))
                 fail("final segment protection failed", image.path);
+            ++metrics.protects;
         }
+        metrics.protectNs+=os::Sys().readMonotonicTime()-phase;
         for (uint32_t i = 0; i < image.programCount; ++i) {
             const auto& segment = image.programs[i];
             if (segment.type == 0x6474e552 && segment.memorySize) {
@@ -863,12 +914,15 @@ class DynamicLinker {
         if (!entry || !phdr || !phnum || phnum > programLimit)
             fail("missing application auxiliary data");
         os::Runtime::runtimeInit(0, nullptr, environment_);
+        metrics.started=os::Sys().readMonotonicTime();
+        auto phase=metrics.started;
         os::wire::TaskInfo task{};
         if (os::detail::TaskQuery().query(os::detail::TaskControl().getId(),
                                           task))
             fail("cannot query process credentials");
         secure_ =
             task.uid != task.effectiveUid || task.gid != task.effectiveGid;
+        metrics.queryNs=os::Sys().readMonotonicTime()-phase;
         Image& main = images_[0];
         if (!copy(main.path, sizeof(main.path), executableName))
             fail("program path too long");
@@ -891,7 +945,9 @@ class DynamicLinker {
             fail("application entry is not executable");
         os::detail::TaskControl().recordAuxiliary(phdr, phnum, entry, loader);
         segments(main);
+        phase=os::Sys().readMonotonicTime();
         dependencies(0);
+        metrics.dependencyNs=os::Sys().readMonotonicTime()-phase;
         for (uint32_t i = 0; i < imageCount_; ++i) {
             relocate(images_[i], images_[i].rela, images_[i].relaSize);
             relocate(images_[i], images_[i].plt, images_[i].pltSize);
@@ -900,6 +956,7 @@ class DynamicLinker {
         publishDebugState(loader);
         for (uint32_t i = 0; i < imageCount_; ++i) {
             protect(images_[i]);
+            phase=os::Sys().readMonotonicTime();
             for (uint32_t p = 0; p < images_[i].programCount; ++p) {
                 const auto& segment = images_[i].programs[p];
                 if (segment.type == 1 && segment.fileSize)
@@ -910,6 +967,7 @@ class DynamicLinker {
                             up(segment.address + segment.fileSize),
                         down(segment.offset));
             }
+            metrics.recordNs+=os::Sys().readMonotonicTime()-phase;
         }
         // Replace one reserved custom auxiliary tag with the shared-library
         // finalizer. Main startup still owns the executable's init/fini arrays.
@@ -922,12 +980,15 @@ class DynamicLinker {
         // Shared-library constructors may allocate, inspect environ, or use
         // inherited descriptors. Initialize those facilities before invoking
         // any constructors; main startup must preserve their resulting state.
+        phase=os::Sys().readMonotonicTime();
         uint64_t prepare = 0;
         if (lookup("_ZN2os7Runtime7prepareEPPc", prepare))
             reinterpret_cast<void (*)(char**)>(prepare)(environment_);
         uint64_t setEnvironment = 0;
         if (lookup("__libc_set_environ", setEnvironment))
             reinterpret_cast<void (*)(char**)>(setEnvironment)(environment_);
+        metrics.prepareNs=os::Sys().readMonotonicTime()-phase;
+        phase=os::Sys().readMonotonicTime();
         uint64_t importState = 0;
         if (lookup("__libc_import_exec_state", importState))
             for (uint32_t i = 0; auxiliary[i * 2]; ++i)
@@ -937,6 +998,7 @@ class DynamicLinker {
                     auxiliary[i * 2 + 1] = 0;
                     break;
                 }
+        metrics.importNs=os::Sys().readMonotonicTime()-phase;
         uint64_t allocate = 0, free = 0;
         if (lookup("__osinfo_runtime_allocate", allocate) &&
             lookup("__osinfo_runtime_free", free)) {
@@ -948,7 +1010,10 @@ class DynamicLinker {
         if (lookup("__osinfo_bind_loader", bindLoader))
             reinterpret_cast<void (*)(const OsDynamicLoader*)>(bindLoader)(
                 &api);
+        phase=os::Sys().readMonotonicTime();
         init(0);
+        metrics.initNs=os::Sys().readMonotonicTime()-phase;
+        reportLinkMetrics(main.path,environment_);
         asm volatile("mov %0, %%rsp; jmp *%1" ::"r"(stack_), "r"(entry)
                      : "memory");
         __builtin_unreachable();

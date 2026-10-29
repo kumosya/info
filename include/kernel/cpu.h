@@ -189,7 +189,7 @@ bool isPreemptionEnabled();
 [[noreturn]] void halt();
 
 void initLocalApic();
-void initTimer(uint8_t vector, uint32_t initialCount);
+void initTimer(uint8_t vector, uint32_t intervalMicroseconds);
 
 void sendEndOfInterrupt();
 void stopOtherCpus();

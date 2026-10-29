@@ -50,7 +50,7 @@ class MemoryControl : public Sys::Transport {
                       uint64_t offset, uint64_t protection,
                       uint64_t target = 0);
     int64_t reclaimCaches();
-    int unmapTarget(uint64_t address, uint64_t size, uint64_t target = 0);
+    int unmapTarget(uint64_t address, uint64_t size, uint64_t target = 0,bool preserveLocks=false);
     int protectTarget(uint64_t address, uint64_t size, uint64_t protection,
                       uint64_t target = 0);
     uint64_t mapSharedMemory(uint64_t handle, uint64_t address, uint64_t size,
@@ -62,6 +62,11 @@ class MemoryControl : public Sys::Transport {
 };
 class MappingClient {
    public:
+    int64_t openTyped(const char* name,int flags,unsigned policy);
+    int64_t allocateTyped(uint64_t handle,uint64_t size);
+    int typedInfo(uint64_t handle,uint64_t& available);
+    int64_t memoryOffset(uint64_t address,uint64_t size,uint64_t& offset,uint64_t& contiguous,unsigned& rights);
+    int policy(unsigned operation,uint64_t address,uint64_t size,uint64_t argument);
     uint64_t anonymous(uint64_t size, uint32_t protection, bool lazy = true,
                        uint64_t hint = 0, uint64_t* identity = nullptr);
     uint64_t shared(uint64_t handle, uint64_t size, uint32_t protection,

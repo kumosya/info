@@ -234,7 +234,7 @@ bool protectPageLocked(uint64_t rootPhysicalAddress, uint64_t virtualAddress,
     uint64_t& entry = pt->entries[ptIndex];
     if ((entry & pagePresent) == 0) return false;
     const uint64_t preserved =
-        entry & (pageMask | pageExternal | (1ULL << 5) | (1ULL << 6));
+        entry & (pageMask | pageExternal | pageLocked | (1ULL << 5) | (1ULL << 6));
     entry = preserved | flags | pagePresent;
     return true;
 }
@@ -384,6 +384,101 @@ bool protectPageInAddressSpace(uint64_t rootPhysicalAddress,
     }
     if (protectedPage) cpu::requestTlbShootdown(virtualAddress);
     return protectedPage;
+}
+
+// Bound IRQ-off page-table work and one shootdown to at most 64 leaves.
+// Preflight under the same lock prevents partial changes on an invalid range.
+static bool editPages(uint64_t root, uint64_t address, uint64_t size,
+                      uint64_t flags, bool protect) {
+    if (!root || !size || size > 64 * 4096 ||
+        ((address | size) & 4095) || address > UINT64_MAX - size ||
+        (protect && !(flags & pageUser))) return false;
+    {
+        ::kernel::task::InterruptSpinLockGuard guard(virtualMemoryLock);
+        for (uint64_t offset = 0; offset < size; offset += 4096) {
+            uint64_t existing = 0;
+            if (!translateLocked(root, address + offset, &existing) ||
+                !(existing & pageUser) || (existing & (1ULL << 7)))
+                return false;
+        }
+        for (uint64_t offset = 0; offset < size; offset += 4096) {
+            if (protect) protectPageLocked(root, address + offset, flags);
+            else unmapPageLocked(root, address + offset);
+            asm volatile("invlpg (%0)" : : "r"(address + offset) : "memory");
+        }
+    }
+    cpu::requestTlbShootdown(address, size);
+    return true;
+}
+
+bool unmapPagesInAddressSpace(uint64_t root, uint64_t address, uint64_t size) {
+    return editPages(root, address, size, 0, false);
+}
+bool protectPagesInAddressSpace(uint64_t root, uint64_t address, uint64_t size,
+                               uint64_t flags) {
+    return editPages(root, address, size, flags, true);
+}
+
+namespace {
+bool setPageLock(uint64_t root,uint64_t address,bool locked) {
+    ::kernel::task::InterruptSpinLockGuard guard(virtualMemoryLock);
+    auto* table=getTable(root);
+    for(unsigned shift=39;shift>12;shift-=9) {
+        const auto entry=table->entries[(address>>shift)&511];
+        if(!(entry&pagePresent) || (entry&(1ULL<<7)))return false;
+        table=getTable(entry);
+    }
+    auto& entry=table->entries[(address>>12)&511];
+    if((entry&(pagePresent|pageUser))!=(pagePresent|pageUser))return false;
+    if(locked)entry|=pageLocked;else entry&=~pageLocked;
+    return true;
+}
+}
+int lockUserPages(kernel::task::Task& target,uint64_t address,uint64_t size,bool locked,bool allowAbsent,bool checkOnly) {
+    if(!size || ((address|size)&4095) || address<0x10000 || address>=0x800000000000ULL || size>0x800000000000ULL-address)return 22;
+    ::kernel::task::PreemptionSpinLockGuard guard(target.addressSpace().lock());
+    const auto root=target.addressSpace().rootPhysicalAddress();if(!root)return 12;
+    for(uint64_t offset=0;offset<size;offset+=4096) {
+        uint64_t flags=0;
+        if(!getPhysicalAddressInAddressSpace(root,address+offset,&flags)) {
+            if(allowAbsent || (!locked && target.addressSpace().residency().contains(address+offset)))continue;
+            return 12;
+        }
+        if(!(flags&pageUser) || (flags&(pageCacheDisable|pageWriteThrough|(1ULL<<7))))return 12;
+    }
+    auto next=target.addressSpace().residency();
+    if(!next.set(address,size,locked))return 12;
+    if(locked && next.bytes>target.memlockLimit())return 12;
+    if(checkOnly)return 0;
+    for(uint64_t offset=0;offset<size;offset+=4096)setPageLock(root,address+offset,locked);
+    target.addressSpace().residency()=next;
+    return 0;
+}
+int lockAllUserPages(kernel::task::Task& target,unsigned flags,const uint64_t* ranges,unsigned count) {
+    if(flags&~3U)return 22;
+    ::kernel::task::PreemptionSpinLockGuard guard(target.addressSpace().lock());
+    const auto root=target.addressSpace().rootPhysicalAddress();if(!root)return 12;
+    uint64_t cursor=0,address=0,state=0;
+    auto next=target.addressSpace().residency();
+    if(!flags)next={};
+    if(flags&1)while(nextDumpPage(root,cursor,address,state)) {
+        if(!next.set(address,4096,true))return 12;
+        cursor=address+4096;
+    }
+    if(flags&1)for(unsigned i=0;i<count;++i) {
+        const auto address=ranges[i*2],size=ranges[i*2+1];
+        if(!size || ((address|size)&4095) || address<0x10000 || address>=0x800000000000ULL || size>0x800000000000ULL-address || !next.set(address,size,true))return 12;
+    }
+    if((flags&1) && next.bytes>target.memlockLimit())return 12;
+    if((flags&1) || !flags) {
+        cursor=0;
+        while(nextDumpPage(root,cursor,address,state)) {
+            setPageLock(root,address,flags!=0);cursor=address+4096;
+        }
+        target.addressSpace().residency()=next;
+    }
+    target.addressSpace().lockFuture()=flags&2;
+    return 0;
 }
 
 // Kernel-root translation returning a physical byte address.
@@ -609,9 +704,8 @@ bool cloneAddressSpaceRoot(uint64_t sourceRootPhysicalAddress,
                                                              sourcePhysical);
                         uint8_t* destination = reinterpret_cast<uint8_t*>(
                             directMapBase + destinationPhysical);
-                        for (uint32_t byte = 0; byte < 4096; ++byte) {
-                            destination[byte] = source[byte];
-                        }
+                        size_t words=4096/8;
+                        asm volatile("rep movsq" : "+D"(destination), "+S"(source), "+c"(words) : : "memory");
                     }
                     if (!mapPageLocked(destinationRootPhysicalAddress,
                                        virtualAddress, destinationPhysical,

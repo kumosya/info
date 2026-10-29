@@ -584,15 +584,28 @@ enum class TaskState : uint8_t { Created, Running, Terminated, Stopped };
 
 class AddressSpace {
    public:
+    struct Residency {
+        struct Range {uint64_t begin=0,end=0;} ranges[128]{};
+        unsigned count=0;
+        uint64_t bytes=0;
+        bool set(uint64_t address,uint64_t size,bool locked);
+        bool contains(uint64_t address)const;
+        uint64_t overlap(uint64_t address,uint64_t size)const;
+    };
     void init(uint64_t rootPhysicalAddress);
     uint64_t replaceRoot(uint64_t rootPhysicalAddress);
     uint64_t rootPhysicalAddress() const;
     uint64_t generation() const { return generation_; }
+    uint64_t& lockedBytes() { return residency_.bytes; }
+    Residency& residency() {return residency_;}
+    bool& lockFuture() { return lockFuture_; }
     SpinLock& lock();
 
    private:
     uint64_t rootPhysicalAddress_;
     uint64_t generation_ = 1;
+    Residency residency_{};
+    bool lockFuture_ = false;
     SpinLock lock_;
 };
 
@@ -785,6 +798,7 @@ class Task {
         return dumpable_ && !managedService_ && uid_ == effectiveUid_ &&
                gid_ == effectiveGid_;
     }
+    uint64_t memlockLimit() const {return __atomic_load_n(&memlockLimit_,__ATOMIC_ACQUIRE);}
     uint64_t coreLimit() const { return coreLimit_; }
     uint64_t coreHardLimit() const { return coreHardLimit_; }
     bool setCoreLimit(uint64_t soft, uint64_t hard);
@@ -917,6 +931,7 @@ class Task {
     uint64_t coreDeadline_         = 0;
     uint64_t coreLimit_ = 8 * 1024 * 1024, coreHardLimit_ = 8 * 1024 * 1024;
     uint64_t niceLimit_ = 0, niceHardLimit_ = 0;
+    uint64_t memlockLimit_ = 64*1024, memlockHardLimit_ = 64*1024;
     int32_t initialNice_ = 0;
     bool dumpable_       = true;
     bool exitNotified_   = false;

@@ -58,7 +58,8 @@ enum class TtyRequest : uint64_t {
     SetForegroundGroup,
     SetNonblocking,
     GetNumber,
-    GetForegroundGroup
+    GetForegroundGroup,
+    DeviceControl
 };
 enum class StorageRequest : uint64_t {
     GetInfo = 0x100,
@@ -128,7 +129,8 @@ enum class FsRequest : uint64_t {
     RemoveFile,
     Fchmod,
     Fchown,
-    Ftimes
+    Ftimes,
+    ReadBuffer
 };
 constexpr uint64_t fsCompletionNotification = 0x4653434f4d504cULL;
 
@@ -170,7 +172,13 @@ enum class MmOperation : uint64_t {
     Sync,
     UnmapOwned,
     ProtectOwned,
-    SyncOwned
+    SyncOwned,
+    Lock,
+    Unlock,
+    LockAll,
+    UnlockAll,
+    Advise,
+    MemoryOffset
 };
 constexpr uint64_t mmFlagEager = 1, mmFlagShared = 2;
 }  // namespace os

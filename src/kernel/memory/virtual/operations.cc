@@ -49,6 +49,10 @@ uint64_t mapUserPages(::kernel::task::Task& target, uint64_t address,
         task->addressSpace().lock());
     if (!task->addressSpace().rootPhysicalAddress())
         return error(kernel::task::SyscallError::NotFound);
+    auto residency=task->addressSpace().residency();
+    if(task->addressSpace().lockFuture() &&
+       (!residency.set(address,size,true) || residency.bytes>task->memlockLimit()))
+        return error(kernel::task::SyscallError::OutOfMemory);
     uint64_t flags = pageUser;
     if ((protection & 1) != 0) {
         flags |= pageWritable;
@@ -63,7 +67,7 @@ uint64_t mapUserPages(::kernel::task::Task& target, uint64_t address,
         if (physicalAddress == 0 ||
             !mapPageInAddressSpace(task->addressSpace().rootPhysicalAddress(),
                                    address + mappedSize, physicalAddress,
-                                   flags)) {
+                                   flags | (residency.contains(address+mappedSize)?pageLocked:0))) {
             if (physicalAddress != 0) {
                 freePhysicalPage(physicalAddress);
             }
@@ -89,6 +93,7 @@ uint64_t mapUserPages(::kernel::task::Task& target, uint64_t address,
         }
         mappedSize += pageSize;
     }
+    task->addressSpace().residency()=residency;
     return address;
 }
 
@@ -96,7 +101,7 @@ uint64_t mapUserPages(::kernel::task::Task& target, uint64_t address,
 // destructive PTE edit. Ordinary backing releases pages; external backing
 // releases object references through the completed record updates.
 uint64_t unmapUserPages(::kernel::task::Task& target, uint64_t address,
-                        uint64_t size) {
+                        uint64_t size,bool preserveLocks) {
     kernel::task::Task* task = &target;
     if (task == nullptr || task == kernel::task::getIdle() ||
         (address & (pageSize - 1)) != 0 || (size & (pageSize - 1)) != 0 ||
@@ -112,10 +117,13 @@ uint64_t unmapUserPages(::kernel::task::Task& target, uint64_t address,
         const uint64_t physical = getPhysicalAddressInAddressSpace(
             task->addressSpace().rootPhysicalAddress(), address + offset,
             &flags);
-        if (physical == 0 || (flags & pageUser) == 0) {
+        if (physical == 0 || (flags & pageUser) == 0 || (flags & (1ULL << 7))) {
             return error(kernel::task::SyscallError::NotFound);
         }
     }
+    auto residency=task->addressSpace().residency();
+    if(!preserveLocks && !residency.set(address,size,false))
+        return error(kernel::task::SyscallError::OutOfMemory);
     void* reservation       = nullptr;
     void* sharedReservation = nullptr;
     if (!sharedMemory().prepareUnmap(*task, address, size, sharedReservation))
@@ -127,20 +135,28 @@ uint64_t unmapUserPages(::kernel::task::Task& target, uint64_t address,
         sharedMemory().cancelUnmap(sharedReservation);
         return error(kernel::task::SyscallError::OutOfMemory);
     }
-    for (uint64_t offset = 0; offset < size; offset += pageSize) {
-        uint64_t flags          = 0;
-        const uint64_t physical = getPhysicalAddressInAddressSpace(
-            task->addressSpace().rootPhysicalAddress(), address + offset,
-            &flags);
-        unmapPageInAddressSpace(task->addressSpace().rootPhysicalAddress(),
-                                address + offset);
-        if ((flags & pageExternal) == 0) {
-            freePhysicalPage(physical & ~(pageSize - 1));
+    const auto root = task->addressSpace().rootPhysicalAddress();
+    for (uint64_t offset = 0; offset < size;) {
+        const uint64_t count = (size - offset) / pageSize < 64
+                                   ? (size - offset) / pageSize : 64;
+        uint64_t physical[64]{}, flags[64]{};
+        for (uint64_t i = 0; i < count; ++i)
+            physical[i] = getPhysicalAddressInAddressSpace(
+                root, address + offset + i * pageSize, &flags[i]);
+        // Backing RAM remains owned until every CPU acknowledges this batch.
+        // Preflight above checked every 4 KiB leaf while this same address-
+        // space lock remains held, so this bounded edit cannot fail.
+        unmapPagesInAddressSpace(root, address + offset, count * pageSize);
+        for (uint64_t i = 0; i < count; ++i) {
+            if (!(flags[i] & pageExternal))
+                freePhysicalPage(physical[i] & ~(pageSize - 1));
         }
+        offset += count * pageSize;
     }
     // Commit whole removal, boundary trimming or middle splitting using
     // prepared metadata. No post-removal allocation should now be needed for a
     // split.
+    task->addressSpace().residency()=residency;
     maps().completeUnmap(*task, address, size, reservation);
     sharedMemory().releaseMapping(*task, address, size, sharedReservation);
     return 0;
@@ -171,7 +187,7 @@ uint64_t protectUserPages(::kernel::task::Task& target, uint64_t address,
         if (!getPhysicalAddressInAddressSpace(
                 task->addressSpace().rootPhysicalAddress(), address + offset,
                 &existing) ||
-            !(existing & pageUser))
+            !(existing & pageUser) || (existing & (1ULL << 7)))
             return error(kernel::task::SyscallError::NotFound);
     }
     // Translate public write/execute into PTE bits; low-level protection
@@ -179,12 +195,14 @@ uint64_t protectUserPages(::kernel::task::Task& target, uint64_t address,
     uint64_t flags = pageUser;
     if ((protection & 1) != 0) flags |= pageWritable;
     if ((protection & 2) == 0) flags |= pageNoExecute;
-    for (uint64_t offset = 0; offset < size; offset += pageSize) {
-        if (!protectPageInAddressSpace(
+    for (uint64_t offset = 0; offset < size;) {
+        const uint64_t bytes = size - offset < 64 * pageSize
+                                   ? size - offset : 64 * pageSize;
+        if (!protectPagesInAddressSpace(
                 task->addressSpace().rootPhysicalAddress(), address + offset,
-                flags)) {
+                bytes, flags))
             return error(kernel::task::SyscallError::InvalidArgument);
-        }
+        offset += bytes;
     }
     return 0;
 }

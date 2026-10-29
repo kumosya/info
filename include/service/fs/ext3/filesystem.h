@@ -13,8 +13,8 @@ constexpr uint16_t superMagic          = 0xef53;
 constexpr uint32_t rootInode           = 2;
 constexpr uint16_t modeDirectory       = vfs::modeDirectory;
 constexpr uint16_t modeRegular         = vfs::modeRegular;
-constexpr uint32_t blockCacheSlotCount = 256;
-constexpr uint32_t cacheHashBuckets    = 512;
+constexpr uint32_t blockCacheSlotCount = 4096;
+constexpr uint32_t cacheHashBuckets    = 8192;
 constexpr uint32_t cacheNoSlot         = 0xffffffffU;
 constexpr uint32_t readaheadWindow     = 4;
 
@@ -167,6 +167,7 @@ class Filesystem final : public vfs::FileSystem {
     uint32_t evictCacheSlot();
     void insertCacheSlot(uint32_t slot, uint32_t block);
     void removeCacheSlot(uint32_t slot);
+    void touchCacheSlot(uint32_t slot);
     void prefetchBlock(uint32_t block);
     void prefetchAhead(uint32_t inodeNumber, const Inode& inode,
                        uint32_t logical);
@@ -177,11 +178,11 @@ class Filesystem final : public vfs::FileSystem {
     uint32_t groupCount_ = 0;
     uint8_t blockCache_[blockCacheSlotCount][4096]{};
     uint32_t cachedBlocks_[blockCacheSlotCount]{};
-    uint32_t cacheAges_[blockCacheSlotCount]{};
+    uint32_t cacheOlder_[blockCacheSlotCount]{},cacheNewer_[blockCacheSlotCount]{};
     uint32_t cacheNext_[blockCacheSlotCount]{};
     uint32_t cacheHash_[cacheHashBuckets]{};
     bool cacheValid_[blockCacheSlotCount]{};
-    uint32_t cacheClock_           = 0;
+    uint32_t cacheUsed_=0,cacheNewest_=cacheNoSlot,cacheOldest_=cacheNoSlot,cacheSpare_=cacheNoSlot;
     uint32_t readaheadInode_       = 0;
     uint32_t readaheadLastLogical_ = 0;
 };

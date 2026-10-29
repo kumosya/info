@@ -51,6 +51,7 @@ uint32_t discoveredCpuCount;
 ::Atomic<uint32_t> onlineCpuCount{0};
 kernel::task::SpinLock tlbShootdownLock;
 ::Atomic<uint64_t> tlbShootdownAddress{0};
+::Atomic<uint64_t> tlbShootdownSize{4096};
 ::Atomic<uint32_t> tlbShootdownAcknowledgements{0};
 
 extern "C" uint8_t apTrampolineStart;
@@ -126,7 +127,9 @@ void rescheduleIpiHandler(Context*) { kernel::task::requestReschedule(); }
 
 void tlbShootdownIpiHandler(Context*) {
     const uint64_t address = tlbShootdownAddress.load(::MemoryOrder::Acquire);
-    asm volatile("invlpg (%0)" : : "r"(address) : "memory");
+    const uint64_t size = tlbShootdownSize.load(::MemoryOrder::Acquire);
+    for (uint64_t offset = 0; offset < size; offset += 4096)
+        asm volatile("invlpg (%0)" : : "r"(address + offset) : "memory");
     tlbShootdownAcknowledgements.fetchAdd(1, ::MemoryOrder::Release);
 }
 
@@ -308,7 +311,7 @@ void requestRemoteReschedule(uint32_t cpuId) {
     }
 }
 
-void requestTlbShootdown(uint64_t virtualAddress) {
+void requestTlbShootdown(uint64_t virtualAddress, uint64_t size) {
     if (cpu::getOnlineCpuCount() <= 1) {
         return;
     }
@@ -318,6 +321,7 @@ void requestTlbShootdown(uint64_t virtualAddress) {
     tlbShootdownLock.lock();
     const uint64_t flags = cpu::disableInterrupts();
     tlbShootdownAddress.store(virtualAddress, MemoryOrder::Release);
+    tlbShootdownSize.store(size, MemoryOrder::Release);
     tlbShootdownAcknowledgements.store(0, MemoryOrder::Release);
     uint32_t targets = 0;
     for (uint32_t cpuId = 0; cpuId < discoveredCpuCount; ++cpuId) {

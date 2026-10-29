@@ -23,15 +23,15 @@ int Task::resourceLimit(Task& caller, int resource, bool set, uint64_t& soft,
          caller.uid() != savedUid_ || caller.gid() != gid_ ||
          caller.gid() != effectiveGid_ || caller.gid() != savedGid_))
         return 1;
-    if (resource != 4 && resource != 13)
+    if (resource != 4 && resource != 8 && resource != 13)
         return resource >= 0 && resource < 16 ? 95 : 22;
-    uint64_t& current      = resource == 4 ? coreLimit_ : niceLimit_;
-    uint64_t& maximum      = resource == 4 ? coreHardLimit_ : niceHardLimit_;
+    uint64_t& current      = resource == 4 ? coreLimit_ : resource==8?memlockLimit_:niceLimit_;
+    uint64_t& maximum      = resource == 4 ? coreHardLimit_ : resource==8?memlockHardLimit_:niceHardLimit_;
     const uint64_t oldSoft = current, oldHard = maximum;
     if (set) {
         if (soft > hard) return 22;
         if (hard > maximum && caller.effectiveUid() != 0) return 1;
-        current = soft;
+        __atomic_store_n(&current,soft,__ATOMIC_RELEASE);
         maximum = hard;
     }
     soft = oldSoft;

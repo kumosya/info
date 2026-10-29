@@ -15,6 +15,7 @@
 #include "kernel/syscall.h"
 #include "kernel/task.h"
 #include "kernel/time.h"
+#include "kernel/smp.h"
 #include "service/common/identity.h"
 #include "service/common/kernel-requests.h"
 
@@ -23,6 +24,26 @@ namespace kernel::task {
 static_assert(sizeof(CpuContext) == 21 * sizeof(uint64_t));
 
 namespace {
+// Place new work on a lightly loaded allowed CPU. Wakeups retain their CPU;
+// repeatedly inheriting CPU 0 at creation left other processors idle.
+void placeNewThread(Thread& thread) {
+    const auto preferred=thread.getCpuId();
+    const auto discovered=cpu::getDiscoveredCpuCount();
+    const auto count=discovered<64?discovered:64;
+    uint64_t bestLoad=UINT64_MAX;uint32_t best=preferred;
+    for(uint32_t n=0;n<count && n<64;++n) {
+        const auto id=(preferred+n)%count;
+        auto* descriptor=cpu::getCpuDescriptor(id);
+        if(!(thread.getCpuAffinity()&(1ULL<<id)) || !descriptor ||
+           descriptor->getState().load(MemoryOrder::Acquire)!=cpu::CpuState::Online)continue;
+        auto* local=descriptor->getLocalData();
+        auto* queue=local?local->getRunQueue():nullptr;if(!queue)continue;
+        InterruptSpinLockGuard guard(queue->getLock());
+        const uint64_t load=queue->getRunnableCount()+(queue->getCurrentThread() && queue->getCurrentThread()!=queue->getIdleThread()?1:0);
+        if(load<bestLoad){bestLoad=load;best=id;}
+    }
+    thread.setCpuId(best);
+}
 
 // Ordinary kernel stack bytes; fixed-role services use a larger stack to
 // accommodate deeper native service/loader paths without changing user stacks.
@@ -109,6 +130,7 @@ Thread* Thread::create(Task* task, ThreadEntry entryPoint, void* argument,
         return nullptr;
     }
     if (makeRunnable && task::isSchedulerInitialized()) {
+        placeNewThread(*thread);
         task::enqueueThread(thread);
     }
     return thread;
@@ -165,7 +187,8 @@ Thread* Thread::createUser(Task* task, uint64_t entryPoint,
         }
         thread->setCpuAffinity(initialAffinity);
         if (makeRunnable && task::isSchedulerInitialized()) {
-            task::enqueueThread(thread);
+            placeNewThread(*thread);
+        task::enqueueThread(thread);
         }
     }
     return thread;
@@ -194,6 +217,7 @@ Thread* Thread::createForkedUser(Task* task, const SyscallContext& context,
         thread->lastUserContext = *childContext;
         thread->hasUserContext  = true;
         if (currentThread()) {
+            thread->setCpuAffinity(currentThread()->getCpuAffinity());
             thread->signalStack       = currentThread()->signalStack;
             thread->activeSignalFrame = currentThread()->activeSignalFrame;
             thread->signalDepth       = currentThread()->signalDepth;
@@ -202,7 +226,7 @@ Thread* Thread::createForkedUser(Task* task, const SyscallContext& context,
                      : "=m"(thread->floatingPointState)
                      :
                      : "memory");
-        if (task::isSchedulerInitialized()) task::enqueueThread(thread);
+        if (task::isSchedulerInitialized()) {placeNewThread(*thread);task::enqueueThread(thread);}
     }
     return thread;
 }

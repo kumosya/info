@@ -8,6 +8,39 @@
 #include <os/task.h>
 
 namespace vfs::server {
+void FsServer::readBuffer(const os::IpcMessage& request,os::IpcMessage& reply) {
+    struct Handles {
+        const os::IpcMessage& message;
+        ~Handles(){for(unsigned i=0;i<message.handleCount && i<4;++i)os::closeHandle(message.handles[i]);}
+    } handles{request};
+    constexpr uint64_t capacity=65536,base=0x3c00000000ULL;
+    reply.length=2;reply.data[1]=0x4653425546464552ULL;reply.data[0]=int64_t(os::ErrorCode::InvalidArgument);
+    if(request.length!=3 || request.handleCount!=1 || !request.data[2] || request.data[2]>capacity ||
+       (request.data[1]!=UINT64_MAX && request.data[1]>INT64_MAX-request.data[2]))return;
+    if(!permitted(request)){reply.data[0]=int64_t(os::ErrorCode::PermissionDenied);return;}
+    auto* entry=acquireDescription(request.senderPid,request.data[0]);
+    if(!entry){reply.data[0]=int64_t(os::ErrorCode::InvalidHandle);return;}
+    struct Description {FsServer* server;OpenFileDescription* entry;~Description(){server->releaseDescription(entry);}} description{this,entry};
+    if(!entry->filesystem || (entry->mode&0xf000U)!=vfs::modeRegular){reply.data[0]=int64_t(os::ErrorCode::NotSupported);return;}
+    static uint32_t slots=0;
+    unsigned slot=16;
+    for(unsigned i=0;i<16;++i)if(!(__atomic_fetch_or(&slots,1U<<i,__ATOMIC_ACQ_REL)&(1U<<i))){slot=i;break;}
+    if(slot==16){reply.data[0]=int64_t(os::ErrorCode::NotSupported);return;}
+    const uint64_t address=base+slot*capacity;
+    struct Mapping {uint32_t* slots;unsigned slot;uint64_t address=0;~Mapping(){if(address)os::detail::MemoryControl().unmapTarget(address,65536);__atomic_fetch_and(slots,~(1U<<slot),__ATOMIC_RELEASE);}} mapping{&slots,slot};
+    if(os::detail::MemoryControl().mapPages(request.handles[0],address,capacity,0,1)!=address){reply.data[0]=int64_t(os::ErrorCode::InvalidHandle);return;}
+    mapping.address=address;
+    std::lock_guard<std::mutex> guard(descriptionMutex(entry));
+    const bool positioned=request.data[1]!=UINT64_MAX;
+    const auto offset=positioned?request.data[1]:entry->offset;
+    const vfs::FileStatus status{entry->inode,entry->mode,entry->size,entry->uid,entry->gid,1,0,0,0,entry->privateData};
+    std::lock_guard<std::mutex> filesystem(fileSystemLock(entry->mountIndex));
+    const auto count=entry->filesystem->read(status,offset,reinterpret_cast<void*>(address),request.data[2]);
+    if(count>=0 && uint64_t(count)<=request.data[2]) {
+        if(!positioned)entry->offset+=uint64_t(count);
+        reply.data[0]=uint64_t(count);
+    }else reply.data[0]=int64_t(os::ErrorCode::IoError);
+}
 
 void FsServer::delegateMapping(const os::IpcMessage& request,
                                os::IpcMessage& reply) {

@@ -90,6 +90,7 @@ bool FsServer::permitted(const os::IpcMessage& request) {
         case os::FsRequest::WriteAtAsync:
         case os::FsRequest::Ftruncate:
         case os::FsRequest::ReadAt:
+        case os::FsRequest::ReadBuffer:
         case os::FsRequest::WriteAt: {
             std::lock_guard<std::mutex> guard(descriptorLock_);
             FileDescriptor* descriptor =
@@ -99,7 +100,7 @@ bool FsServer::permitted(const os::IpcMessage& request) {
             // credential changes do not revoke an already-open file descriptor.
             const bool reading = operation == os::FsRequest::Read ||
                                  operation == os::FsRequest::ReadAtAsync ||
-                                 operation == os::FsRequest::ReadAt;
+                                 operation == os::FsRequest::ReadAt || operation == os::FsRequest::ReadBuffer;
             const int access = descriptor->flags & O_ACCMODE;
             return reading ? access != O_WRONLY : access != O_RDONLY;
         }

@@ -25,7 +25,6 @@ class TaskServer {
     static constexpr uint64_t maximumExecutableSize = 8ULL * 1024 * 1024;
     static constexpr uint32_t sharedImageCount      = 1;
 
-    static constexpr uint32_t executableReadWindow = 8;
 
     bool parseArguments(const os::IpcMessage& request, const char*& path,
                         const char* (&arguments)[maximumArgumentCount],
@@ -86,33 +85,11 @@ class TaskServer {
                         uint64_t size) {
         os::File file;
         if (file.borrow(fs, descriptor, nullptr, O_RDONLY)) return false;
-        os::File::Opt operations[executableReadWindow];
-        uint64_t offsets[executableReadWindow]{};
-        uint64_t next = 0;
-        uint32_t head = 0, count = 0;
-        const size_t maximum = file.getMaximumAsyncTransfer();
-        while (next < size || count) {
-            while (next < size && count < executableReadWindow) {
-                const uint32_t slot = (head + count) % executableReadWindow;
-                const size_t chunk =
-                    size - next < maximum ? size - next : maximum;
-                if (file.readAsync(next, chunk, operations[slot])) return false;
-                offsets[slot] = next;
-                next += chunk;
-                ++count;
-            }
-            auto& operation = operations[head];
-            if (operation.wait(os::ipcInfiniteDeadline)) return false;
-            const uint64_t offset = offsets[head];
-            const size_t expected =
-                size - offset < maximum ? size - offset : maximum;
-            if (operation.getTransferred() != expected || !operation.getData())
-                return false;
-            os::Runtime::copyBytes(static_cast<uint8_t*>(image) + offset,
-                                   operation.getData(), expected);
-            if (operation.close()) return false;
-            head = (head + 1) % executableReadWindow;
-            --count;
+        uint64_t offset=0;
+        while(offset<size) {
+            const auto count=file.pread(static_cast<uint8_t*>(image)+offset,size-offset,offset);
+            if(count<=0)return false;
+            offset+=uint64_t(count);
         }
         return true;
     }

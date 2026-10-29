@@ -29,6 +29,11 @@ void Filesystem::insertCacheSlot(uint32_t slot, uint32_t block) {
     cacheValid_[slot]     = true;
     cacheNext_[slot]      = cacheHash_[bucket];
     cacheHash_[bucket]    = slot;
+    cacheOlder_[slot]=cacheNewest_;cacheNewer_[slot]=cacheNoSlot;
+    if(cacheNewest_!=cacheNoSlot)cacheNewer_[cacheNewest_]=slot;
+    else cacheOldest_=slot;
+    cacheNewest_=slot;
+    cacheSpare_=cacheNoSlot;
 }
 
 void Filesystem::removeCacheSlot(uint32_t slot) {
@@ -44,18 +49,26 @@ void Filesystem::removeCacheSlot(uint32_t slot) {
     }
     cacheNext_[slot]  = cacheNoSlot;
     cacheValid_[slot] = false;
+    const auto older=cacheOlder_[slot],newer=cacheNewer_[slot];
+    if(older!=cacheNoSlot)cacheNewer_[older]=newer;else cacheOldest_=newer;
+    if(newer!=cacheNoSlot)cacheOlder_[newer]=older;else cacheNewest_=older;
+}
+
+void Filesystem::touchCacheSlot(uint32_t slot) {
+    if(slot==cacheNewest_)return;
+    const auto older=cacheOlder_[slot],newer=cacheNewer_[slot];
+    if(older!=cacheNoSlot)cacheNewer_[older]=newer;else cacheOldest_=newer;
+    if(newer!=cacheNoSlot)cacheOlder_[newer]=older;
+    cacheOlder_[slot]=cacheNewest_;cacheNewer_[slot]=cacheNoSlot;
+    cacheNewer_[cacheNewest_]=slot;cacheNewest_=slot;
 }
 
 uint32_t Filesystem::evictCacheSlot() {
-    for (uint32_t slot = 0; slot < blockCacheSlotCount; ++slot) {
-        if (!cacheValid_[slot]) return slot;
-    }
-    uint32_t selected = 0;
-    for (uint32_t slot = 1; slot < blockCacheSlotCount; ++slot) {
-        if (cacheAges_[slot] < cacheAges_[selected]) selected = slot;
-    }
+    if(cacheSpare_!=cacheNoSlot)return cacheSpare_;
+    if(cacheUsed_<blockCacheSlotCount)return cacheSpare_=cacheUsed_++;
+    const uint32_t selected = cacheOldest_;
     removeCacheSlot(selected);
-    return selected;
+    return cacheSpare_=selected;
 }
 
 bool Filesystem::readBlock(uint32_t block, void* buffer) {
@@ -66,7 +79,7 @@ bool Filesystem::readBlock(uint32_t block, void* buffer) {
     const uint32_t hit = findCachedBlock(block);
     if (hit != cacheNoSlot) {
         os::Runtime::copyBytes(buffer, blockCache_[hit], blockSize_);
-        cacheAges_[hit] = ++cacheClock_;
+        touchCacheSlot(hit);
         return true;
     }
     return fetchBlock(block, buffer);
@@ -81,7 +94,6 @@ bool Filesystem::fetchBlock(uint32_t block, void* buffer) {
     }
     os::Runtime::copyBytes(buffer, blockCache_[selected], blockSize_);
     insertCacheSlot(selected, block);
-    cacheAges_[selected] = ++cacheClock_;
     return true;
 }
 
@@ -97,7 +109,6 @@ void Filesystem::prefetchBlock(uint32_t block) {
         return;
     }
     insertCacheSlot(selected, block);
-    cacheAges_[selected] = ++cacheClock_;
 }
 
 void Filesystem::prefetchAhead(uint32_t inodeNumber, const Inode& inode,
@@ -133,7 +144,7 @@ bool Filesystem::writeBlock(uint32_t block, const void* buffer) {
     const uint32_t hit = findCachedBlock(block);
     if (hit != cacheNoSlot) {
         os::Runtime::copyBytes(blockCache_[hit], buffer, blockSize_);
-        cacheAges_[hit] = ++cacheClock_;
+        touchCacheSlot(hit);
     }
     return true;
 }

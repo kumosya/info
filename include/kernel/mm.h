@@ -35,6 +35,9 @@ class SharedMemory {
                              uint64_t destinationHandle = 0);
     bool unlink(const char* name);
     bool resize(kernel::task::Task& task, uint64_t handle, uint64_t size);
+    int64_t openTyped(kernel::task::Task& task,int flags,unsigned policy);
+    int64_t allocateTyped(kernel::task::Task& task,uint64_t handle,uint64_t size);
+    int typedInfo(kernel::task::Task& task,uint64_t handle,uint64_t& available);
     bool querySize(kernel::task::Task& task, uint64_t handle, uint64_t& size);
     bool unlink(kernel::task::Task& task, uint64_t handle);
     uint64_t map(kernel::task::Task& task, uint64_t handle, uint64_t address,
@@ -57,6 +60,9 @@ class SharedMemory {
     static constexpr uint32_t objectCapacity = 16, handleCapacity = 64,
                               mappingCapacity = 64;
     static constexpr uint32_t pageCapacity = 64, nameCapacity = 64;
+    static constexpr unsigned typedPageCount = 256;
+    uint64_t typedBase_{};
+    bool typedUsed_[typedPageCount]{};
     class SharedMemoryObject {
         friend class SharedMemory;
 
@@ -66,6 +72,8 @@ class SharedMemory {
        private:
         bool used = false;
         bool linked{};
+        bool typedPool{},typedAllocation{};
+        unsigned typedPolicy{};
         char name[nameCapacity]{};
         uint32_t references{};
         uint32_t mappings{};
@@ -225,7 +233,7 @@ class MemoryService {
              os::IpcMessage& reply);
     uint64_t map(uint64_t address, uint64_t size, uint64_t flags,
                  uint64_t handle, uint64_t offset, uint64_t target);
-    uint64_t unmap(uint64_t address, uint64_t size, uint64_t target);
+    uint64_t unmap(uint64_t address, uint64_t size, uint64_t target,bool preserveLocks=false);
     uint64_t protect(uint64_t address, uint64_t size, uint64_t protection,
                      uint64_t target);
 

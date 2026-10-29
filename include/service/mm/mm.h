@@ -25,6 +25,17 @@ class KernelMemory {
         return services::RequestChannel(os::CoreServiceKind::Memory)
             .result(request, reply);
     }
+    static int residency(uint64_t task,uint64_t address,uint64_t size,bool lock,bool allowAbsent=true,bool checkOnly=false) {
+        os::IpcMessage request{},reply{};request.type=uint64_t(os::MemoryOperation::LockRange);request.length=5;
+        request.data[0]=task;request.data[1]=address;request.data[2]=size;request.data[3]=(lock?1:0)|(allowAbsent?2:0)|(checkOnly?4:0);
+        const int status=services::RequestChannel(os::CoreServiceKind::Memory).result(request,reply);
+        return status?5:int(reply.data[1]);
+    }
+    static int lockState(uint64_t task,uint64_t& bytes,bool& future,uint64_t& limit) {
+        os::IpcMessage request{},reply{};request.type=uint64_t(os::MemoryOperation::LockState);request.length=5;request.data[0]=task;
+        const int status=services::RequestChannel(os::CoreServiceKind::Memory).result(request,reply);
+        if(status)return 5;bytes=reply.data[1];future=reply.data[2];limit=reply.data[3];return 0;
+    }
     static int bindPager(uint64_t endpoint) {
         os::IpcMessage request{}, reply{};
         request.type    = static_cast<uint64_t>(os::MemoryOperation::BindPager);
@@ -147,6 +158,7 @@ class Pager {
     Pager(MemoryState& state, ReclaimManager& reclaim)
         : state_(state), reclaim_(reclaim), allocator_(state, reclaim) {}
     int fault(uint64_t task, uint64_t address, uint64_t flags);
+    int populateLocked(uint64_t task,uint64_t address);
     int clone(uint64_t parent, uint64_t child);
 
    private:

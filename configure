@@ -3,8 +3,7 @@
 # files and is expanded directly into packages/. Existing packages/ is offline.
 RELEASE_URLS=${OSINFO_RELEASE_URLS:-'
 https://github.com/kumosya/inpkg/releases/download/v0.1-beta/inpkg.inpk
-https://github.com/kumosya/guiw/releases/download/v0.2-beta/guiw.inpk
-https://github.com/kumosya/guiw/releases/download/v0.2-beta/libosgui-c++.inpk
+https://github.com/kumosya/guiw/releases/download/v0.3-beta/guiw.zip
 https://github.com/kumosya/osinfo-base-tools/releases/download/v0.1-beta/osinfo-base-tools.zip
 '}
 
@@ -87,6 +86,14 @@ if [ ! -d "$packages" ]; then
     test -n "$(ls -A "$probe/download")" || { echo 'release URL list is empty' >&2; exit 1; }
     mkdir -p "$(dirname -- "$packages")"
     mv -- "$probe/download" "$packages"
+fi
+if [ -f "$packages/guiw.zip" ]; then
+    for retired in guiw-app.zip guiw-app-tools.inpk libguiw-language.inpk; do
+        if [ -f "$packages/$retired" ]; then
+            backup=$(mktemp -d "$build/guiw-packages-backup-XXXXXX")
+            mv -- "$packages/$retired" "$backup/$retired"
+        fi
+    done
 fi
 if [ "$bootstrap_sdk" -eq 1 ]; then
     tools/osinfo-host prepare --argument base --build "$build" --objects "$objects" --packages "$packages"

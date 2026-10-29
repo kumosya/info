@@ -113,14 +113,15 @@ uint64_t MemoryService::map(uint64_t address, uint64_t size, uint64_t flags,
 // Authorize and retain before range unmapping; its address-space lock and
 // split preparation live in the common unmapUserPages implementation.
 uint64_t MemoryService::unmap(uint64_t address, uint64_t size,
-                              uint64_t targetId) {
+                              uint64_t targetId,bool preserveLocks) {
     auto* caller = task::getCurrent();
     if (!caller || !mappingAuthorized(*caller, targetId))
         return error(::kernel::task::SyscallError::PermissionDenied);
+    if(preserveLocks && !isMemoryManager(*caller))return error(::kernel::task::SyscallError::PermissionDenied);
     auto target = task::find(targetId ? targetId : caller->id());
     return !target || target->isTerminated()
                ? error(::kernel::task::SyscallError::NotFound)
-               : mm::unmapUserPages(*target, address, size);
+               : mm::unmapUserPages(*target, address, size,preserveLocks);
 }
 // Only current MM may establish COW. Ordinary protection must obey recorded
 // backing rights and cannot directly re-enable a COW mapping's write bit.

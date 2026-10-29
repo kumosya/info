@@ -84,9 +84,72 @@ class MemoryManager {
     SharedMemoryManager shared_;
     uint64_t endpoint_ = 0;
 
+    int populate(uint64_t task,uint64_t address,uint64_t size,bool pin=false) {
+        for(uint64_t offset=0;offset<size;offset+=4096) {
+            if(state_.regions.find(task,address+offset)) {
+                const int status=pager_.populateLocked(task,address+offset);
+                if(status)return status==-5?12:status==-3?13:12;
+                if(pin)if(auto* page=state_.page(task,address+offset))page->pinned=true;
+            } else if(!(KernelMemory::pageState(task,address+offset)&1))return 12;
+        }
+        return 0;
+    }
+    int residency(const os::IpcMessage& request,unsigned operation) {
+        const auto task=request.senderPid,address=request.data[0],size=request.data[1];
+        if(operation<=1) {
+            if(!RegionTable::validRange(address,size))return 22;
+            // Validate coverage before allowing absent PROT_NONE backing. Keep
+            // each newly populated page pinned while later pages may reclaim.
+            if(!operation)for(uint64_t offset=0;offset<size;offset+=4096)
+                if(!state_.regions.find(task,address+offset) && !(KernelMemory::pageState(task,address+offset)&1))return 12;
+            const int preflight=KernelMemory::residency(task,address,size,operation==0,true,true);
+            if(preflight)return preflight;
+            bool pinned[MemoryState::pageCapacity]{};
+            for(size_t i=0;i<MemoryState::pageCapacity;++i)pinned[i]=state_.pages[i].pinned;
+            int status=!operation?populate(task,address,size,true):0;
+            if(!status)status=KernelMemory::residency(task,address,size,operation==0);
+            if(status)for(size_t i=0;i<MemoryState::pageCapacity;++i)state_.pages[i].pinned=pinned[i];
+            if(!status)for(auto& page:state_.pages)
+                if(page.used && page.task==task && page.address>=address && page.address-address<size)page.pinned=operation==0;
+            return status;
+        }
+        if(operation==4) {
+            if(request.data[2]>4 || !RegionTable::validRange(address,size))return 22;
+            for(uint64_t offset=0;offset<size;offset+=4096)
+                if(!state_.regions.find(task,address+offset) && !(KernelMemory::pageState(task,address+offset)&1))return 12;
+            return request.data[2]==3?populate(task,address,size):0;
+        }
+        const auto flags=operation==3?0:unsigned(request.data[0]);
+        if((operation==2 && !flags) || flags>3)return 22;
+        os::IpcMessage command{},reply{};command.type=uint64_t(os::MemoryOperation::LockAll);command.length=5;
+        command.data[0]=task;command.data[1]=flags;unsigned count=0;
+        struct PinTransaction {
+            MemoryState& state;bool original[MemoryState::pageCapacity]{};bool committed=false;
+            explicit PinTransaction(MemoryState& value):state(value) {
+                for(size_t i=0;i<MemoryState::pageCapacity;++i)original[i]=state.pages[i].pinned;
+            }
+            ~PinTransaction() {
+                if(!committed)for(size_t i=0;i<MemoryState::pageCapacity;++i)state.pages[i].pinned=original[i];
+            }
+        } pins(state_);
+        if(flags&1)for(size_t i=0;i<RegionTable::capacity;++i) {
+            const auto& region=state_.regions.at(i);if(!region.used || region.task!=task)continue;
+            const int status=populate(task,region.address,region.size,true);if(status)return status;
+            if(count==128)return 12;
+            command.data[3+count*2]=region.address;command.data[4+count*2]=region.size;++count;
+        }
+        command.data[2]=count;if(command.length<3+count*2)command.length=3+count*2;
+        const int status=services::RequestChannel(os::CoreServiceKind::Memory).result(command,reply);
+        if(status)return 5;
+        if(reply.data[1])return int(reply.data[1]);
+        if((flags&1) || !flags)for(auto& page:state_.pages)if(page.used && page.task==task)page.pinned=flags!=0;
+        pins.committed=true;
+        return 0;
+    }
     int unmap(uint64_t task, uint64_t address, uint64_t size) {
         RegionTable staged = state_.regions;
         if (!staged.remove(task, address, size)) return -1;
+        if(KernelMemory::residency(task,address,size,false,true,true))return -5;
         bool wasMapped[MemoryState::pageCapacity]{};
         for (size_t i = 0; i < MemoryState::pageCapacity; ++i) {
             auto& page = state_.pages[i];
@@ -95,7 +158,7 @@ class MemoryManager {
                 continue;
             wasMapped[i] = true;
             if (os::detail::MemoryControl().unmapTarget(page.address, 4096,
-                                                        task)) {
+                                                        task,true)) {
                 // Keep backing references until the unmap transaction commits.
                 for (size_t n = 0; n < i; ++n)
                     if (wasMapped[n]) {
@@ -111,6 +174,7 @@ class MemoryManager {
             }
             page.mapped = false;
         }
+        if(KernelMemory::residency(task,address,size,false))return -11;
         state_.regions = staged;
         for (auto& page : state_.pages)
             if (page.used && page.task == task && page.address >= address &&
@@ -141,7 +205,7 @@ class MemoryManager {
                                      (page.cow ? ~1ULL : ~0ULL),
                                  task)
                            : os::detail::MemoryControl().unmapTarget(
-                                 page.address, 4096, task);
+                                 page.address, 4096, task,true);
             if (result) {
                 // Restore PTE permissions from the uncommitted region table.
                 for (size_t n = 0; n < index; ++n)
@@ -248,6 +312,14 @@ class MemoryManager {
             state_.collectBackings();
             return -5;
         }
+        uint64_t lockedBytes=0,limit=0;bool future=false;
+        if(KernelMemory::lockState(region.task,lockedBytes,future,limit)) {unmap(region.task,region.address,region.size);return -11;}
+        if(future) {
+            if(KernelMemory::residency(region.task,region.address,region.size,true)) {unmap(region.task,region.address,region.size);return -5;}
+            const auto error=populate(region.task,region.address,region.size);
+            if(error) {unmap(region.task,region.address,region.size);return -5;}
+            for(auto& page:state_.pages)if(page.used && page.task==region.task && page.address>=region.address && page.address-region.address<region.size)page.pinned=true;
+        }
         if (!region.lazy && protection)
             for (uint64_t offset = 0; offset < size; offset += 4096) {
                 const int result =
@@ -277,7 +349,38 @@ class MemoryManager {
             reply.data[0] = static_cast<int64_t>(os::ErrorCode::PeerDied);
             return;
         }
+        if(operation>=os::MmOperation::Lock && operation<=os::MmOperation::Advise) {
+            reply.data[0]=0;
+            if(request.length<3)reply.data[1]=22;
+            else reply.data[1]=residency(request,unsigned(operation)-unsigned(os::MmOperation::Lock));
+            return;
+        }
         switch (operation) {
+            case os::MmOperation::MemoryOffset: {
+                if(request.length!=2)break;
+                const uint64_t address=request.data[0],size=request.data[1];
+                if(!size || address<0x10000 || address>=0x800000000000ULL || size>0x800000000000ULL-address)break;
+                const auto* region=state_.regions.find(request.senderPid,address);
+                if(!region){reply.data[0]=-4;break;}
+                const auto* backing=state_.backing(region->backing);
+                if(!backing || backing->kind!=BackingKind::Shared){reply.data[0]=-7;break;}
+                const uint64_t offset=region->offset+address-region->address;
+                uint64_t end=region->address+region->size;
+                while(end<address+size) {
+                    const auto* next=state_.regions.find(request.senderPid,end);
+                    if(!next || next->backing!=region->backing || next->offset!=offset+end-address)break;
+                    end=next->address+next->size;
+                }
+                if(end<address+size){reply.data[0]=-7;break;}
+                const unsigned rights=backing->writable?7:1;
+                os::Ipc::Handle duplicate;
+                const int status=os::Ipc::Handle(backing->handle,false).duplicate(rights,0,duplicate);
+                if(status){reply.data[0]=status;break;}
+                reply.data[0]=0;reply.data[1]=offset;reply.data[2]=end-address;reply.data[3]=rights;
+                reply.handleCount=1;reply.handles[0]=duplicate.release();
+                reply.handleRights[0]=rights;reply.handleOptions[0]=os::ipcHandleRestrictRights;
+                break;
+            }
             case os::MmOperation::MapAnonymous:
                 if (request.length >= 4)
                     reply.data[0] = reserve(request, BackingKind::Anonymous);

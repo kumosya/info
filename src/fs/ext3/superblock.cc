@@ -19,7 +19,7 @@ bool Filesystem::mount(SectorDevice& device) {
     for (uint32_t bucket = 0; bucket < cacheHashBuckets; ++bucket) {
         cacheHash_[bucket] = cacheNoSlot;
     }
-    cacheClock_           = 0;
+    cacheUsed_=0;cacheNewest_=cacheOldest_=cacheSpare_=cacheNoSlot;
     readaheadInode_       = 0;
     readaheadLastLogical_ = 0;
     if (!readSuperblock() || superblock_.magic != superMagic ||

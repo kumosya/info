@@ -1,15 +1,16 @@
 #include "host.h"
 namespace host {
 namespace {
-void guiPackage(const Context& context, const fs::path& destination) {
-    const auto archive = context.packages / "libosgui-c++.inpk";
+void developmentPackage(const Context& context,const fs::path& destination,
+                        const std::string& name,const std::string& headerPrefix,
+                        const std::vector<std::string>& requiredHeaders) {
+    const auto libraryName=name+".so";
+    const auto archive = context.packages / (name+".inpk");
     if (!fs::is_regular_file(archive))
-        throw std::runtime_error(
-            "missing libosgui-c++.inpk; build guiw/lib/osgui-c++ with the base "
-            "SDK first");
+        throw std::runtime_error("missing external SDK package: "+archive.filename().string());
     run({"tools/inpkg", "check", archive.string()});
     const auto metadata = packageMetadata(archive);
-    if (metadata.name != "libosgui-c++")
+    if (metadata.name != name)
         throw std::runtime_error("unexpected GUI package identity");
     const auto manifest =
         capture({"tar", "-xOzf", archive.string(), "package.conf"});
@@ -26,9 +27,9 @@ void guiPackage(const Context& context, const fs::path& destination) {
         auto member = line.substr(8, separator - 8),
              target = line.substr(separator + 4);
         fs::path output;
-        if (target == "/usr/lib/libosgui-c++.so")
-            output = "lib/libosgui-c++.so";
-        else if (target.rfind("/usr/include/osgui-c++/", 0) == 0) {
+        if (target == ("/usr/lib/"+libraryName))
+            output = fs::path("lib")/libraryName;
+        else if (!headerPrefix.empty() && target.rfind("/usr/include/"+headerPrefix, 0) == 0) {
             output = fs::path("include") /
                      target.substr(std::string("/usr/include/").size());
             headers.insert(output.filename().string());
@@ -41,21 +42,29 @@ void guiPackage(const Context& context, const fs::path& destination) {
         // selected regular payloads instead of extracting a system tree into
         // the SDK.
         auto data = capture({"tar", "-xOzf", archive.string(), member});
-        if (target == "/usr/lib/libosgui-c++.so") {
+        if (target == ("/usr/lib/"+libraryName)) {
             if (data.size() < 64 ||
                 data.substr(0, 4) != std::string("\177ELF", 4) ||
                 data[4] != 2 || data[5] != 1 ||
                 static_cast<unsigned char>(data[18]) != 62 || data[19])
                 throw std::runtime_error(
-                    "libosgui-c++ must be little-endian ELF64 x86-64");
+                    name+" must be little-endian ELF64 x86-64");
             library = true;
         }
         write(checked, data);
+        if (target == ("/usr/lib/"+libraryName) && name.rfind("lib",0)!=0)
+            write(destination / "lib" / ("lib"+libraryName),data);
     }
-    if (!library || !headers.count("gui.h") || !headers.count("protocol.h") ||
-        !headers.count("session.h") || version.empty())
-        throw std::runtime_error("incomplete libosgui-c++ development payload");
-    write(destination / "libosgui-c++.version", version + "\n");
+    if (!library || version.empty())
+        throw std::runtime_error("incomplete development payload: "+name);
+    for(const auto& header:requiredHeaders)
+        if(!headers.count(header))throw std::runtime_error("missing SDK header: "+name+"/"+header);
+    write(destination / (name+".version"), version + "\n");
+}
+void guiPackage(const Context& context,const fs::path& destination) {
+    developmentPackage(context,destination,"libguiw-font","guiw/",{"font.h"});
+    developmentPackage(context,destination,"libosgui-c++","osgui-c++/",{"gui.h","protocol.h","session.h"});
+    developmentPackage(context,destination,"guiw-language","",{});
 }
 }  // namespace
 void sdk(const Context& context) {

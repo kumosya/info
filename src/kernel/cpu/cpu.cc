@@ -1,3 +1,4 @@
+#include "kernel/time.h"
 #include "kernel/cpu.h"
 
 #include <cstddef>
@@ -256,12 +257,31 @@ void initLocalApic() {
     device::serialWrite("[CPU] Local APIC initialized\n");
 }
 
-void initTimer(uint8_t vector, uint32_t initialCount) {
+void initTimer(uint8_t vector, uint32_t intervalMicroseconds) {
     volatile uint32_t* registers =
         __atomic_load_n(&localApic, __ATOMIC_ACQUIRE);
+    // APIC counts are bus-clock ticks, not nanoseconds. Calibrate each CPU's
+    // divided timer against the already initialized monotonic clock.
+    const auto flags = cpu::disableInterrupts();
     registers[0x3e0 / 4] = 0x3;
+    registers[0x320 / 4] = (1U << 16) | vector;
+    registers[0x380 / 4] = UINT32_MAX;
+    const auto begin = time::getMonotonicTime();
+    uint64_t elapsed;
+    do {
+        asm volatile("pause");
+        elapsed = time::getMonotonicTime() - begin;
+    } while (elapsed < 5000000);
+    const uint64_t ticks = UINT32_MAX - registers[0x390 / 4];
+    registers[0x380 / 4] = 0;
+    const uint64_t count = ticks * intervalMicroseconds * 1000ULL / elapsed;
+    if (!count || count > UINT32_MAX) {
+        device::serialWrite("[CPU] APIC timer calibration failed\n");
+        cpu::halt();
+    }
     registers[0x320 / 4] = (1U << 17) | vector;
-    registers[0x380 / 4] = initialCount;
+    registers[0x380 / 4] = uint32_t(count);
+    cpu::restoreInterrupts(flags);
 }
 
 void sendEndOfInterrupt() {

@@ -211,6 +211,7 @@ class FsServer {
                         os::IpcMessage& reply);
     void transferAt(const os::IpcMessage& request, os::IpcMessage& reply,
                     bool writing);
+    void readBuffer(const os::IpcMessage& request, os::IpcMessage& reply);
 
     void stat(const char* path, os::IpcMessage& reply, uint64_t caller = 0);
     int64_t readDevice(uint32_t index, uint64_t offset, void* buffer,

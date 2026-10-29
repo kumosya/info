@@ -20,6 +20,7 @@ constexpr uint64_t pageWriteThrough = 1ULL << 3;
 constexpr uint64_t pageCacheDisable = 1ULL << 4;
 constexpr uint64_t pageGlobal       = 1ULL << 8;
 constexpr uint64_t pageExternal     = 1ULL << 9;
+constexpr uint64_t pageLocked       = 1ULL << 10;
 constexpr uint64_t pageNoExecute    = 1ULL << 63;
 
 enum class UserPageMapResult : uint8_t {
@@ -40,6 +41,13 @@ bool unmapPageInAddressSpace(uint64_t rootPhysicalAddress,
                              uint64_t virtualAddress);
 bool protectPageInAddressSpace(uint64_t rootPhysicalAddress,
                                uint64_t virtualAddress, uint64_t flags);
+// Bounded batches complete all remote invalidations before returning. The
+// caller holds the target address-space lock and owns backing-page release.
+bool unmapPagesInAddressSpace(uint64_t root, uint64_t address, uint64_t size);
+bool protectPagesInAddressSpace(uint64_t root, uint64_t address, uint64_t size,
+                               uint64_t flags);
+int lockUserPages(kernel::task::Task& target,uint64_t address,uint64_t size,bool locked,bool allowAbsent=false,bool checkOnly=false);
+int lockAllUserPages(kernel::task::Task& target,unsigned flags,const uint64_t* ranges=nullptr,unsigned count=0);
 uint64_t getPhysicalAddressInAddressSpace(uint64_t rootPhysicalAddress,
                                           uint64_t virtualAddress,
                                           uint64_t* flags = nullptr);
@@ -274,7 +282,7 @@ Maps& maps();
 uint64_t mapUserPages(kernel::task::Task& target, uint64_t address,
                       uint64_t size, uint64_t protection);
 uint64_t unmapUserPages(kernel::task::Task& target, uint64_t address,
-                        uint64_t size);
+                        uint64_t size,bool preserveLocks=false);
 uint64_t protectUserPages(kernel::task::Task& target, uint64_t address,
                           uint64_t size, uint64_t protection);
 

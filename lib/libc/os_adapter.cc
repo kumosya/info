@@ -1,4 +1,6 @@
 #include <cerrno>
+#include <devctl.h>
+#include <fcntl.h>
 #include <cstdlib>
 #include <new>
 #include <termios.h>
@@ -110,7 +112,7 @@ void* __libc_file_adopt(uint64_t fs, uint64_t handle, const char* path,
         kind == DESCRIPTOR_FILE
             ? result->adopt(fs, handle, path, flags)
             : result->adoptHandle(handle,
-                                  kind == DESCRIPTOR_SHARED_MEMORY
+                                  (kind == DESCRIPTOR_SHARED_MEMORY || kind == DESCRIPTOR_TYPED_MEMORY)
                                       ? os::File::Backend::SharedMemory
                                   : (kind == DESCRIPTOR_TERMINAL_READ ||
                                      kind == DESCRIPTOR_TERMINAL_WRITE) &&
@@ -900,6 +902,43 @@ extern "C" int __libc_os_mm_sync(uint64_t address, uint64_t size) {
     return os::detail::MappingClient().sync(address, size);
 }
 
+extern "C" pid_t tcgetpgrp(int descriptor) {
+    OpenDescription* description = libcDescriptor(descriptor);
+    if (!description) { errno=EBADF;return -1; }
+    if (!isatty(descriptor)) return -1;
+    uint64_t group=0;
+    if (description->handle) {
+        os::detail::PtyClient terminal(description->handle);
+        const int status=terminal.queryForegroundGroup(group);
+        if(status) {errno=-posixFileResult(status);return -1;}
+    } else {
+        os::Console terminal;
+        const int status=terminal.openCurrent();
+        if(status) {errno=-posixFileResult(status);return -1;}
+        group=terminal.getForegroundGroup();
+    }
+    if(group>INT32_MAX) {errno=EOVERFLOW;return -1;}
+    return pid_t(group);
+}
+extern "C" int tcsetpgrp(int descriptor, pid_t group) {
+    OpenDescription* description = libcDescriptor(descriptor);
+    if (!description) {errno=EBADF;return -1;}
+    if (!isatty(descriptor)) return -1;
+    if(group<=0) {errno=EINVAL;return -1;}
+    if (description->handle) {
+        os::detail::PtyClient terminal(description->handle);
+        if(!terminal.setForegroundGroup(uint64_t(group))) {
+            errno=-posixFileResult(terminal.getError());return -1;
+        }
+    } else {
+        os::Console terminal;
+        int status=terminal.openCurrent();
+        if(!status)status=terminal.setForegroundGroup(uint64_t(group));
+        if(status) {errno=-posixFileResult(status);return -1;}
+    }
+    return 0;
+}
+
 extern "C" int tcgetattr(int descriptor, struct termios* attributes) {
     if (!attributes) {
         errno = EFAULT;
@@ -1013,4 +1052,58 @@ extern "C" int tcsetattr(int descriptor, int action,
         return -1;
     }
     return 0;
+}
+
+extern "C" int __libc_os_mm_policy(unsigned operation,uint64_t address,uint64_t size,uint64_t argument) {
+    const int result=os::detail::MappingClient().policy(operation,address,size,argument);
+    return result<0?-int(posixFileResult(result)):result;
+}
+
+extern "C" int posix_devctl(int descriptor, int command, void* data,
+                             size_t length, int* deviceInfo) {
+    const int saved = errno;
+    const auto finish = [saved](int error) { errno = saved; return error; };
+    OpenDescription* description = libcDescriptor(descriptor);
+    if (!description) return finish(EBADF);
+    if (!data || !deviceInfo || !__libc_os_accessible(deviceInfo,sizeof(*deviceInfo),1)) return finish(EFAULT);
+    if (command != OSINFO_DEVCTL_TTY_GET_SIZE && command != OSINFO_DEVCTL_TTY_SET_SIZE)
+        return finish(ENOTTY);
+    if (length != sizeof(osinfo_devctl_tty_size)) return finish(EINVAL);
+    if(!__libc_os_accessible(data,length,command==OSINFO_DEVCTL_TTY_GET_SIZE))return finish(EFAULT);
+    if (command == OSINFO_DEVCTL_TTY_SET_SIZE &&
+        (description->flags & O_ACCMODE) == O_RDONLY) return finish(EACCES);
+    if (!description->handle || !isatty(descriptor)) return finish(ENOTTY);
+    os::Ipc::Handle endpoint(os::detail::RegistryClient().lookup(os::ttyServiceName, 100));
+    if (!endpoint.getValue()) return finish(ENODEV);
+    os::IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(os::TtyRequest::DeviceControl);
+    request.length = command == OSINFO_DEVCTL_TTY_SET_SIZE ? 4 : 2;
+    request.data[0] = command;
+    request.data[1] = length;
+    request.handleCount = 1;
+    request.handles[0] = description->handle;
+    if (command == OSINFO_DEVCTL_TTY_SET_SIZE)
+        os::Runtime::copyBytes(&request.data[2], data, length);
+    if (os::callService(endpoint.getValue(), request, reply) || reply.length != 4)
+        return finish(EIO);
+    if (reply.data[0]) return finish(static_cast<int>(reply.data[0]));
+    *deviceInfo = static_cast<int>(reply.data[1]);
+    if (!*deviceInfo && command == OSINFO_DEVCTL_TTY_GET_SIZE)
+        os::Runtime::copyBytes(data, &reply.data[2], length);
+    return finish(0);
+}
+
+extern "C" int64_t __libc_os_mm_offset(uint64_t address,uint64_t size,
+                                        uint64_t* offset,uint64_t* contiguous,unsigned* rights) {
+    return os::detail::MappingClient().memoryOffset(address,size,*offset,*contiguous,*rights);
+}
+
+extern "C" int64_t __libc_os_typed_open(const char* name,int flags,unsigned policy) {
+    return os::detail::MappingClient().openTyped(name,flags,policy);
+}
+extern "C" int64_t __libc_os_typed_allocate(uint64_t handle,uint64_t size) {
+    return os::detail::MappingClient().allocateTyped(handle,size);
+}
+extern "C" int __libc_os_typed_info(uint64_t handle,uint64_t* available) {
+    return os::detail::MappingClient().typedInfo(handle,*available);
 }

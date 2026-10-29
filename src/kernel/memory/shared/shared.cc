@@ -61,9 +61,14 @@ SharedMemory& sharedMemory() { return sharedRegistry; }
 void SharedMemory::releaseObject(SharedMemoryObject& object) {
     if (object.linked || object.references != 0 || object.mappings != 0) return;
     for (uint32_t index = 0; index < object.pageCount; ++index) {
-        if (object.pages[index] != 0) freePhysicalPage(object.pages[index]);
+        if (object.pages[index] != 0) {
+            if(object.typedAllocation)typedUsed_[(object.pages[index]-typedBase_)/pageSize]=false;
+            else freePhysicalPage(object.pages[index]);
+        }
         object.pages[index] = 0;
     }
+    object.typedPool = object.typedAllocation = false;
+    object.typedPolicy = 0;
     object.used      = false;
     object.name[0]   = '\0';
     object.pageCount = 0;
@@ -154,6 +159,81 @@ uint64_t SharedMemory::open(::kernel::task::Task& task, const char* name,
     return result;
 }
 
+
+// A reserved RAM extent backs the named typed pool. Allocation bits and object
+// references are protected by the same registry lock as mapped-view lifetimes.
+int64_t SharedMemory::openTyped(kernel::task::Task& task,int flags,unsigned policy) {
+    if((flags&~(3|0x80000)) || ((flags&3)!=0 && (flags&3)!=2))return -1;
+    if(policy!=1 && policy!=2)return -7;
+    const uint64_t handle=open(task,nullptr,0x42);
+    if(!handle)return -5;
+    bool ready=false;
+    {
+        kernel::task::PreemptionSpinLockGuard guard(registryLock);
+        if(!typedBase_)typedBase_=allocatePhysicalBlock(8);
+        if(typedBase_) {
+            auto* reference=resolve(task,handle,0);
+            reference->object->typedPool=true;
+            reference->object->typedPolicy=policy;
+            ready=true;
+        }
+    }
+    if(!ready){task.handles().close(handle);return -5;}
+    if((flags&3)==0) {
+        const uint64_t readonly=task.handles().duplicate(handle,1,0);
+        task.handles().close(handle);
+        return readonly?static_cast<int64_t>(readonly):-5;
+    }
+    return handle;
+}
+int SharedMemory::typedInfo(kernel::task::Task& task,uint64_t handle,uint64_t& available) {
+    kernel::task::HandleTable::Pin pin(task.handles(),handle,kernel::task::HandleType::SharedMemory,1);
+    auto* reference=pin.as<SharedMemoryHandle>();if(!reference)return -2;
+    kernel::task::PreemptionSpinLockGuard guard(registryLock);
+    if(!reference->object->typedPool)return -1;
+    unsigned free=0,run=0,longest=0;
+    for(bool used:typedUsed_) {
+        if(used)run=0;
+        else {++free;++run;if(run>longest)longest=run;}
+    }
+    available=(reference->object->typedPolicy==2?longest:free)*pageSize;
+    return 0;
+}
+int64_t SharedMemory::allocateTyped(kernel::task::Task& task,uint64_t handle,uint64_t size) {
+    kernel::task::HandleTable::Pin pin(task.handles(),handle,kernel::task::HandleType::SharedMemory,1);
+    auto* source=pin.as<SharedMemoryHandle>();if(!source)return -2;
+    if(!size || (size&4095) || size>pageCapacity*pageSize)return -1;
+    const auto allocation=open(task,nullptr,0x42);if(!allocation)return -5;
+    bool success=false;
+    {
+        kernel::task::PreemptionSpinLockGuard guard(registryLock);
+        if(source->object->typedPool) {
+            const unsigned count=size/pageSize;unsigned selected[pageCapacity]{},found=0;
+            for(unsigned i=0;i<typedPageCount && found<count;++i) {
+                if(typedUsed_[i]) {if(source->object->typedPolicy==2)found=0;}
+                else selected[found++]=i;
+            }
+            if(found==count) {
+                auto* object=resolve(task,allocation,0)->object;
+                object->typedAllocation=true;object->size=size;object->pageCount=count;
+                for(unsigned i=0;i<count;++i) {
+                    typedUsed_[selected[i]]=true;
+                    object->pages[i]=typedBase_+selected[i]*pageSize;
+                    clearPhysicalPages(object->pages[i],pageSize);
+                }
+                success=true;
+            }
+        }
+    }
+    if(!success){task.handles().close(allocation);return source->object->typedPool?-5:-1;}
+    if(!resolve(task,handle,kernel::task::handleRightWrite)) {
+        const uint64_t readonly=task.handles().duplicate(allocation,1,0);
+        task.handles().close(allocation);
+        return readonly?static_cast<int64_t>(readonly):-5;
+    }
+    return allocation;
+}
+
 // Share the existing handle Reference, optionally preserving its numeric value
 // for fork; this does not create another name or open wrapper.
 uint64_t SharedMemory::duplicateHandle(::kernel::task::Task& source,
@@ -193,6 +273,7 @@ bool SharedMemory::resize(::kernel::task::Task& task, uint64_t handle,
     if (sharedHandle == nullptr || size > pageCapacity * pageSize) return false;
     SharedMemoryObject* object = sharedHandle->object;
     ::kernel::task::PreemptionSpinLockGuard registryGuard(registryLock);
+    if(object->typedPool || object->typedAllocation)return false;
     if (object->mappings != 0 && size < object->size) {
         return false;
     }
@@ -274,7 +355,7 @@ uint64_t SharedMemory::map(::kernel::task::Task& task, uint64_t handle,
     ::kernel::task::PreemptionSpinLockGuard registryGuard(registryLock);
     const uint64_t mappedObjectSize =
         (object->size + pageSize - 1) & ~(pageSize - 1);
-    if (object->size == 0 || offset >= object->size || offset + size < offset ||
+    if (object->typedPool || object->size == 0 || offset >= object->size || offset + size < offset ||
         offset + size > mappedObjectSize)
         return 0;
     SharedMemoryMapping* mapping = nullptr;
@@ -286,6 +367,11 @@ uint64_t SharedMemory::map(::kernel::task::Task& task, uint64_t handle,
     }
     if (mapping == nullptr) return 0;
     uint64_t flags = pageUser | pageExternal;
+    auto residency=task.addressSpace().residency();
+    const bool pager=kernel::task::getCurrent() && kernel::task::getCurrent()!=&task &&
+        kernel::task::getCurrent()->serviceRole()==os::ServiceRole::Memory;
+    if(!pager && task.addressSpace().lockFuture() &&
+       (!residency.set(address,size,true) || residency.bytes>task.memlockLimit()))return 0;
     if ((protection & 1) != 0) flags |= pageWritable;
     if ((protection & 2) == 0) flags |= pageNoExecute;
     uint64_t mapped = 0;
@@ -294,7 +380,7 @@ uint64_t SharedMemory::map(::kernel::task::Task& task, uint64_t handle,
             static_cast<uint32_t>((offset + mapped) / pageSize);
         if (!mm::mapPageInAddressSpace(
                 task.addressSpace().rootPhysicalAddress(), address + mapped,
-                object->pages[page], flags)) {
+                object->pages[page], flags | (residency.contains(address+mapped)?pageLocked:0))) {
             while (mapped != 0) {
                 mapped -= pageSize;
                 mm::unmapPageInAddressSpace(
@@ -305,6 +391,7 @@ uint64_t SharedMemory::map(::kernel::task::Task& task, uint64_t handle,
         }
         mapped += pageSize;
     }
+    task.addressSpace().residency()=residency;
     mapping->used = true;
     mapping->pagerManaged =
         kernel::task::getCurrent() != &task &&

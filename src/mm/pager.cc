@@ -28,6 +28,26 @@ int Pager::loadFile(ResidentPage& page, const Region& region,
     page.fileOffset    = offset;
     return read < 0 || unmapped ? -11 : 0;
 }
+int Pager::populateLocked(uint64_t task,uint64_t address) {
+    const auto* region=state_.regions.find(task,address);if(!region)return -4;
+    if(region->protection)return fault(task,address,(region->protection&1)?0:(region->protection&4)?16:2);
+    address&=~4095ULL;
+    if(auto* existing=state_.page(task,address))return existing->used?0:-4;
+    if(state_.pagesUsed(task)>=2048)return -5;
+    auto* page=state_.vacantPage();auto* backing=state_.backing(region->backing);
+    if(!page || !backing)return -5;
+    *page={};page->used=true;page->task=task;page->address=address;page->backing=region->backing;
+    if(backing->kind!=BackingKind::Shared) {
+        const auto handle=allocator_.allocate(task);
+        if(handle<=0){*page={};return -5;}
+        page->handle=handle;
+        if(backing->kind==BackingKind::File) {
+            const auto error=loadFile(*page,*region,*backing);
+            if(error){os::closeHandle(page->handle);*page={};return error;}
+        }
+    }
+    return 0;
+}
 int Pager::fault(uint64_t task, uint64_t address, uint64_t flags) {
     const Region* region = state_.regions.find(task, address);
     if (!region) return -4;

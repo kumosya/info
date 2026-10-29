@@ -62,13 +62,18 @@ bool Maps::map(::kernel::task::Task& target, PageObject& object,
     Map* record = allocate();
     if (!record) return false;
     const uint64_t root  = target.addressSpace().rootPhysicalAddress();
-    const uint64_t flags = pageUser | pageExternal |
+    uint64_t flags = pageUser | pageExternal |
                            ((protection & 1) ? pageWritable : 0) |
                            ((protection & 2) ? 0 : pageNoExecute);
+    auto residency=target.addressSpace().residency();
+    const bool pager=kernel::task::getCurrent() && kernel::task::getCurrent()!=&target &&
+        kernel::task::getCurrent()->serviceRole()==os::ServiceRole::Memory;
+    if(!pager && target.addressSpace().lockFuture() &&
+       (!residency.set(address,size,true) || residency.bytes>target.memlockLimit())){pool.release(record);return false;}
     uint64_t mapped = 0;
     while (mapped < size && mm::mapPageInAddressSpace(
                                 root, address + mapped,
-                                object.physical() + offset + mapped, flags))
+                                object.physical() + offset + mapped, flags | (residency.contains(address+mapped)?pageLocked:0)))
         mapped += 4096;
     if (mapped != size) {
         while (mapped) {
@@ -78,6 +83,7 @@ bool Maps::map(::kernel::task::Task& target, PageObject& object,
         pool.release(record);
         return false;
     }
+    target.addressSpace().residency()=residency;
     object.retain();
     *record = {&target, &object,           address, size,
                offset,  maximumProtection, mappings};

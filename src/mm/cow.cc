@@ -34,6 +34,7 @@ int Pager::clone(uint64_t parent, uint64_t child) {
         auto* copy = state_.vacantPage();
         *copy      = source;
         copy->task = child;
+        copy->pinned = false;
         if (source.handle) {
             os::Ipc::Handle handleOwner;
             const int handleStatus = os::Ipc::Handle(source.handle, false)
@@ -89,7 +90,7 @@ int Pager::copyPrivate(ResidentPage& page, const Region& region) {
     const uint64_t protection =
         KernelMemory::nativeProtection(region.protection);
     if (page.mapped && os::detail::MemoryControl().unmapTarget(
-                           page.address, 4096, page.task)) {
+                           page.address, 4096, page.task,true)) {
         os::closeHandle(handle);
         return -11;
     }

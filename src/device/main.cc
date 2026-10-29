@@ -93,6 +93,12 @@ class InputQueue {
         return true;
     }
 
+    bool subscribed(uint64_t taskId) {
+        os::SpinLock::Guard guard(lock_);
+        const auto* subscriber = findSubscriber(taskId);
+        return subscriber && !subscriber->closing;
+    }
+
     bool subscribe(uint64_t taskId, uint64_t wakeEndpoint) {
         if (taskId == 0 || wakeEndpoint == 0) {
             return false;
@@ -597,10 +603,13 @@ class InputService {
             }
             os::IpcMessage reply{};
             os::wire::TaskInfo caller{};
-            if (os::detail::TaskQuery().query(request.senderPid, caller) ||
-                !caller.managedService ||
-                (caller.serviceRole != uint32_t(os::ServiceRole::Console) &&
-                 caller.serviceRole != uint32_t(os::ServiceRole::Window))) {
+            // Subscription already authenticated this immutable managed-service
+            // role. Avoid a synchronous task-service round trip for each event.
+            if (!queue_.subscribed(request.senderPid) &&
+                (os::detail::TaskQuery().query(request.senderPid, caller) ||
+                 !caller.managedService ||
+                 (caller.serviceRole != uint32_t(os::ServiceRole::Console) &&
+                  caller.serviceRole != uint32_t(os::ServiceRole::Window)))) {
                 for (uint32_t i = 0; i < request.handleCount; ++i)
                     os::closeHandle(request.handles[i]);
                 reply.length = 1;

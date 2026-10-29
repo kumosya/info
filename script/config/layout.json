@@ -237,6 +237,11 @@
     },
     {
       "type": "external-runtime",
+      "package": "libguiw-font",
+      "library": "libguiw-font.so"
+    },
+    {
+      "type": "external-runtime",
       "package": "libosgui-c++",
       "library": "libosgui-c++.so"
     },
