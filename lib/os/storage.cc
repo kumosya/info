@@ -2,10 +2,19 @@
 #include "service/common/queries.h"
 #include "service/common/requests.h"
 #include "service/common/runtime.h"
+#include "service/device/storage/range_reply.h"
 #include <os/service.h>
 #include <os/storage.h>
 
 namespace os {
+namespace {
+uint64_t storageDeadline() {
+    // Includes the backend I/O and kernel stop budgets.
+    return StorageProtocol::ipcDeadlineAfter(Sys().readMonotonicTime(),
+                                             8000000000ULL);
+}
+}  // namespace
+
 uint64_t Storage::Part::getStartBlock() const { return startBlock_; }
 uint64_t Storage::Part::getBlockCount() const { return blockCount_; }
 uint32_t Storage::Part::getType() const { return type_; }
@@ -100,8 +109,11 @@ bool Storage::Device::refresh() {
         callService(service_.getValue(), request_, reply_) || reply_.data[0] ||
         reply_.length < storageIdentityWord +
                             (sizeof(wire::StorageDeviceIdentity) + 7) / 8 ||
-        !reply_.data[1] || reply_.data[2] != 512 ||
-        reply_.data[1] > UINT64_MAX / 512)
+        !reply_.data[1] || reply_.data[2] < 512 ||
+        reply_.data[2] > UINT32_MAX ||
+        (reply_.data[2] & (reply_.data[2] - 1)) ||
+        reply_.data[1] > UINT64_MAX / reply_.data[2] ||
+        reply_.data[3] > UINT32_MAX)
         return false;
     blockCount_        = reply_.data[1];
     blockSize_         = uint32_t(reply_.data[2]);
@@ -131,70 +143,102 @@ bool Storage::Device::refresh() {
 int Storage::Device::read(uint64_t first, uint32_t count, void* buffer,
                           size_t capacity, uint32_t& completed) {
     completed = 0;
-    if (uint64_t(count) * 512 > capacity)
-        return static_cast<int>(ErrorCode::InvalidArgument);
+    Guard guard(*this);
+    if (!blockSize_ || count > capacity / blockSize_)
+        return static_cast<int>(Error::InvalidArgument);
     return transfer(first, count, buffer, nullptr, completed);
 }
 int Storage::Device::write(uint64_t first, uint32_t count, const void* buffer,
                            size_t size, uint32_t& completed) {
     completed = 0;
-    if (uint64_t(count) * 512 > size)
-        return static_cast<int>(ErrorCode::InvalidArgument);
+    Guard guard(*this);
+    if (!blockSize_ || count > size / blockSize_)
+        return static_cast<int>(Error::InvalidArgument);
     return transfer(first, count, nullptr, buffer, completed);
 }
 int Storage::Device::transfer(uint64_t first, uint32_t count, void* output,
                               const void* input, uint32_t& completed) {
-    completed = 0;
-    Guard guard(*this);
-    if (!service_.getValue() || (!output && !input) || (input && readOnly_) ||
-        !count || first >= blockCount_ || count > blockCount_ - first ||
-        !maxTransferBlocks_)
-        return static_cast<int>(ErrorCode::InvalidArgument);
-    uint32_t done = 0;
-    while (done < count) {
-        const uint32_t limit = maxTransferBlocks_ < maximumStorageTransferBlocks
-                                   ? maxTransferBlocks_
-                                   : maximumStorageTransferBlocks;
-        const uint32_t batch = count - done < limit ? count - done : limit,
-                       bytes = batch * 512;
-        request_             = {};
-        reply_               = {};
-        request_.type        = static_cast<uint64_t>(
-            input ? StorageRequest::WriteRange : StorageRequest::ReadRange);
-        request_.data[0] = (uint64_t(device_) << 56) | (first + done);
-        request_.data[1] = batch;
-        request_.length  = 2;
-        if (input) {
-            Runtime::copyBytes(
-                &request_.data[2],
-                static_cast<const uint8_t*>(input) + uint64_t(done) * 512,
-                bytes);
-            request_.length += bytes / 8;
-        }
-        if (callService(service_.getValue(), request_, reply_) ||
-            reply_.length < 2 || reply_.data[0] || reply_.data[1] != bytes ||
-            (!input && reply_.length < 2 + bytes / 8))
-            return static_cast<int>(ErrorCode::IoError);
-        if (output)
-            Runtime::copyBytes(
-                static_cast<uint8_t*>(output) + uint64_t(done) * 512,
-                &reply_.data[2], bytes);
-        done += batch;
-        completed = done;
-    }
-    return 0;
+    const auto limit =
+        StorageProtocol::rangeLimit(blockSize_, maxTransferBlocks_);
+    if (!service_.getValue()) return static_cast<int>(Error::DeviceOffline);
+    if ((!output && !input) || !count)
+        return static_cast<int>(Error::InvalidArgument);
+    if (!limit) return static_cast<int>(Error::NotSupported);
+    if (first >= blockCount_ || count > blockCount_ - first ||
+        first > storageBlockMask || count - 1 > storageBlockMask - first)
+        return static_cast<int>(Error::InvalidBlock);
+    if (input && readOnly_) return static_cast<int>(Error::ReadOnly);
+    const auto transfer = storage::transferBatches(
+        count, limit, [&](uint32_t done, uint32_t batch) {
+            const uint32_t bytes = batch * blockSize_;
+            request_             = {};
+            reply_               = {};
+            request_.type        = static_cast<uint64_t>(
+                input ? StorageRequest::WriteRange : StorageRequest::ReadRange);
+            request_.data[0] =
+                StorageProtocol::encodeStorageBlock(device_, first + done);
+            request_.data[1] = batch;
+            request_.length  = 2;
+            if (input) {
+                Runtime::copyBytes(&request_.data[2],
+                                   static_cast<const uint8_t*>(input) +
+                                       size_t(done) * blockSize_,
+                                   bytes);
+                request_.length += bytes / 8;
+            }
+            const int status = callService(service_.getValue(), request_,
+                                           reply_, storageDeadline());
+            if (status)
+                return storage::TransferResult{storage::transportError(status),
+                                               0};
+            const auto result = storage::decodeRangeReply(
+                reply_, batch, blockSize_, output != nullptr);
+            if (output && result.getCompleted())
+                Runtime::copyBytes(
+                    static_cast<uint8_t*>(output) + size_t(done) * blockSize_,
+                    &reply_.data[2], result.getCompleted() * blockSize_);
+            return result;
+        });
+    completed = transfer.getCompleted();
+    return static_cast<int>(transfer.getError());
 }
-bool Storage::Device::flush() {
+bool Storage::Device::flush() { return flushStatus() == Error::Success; }
+
+Storage::Error Storage::Device::flushStatus() {
     Guard guard(*this);
+    if (!service_.getValue()) return Error::DeviceOffline;
     request_         = {};
     reply_           = {};
     request_.type    = static_cast<uint64_t>(StorageRequest::Flush);
     request_.length  = 1;
     request_.data[0] = device_;
-    return service_.getValue() &&
-           !callService(service_.getValue(), request_, reply_) &&
-           reply_.length >= 1 && !reply_.data[0];
+    const int status =
+        callService(service_.getValue(), request_, reply_, storageDeadline());
+    if (status) return storage::transportError(status);
+    return reply_.length == 1 ? storage::storageError(reply_.data[0])
+                              : Error::Io;
 }
+Storage::Error Storage::Device::statistics(Statistics& result) {
+    Guard guard(*this);
+    if (!service_.getValue()) return Error::DeviceOffline;
+    request_         = {};
+    reply_           = {};
+    request_.type    = static_cast<uint64_t>(StorageRequest::GetStatistics);
+    request_.length  = 1;
+    request_.data[0] = device_;
+    const int status =
+        callService(service_.getValue(), request_, reply_, storageDeadline());
+    if (status) return storage::transportError(status);
+    if (reply_.length < 1) return Error::Io;
+    const auto error = storage::storageError(reply_.data[0]);
+    if (error == Error::InvalidArgument) return Error::NotSupported;
+    if (error != Error::Success) return error;
+    if (reply_.length != StorageProtocol::statisticsWords) return Error::Io;
+    result = {reply_.data[1], reply_.data[2], reply_.data[3],
+              reply_.data[4], reply_.data[5], reply_.data[6]};
+    return Error::Success;
+}
+
 int64_t detail::StorageClient::deviceCount() {
     Ipc::Handle service(detail::RegistryClient().lookup("storage", 1000));
     if (!service.getValue()) return static_cast<int>(ErrorCode::NotFound);

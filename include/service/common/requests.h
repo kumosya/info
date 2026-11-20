@@ -70,20 +70,35 @@ enum class StorageRequest : uint64_t {
     WriteAsync,
     GetCount,
     ReadRange,
-    WriteRange
+    WriteRange,
+    GetStatistics
 };
 constexpr uint64_t storageCompletionNotification = 0x53544f52414745ULL;
 constexpr uint64_t storageDeviceShift            = 56;
 constexpr uint64_t storageBlockMask = (1ULL << storageDeviceShift) - 1;
 
-class StorageProtocol {
-   public:
-    static constexpr uint64_t encodeStorageBlock(uint32_t deviceId,
-                                                 uint64_t block) {
-        return (static_cast<uint64_t>(deviceId) << storageDeviceShift) |
-               (block & storageBlockMask);
-    }
-};
+namespace StorageProtocol {
+constexpr uint32_t statisticsWords = 7;
+
+constexpr uint32_t rangeLimit(uint32_t bytesPerBlock, uint32_t backendLimit) {
+    if (!bytesPerBlock || bytesPerBlock % sizeof(uint64_t)) return 0;
+    const uint32_t payloadLimit =
+        (ipcDataWordCount - 2) * sizeof(uint64_t) / bytesPerBlock;
+    return backendLimit < payloadLimit ? backendLimit : payloadLimit;
+}
+
+constexpr uint64_t encodeStorageBlock(uint32_t deviceId, uint64_t block) {
+    return (static_cast<uint64_t>(deviceId) << storageDeviceShift) |
+           (block & storageBlockMask);
+}
+
+constexpr uint64_t ipcDeadlineAfter(uint64_t now, uint64_t budget) {
+    constexpr uint64_t lastFinite = UINT64_MAX - 1;
+    return now >= lastFinite || budget > lastFinite - now ? lastFinite
+                                                          : now + budget;
+}
+}  // namespace StorageProtocol
+
 enum class FsRequest : uint64_t {
     Open = 1,
     Close,

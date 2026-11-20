@@ -14,6 +14,10 @@ SECTIONS
 {
     . = 0x400000;
     .interp : { *(.interp) } :text :interp
+    /* Notes must not inherit the interpreter program header. */
+    .note.gnu.property : { *(.note.gnu.property) } :text
+    .note.gnu.build-id : { *(.note.gnu.build-id) } :text
+    .note : { *(.note.*) } :text
     .text :
     {
         *(.text.start)

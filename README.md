@@ -19,6 +19,8 @@ osinfo 运行在 x86-64 架构，采用混合内核架构：
 
 关于配置参数，`CC`、`CPP`、`AR`、`HOST_CPP` 可选择编译器；仅编译时可使用 `--disable-image-tools`。
 
+当前隔离 Linux 基线已验证 Debian GCC 12.2 和 GCC 14.2；本次 openEuler GCC 12.3.1-110 环境出现不稳定的编译器内部崩溃。需要复现该环境的构建时，使用[固定工具链入口](tests/storage/README.md#固定工具链与-sdk-链接回归)，避免依赖 PATH 中的异常编译器或复用关机后留下的半成品。
+
 ## 编译与安装
 
 ### 安装到本体镜像

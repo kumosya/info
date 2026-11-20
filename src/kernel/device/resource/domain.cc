@@ -244,9 +244,9 @@ bool ResourceDomain::reset() {
 
     *status_ = 0;
     asm volatile("mfence" ::: "memory");
-    const uint64_t deadline = time::getMonotonicTime() + 100000000ULL;
+    const uint64_t start = time::getMonotonicTime();
     while (*status_ != 0) {
-        if (time::getMonotonicTime() >= deadline) return false;
+        if (time::getMonotonicTime() - start >= 100000000ULL) return false;
         task::yieldThread();
     }
     return Pci(pciBus(), function_).read(4, command) && !(command & 4);
@@ -259,7 +259,7 @@ int ResourceDomain::stop(::kernel::task::Task& owner) {
         if (state_ == State::Active) state_ = State::Pending;
         ::kernel::task::wakeThread(resourceDomains().worker);
     }
-    const uint64_t deadline = time::getMonotonicTime() + 2000000000ULL;
+    const uint64_t start = time::getMonotonicTime();
     while (true) {
         {
             ::kernel::task::InterruptSpinLockGuard guard(
@@ -267,7 +267,7 @@ int ResourceDomain::stop(::kernel::task::Task& owner) {
             if (state_ == State::Stopped) return 0;
             if (state_ == State::Quarantined) return -11;
         }
-        if (time::getMonotonicTime() >= deadline) return -9;
+        if (time::getMonotonicTime() - start >= 2000000000ULL) return -9;
         task::yieldThread();
     }
 }

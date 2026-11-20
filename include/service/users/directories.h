@@ -80,7 +80,10 @@ class DirectoryManager {
         struct stat status{};
         if (lstat(path, &status) || !S_ISDIR(status.st_mode))
             return failure("stat", path);
-        if (chmod(path, mode) || chown(path, uid, gid))
+        const bool modeMatches  = (status.st_mode & 07777) == mode;
+        const bool ownerMatches = status.st_uid == uid && status.st_gid == gid;
+        if ((!modeMatches && chmod(path, mode)) ||
+            (!ownerMatches && chown(path, uid, gid)))
             return failure("permissions", path);
         return true;
     }

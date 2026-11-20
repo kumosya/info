@@ -40,10 +40,33 @@
 # debug information files
 *.dwo
 
+# Editor and local configuration
 /.VSCodeCounter/*
 /.vscode/*
-/docs/prompt/*
-/build/*
-/obj/*
-/tests/*
 /config/*
+
+# Local prompt archive
+/docs/prompt/
+
+# Build directories and isolated validation copies
+/build
+/build-*/
+/obj/
+/obj-*/
+/packages-*/
+
+# Disk images and release archives copied to the repository root
+/*.img
+/*.iso
+/*.vhd
+/OSInfo-*-x86_64.zip
+
+# Test outputs and Python bytecode
+/tests/output/
+/tests/**/__pycache__/
+
+# Local host diagnostics and runtime installation helpers
+/tests/storage/collect_host_diagnostics.ps1
+/tests/storage/diagnose_compiler.py
+/tests/storage/install_system_runtime.sh
+/tests/storage/run_runtime_install.sh

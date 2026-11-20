@@ -40,6 +40,8 @@ Storage::Number 表示主次设备号，可设置本地数值；Storage::Part �
 | `Dma` | `-8` | DMA 分配或访问失败 |
 | `Corrupted` | `-9` | 检测到损坏的数据或元信息 |
 | `InvalidArgument` | `-10` | 参数无效 |
+| `NotSupported` | `-11` | 设备不能执行该操作 |
+| `CapabilityUnknown` | `-12` | 设备未提供足以承诺刷新的能力信息 |
 
 ## 常量与标志
 
@@ -164,13 +166,20 @@ bool refresh();
 
 ```cpp
 bool flush();
+Storage::Error flushStatus();
 ```
 
-用途：要求服务把已提交的修改写回设备，等待同步结果。
+用途：在父设备上建立刷新边界，覆盖已进入同一设备写入顺序的请求。分区刷新也作用于父盘。BootImage 成功只表示本次运行中的内存写入已完成。
 
 参数：无。
 
-结果：返回 true 或 false，具体含义见用途。
+结果：`flushStatus()` 返回具体的 storage 状态。`flush()` 仅在该状态为 `Success` 时返回 true。
+
+```cpp
+Storage::Error statistics(Storage::Statistics& result);
+```
+
+读取同一物理后端的一致快照，整盘和分区共享。字段 `completedRequests` 包含成功和失败的已结束请求，`readBytes` 与 `writtenBytes` 只包含已确认字节，`errors` 包含 `timeouts`，`inFlight` 是 storage 工作线程已开始但尚未结束的请求。查询失败保留调用者原结果。该方法需要配套版本的 libos-c++；旧服务不支持查询时返回 `NotSupported`。
 
 ```cpp
 int read(uint64_t firstBlock, uint32_t count, void* buffer, size_t capacity, uint32_t& completed);
@@ -186,7 +195,7 @@ int read(uint64_t firstBlock, uint32_t count, void* buffer, size_t capacity, uin
 - `size_t capacity`：输出缓冲区可容纳的字节数；条目数组接口中表示可容纳的条目个数。
 - `uint32_t& completed`：输出实际完成的块数，即使操作中途失败也要填写。
 
-结果：0 表示请求块全部完成，负值表示失败；completed 始终指出此前已完成的块数。
+结果：返回 `Storage::Error` 的整数值。只有 `completed` 指定的连续前缀有效。若调用失败，后续批次不执行。
 
 ```cpp
 int write(uint64_t firstBlock, uint32_t count, const void* buffer, size_t size, uint32_t& completed);
@@ -202,7 +211,7 @@ int write(uint64_t firstBlock, uint32_t count, const void* buffer, size_t size, 
 - `size_t size`：本次数据的字节数。
 - `uint32_t& completed`：输出实际完成的块数，即使操作中途失败也要填写。
 
-结果：0 表示请求块全部完成，负值表示失败；completed 始终指出此前已完成的块数。
+结果：返回 `Storage::Error` 的整数值。`completed` 只包括确认写入的连续前缀。超时批次可能已执行，客户端不会自动重试，完成块数也不代表数据已持久化。
 
 ```cpp
 int open(uint32_t id);

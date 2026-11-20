@@ -7,17 +7,29 @@ class StorageClient;
 class Storage {
    public:
     enum class Error : int64_t {
-        Success         = 0,
-        DeviceNotFound  = -1,
-        DeviceOffline   = -2,
-        InvalidBlock    = -3,
-        Io              = -4,
-        Timeout         = -5,
-        ReadOnly        = -6,
-        NoSpace         = -7,
-        Dma             = -8,
-        Corrupted       = -9,
-        InvalidArgument = -10
+        Success           = 0,
+        DeviceNotFound    = -1,
+        DeviceOffline     = -2,
+        InvalidBlock      = -3,
+        Io                = -4,
+        Timeout           = -5,
+        ReadOnly          = -6,
+        NoSpace           = -7,
+        Dma               = -8,
+        Corrupted         = -9,
+        InvalidArgument   = -10,
+        NotSupported      = -11,
+        CapabilityUnknown = -12
+    };
+
+    class Statistics {
+       public:
+        uint64_t completedRequests{};
+        uint64_t readBytes{};
+        uint64_t writtenBytes{};
+        uint64_t errors{};
+        uint64_t timeouts{};
+        uint64_t inFlight{};
     };
 
     class Number {
@@ -76,6 +88,8 @@ class Storage {
         int write(uint64_t firstBlock, uint32_t count, const void* buffer,
                   size_t size, uint32_t& completed);
         bool flush();
+        Error flushStatus();
+        Error statistics(Statistics& result);
 
         uint64_t getBlockCount() const;
         uint32_t getBlockSize() const;

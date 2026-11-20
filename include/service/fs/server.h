@@ -90,30 +90,35 @@ class BlockDeviceClient final : public vfs::SectorDevice {
     }
     bool readSector(uint64_t block, void* buffer) override {
         uint32_t done = 0;
-        return device_.read(block, 1, buffer, 512, done) == 0;
+        return usable() && device_.read(block, 1, buffer, 512, done) == 0;
     }
     bool writeSector(uint64_t block, const void* buffer) override {
         uint32_t done = 0;
-        return device_.write(block, 1, buffer, 512, done) == 0;
+        return usable() && device_.write(block, 1, buffer, 512, done) == 0;
     }
     bool readSectors(uint64_t block, uint32_t count, void* buffer) override {
         uint32_t done = 0;
-        return device_.read(block, count, buffer, uint64_t(count) * 512,
-                            done) == 0;
+        return usable() && device_.read(block, count, buffer,
+                                        uint64_t(count) * 512, done) == 0;
     }
     bool writeSectors(uint64_t block, uint32_t count,
                       const void* buffer) override {
         uint32_t done = 0;
-        return device_.write(block, count, buffer, uint64_t(count) * 512,
-                             done) == 0;
+        return usable() && device_.write(block, count, buffer,
+                                         uint64_t(count) * 512, done) == 0;
     }
-    bool flush() override { return device_.flush(); }
-    uint64_t sectorCount() const override { return device_.getBlockCount(); }
+    bool flush() override { return usable() && device_.flush(); }
+    uint64_t sectorCount() const override {
+        return usable() ? device_.getBlockCount() : 0;
+    }
+    bool usable() const {
+        return device_.getBlockSize() == 512 && device_.getMaxTransferBlocks();
+    }
     bool readOnly() const override { return device_.getReadOnly(); }
     bool probe() {
         uint8_t block[512]{};
         uint32_t done = 0;
-        return device_.getBlockCount() &&
+        return usable() && device_.getBlockCount() &&
                device_.read(0, 1, block, sizeof(block), done) == 0;
     }
     const os::wire::StorageDeviceIdentity& identity() const {
