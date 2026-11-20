@@ -64,6 +64,7 @@
 # Test outputs and Python bytecode
 /tests/output/
 /tests/**/__pycache__/
+/tests/storage/
 
 # Local host diagnostics and runtime installation helpers
 /tests/storage/collect_host_diagnostics.ps1

@@ -43,7 +43,7 @@ StorageDeviceIdentity 位于 `include/service/common/records.h`，包含节点 I
 
 VirtIO 1.0  transport 发现 common/notify/ISR/device capability，映射 BAR、协商只读/flush、分配 DMA 队列及请求缓冲。每个请求槽使用独立 DMA 页，可传输连续扇区，短暂轮询后才让出 CPU；提交与完成由锁保护。fs 的 BlockDeviceClient 用同步批量请求代替逐扇区传递完成端点，IPC 缓冲放在受锁保护的实例内，避免挤占启动线程栈。多设备采用独立 MMIO/DMA 区域。当前不包括 AHCI/NVMe、MBR 扩展分区链或热插拔。
 
-OS 本体默认使用 `make mkimg run` 从 VirtIO 硬盘启动，[storage 回归](../../../tests/storage/README.md) 使用隔离镜像。InfoIDE 项目默认从项目内的 osinfo.img 启动；仅选择 --boot cdrom 时，才使用上述可选 rootfs 内存模块路径。
+OS 本体默认使用 `make mkimg run` 从 VirtIO 硬盘启动。存储回归使用隔离镜像。InfoIDE 项目默认从项目内的 osinfo.img 启动；仅选择 --boot cdrom 时，才使用上述可选 rootfs 内存模块路径。
 
 ## owner、权限与失败处理
 
