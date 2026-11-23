@@ -5,11 +5,9 @@
 
 #include "service/task/core_dump.h"
 
-#include "service/common/channel.h"
-#include "service/common/kernel-requests.h"
-#include "service/common/queries.h"
-#include "service/common/requests.h"
-#include "service/common/runtime.h"
+#include <os/detail/client.h>
+#include "service/common/protocol.h"
+#include <os/runtime.h>
 #include <os/device.h>
 #include <os/dir.h>
 #include <os/file.h>
@@ -18,7 +16,7 @@
 #include <os/service.h>
 #include <os/task.h>
 
-static os::wire::CorePolicy policy{1, 8 * 1024 * 1024, 2, 10000};
+static services::wire::CorePolicy policy{1, 8 * 1024 * 1024, 2, 10000};
 static uint64_t maximumSpace = 64 * 1024 * 1024;
 static char directory[192]   = "/var/core";
 static uint64_t fs           = 0;
@@ -27,7 +25,7 @@ alignas(16) static uint8_t workerStack[64 * 1024]{};
 /*
  * 构造并调用核心转储控制请求，把公共消息格式和错误处理集中在一个入口。
  */
-static int operation(os::TaskOperation type, os::IpcMessage& request,
+static int operation(services::TaskOperation type, os::IpcMessage& request,
                      os::IpcMessage& reply) {
     request.type = static_cast<uint64_t>(type);
 
@@ -35,7 +33,7 @@ static int operation(os::TaskOperation type, os::IpcMessage& request,
         request.length = 4;
     }
 
-    const int result = services::RequestChannel(os::CoreServiceKind::Task)
+    const int result = os::detail::RequestChannel(services::CoreServiceKind::Task)
                            .call(request, reply,
                                  os::Sys().readMonotonicTime() + 1000000000ULL);
 
@@ -296,7 +294,7 @@ static void decimal(char* output, size_t& used, uint64_t value) {
  * 按票据分块读取内核捕获的数据并写入文件。
  * 检查目录、空间和写入长度，所有失败都通过结果协议通知内核。
  */
-static bool writeCore(const os::wire::CoreTicket& ticket) {
+static bool writeCore(const services::wire::CoreTicket& ticket) {
     if (!controlledDirectory() || !spaceAvailable(ticket.bytes)) {
         return false;
     }
@@ -347,7 +345,7 @@ static bool writeCore(const os::wire::CoreTicket& ticket) {
         request.data[2] = bytes;
         request.data[3] = reinterpret_cast<uint64_t>(buffer);
 
-        if (operation(os::TaskOperation::CoreRead, request, reply) !=
+        if (operation(services::TaskOperation::CoreRead, request, reply) !=
                 static_cast<int>(bytes) ||
             file.write(buffer, bytes) != static_cast<ssize_t>(bytes)) {
             success = false;
@@ -379,7 +377,7 @@ static bool writeCore(const os::wire::CoreTicket& ticket) {
  */
 static void run() {
     fs = os::detail::RegistryClient(os::getBootstrapHandle())
-             .lookup(os::fsServiceName, 30000);
+             .lookup(services::fsServiceName, 30000);
 
     if (!fs) {
         os::Sys().log("[CORE] disabled: fs service unavailable\n");
@@ -405,7 +403,7 @@ static void run() {
     request.length = sizeof(policy) / 8;
     os::Runtime::copyBytes(request.data, &policy, sizeof(policy));
 
-    if (operation(os::TaskOperation::CoreConfigure, request, reply)) {
+    if (operation(services::TaskOperation::CoreConfigure, request, reply)) {
         os::Sys().log("[CORE] policy rejected\n");
         os::exitThread(0);
     }
@@ -418,12 +416,12 @@ static void run() {
         reply          = {};
         request.length = 1;
 
-        if (operation(os::TaskOperation::CoreAcquire, request, reply)) {
+        if (operation(services::TaskOperation::CoreAcquire, request, reply)) {
             os::sleep(50);
             continue;
         }
 
-        os::wire::CoreTicket ticket{};
+        services::wire::CoreTicket ticket{};
         os::Runtime::copyBytes(&ticket, &reply.data[1], sizeof(ticket));
 
         // 文件写入的成功与失败都要回报内核，让内核归还捕获缓冲并完成延后的退出通知。
@@ -434,7 +432,7 @@ static void run() {
         request.data[0]    = ticket.id;
         request.data[1]    = success;
         const int finished =
-            operation(os::TaskOperation::CoreFinish, request, reply);
+            operation(services::TaskOperation::CoreFinish, request, reply);
 
         if (finished && success) {
             os::Sys().log("[CORE] completion expired\n");
@@ -457,4 +455,4 @@ static bool startWriter() {
 /*
  * 对外提供转储写入服务启动入口，内部复用线程创建逻辑。
  */
-bool taskCore::start() { return startWriter(); }
+bool task::core::start() { return startWriter(); }

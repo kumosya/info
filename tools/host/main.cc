@@ -208,6 +208,7 @@ int main(int argc, char** argv) {
             } else
                 throw std::runtime_error("unknown option " + key);
         }
+        if (context.objects.empty()) context.objects = context.build / "obj";
         std::string command = argv[1];
         if (command == "defaults")
             host::defaults(context);

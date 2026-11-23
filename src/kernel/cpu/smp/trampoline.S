@@ -45,6 +45,7 @@ apProtectedEntry:
     rdmsr
     orl $((1 << 8) | (1 << 11)), %eax
     wrmsr
+    /* 进入 C++ 后由本 CPU 的初始化过程统一启用缓存。 */
     movl %cr0, %eax
     andl $~((1 << 2) | (1 << 3)), %eax
     orl $((1 << 31) | (1 << 18) | (1 << 5) | (1 << 1) | 1), %eax

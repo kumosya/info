@@ -7,6 +7,7 @@
 #include <cstdint>
 
 namespace os {
+
     /* 保存 ELF 文件类别、架构、入口和各头表位置。 */
     struct ElfHeader {
             uint8_t identity[16];
@@ -17,16 +18,19 @@ namespace os {
             uint16_t size, programSize, programCount, sectionSize, sectionCount,
                 sectionNames;
     };
+
     /* 描述一个 ELF 程序段的文件位置、内存范围和权限。 */
     struct ElfProgramHeader {
             uint32_t type, flags;
             uint64_t offset, address, physical, fileSize, memorySize, alignment;
     };
+
     /* 保存 ELF 动态链接表的一项标签和对应数值。 */
     struct ElfDynamic {
             int64_t tag;
             uint64_t value;
     };
+
     /* 保存 ELF 符号的名称索引、地址、大小及绑定属性。 */
     struct ElfSymbol {
             uint32_t name;
@@ -34,6 +38,7 @@ namespace os {
             uint16_t section;
             uint64_t value, size;
     };
+
     /* 保存带显式加数的 ELF 重定位项，指明需要修正的地址与符号。 */
     struct ElfRela {
             uint64_t offset, info;
@@ -45,6 +50,7 @@ namespace os {
     static_assert(sizeof(ElfDynamic) == 16);
     static_assert(sizeof(ElfSymbol) == 24);
     static_assert(sizeof(ElfRela) == 24);
+
     /* 校验并查询 ELF 文件头、程序段和动态加载信息。 */
     class Executable {
         public:

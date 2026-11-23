@@ -10,7 +10,6 @@
 #include <sys/syscall.h>
 
 #include "internal.h"
-#include "internal.h"
 
 #define LIBC_CHILD_CAPACITY 32
 #define LIBC_SHARED_IMAGE_COUNT 1
@@ -181,7 +180,7 @@ static int executeScript(int source, const char* path, int descriptorExecution, 
 static int executeDescriptor(int source, const char* path, int descriptorExecution, int closeOnExec,
                              char* const arguments[], char* const environment[], unsigned depth) {
     enum { maximum_arguments = 64, maximum_environment = 64 };
-    const uint64_t maximum_image_size = 8ULL * 1024 * 1024;
+    const uint64_t maximum_image_size = OS_TASK_IMAGE_MAX_BYTES;
     char absolute[LIBC_PATH_CAPACITY];
     struct stat status;
     OsExecImageInfo info;

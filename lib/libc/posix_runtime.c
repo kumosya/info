@@ -144,10 +144,72 @@ int gethostname(char* buffer,size_t size) {
     if(n==size) { errno=ENAMETOOLONG; return -1; }
     buffer[n]=0; return 0;
 }
+
+/* 读取系统信息节点的一行，去掉换行，并保留底层读取错误。 */
+static int read_system_text(const char* path, char* output, size_t capacity) {
+    const int descriptor = open(path, O_RDONLY | O_CLOEXEC);
+    if (descriptor < 0) {
+        return -1;
+    }
+
+    size_t used = 0;
+    int error = 0;
+    int complete = 0;
+    for (;;) {
+        char bytes[128];
+        const ssize_t count = read(descriptor, bytes, sizeof(bytes));
+        if (count < 0 && errno == EINTR) {
+            continue;
+        }
+        if (count < 0) {
+            error = errno;
+            break;
+        }
+        if (!count) {
+            break;
+        }
+        for (ssize_t index = 0; index < count; ++index) {
+            const char byte = bytes[index];
+            if (byte == '\n' || byte == '\r') {
+                complete = 1;
+                break;
+            }
+            if (used + 1 >= capacity || !byte) {
+                error = byte ? ENAMETOOLONG : EIO;
+                break;
+            }
+            output[used++] = byte;
+        }
+        if (error || complete) {
+            break;
+        }
+    }
+
+    close(descriptor);
+    if (error || !used) {
+        errno = error ? error : EIO;
+        return -1;
+    }
+    output[used] = 0;
+    return 0;
+}
+
+/* 系统名称、版本和架构由系统文件提供，主机名沿用可更新的主机配置。 */
 int uname(struct utsname* result) {
-    if(!result) { errno=EFAULT; return -1; }
-    memset(result,0,sizeof(*result)); strcpy(result->sysname,"osinfo");
-    strcpy(result->release,"0.2"); strcpy(result->version,"osinfo kernel"); strcpy(result->machine,"x86_64");
-    if(gethostname(result->nodename,sizeof(result->nodename))) return -1;
+    if (!result) {
+        errno = EFAULT;
+        return -1;
+    }
+
+    struct utsname identity = {0};
+    if (read_system_text("/sys/kernel/ostype", identity.sysname, sizeof(identity.sysname)) ||
+        read_system_text("/sys/kernel/osrelease", identity.release, sizeof(identity.release)) ||
+        read_system_text("/sys/kernel/version", identity.version, sizeof(identity.version)) ||
+        read_system_text("/sys/kernel/machine", identity.machine, sizeof(identity.machine)) ||
+        gethostname(identity.nodename, sizeof(identity.nodename))) {
+        return -1;
+    }
+
+    *result = identity;
     return 0;
 }

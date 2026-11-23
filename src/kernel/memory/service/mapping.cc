@@ -17,7 +17,7 @@
 #include "kernel/task.h"
 #include "kernel/time.h"
 #include "service/common/identity.h"
-#include "service/common/kernel-requests.h"
+#include "service/common/protocol.h"
 #include "service/common/records.h"
 #include <os/device.h>
 
@@ -35,7 +35,7 @@ namespace mm {
      * 跨任务内存操作需要使用这个身份检查。
      */
     static bool isMemoryManager(const ::task::Task& caller) {
-        return caller.serviceRole() == os::ServiceRole::Memory &&
+        return caller.serviceRole() == services::ServiceRole::Memory &&
                caller.hasCapability(::task::taskCapabilityMemory) &&
                ::task::serviceRecovery().current(caller);
     }

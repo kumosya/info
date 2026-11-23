@@ -17,7 +17,7 @@
 #include "kernel/task.h"
 #include "kernel/time.h"
 #include "service/common/identity.h"
-#include "service/common/kernel-requests.h"
+#include "service/common/protocol.h"
 #include "service/common/records.h"
 #include <os/device.h>
 
@@ -133,8 +133,18 @@ namespace task {
         }
 
         // 复制任何一层记录失败，都交给统一子任务回收路径清理，不能把半初始化孩子留在全局任务表中。
-        if (!cloned || !child->inheritForFork(*parent) ||
-            !mm::pagerBridge().clone(*parent, *child)) {
+        const bool inherited = cloned && child->inheritForFork(*parent);
+        const bool pagerCloned = inherited && mm::pagerBridge().clone(*parent, *child);
+        if (!pagerCloned) {
+            device::serialWrite("[FORK-FAIL] maps=");
+            device::serialWriteDecimal(cloned);
+            device::serialWrite(" inherit=");
+            device::serialWriteDecimal(inherited);
+            device::serialWrite(" pager=");
+            device::serialWriteDecimal(pagerCloned);
+            device::serialWrite(" free_pages=");
+            device::serialWriteDecimal(mm::getFreeMemoryBytes() / 4096);
+            device::serialWrite("\n");
             child->destroy();
 
             return error(SyscallError::OutOfMemory);
@@ -170,11 +180,11 @@ namespace task {
         constexpr uint32_t maximumSharedImageCount = 4;
         constexpr uint32_t maximumStringLength     = 383;
         constexpr uint32_t maximumNameLength       = 95;
-        constexpr uint64_t maximumImageSize        = 8ULL * 1024 * 1024;
+        constexpr uint64_t maximumImageSize        = OS_TASK_IMAGE_MAX_BYTES;
         constexpr uint64_t maximumRuntimeStateSize = 16 * 1024;
         Task* task                                 = &caller_;
         Thread* current                            = currentThread();
-        os::wire::ExecImageInfo info{};
+        services::wire::ExecImageInfo info{};
 
         if (context == nullptr || task == nullptr || current == nullptr ||
             !task::copyFromUser(&info, reinterpret_cast<const void*>(image),
@@ -209,13 +219,13 @@ namespace task {
         }
 
         // 先复制共享映像描述再读取其中的用户指针；每个映像分别限制大小，描述数组有效不代表其中任意地址都有效。
-        os::wire::SharedImageInfo userSharedImages[maximumSharedImageCount]{};
+        services::wire::SharedImageInfo userSharedImages[maximumSharedImageCount]{};
         ::elf::ElfSharedImage sharedImages[maximumSharedImageCount]{};
 
         if (info.sharedImageCount != 0 &&
             !task::copyFromUser(
                 userSharedImages, info.sharedImages,
-                info.sharedImageCount * sizeof(os::wire::SharedImageInfo))) {
+                info.sharedImageCount * sizeof(services::wire::SharedImageInfo))) {
             failureResult = error(SyscallError::InvalidArgument);
 
             return false;
@@ -405,7 +415,7 @@ namespace task {
 
         if (loadError == ::elf::ElfLoadError::None &&
             info.runtimeStateSize != 0) {
-            runtimeStateAddress = os::execRuntimeStateAddress;
+            runtimeStateAddress = services::execRuntimeStateAddress;
             const uint64_t mappedSize =
                 (info.runtimeStateSize + pageSize - 1) & ~(pageSize - 1);
 
@@ -473,6 +483,9 @@ namespace task {
         }
 
         if (loadError != ::elf::ElfLoadError::None) {
+            device::serialWrite("[EXEC-FAIL] loader=");
+            device::serialWriteDecimal(static_cast<uint32_t>(loadError));
+            device::serialWrite("\n");
             mm::destroyAddressSpaceRoot(newRoot);
             failureResult = elfLoadError(loadError);
 
@@ -490,6 +503,7 @@ namespace task {
         }
 
         task->setCommandLine(info.argumentCount, arguments);
+
         // 只安装新入口、栈和初始标志，重置浮点状态并标记现场已恢复；系统调用收尾必须跳过旧回复写入和普通返回值覆盖。
         *context            = {};
         context->userRip    = loadResult.getEntryPoint();

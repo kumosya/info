@@ -1,34 +1,32 @@
-#include <csignal>
-
-#include "kernel/graphic/font.h"
-#include "service/common/channel.h"
-#include "service/common/kernel-requests.h"
-#include "service/common/queries.h"
-#include "service/common/records.h"
-#include "service/common/requests.h"
-#include "service/common/runtime.h"
-#include "service/console/boot.h"
-#include "service/console/client.h"
 #include <os/console.h>
+#include <os/detail/client.h>
 #include <os/device.h>
 #include <os/file.h>
 #include <os/input.h>
 #include <os/ipc.h>
 #include <os/mm.h>
+#include <os/runtime.h>
 #include <os/service.h>
 #include <os/sync.h>
 #include <os/task.h>
 
+#include <csignal>
+
+#include "kernel/graphic/font.h"
+#include "service/common/protocol.h"
+#include "service/common/records.h"
+#include "service/console/boot.h"
+
 constexpr uint64_t framebufferAddress = 0x0000000051000000ULL;
-constexpr uint64_t inputStackAddress  = 0x0000000062000000ULL;
-constexpr uint64_t inputStackSize     = 64 * 1024;
-constexpr uint32_t cellWidth          = 8;
-constexpr uint32_t cellHeight         = 16;
-constexpr uint32_t maximumColumns     = 128;
-constexpr uint32_t maximumRows        = 48;
-constexpr uint32_t inputCapacity      = 512;
-constexpr uint32_t lineCapacity       = 256;
-constexpr uint32_t historyCapacity    = 16;
+constexpr uint64_t inputStackAddress = 0x0000000062000000ULL;
+constexpr uint64_t inputStackSize = 64 * 1024;
+constexpr uint32_t cellWidth = 8;
+constexpr uint32_t cellHeight = 16;
+constexpr uint32_t maximumColumns = 128;
+constexpr uint32_t maximumRows = 48;
+constexpr uint32_t inputCapacity = 512;
+constexpr uint32_t lineCapacity = 256;
+constexpr uint32_t historyCapacity = 16;
 
 struct Cell {
         char character;
@@ -41,8 +39,11 @@ class DisplayConsole {
     public:
         bool init() {
             if (info_.open(framebufferAddress) || !info_.getAddress() ||
-                info_.getWidth() < cellWidth || info_.getHeight() < cellHeight)
+                info_.getWidth() < cellWidth ||
+                info_.getHeight() < cellHeight) {
                 return false;
+            }
+
             surface_ = {reinterpret_cast<uint8_t*>(info_.getAddress()),
                         info_.getWidth(),
                         info_.getHeight(),
@@ -68,9 +69,9 @@ class DisplayConsole {
                     uint32_t cursorX, uint32_t cursorY) {
             for (uint32_t row = 0; row < rows; ++row) {
                 for (uint32_t column = 0; column < columns; ++column) {
-                    const Cell& cell     = cells[row * columns + column];
+                    const Cell& cell = cells[row * columns + column];
                     const uint32_t index = row * columns + column;
-                    const bool cursor    = column == cursorX && row == cursorY;
+                    const bool cursor = column == cursorX && row == cursorY;
                     const bool previousCursor =
                         column == previousCursorX_ && row == previousCursorY_;
                     const Cell& previous = previousCells_[index];
@@ -84,12 +85,15 @@ class DisplayConsole {
                     }
                 }
             }
+
             previousCursorX_ = cursorX;
             previousCursorY_ = cursorY;
-            valid_           = true;
+            valid_ = true;
         }
 
-        void invalidate() { valid_ = false; }
+        void invalidate() {
+            valid_ = false;
+        }
 
     private:
         void drawCell(uint32_t column, uint32_t row, const Cell& cell,
@@ -100,9 +104,10 @@ class DisplayConsole {
             uint32_t background = os::Console::terminalColor(cell.background);
             if (cursor != ((cell.attributes & 4U) != 0)) {
                 const uint32_t temporary = foreground;
-                foreground               = background;
-                background               = temporary;
+                foreground = background;
+                background = temporary;
             }
+
             graphic::drawGlyph(surface_, column * cellWidth, row * cellHeight,
                                uint8_t(cell.character), foreground, background,
                                (cell.attributes & 2U) != 0);
@@ -113,7 +118,7 @@ class DisplayConsole {
         Cell previousCells_[maximumColumns * maximumRows]{};
         uint32_t previousCursorX_ = 0;
         uint32_t previousCursorY_ = 0;
-        bool valid_               = false;
+        bool valid_ = false;
 };
 
 class Tty {
@@ -122,10 +127,10 @@ class Tty {
                   bool banner = true) {
             os::Runtime::clearMemory(this, sizeof(*this));
             insertMode_ = true;
-            echo_       = true;
-            id_         = id;
-            columns_    = columns;
-            rows_       = rows;
+            echo_ = true;
+            id_ = id;
+            columns_ = columns;
+            rows_ = rows;
             clear();
             if (banner) {
                 write("osinfo tty", 10);
@@ -140,7 +145,7 @@ class Tty {
             }
         }
 
-        void handleKey(const os::wire::KeyEvent& key) {
+        void handleKey(const services::wire::KeyEvent& key) {
             os::Input::Key keyCode = navigationKey(key);
             if ((key.modifiers & os::Input::Modifier::Control) != 0 &&
                 keyCode >= os::Input::Key::A && keyCode <= os::Input::Key::Z) {
@@ -153,8 +158,8 @@ class Tty {
                     moveCursorForward(lineLength_ - lineCursor_);
                     write(notation, 2);
                     put('\n');
-                    lineLength_      = 0;
-                    lineCursor_      = 0;
+                    lineLength_ = 0;
+                    lineCursor_ = 0;
                     historyPosition_ = historyCount_;
                     if (foregroundTask_ != 0) {
                         os::detail::TaskControl().sendSignal(
@@ -173,77 +178,96 @@ class Tty {
                         commitLine(false);
                     }
                 } else if (keyCode == os::Input::Key::L) {
-                    clear();
-                    write("^L\n", 3);
+                    redrawInputAfterClear();
                 } else {
                     write(notation, 2);
                     appendControlCharacter(static_cast<char>(letter - 'A' + 1));
                 }
+
                 return;
             }
+
             if (!echo_) {
                 if (keyCode == os::Input::Key::Enter ||
                     keyCode == os::Input::Key::KeypadEnter) {
                     commitLine(true);
                 } else if (keyCode == os::Input::Key::Backspace) {
-                    if (lineLength_) line_[--lineLength_] = 0;
+                    if (lineLength_) {
+                        line_[--lineLength_] = 0;
+                    }
+
                     lineCursor_ = lineLength_;
                 } else {
-                    os::wire::KeyEvent translated = key;
-                    translated.keyCode            = keyCode;
-                    const char character          = keyCharacter(translated);
-                    if (character && lineLength_ + 1 < lineCapacity)
+                    services::wire::KeyEvent translated = key;
+                    translated.keyCode = keyCode;
+                    const char character = keyCharacter(translated);
+                    if (character && lineLength_ + 1 < lineCapacity) {
                         line_[lineLength_++] = character;
+                    }
+
                     lineCursor_ = lineLength_;
                 }
+
                 return;
             }
+
             if (keyCode == os::Input::Key::Left) {
                 if (lineCursor_ != 0) {
                     --lineCursor_;
                     moveCursorBackward(1);
                 }
+
                 return;
             }
+
             if (keyCode == os::Input::Key::Right) {
                 if (lineCursor_ < lineLength_) {
                     ++lineCursor_;
                     moveCursorForward(1);
                 }
+
                 return;
             }
+
             if (keyCode == os::Input::Key::Home) {
                 moveCursorBackward(lineCursor_);
                 lineCursor_ = 0;
                 return;
             }
+
             if (keyCode == os::Input::Key::End) {
                 moveCursorForward(lineLength_ - lineCursor_);
                 lineCursor_ = lineLength_;
                 return;
             }
+
             if (keyCode == os::Input::Key::Up ||
                 keyCode == os::Input::Key::PageUp) {
                 recallHistory(keyCode == os::Input::Key::PageUp ? -16 : -1);
                 return;
             }
+
             if (keyCode == os::Input::Key::Down ||
                 keyCode == os::Input::Key::PageDown) {
                 recallHistory(keyCode == os::Input::Key::PageDown ? 16 : 1);
                 return;
             }
+
             if (keyCode == os::Input::Key::Insert) {
                 insertMode_ = !insertMode_;
                 return;
             }
+
             if (keyCode == os::Input::Key::Backspace) {
                 eraseInputCharacter(true);
                 return;
             }
+
             if (keyCode == os::Input::Key::Delete) {
                 eraseInputCharacter(false);
                 return;
             }
+
             if (keyCode == os::Input::Key::Enter ||
                 keyCode == os::Input::Key::KeypadEnter) {
                 moveCursorForward(lineLength_ - lineCursor_);
@@ -251,15 +275,18 @@ class Tty {
                 commitLine(true);
                 return;
             }
+
             if (keyCode == os::Input::Key::Tab) {
                 for (uint32_t index = 0; index < 4; ++index) {
                     appendInputCharacter(' ');
                 }
+
                 return;
             }
-            os::wire::KeyEvent translated = key;
-            translated.keyCode            = keyCode;
-            const char character          = keyCharacter(translated);
+
+            services::wire::KeyEvent translated = key;
+            translated.keyCode = keyCode;
+            const char character = keyCharacter(translated);
             if (character != '\0') {
                 appendInputCharacter(character);
             }
@@ -271,22 +298,62 @@ class Tty {
                     eofPending_ = false;
                     return 0;
                 }
+
                 return static_cast<int64_t>(os::ErrorCode::WouldBlock);
             }
+
             uint32_t count = inputCount_ < capacity ? inputCount_ : capacity;
             for (uint32_t index = 0; index < count; ++index) {
                 destination[index] = input_[inputRead_];
-                inputRead_         = (inputRead_ + 1) % inputCapacity;
+                inputRead_ = (inputRead_ + 1) % inputCapacity;
             }
+
             inputCount_ -= count;
             return count;
         }
 
-        bool readable() const { return inputCount_ || eofPending_; }
+        bool readable() const {
+            return inputCount_ || eofPending_;
+        }
 
-        const Cell* cells() const { return cells_; }
-        uint32_t cursorX() const { return cursorX_; }
-        uint32_t cursorY() const { return cursorY_; }
+        /* 清掉历史显示，把提示符和正在编辑的内容移到顶部，保留输入和光标。 */
+        void redrawInputAfterClear() {
+            Cell saved[maximumColumns * maximumRows];
+            const uint32_t cursor = cursorY_ * columns_ + cursorX_;
+            const uint32_t beginning = cursor >= lineCursor_ ? cursor - lineCursor_ : 0;
+            const uint32_t firstRow = beginning / columns_;
+            const uint32_t end = beginning + lineLength_;
+            const uint32_t lastRow = end / columns_ < rows_ ? end / columns_ : rows_ - 1;
+            const uint32_t count = (lastRow - firstRow + 1) * columns_;
+            const uint32_t nextX = cursorX_, nextY = cursorY_ - firstRow;
+            const os::Console::Style style = style_;
+
+            for (uint32_t index = 0; index < count; ++index) {
+                saved[index] = cells_[firstRow * columns_ + index];
+            }
+
+            clear();
+            for (uint32_t index = 0; index < count; ++index) {
+                cells_[index] = saved[index];
+            }
+
+            cursorX_ = nextX;
+            cursorY_ = nextY;
+            style_ = style;
+        }
+
+        const Cell* cells() const {
+            return cells_;
+        }
+
+        uint32_t cursorX() const {
+            return cursorX_;
+        }
+
+        uint32_t cursorY() const {
+            return cursorY_;
+        }
+
         void resetSession() {
             inputRead_ = inputWrite_ = inputCount_ = lineLength_ = lineCursor_ =
                 0;
@@ -295,38 +362,56 @@ class Tty {
             os::Runtime::clearMemory(history_, sizeof(history_));
             setForegroundTask(0);
             echo_ = insertMode_ = true;
-            eofPending_         = false;
-            ansi_               = {};
-            style_              = {};
+            eofPending_ = false;
+            ansi_ = {};
+            style_ = {};
         }
+
         int setForegroundTask(uint64_t taskId) {
             os::IpcMessage request{}, reply{};
-            request.type =
-                static_cast<uint64_t>(os::TaskOperation::SetTerminalForeground);
-            request.length  = 4;
+            request.type = static_cast<uint64_t>(
+                services::TaskOperation::SetTerminalForeground);
+            request.length = 4;
             request.data[0] = 1;
             request.data[1] = id_;
             request.data[2] = taskId;
             const int status =
-                services::RequestChannel(os::CoreServiceKind::Task)
+                os::detail::RequestChannel(services::CoreServiceKind::Task)
                     .result(request, reply);
-            if (status) return status;
+            if (status) {
+                return status;
+            }
+
             foregroundTask_ = taskId;
-            if (!taskId) echo_ = true;
+            if (!taskId) {
+                echo_ = true;
+            }
+
             return 0;
         }
-        uint64_t foregroundGroup() const { return foregroundTask_; }
-        bool echo() const { return echo_; }
-        void setEcho(bool enabled) { echo_ = enabled; }
+
+        uint64_t foregroundGroup() const {
+            return foregroundTask_;
+        }
+
+        bool echo() const {
+            return echo_;
+        }
+
+        void setEcho(bool enabled) {
+            echo_ = enabled;
+        }
 
     private:
-        static os::Input::Key navigationKey(const os::wire::KeyEvent& key) {
+        static os::Input::Key navigationKey(
+            const services::wire::KeyEvent& key) {
             const bool numeric =
                 (key.modifiers & os::Input::Modifier::NumLock) != 0 &&
                 (key.modifiers & os::Input::Modifier::Shift) == 0;
             if (numeric) {
                 return key.keyCode;
             }
+
             switch (key.keyCode) {
                 case os::Input::Key::Keypad0:
                     return os::Input::Key::Insert;
@@ -353,7 +438,7 @@ class Tty {
             }
         }
 
-        static char keyCharacter(const os::wire::KeyEvent& key) {
+        static char keyCharacter(const services::wire::KeyEvent& key) {
             const bool shift =
                 (key.modifiers & os::Input::Modifier::Shift) != 0;
             const bool caps =
@@ -364,15 +449,17 @@ class Tty {
                                        static_cast<uint32_t>(os::Input::Key::A);
                 return static_cast<char>(((shift != caps) ? 'A' : 'a') + index);
             }
+
             if (key.keyCode >= os::Input::Key::Digit1 &&
                 key.keyCode <= os::Input::Key::Digit9) {
-                constexpr char normal[]  = "123456789";
+                constexpr char normal[] = "123456789";
                 constexpr char shifted[] = "!@#$%^&*(";
                 const uint32_t index =
                     static_cast<uint32_t>(key.keyCode) -
                     static_cast<uint32_t>(os::Input::Key::Digit1);
                 return shift ? shifted[index] : normal[index];
             }
+
             switch (key.keyCode) {
                 case os::Input::Key::Digit0:
                     return shift ? ')' : '0';
@@ -439,56 +526,71 @@ class Tty {
             if (lineLength_ + 1 >= lineCapacity) {
                 return;
             }
+
             const uint32_t redrawStart = lineCursor_;
             if (insertMode_ || lineCursor_ == lineLength_) {
                 for (uint32_t index = lineLength_; index > lineCursor_;
                      --index) {
                     line_[index] = line_[index - 1];
                 }
+
                 ++lineLength_;
             }
+
             line_[lineCursor_++] = character;
             for (uint32_t index = redrawStart; index < lineLength_; ++index) {
                 put(line_[index]);
             }
+
             moveCursorBackward(lineLength_ - lineCursor_);
             historyPosition_ = historyCount_;
         }
 
-        void appendControlCharacter(char character) { enqueue(character); }
+        void appendControlCharacter(char character) {
+            enqueue(character);
+        }
 
         void eraseInputCharacter(bool backward) {
             if ((backward && lineCursor_ == 0) ||
                 (!backward && lineCursor_ == lineLength_)) {
                 return;
             }
+
             if (backward) {
                 --lineCursor_;
                 moveCursorBackward(1);
             }
+
             for (uint32_t index = lineCursor_; index + 1 < lineLength_;
                  ++index) {
                 line_[index] = line_[index + 1];
             }
+
             --lineLength_;
             for (uint32_t index = lineCursor_; index < lineLength_; ++index) {
                 put(line_[index]);
             }
+
             put(' ');
             moveCursorBackward(lineLength_ - lineCursor_ + 1);
             historyPosition_ = historyCount_;
         }
 
         void commitLine(bool newline) {
-            if (echo_) rememberLine();
+            if (echo_) {
+                rememberLine();
+            }
+
             for (uint32_t index = 0; index < lineLength_; ++index) {
                 enqueue(line_[index]);
             }
+
             if (newline) {
                 enqueue('\n');
             }
-            lineLength_      = 0;
-            lineCursor_      = 0;
+
+            lineLength_ = 0;
+            lineCursor_ = 0;
             historyPosition_ = historyCount_;
         }
 
@@ -496,6 +598,7 @@ class Tty {
             if (lineLength_ == 0) {
                 return;
             }
+
             if (historyCount_ == historyCapacity) {
                 for (uint32_t index = 1; index < historyCapacity; ++index) {
                     for (uint32_t character = 0; character < lineCapacity;
@@ -504,13 +607,16 @@ class Tty {
                             history_[index][character];
                     }
                 }
+
                 --historyCount_;
             }
+
             uint32_t count =
                 lineLength_ < lineCapacity - 1 ? lineLength_ : lineCapacity - 1;
             for (uint32_t index = 0; index < count; ++index) {
                 history_[historyCount_][index] = line_[index];
             }
+
             history_[historyCount_][count] = '\0';
             ++historyCount_;
         }
@@ -519,12 +625,17 @@ class Tty {
             if (historyCount_ == 0) {
                 return;
             }
+
             int32_t position =
                 static_cast<int32_t>(historyPosition_) + direction;
-            if (position < 0) position = 0;
+            if (position < 0) {
+                position = 0;
+            }
+
             if (position > static_cast<int32_t>(historyCount_)) {
                 position = static_cast<int32_t>(historyCount_);
             }
+
             historyPosition_ = static_cast<uint32_t>(position);
             char replacement[lineCapacity]{};
             uint32_t length = 0;
@@ -535,6 +646,7 @@ class Tty {
                     ++length;
                 }
             }
+
             replaceInputLine(replacement, length);
         }
 
@@ -545,12 +657,15 @@ class Tty {
                 line_[index] = replacement[index];
                 put(replacement[index]);
             }
+
             for (uint32_t index = length; index < oldLength; ++index) {
                 put(' ');
             }
+
             if (oldLength > length) {
                 moveCursorBackward(oldLength - length);
             }
+
             lineLength_ = length;
             lineCursor_ = length;
         }
@@ -581,18 +696,20 @@ class Tty {
             if (inputCount_ == inputCapacity) {
                 return;
             }
+
             input_[inputWrite_] = character;
-            inputWrite_         = (inputWrite_ + 1) % inputCapacity;
+            inputWrite_ = (inputWrite_ + 1) % inputCapacity;
             ++inputCount_;
             os::notifyReadiness();
         }
 
         void consume(char character) {
             const auto result = ansi_.feed(static_cast<uint8_t>(character));
-            if (result == os::Console::EscapeParser::Result::Text)
+            if (result == os::Console::EscapeParser::Result::Text) {
                 put(character);
-            else if (result == os::Console::EscapeParser::Result::Command)
+            } else if (result == os::Console::EscapeParser::Result::Command) {
                 applyAnsi(ansi_.getCommand());
+            }
         }
 
         void applyAnsi(char command) {
@@ -610,7 +727,7 @@ class Tty {
             } else if (command == 'D') {
                 cursorX_ = first > cursorX_ ? 0 : cursorX_ - first;
             } else if (command == 'H') {
-                cursorY_              = first > rows_ ? rows_ - 1 : first - 1;
+                cursorY_ = first > rows_ ? rows_ - 1 : first - 1;
                 const uint32_t column = parameterTwo_ == 0 ? 1 : parameterTwo_;
                 cursorX_ = column > columns_ ? columns_ - 1 : column - 1;
             } else if (command == 'J' &&
@@ -621,8 +738,9 @@ class Tty {
                     cells_[cursorY_ * columns_ + column] = blankCell();
                 }
             } else if (command == 'm') {
-                for (uint32_t i = 0; i < ansi_.getParameterCount(); ++i)
+                for (uint32_t i = 0; i < ansi_.getParameterCount(); ++i) {
                     style_.apply(ansi_.getParameter(i));
+                }
             }
         }
 
@@ -631,27 +749,33 @@ class Tty {
                 cursorX_ = 0;
                 return;
             }
+
             if (character == '\n') {
                 cursorX_ = 0;
                 advanceRow();
                 return;
             }
+
             if (character == '\b') {
                 if (cursorX_ != 0) {
                     --cursorX_;
                     cells_[cursorY_ * columns_ + cursorX_] = blankCell();
                 }
+
                 return;
             }
+
             if (character == '\t') {
                 do {
                     put(' ');
                 } while ((cursorX_ & 3U) != 0);
                 return;
             }
+
             if (character < 32 || character > 126) {
                 return;
             }
+
             cells_[cursorY_ * columns_ + cursorX_] = {
                 character, style_.getForeground(), style_.getBackground(),
                 style_.getAttributes()};
@@ -665,28 +789,34 @@ class Tty {
             if (++cursorY_ < rows_) {
                 return;
             }
+
             for (uint32_t row = 1; row < rows_; ++row) {
                 for (uint32_t column = 0; column < columns_; ++column) {
                     cells_[(row - 1) * columns_ + column] =
                         cells_[row * columns_ + column];
                 }
             }
+
             for (uint32_t column = 0; column < columns_; ++column) {
                 cells_[(rows_ - 1) * columns_ + column] = blankCell();
             }
+
             cursorY_ = rows_ - 1;
         }
 
-        Cell blankCell() const { return {' ', 7, 0, 0}; }
+        Cell blankCell() const {
+            return {' ', 7, 0, 0};
+        }
 
         void clear() {
             for (uint32_t index = 0; index < maximumColumns * maximumRows;
                  ++index) {
                 cells_[index] = blankCell();
             }
+
             cursorX_ = cursorY_ = 0;
-            style_              = {};
-            ansi_               = {};
+            style_ = {};
+            ansi_ = {};
         }
 
         uint32_t id_;
@@ -723,15 +853,17 @@ class ConsoleService {
             endpoint_ = os::detail::EndpointControl().create();
             if (registry_ == 0 || endpoint_ == 0 || !display_.init() ||
                 !os::detail::RegistryClient(registry_).registerName(
-                    os::consoleServiceName, endpoint_) ||
+                    services::consoleServiceName, endpoint_) ||
                 !os::detail::RegistryClient(registry_).registerName(
-                    os::terminalServiceName, endpoint_)) {
+                    services::terminalServiceName, endpoint_)) {
                 return false;
             }
+
             for (uint32_t index = 0; index < os::textTerminalCount; ++index) {
                 terminals_[index].init(index, display_.columns(),
                                        display_.rows());
             }
+
             loadConfiguration();
             // A restarted console takes the framebuffer back before showing
             // boot output.
@@ -739,10 +871,13 @@ class ConsoleService {
                 os::detail::RegistryClient(registry_).lookup("guiw", 1);
             if (window) {
                 const bool hidden =
-                    os::DisplayHandoff().setGraphicalActive(window, false);
+                    os::DisplayHandoff(window).setGraphicalActive(false);
                 os::closeHandle(window);
-                if (!hidden) return false;
+                if (!hidden) {
+                    return false;
+                }
             }
+
             bootStorage.init(0, display_.columns(), display_.rows(), false);
             const char heading[] = "osinfo: starting services...\n\n";
             bootStorage.write(heading, sizeof(heading) - 1);
@@ -750,35 +885,32 @@ class ConsoleService {
             return true;
         }
 
-        uint64_t endpoint() const { return endpoint_; }
+        uint64_t endpoint() const {
+            return endpoint_;
+        }
 
         void handle(const os::IpcMessage& request, os::IpcMessage& reply) {
             os::SpinLock::Guard guard(lock_);
             const auto operation =
-                static_cast<os::TerminalRequest>(request.type);
-            if (operation == os::TerminalRequest::GetBootState) {
+                static_cast<services::TerminalRequest>(request.type);
+            if (operation == services::TerminalRequest::GetBootState) {
                 reply.data[0] =
                     request.length || request.handleCount
                         ? static_cast<int64_t>(os::ErrorCode::InvalidArgument)
                         : 0;
                 reply.data[1] = boot_.active() ? 1 : 0;
                 reply.data[2] = defaultTerminal_;
-                reply.length  = 3;
-            } else if (operation == os::TerminalRequest::BootStatus ||
-                       operation == os::TerminalRequest::BootComplete) {
-                os::wire::TaskInfo caller{};
-                if (os::detail::TaskQuery().query(request.senderPid, caller) ||
-                    !console::BootState::authorized(caller))
-                    reply.data[0] =
-                        static_cast<int64_t>(os::ErrorCode::PermissionDenied);
-                else if (operation == os::TerminalRequest::BootStatus
-                             ? !console::BootState::validStatus(request)
-                             : !console::BootState::validComplete(request))
-                    reply.data[0] =
-                        static_cast<int64_t>(os::ErrorCode::InvalidArgument);
-                else if (!boot_.active())
-                    reply.data[0] = static_cast<int64_t>(os::ErrorCode::Busy);
-                else if (operation == os::TerminalRequest::BootStatus) {
+                reply.length = 3;
+            } else if (operation == services::TerminalRequest::BootStatus ||
+                       operation == services::TerminalRequest::BootComplete) {
+                services::wire::TaskInfo caller{};
+                const int validation =
+                    os::detail::TaskQuery().query(request.senderPid, caller)
+                        ? static_cast<int>(os::ErrorCode::PermissionDenied)
+                        : boot_.validate(request, caller);
+                if (validation) {
+                    reply.data[0] = static_cast<int64_t>(validation);
+                } else if (operation == services::TerminalRequest::BootStatus) {
                     const char* prefix =
                         request.data[0]
                             ? "\x1b[32m[ OK ]\x1b[0m Started "
@@ -798,7 +930,7 @@ class ConsoleService {
                             ? 0
                             : static_cast<int64_t>(os::ErrorCode::IoError);
                 }
-            } else if (operation == os::TerminalRequest::Write) {
+            } else if (operation == services::TerminalRequest::Write) {
                 const uint32_t terminal =
                     static_cast<uint32_t>(request.data[0]);
                 uint32_t length = static_cast<uint32_t>(request.data[1]);
@@ -815,16 +947,19 @@ class ConsoleService {
                         for (uint32_t index = 0; index < length; ++index) {
                             serial[index] = data[index];
                         }
+
                         os::Sys().log(serial);
                     }
+
                     if (!boot_.active() && activeTerminal_ == terminal) {
                         redrawLocked();
                     }
+
                     reply.data[0] = 0;
                     reply.data[1] = length;
-                    reply.length  = 2;
+                    reply.length = 2;
                 }
-            } else if (operation == os::TerminalRequest::Read) {
+            } else if (operation == services::TerminalRequest::Read) {
                 const uint32_t terminal =
                     static_cast<uint32_t>(request.data[0]);
                 uint32_t capacity = static_cast<uint32_t>(request.data[1]);
@@ -835,6 +970,7 @@ class ConsoleService {
                     if (capacity > 6 * sizeof(uint64_t)) {
                         capacity = 6 * sizeof(uint64_t);
                     }
+
                     char data[6 * sizeof(uint64_t)]{};
                     const int64_t count =
                         terminals_[terminal].read(data, capacity);
@@ -847,10 +983,11 @@ class ConsoleService {
                             reinterpret_cast<char*>(&reply.data[2])[index] =
                                 data[index];
                         }
+
                         reply.length = 8;
                     }
                 }
-            } else if (operation == os::TerminalRequest::Readiness) {
+            } else if (operation == services::TerminalRequest::Readiness) {
                 if (request.length != 1 || request.handleCount ||
                     request.data[0] >= os::textTerminalCount) {
                     reply.data[0] =
@@ -858,16 +995,16 @@ class ConsoleService {
                 } else {
                     reply.data[0] = 0;
                     reply.data[1] = terminals_[request.data[0]].readable();
-                    reply.length  = 2;
+                    reply.length = 2;
                 }
-            } else if (operation == os::TerminalRequest::GetState) {
+            } else if (operation == services::TerminalRequest::GetState) {
                 if (request.length != 1 || request.handleCount ||
-                    request.data[0] > os::graphicalTerminalId)
+                    request.data[0] > os::graphicalTerminalId) {
                     reply.data[0] =
                         static_cast<int64_t>(os::ErrorCode::InvalidArgument);
-                else {
+                } else {
                     const uint32_t id = static_cast<uint32_t>(request.data[0]);
-                    reply.data[0]     = 0;
+                    reply.data[0] = 0;
                     reply.data[1] = !boot_.active() && activeTerminal_ == id;
                     reply.data[2] = id < os::textTerminalCount
                                         ? terminals_[id].echo()
@@ -875,14 +1012,14 @@ class ConsoleService {
                     reply.data[3] = id < os::textTerminalCount
                                         ? terminals_[id].foregroundGroup()
                                         : 0;
-                    reply.length  = 4;
+                    reply.length = 4;
                 }
-            } else if (operation == os::TerminalRequest::GetActive) {
+            } else if (operation == services::TerminalRequest::GetActive) {
                 reply.data[0] = 0;
                 reply.data[1] = boot_.active() ? static_cast<uint64_t>(-1)
                                                : activeTerminal_;
-                reply.length  = 2;
-            } else if (operation == os::TerminalRequest::Switch) {
+                reply.length = 2;
+            } else if (operation == services::TerminalRequest::Switch) {
                 reply.data[0] =
                     boot_.active() ? static_cast<int64_t>(os::ErrorCode::Busy)
                     : request.length != 1 ||
@@ -891,45 +1028,49 @@ class ConsoleService {
                     : switchLocked(static_cast<uint32_t>(request.data[0]))
                         ? 0
                         : static_cast<int64_t>(os::ErrorCode::IoError);
-            } else if (operation == os::TerminalRequest::GetInfo) {
+            } else if (operation == services::TerminalRequest::GetInfo) {
                 reply.data[0] = 0;
                 reply.data[1] = os::textTerminalCount;
                 reply.data[2] = os::graphicalTerminalId;
                 reply.data[3] = display_.columns();
                 reply.data[4] = display_.rows();
-                reply.length  = 5;
-            } else if (operation == os::TerminalRequest::GetEcho ||
-                       operation == os::TerminalRequest::SetEcho) {
+                reply.length = 5;
+            } else if (operation == services::TerminalRequest::GetEcho ||
+                       operation == services::TerminalRequest::SetEcho) {
                 const uint32_t terminal =
                     static_cast<uint32_t>(request.data[0]);
                 if (request.length !=
-                        (operation == os::TerminalRequest::SetEcho ? 2U : 1U) ||
+                        (operation == services::TerminalRequest::SetEcho
+                             ? 2U
+                             : 1U) ||
                     request.data[0] >= os::textTerminalCount ||
-                    (operation == os::TerminalRequest::SetEcho &&
-                     request.data[1] > 1))
+                    (operation == services::TerminalRequest::SetEcho &&
+                     request.data[1] > 1)) {
                     reply.data[0] =
                         static_cast<int64_t>(os::ErrorCode::InvalidArgument);
-                else {
+                } else {
                     reply.data[0] = 0;
                     reply.data[1] = terminals_[terminal].echo();
-                    reply.length  = 2;
-                    if (operation == os::TerminalRequest::SetEcho)
+                    reply.length = 2;
+                    if (operation == services::TerminalRequest::SetEcho) {
                         terminals_[terminal].setEcho(request.data[1] != 0);
+                    }
                 }
-            } else if (operation == os::TerminalRequest::ResetSession) {
-                os::wire::TaskInfo caller{};
+            } else if (operation == services::TerminalRequest::ResetSession) {
+                services::wire::TaskInfo caller{};
                 if (request.length != 1 ||
                     request.data[0] >= os::textTerminalCount ||
                     os::detail::TaskQuery().query(request.senderPid, caller) ||
                     caller.serviceRole !=
-                        static_cast<uint32_t>(os::ServiceRole::Init))
+                        static_cast<uint32_t>(services::ServiceRole::Init)) {
                     reply.data[0] =
                         static_cast<int64_t>(os::ErrorCode::PermissionDenied);
-                else {
+                } else {
                     terminals_[request.data[0]].resetSession();
                     reply.data[0] = 0;
                 }
-            } else if (operation == os::TerminalRequest::SetForegroundGroup) {
+            } else if (operation ==
+                       services::TerminalRequest::SetForegroundGroup) {
                 const uint32_t terminal =
                     static_cast<uint32_t>(request.data[0]);
                 if (request.length != 2 ||
@@ -944,26 +1085,32 @@ class ConsoleService {
                 reply.data[0] = static_cast<uint64_t>(
                     static_cast<int64_t>(os::ErrorCode::NotSupported));
             }
+
             if (reply.length == 0) {
                 reply.length = 1;
             }
         }
 
         void handleInput(const os::Input::Event& event) {
-            os::wire::InputEvent record{};
-            record.type          = event.getType();
-            record.timestamp     = event.getTimestamp();
-            record.key.keyCode   = event.getKeyCode();
+            services::wire::InputEvent record{};
+            record.type = event.getType();
+            record.timestamp = event.getTimestamp();
+            record.key.keyCode = event.getKeyCode();
             record.key.modifiers = event.getModifiers();
-            record.key.pressed   = event.getPressed();
+            record.key.pressed = event.getPressed();
             handleInput(record);
         }
-        void handleInput(const os::wire::InputEvent& event) {
+
+        void handleInput(const services::wire::InputEvent& event) {
             if (event.type != os::Input::Event::Type::KeyDown) {
                 return;
             }
+
             os::SpinLock::Guard guard(lock_);
-            if (boot_.active()) return;
+            if (boot_.active()) {
+                return;
+            }
+
             const bool switchChord =
                 (event.key.modifiers & os::Input::Modifier::Control) != 0 &&
                 (event.key.modifiers & os::Input::Modifier::Shift) != 0 &&
@@ -986,19 +1133,27 @@ class ConsoleService {
                 terminal > os::graphicalTerminalId) {
                 return false;
             }
+
             const uint64_t window =
                 os::detail::RegistryClient(registry_).lookup(
                     "guiw", terminal == os::graphicalTerminalId ? 100 : 1);
             if (window != 0) {
-                const bool changed = os::DisplayHandoff().setGraphicalActive(
-                    window, terminal == os::graphicalTerminalId);
+                const bool changed =
+                    os::DisplayHandoff(window).setGraphicalActive(
+                        terminal == os::graphicalTerminalId);
                 os::closeHandle(window);
-                if (!changed) return false;
+                if (!changed) {
+                    return false;
+                }
             } else if (terminal == os::graphicalTerminalId) {
                 return false;
             }
-            if (finishingBoot) boot_.complete();
-            activeTerminal_                       = terminal;
+
+            if (finishingBoot) {
+                boot_.complete();
+            }
+
+            activeTerminal_ = terminal;
             constexpr const char* terminalNames[] = {
                 "[CONSOLE] switched to tty1\n", "[CONSOLE] switched to tty2\n",
                 "[CONSOLE] switched to tty3\n", "[CONSOLE] switched to tty4\n",
@@ -1009,6 +1164,7 @@ class ConsoleService {
                 display_.invalidate();
                 redrawLocked();
             }
+
             return true;
         }
 
@@ -1018,7 +1174,11 @@ class ConsoleService {
                                 display_.rows(), maximumColumns, maximumRows);
                 return;
             }
-            if (activeTerminal_ >= os::textTerminalCount) return;
+
+            if (activeTerminal_ >= os::textTerminalCount) {
+                return;
+            }
+
             Tty& terminal = terminals_[activeTerminal_];
             display_.render(terminal.cells(), display_.columns(),
                             display_.rows(), terminal.cursorX(),
@@ -1027,35 +1187,42 @@ class ConsoleService {
 
         void loadConfiguration() {
             defaultTerminal_ = 0;
-            serialConsole_   = false;
+            serialConsole_ = false;
             os::File file;
-            if (file.open("/etc/console", O_RDONLY)) return;
+            if (file.open("/etc/console", O_RDONLY)) {
+                return;
+            }
+
             char configuration[256]{};
             const int64_t count =
                 file.read(configuration, sizeof(configuration) - 1);
             if (count <= 0) {
                 return;
             }
-            configuration[count]         = '\0';
+
+            configuration[count] = '\0';
             constexpr char terminalKey[] = "defaultTerminal=tty";
-            constexpr char serialKey[]   = "serialConsole=on";
+            constexpr char serialKey[] = "serialConsole=on";
             for (int64_t index = 0; index < count; ++index) {
                 uint32_t match = 0;
                 while (terminalKey[match] != '\0' && index + match < count &&
                        configuration[index + match] == terminalKey[match]) {
                     ++match;
                 }
+
                 if (terminalKey[match] == '\0' && index + match < count &&
                     configuration[index + match] >= '1' &&
                     configuration[index + match] <= '7') {
                     defaultTerminal_ = static_cast<uint32_t>(
                         configuration[index + match] - '1');
                 }
+
                 match = 0;
                 while (serialKey[match] != '\0' && index + match < count &&
                        configuration[index + match] == serialKey[match]) {
                     ++match;
                 }
+
                 if (serialKey[match] == '\0') {
                     serialConsole_ = true;
                 }
@@ -1065,11 +1232,11 @@ class ConsoleService {
         DisplayConsole display_;
         Tty* terminals_ = terminalStorage;
         os::SpinLock lock_;
-        uint64_t registry_        = 0;
-        uint64_t endpoint_        = 0;
-        uint32_t activeTerminal_  = 0;
+        uint64_t registry_ = 0;
+        uint64_t endpoint_ = 0;
+        uint32_t activeTerminal_ = 0;
         uint32_t defaultTerminal_ = 0;
-        bool serialConsole_       = false;
+        bool serialConsole_ = false;
         console::BootState boot_;
 };
 
@@ -1078,6 +1245,7 @@ class ConsoleApplication {
         static void inputMain(void* self) {
             static_cast<ConsoleApplication*>(self)->inputLoop();
         }
+
         ConsoleService consoleService;
         uint64_t registryEndpoint;
 
@@ -1087,11 +1255,13 @@ class ConsoleApplication {
                 os::Sys().log("[CONSOLE] input service unavailable\n");
                 return;
             }
+
             while (true) {
-                if (client.wait(os::ipcInfiniteDeadline)) {
+                if (client.wait(services::ipcInfiniteDeadline)) {
                     os::Sys().log("[CONSOLE] input subscription failed\n");
                     return;
                 }
+
                 os::Input::Event event{};
                 while (client.receive(event)) {
                     consoleService.handleInput(event);
@@ -1111,6 +1281,7 @@ class ConsoleApplication {
                 os::Sys().log("[CONSOLE] initialization failed\n");
                 return 1;
             }
+
             os::Sys().log(
                 "[CONSOLE] boot display online; waiting for init handoff\n");
             while (true) {
@@ -1119,10 +1290,13 @@ class ConsoleApplication {
                     0) {
                     continue;
                 }
+
                 os::IpcMessage reply{};
                 consoleService.handle(request, reply);
-                for (uint32_t index = 0; index < request.handleCount; ++index)
+                for (uint32_t index = 0; index < request.handleCount; ++index) {
                     os::closeHandle(request.handles[index]);
+                }
+
                 os::replyMessage(consoleService.endpoint(), request.replyToken,
                                  reply);
             }

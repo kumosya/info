@@ -1,8 +1,7 @@
-#include "service/common/kernel-requests.h"
-#include "service/common/queries.h"
+#include "service/common/protocol.h"
+#include <os/detail/client.h>
 #include "service/common/records.h"
-#include "service/common/requests.h"
-#include "service/common/runtime.h"
+#include <os/runtime.h>
 #include <os/device.h>
 #include <os/ipc.h>
 #include <os/mm.h>
@@ -19,21 +18,21 @@ class PciServer {
             reply.data[0] =
                 static_cast<int64_t>(os::ErrorCode::PermissionDenied);
             reply.length = 1;
-            os::wire::TaskInfo caller{};
+            services::wire::TaskInfo caller{};
             if (!request.senderPid || request.handleCount ||
                 os::detail::TaskQuery().query(request.senderPid, caller) ||
                 !caller.trustedDeviceService)
                 return;
             const auto operation =
-                static_cast<os::PciServiceRequest>(request.type);
-            if (operation == os::PciServiceRequest::Enumerate) {
+                static_cast<services::PciServiceRequest>(request.type);
+            if (operation == services::PciServiceRequest::Enumerate) {
                 if (request.length != 1 || !request.data[0] ||
                     request.data[0] > 64) {
                     reply.data[0] =
                         static_cast<int64_t>(os::ErrorCode::InvalidArgument);
                     return;
                 }
-                os::wire::PciFunctionInfo functions[64]{};
+                services::wire::PciFunctionInfo functions[64]{};
                 const int count = service.enumerate(functions, request.data[0]);
                 if (count < 0) {
                     reply.data[0] = count;
@@ -46,7 +45,7 @@ class PciServer {
                 reply.length = 2 + (count * sizeof(*functions) + 7) / 8;
                 return;
             }
-            if (operation == os::PciServiceRequest::Query) {
+            if (operation == services::PciServiceRequest::Query) {
                 if (request.length != 4 || request.data[0] > UINT16_MAX ||
                     request.data[1] > 255 || request.data[2] >= 32 ||
                     request.data[3] >= 8) {
@@ -54,7 +53,7 @@ class PciServer {
                         static_cast<int64_t>(os::ErrorCode::InvalidArgument);
                     return;
                 }
-                os::wire::PciFunctionInfo function{};
+                services::wire::PciFunctionInfo function{};
                 const int status =
                     service.query(request.data[0], request.data[1],
                                   request.data[2], request.data[3], function);
@@ -66,22 +65,22 @@ class PciServer {
                 }
                 return;
             }
-            if ((operation != os::PciServiceRequest::ReadConfig &&
-                 operation != os::PciServiceRequest::WriteConfig) ||
+            if ((operation != services::PciServiceRequest::ReadConfig &&
+                 operation != services::PciServiceRequest::WriteConfig) ||
                 request.length !=
-                    (operation == os::PciServiceRequest::ReadConfig ? 3U
+                    (operation == services::PciServiceRequest::ReadConfig ? 3U
                                                                     : 4U) ||
                 request.data[0] > UINT16_MAX || (request.data[0] & 3)) {
                 reply.data[0] =
                     static_cast<int64_t>(os::ErrorCode::InvalidArgument);
                 return;
             }
-            os::wire::PciFunctionInfo function{};
+            services::wire::PciFunctionInfo function{};
             os::Runtime::copyBytes(&function, &request.data[1],
                                    sizeof(function));
             uint32_t value = 0;
             int status;
-            if (operation == os::PciServiceRequest::ReadConfig)
+            if (operation == services::PciServiceRequest::ReadConfig)
                 status = service.read(function, request.data[0], value);
             else {
                 if (request.data[3] > UINT32_MAX) {
@@ -105,7 +104,7 @@ class PciServer {
             endpoint                = os::detail::EndpointControl().create();
             if (registry == 0 || endpoint == 0 ||
                 !os::detail::RegistryClient(registry).registerName(
-                    os::pciServiceName, endpoint)) {
+                    services::pciServiceName, endpoint)) {
                 os::Sys().log("[PCI] service registration failed\n");
                 return 1;
             }

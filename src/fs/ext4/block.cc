@@ -1,10 +1,10 @@
-#include "service/fs/ext4/filesystem.h"
-#include "service/fs/ext4/internal.h"
 #include <os/device.h>
 #include <os/ipc.h>
 #include <os/mm.h>
 #include <os/service.h>
 #include <os/task.h>
+
+#include "service/fs/ext4/filesystem.h"
 
 namespace fs::ext4 {
 
@@ -14,6 +14,7 @@ namespace fs::ext4 {
         if (device_ == nullptr || buffer == nullptr || block >= blocksCount_) {
             return false;
         }
+
         const uint32_t sectorsPerBlock = blockSize_ / 512;
         return device_->readSectors(block * sectorsPerBlock, sectorsPerBlock,
                                     buffer);
@@ -24,6 +25,7 @@ namespace fs::ext4 {
             block >= blocksCount_) {
             return false;
         }
+
         const uint32_t sectorsPerBlock = blockSize_ / 512;
         return device_->writeSectors(block * sectorsPerBlock, sectorsPerBlock,
                                      buffer);

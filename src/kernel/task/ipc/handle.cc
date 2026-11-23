@@ -492,7 +492,7 @@ namespace task {
         InterruptSpinLockGuard guard(lock_);
 
         // 在同一把表锁下核对源句柄并准备目标，避免源槽位在中间被关闭或复用。
-        if (!validLocked(handle) || (flags & ~os::handleFlagsMask)) {
+        if (!validLocked(handle) || (flags & ~services::handleFlagsMask)) {
             return 0;
         }
 
@@ -615,7 +615,7 @@ namespace task {
     bool HandleTable::setFlags(uint64_t handle, uint32_t flags) {
         InterruptSpinLockGuard guard(lock_);
 
-        if (!validLocked(handle) || (flags & ~os::handleFlagsMask)) {
+        if (!validLocked(handle) || (flags & ~services::handleFlagsMask)) {
             return false;
         }
 
@@ -710,11 +710,11 @@ namespace task {
             }
 
             if (message.handleOptions[i] &
-                ~(os::ipcHandleRestrictRights | os::ipcHandleMove)) {
+                ~(services::ipcHandleRestrictRights | services::ipcHandleMove)) {
                 return false;
             }
 
-            if ((message.handleOptions[i] & os::ipcHandleRestrictRights) &&
+            if ((message.handleOptions[i] & services::ipcHandleRestrictRights) &&
                 (message.handleRights[i] & entry.getRights()) !=
                     message.handleRights[i]) {
                 return false;
@@ -724,7 +724,7 @@ namespace task {
             for (uint32_t j = 0; j < i; ++j) {
                 if (message.handles[i] == message.handles[j] &&
                     ((message.handleOptions[i] | message.handleOptions[j]) &
-                     os::ipcHandleMove)) {
+                     services::ipcHandleMove)) {
                     return false;
                 }
             }
@@ -736,7 +736,7 @@ namespace task {
                 source.entries_[static_cast<uint32_t>(message.handles[i]) - 1];
             references_[i] = entry.reference;
             rights_[i] =
-                (message.handleOptions[i] & os::ipcHandleRestrictRights)
+                (message.handleOptions[i] & services::ipcHandleRestrictRights)
                     ? message.handleRights[i]
                     : entry.getRights();
             (references_[i])->retain();
@@ -745,7 +745,7 @@ namespace task {
         count_ = message.handleCount;
         // 捕获引用是消息入队的提交点；发送路径之后不能再失败，移动后的队列引用成为新拥有者。
         for (uint32_t i = 0; i < count_; ++i) {
-            if (!(message.handleOptions[i] & os::ipcHandleMove)) {
+            if (!(message.handleOptions[i] & services::ipcHandleMove)) {
                 continue;
             }
 
@@ -897,7 +897,7 @@ namespace task {
                 const HandleEntry& entry = entries_[i];
 
                 if (entry.getObject() &&
-                    (entry.flags & os::handleFlagCloseOnExec)) {
+                    (entry.flags & services::handleFlagCloseOnExec)) {
                     handle =
                         (static_cast<uint64_t>(entry.getGeneration()) << 32) |
                         (i + 1);

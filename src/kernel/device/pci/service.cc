@@ -14,13 +14,13 @@
 #include "kernel/task.h"
 #include "kernel/time.h"
 #include "service/common/identity.h"
-#include "service/common/kernel-requests.h"
+#include "service/common/protocol.h"
 #include "service/common/records.h"
 #include <os/device.h>
 
 namespace task {
 
-    namespace PciService {
+    namespace pci_service {
 
         /*
          * 检查 PCI
@@ -30,28 +30,28 @@ namespace task {
             // 配置空间是硬件控制入口，先核对固定 PCI
             // 服务身份、能力和消息最小长度。
             if (!caller.hasCapability(taskCapabilityPci) ||
-                caller.serviceRole() != os::ServiceRole::Pci ||
+                caller.serviceRole() != services::ServiceRole::Pci ||
                 request.length < 4) {
                 return -3;
             }
 
-            const os::PciOperation operation =
-                static_cast<os::PciOperation>(request.type);
-            os::wire::PciFunctionInfo function{};
+            const services::PciOperation operation =
+                static_cast<services::PciOperation>(request.type);
+            services::wire::PciFunctionInfo function{};
             copyMessageData(&function, &request.data[1], sizeof(function));
 
-            if (operation == os::PciOperation::Enumerate) {
+            if (operation == services::PciOperation::Enumerate) {
                 // 枚举容量限制为回复消息能容纳的范围，不能让总线扫描越过回复数组。
                 if (!request.data[0] || request.data[0] > 64) {
                     return -1;
                 }
 
                 const uint32_t count = device::pciBus().enumerate(
-                    reinterpret_cast<os::wire::PciFunctionInfo*>(
+                    reinterpret_cast<services::wire::PciFunctionInfo*>(
                         &reply.data[1]),
                     request.data[0]);
                 reply.data[0] = count;
-            } else if (operation == os::PciOperation::ReadConfig) {
+            } else if (operation == services::PciOperation::ReadConfig) {
                 uint32_t value = 0;
 
                 if (request.data[0] > UINT16_MAX ||
@@ -61,7 +61,7 @@ namespace task {
                 }
 
                 reply.data[1] = value;
-            } else if (operation == os::PciOperation::WriteConfig) {
+            } else if (operation == services::PciOperation::WriteConfig) {
                 // 写请求必须通过资源域的所有权规则，不能让 PCI
                 // 代理绕过设备停机保护重新开启 DMA。
                 if (request.length < 5 || request.data[0] > UINT16_MAX ||
@@ -80,13 +80,13 @@ namespace task {
             return 0;
         }
 
-    }  // namespace PciService
+    }  // namespace pci_service
 
     /*
      * 返回 PCI 内核服务入口描述，供核心服务端点调用。
      */
     EndpointService& pciKernelService() {
-        static EndpointService service(PciService::call);
+        static EndpointService service(pci_service::call);
 
         return service;
     }

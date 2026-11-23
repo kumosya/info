@@ -3,23 +3,26 @@
  */
 
 #pragma once
+#include <os/file.h>
+
 #include <cstddef>
 #include <cstdint>
 
-#include <os/file.h>
 namespace os {
+
     /* 管理打开目录的遍历状态和目录项读取。 */
     class Dir {
         public:
             enum class Scope : int { User = 0, System = 1 };
             enum class Kind : int {
-                Data    = 0,
-                State   = 1,
-                Config  = 2,
-                Cache   = 3,
+                Data = 0,
+                State = 1,
+                Config = 2,
+                Cache = 3,
                 Runtime = 4,
-                Log     = 5
+                Log = 5
             };
+
             /* 保存所属表中的一个条目，由外层容器统一分配和回收。 */
             class Entry {
                 public:
@@ -34,9 +37,10 @@ namespace os {
                     File::Type type_{};
                     uint64_t inode_{}, nextOffset_{};
             };
+
             Dir();
             ~Dir();
-            Dir(const Dir&)            = delete;
+            Dir(const Dir&) = delete;
             Dir& operator=(const Dir&) = delete;
             Dir(Dir&& other) noexcept;
             Dir& operator=(Dir&& other) noexcept;

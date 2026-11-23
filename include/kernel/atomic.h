@@ -6,10 +6,6 @@
  *
  */
 
-/*
- * C++ 原子变量。
- */
-
 #ifndef _KERNEL_ATOMIC_H_
 #define _KERNEL_ATOMIC_H_
 
@@ -26,9 +22,14 @@ enum class MemoryOrder : int {
 /* 封装原子读写和读改写操作，使多 CPU 共享的单个值可以安全更新。 */
 template <typename Type>
 class Atomic {
+        static_assert(__is_trivially_copyable(Type), "原子值必须可按字节复制");
+        static_assert(sizeof(Type) <= 8 && (sizeof(Type) & (sizeof(Type) - 1)) == 0,
+                      "内核原子值只支持 1、2、4、8 字节，不能依赖 libatomic");
     public:
         constexpr Atomic() : value_{} {}
         constexpr explicit Atomic(Type value) : value_(value) {}
+        Atomic(const Atomic&) = delete;
+        Atomic& operator=(const Atomic&) = delete;
 
         Type load(MemoryOrder order = MemoryOrder::Sequential) const {
             Type value;
@@ -48,9 +49,15 @@ class Atomic {
         }
 
         bool compareExchange(Type& expected, Type desired,
-                             MemoryOrder success = MemoryOrder::Sequential,
-                             MemoryOrder failure = MemoryOrder::Sequential) {
-            return __atomic_compare_exchange_n(&value_, &expected, desired,
+                             MemoryOrder order = MemoryOrder::Sequential) {
+            const MemoryOrder failure = order == MemoryOrder::Release ? MemoryOrder::Relaxed :
+                order == MemoryOrder::AcquireRelease ? MemoryOrder::Acquire : order;
+            return compareExchange(expected, desired, order, failure);
+        }
+
+        bool compareExchange(Type& expected, Type desired,
+                             MemoryOrder success, MemoryOrder failure) {
+            return __atomic_compare_exchange(&value_, &expected, &desired,
                                                false, static_cast<int>(success),
                                                static_cast<int>(failure));
         }

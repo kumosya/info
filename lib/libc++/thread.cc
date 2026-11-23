@@ -1,7 +1,7 @@
 #include <thread>
 
-#include "service/common/queries.h"
-#include "service/common/runtime.h"
+#include <os/detail/client.h>
+#include <os/runtime.h>
 #include <os/device.h>
 #include <os/ipc.h>
 #include <os/mm.h>
@@ -41,7 +41,7 @@ namespace std::detail {
     }
 
     static void releaseState(ThreadState& state) {
-        os::Runtime::freeMemory(state.stack);
+        os::Runtime::current().freeMemory(state.stack);
         state = {};
     }
 
@@ -68,7 +68,7 @@ namespace std::detail {
                 continue;
             }
             state       = {};
-            state.stack = os::Runtime::allocateMemory(threadStackSize);
+            state.stack = os::Runtime::current().allocateMemory(threadStackSize);
             if (state.stack == nullptr) {
                 unlockStates();
                 return nullptr;
@@ -80,7 +80,7 @@ namespace std::detail {
                 run, reinterpret_cast<uint64_t>(state.stack) + threadStackSize,
                 &state);
             if (state.id == 0) {
-                os::Runtime::freeMemory(state.stack);
+                os::Runtime::current().freeMemory(state.stack);
                 state = {};
                 unlockStates();
                 return nullptr;

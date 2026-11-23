@@ -135,6 +135,15 @@ namespace host {
                         }
                     }
                     std::vector<std::pair<size_t, size_t>> classes;
+                    std::set<size_t> declarationScopes;
+                    const std::regex namespacePattern(
+                        R"(\bnamespace\s*[\w:]*\s*\{|\bextern\s*\{)");
+                    for (std::sregex_iterator
+                             scope(value.begin(), value.end(), namespacePattern),
+                         end;
+                         scope != end; ++scope) {
+                        declarationScopes.insert(value.find('{', scope->position()));
+                    }
                     for (std::sregex_iterator
                              it(value.begin(), value.end(), classPattern),
                          end;
@@ -157,6 +166,11 @@ namespace host {
                          end;
                          it != end; ++it) {
                         std::string name = (*it)[1];
+                        // 多行条件里的 sizeof 和类型转换属于表达式。
+                        const std::regex statementStart(
+                            R"(^[ \t]*(?:if|else|for|while|switch|return)\b)");
+                        if (std::regex_search(it->str(), statementStart))
+                            continue;
                         if (name == "if" || name == "while" || name == "for" ||
                             name == "switch" || name == "catch" ||
                             name == "main" || name == "osRuntimeInit" ||
@@ -167,6 +181,14 @@ namespace host {
                         if (namePosition && value[namePosition - 1] == ':')
                             continue;
                         bool member = false;
+                        // 函数体中的调用表达式保留在函数体内检查。
+                        for (const std::pair<const size_t, size_t>& range : ends) {
+                            if (range.first < position && position < range.second &&
+                                !declarationScopes.count(range.first)) {
+                                member = true;
+                                break;
+                            }
+                        }
                         for (const auto& [begin, finish] : classes)
                             if (begin < position && position < finish)
                                 member = true;

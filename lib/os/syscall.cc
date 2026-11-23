@@ -6,8 +6,8 @@ namespace os {
                           uint64_t arg3, uint64_t arg4, uint64_t arg5,
                           uint64_t arg6) {
         register uint64_t r10 asm("r10") = arg4;
-        register uint64_t r8 asm("r8")   = arg5;
-        register uint64_t r9 asm("r9")   = arg6;
+        register uint64_t r8 asm("r8") = arg5;
+        register uint64_t r9 asm("r9") = arg6;
         uint64_t result;
         asm volatile("syscall"
                      : "=a"(result)
@@ -17,7 +17,9 @@ namespace os {
         return static_cast<int64_t>(result);
     }
 
-    void notifyReadiness() { invokeSyscall(SyscallNumber::Readiness, 2); }
+    void notifyReadiness() {
+        invokeSyscall(SyscallNumber::Readiness, 2);
+    }
 
     int waitAddress(volatile uint32_t* address, uint32_t expected) {
         return static_cast<int>(

@@ -12,8 +12,7 @@
 #include "kernel/task.h"
 #include "kernel/time.h"
 #include "service/common/identity.h"
-#include "service/common/kernel-requests.h"
-#include "service/common/requests.h"
+#include "service/common/protocol.h"
 
 namespace mm {
 
@@ -92,7 +91,7 @@ namespace mm {
     bool PagerBridge::bind(::task::Task& owner, ::task::Endpoint* endpoint) {
         // 同时核对能力、固定服务角色、当前实例身份和端点所有者，普通进程不能冒充补页服务。
         if (!endpoint || !owner.hasCapability(::task::taskCapabilityMemory) ||
-            owner.serviceRole() != os::ServiceRole::Memory ||
+            owner.serviceRole() != services::ServiceRole::Memory ||
             !::task::serviceRecovery().current(owner) ||
             endpoint->getOwner() != &owner) {
             return false;
@@ -130,7 +129,7 @@ namespace mm {
         ::task::Task* caller = task::getCurrent();
 
         // 不把内存服务自己的缺页再交还给它处理，否则它会等待自己回复；明显非法地址也直接拒绝。
-        if (!caller || caller->serviceRole() == os::ServiceRole::Memory ||
+        if (!caller || caller->serviceRole() == services::ServiceRole::Memory ||
             address < 0x10000 || address >= 0x0000800000000000ULL ||
             (flags & 8)) {
             return false;
@@ -138,7 +137,7 @@ namespace mm {
 
         // 把硬件访问标志连同地址交给内存服务，服务据此区分读取、写入与执行缺页。
         ::task::IpcMessage request{}, reply{};
-        request.type     = static_cast<uint64_t>(os::MmOperation::Fault);
+        request.type     = static_cast<uint64_t>(services::MmOperation::Fault);
         request.length   = 3;
         request.data[0]  = address;
         request.data[1]  = flags;
@@ -167,12 +166,12 @@ namespace mm {
      * 通知内存服务为 fork 复制父任务的映射管理信息，目标子任务已由调用者创建。
      */
     bool PagerBridge::clone(::task::Task& parent, ::task::Task& child) {
-        if (parent.serviceRole() == os::ServiceRole::Memory) {
+        if (parent.serviceRole() == services::ServiceRole::Memory) {
             return false;
         }
 
         ::task::IpcMessage request{}, reply{};
-        request.type     = static_cast<uint64_t>(os::MmOperation::Fork);
+        request.type     = static_cast<uint64_t>(services::MmOperation::Fork);
         request.length   = 1;
         request.data[0]  = child.id();
         const int result = exchange(request, reply, true);

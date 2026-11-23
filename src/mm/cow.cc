@@ -3,13 +3,13 @@
  * 复制 fork 的区域和页记录，并在首次写入时生成私有页面。
  */
 
-#include "service/common/kernel-requests.h"
-#include "service/common/queries.h"
-#include "service/common/records.h"
-#include "service/common/requests.h"
-#include "service/common/runtime.h"
-#include "service/mm/mm.h"
+#include <os/detail/client.h>
+#include <os/runtime.h>
 #include <os/task.h>
+
+#include "service/common/protocol.h"
+#include "service/common/records.h"
+#include "service/mm/mm.h"
 
 namespace mm {
 
@@ -18,7 +18,7 @@ namespace mm {
      * 私有页面先共享同一页对象并去掉写权限，直到某一方写入时再复制；中途失败清理子任务记录。
      */
     int Pager::clone(uint64_t parent, uint64_t child) {
-        os::wire::TaskInfo info{};
+        services::wire::TaskInfo info{};
 
         // 子任务必须确实属于本次父任务且尚未运行，不能给正在执行的任意任务覆盖内存管理记录。
         if (os::detail::TaskQuery().query(child, info) ||
@@ -74,8 +74,8 @@ namespace mm {
             }
 
             ResidentPage* copy = state_.vacantPage();
-            *copy              = source;
-            copy->task         = child;
+            *copy = source;
+            copy->task = child;
 
             // 孩子不继承父进程的锁页状态；它自己的锁页额度和后续锁定请求分别管理。
             copy->pinned = false;
@@ -101,10 +101,10 @@ namespace mm {
 
             if (!region->shared && source.handle) {
                 // 先把硬件脏位并入服务记录，再把父子页都改成写时复制，原内容已被修改的信息不能丢失。
-                source.dirty = source.dirty || (KernelMemory::pageState(
+                source.dirty = source.dirty || (KernelMemory().pageState(
                                                     parent, source.address) &
                                                 (1ULL << 6));
-                copy->dirty  = source.dirty;
+                copy->dirty = source.dirty;
 
                 // 父子都先失去直接写权限；任意一方第一次写入时会再次缺页，届时才生成私有副本。
                 copy->cow = source.cow = true;
@@ -159,7 +159,7 @@ namespace mm {
         os::detail::MemoryControl().unmapTarget(destination, 4096);
         os::detail::MemoryControl().unmapTarget(source, 4096);
         const uint64_t protection =
-            KernelMemory::nativeProtection(region.protection);
+            KernelMemory().nativeProtection(region.protection);
 
         // 临时复制已完成，接下来才从目标地址撤下旧页；保留锁页记录，替换后仍应满足原锁定约定。
         if (page.mapped && os::detail::MemoryControl().unmapTarget(
@@ -192,10 +192,10 @@ namespace mm {
         os::closeHandle(page.handle);
 
         // 新映射已经安装成功，再把页面记录切换到新句柄；此前失败仍可沿用旧页。
-        page.handle  = handle;
-        page.cow     = false;
-        page.dirty   = true;
-        page.mapped  = true;
+        page.handle = handle;
+        page.cow = false;
+        page.dirty = true;
+        page.mapped = true;
         page.lastUse = ++state_.clock;
 
         return 0;

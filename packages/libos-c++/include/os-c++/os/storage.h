@@ -4,37 +4,41 @@
 
 #pragma once
 #include <os/ipc.h>
-namespace os {
-namespace detail {
-class StorageClient;
-}
-class Storage {
-   public:
-    enum class Error : int64_t {
-        Success           = 0,
-        DeviceNotFound    = -1,
-        DeviceOffline     = -2,
-        InvalidBlock      = -3,
-        Io                = -4,
-        Timeout           = -5,
-        ReadOnly          = -6,
-        NoSpace           = -7,
-        Dma               = -8,
-        Corrupted         = -9,
-        InvalidArgument   = -10,
-        NotSupported      = -11,
-        CapabilityUnknown = -12
-    };
 
-    class Statistics {
-       public:
-        uint64_t completedRequests{};
-        uint64_t readBytes{};
-        uint64_t writtenBytes{};
-        uint64_t errors{};
-        uint64_t timeouts{};
-        uint64_t inFlight{};
-    };
+namespace os {
+
+    namespace detail {
+
+        class StorageClient;
+    }
+
+    class Storage {
+        public:
+            enum class Error : int64_t {
+                Success = 0,
+                DeviceNotFound = -1,
+                DeviceOffline = -2,
+                InvalidBlock = -3,
+                Io = -4,
+                Timeout = -5,
+                ReadOnly = -6,
+                NoSpace = -7,
+                Dma = -8,
+                Corrupted = -9,
+                InvalidArgument = -10,
+                NotSupported = -11,
+                CapabilityUnknown = -12
+            };
+
+            class Statistics {
+                public:
+                    uint64_t completedRequests{};
+                    uint64_t readBytes{};
+                    uint64_t writtenBytes{};
+                    uint64_t errors{};
+                    uint64_t timeouts{};
+                    uint64_t inFlight{};
+            };
 
             /* 保存存储设备编号，供请求选择目标设备。 */
             class Number {
@@ -51,6 +55,7 @@ class Storage {
                 private:
                     uint32_t major_, minor_;
             };
+
             /* 保存分区范围和所属块设备信息。 */
             class Part {
                 public:
@@ -80,23 +85,25 @@ class Storage {
                         Ahci,
                         Nvme,
                         UsbStorage,
-                        BootImage
+                        BootImage,
+                        Ide
                     };
 
-        Device();
-        Device(const Device&)            = delete;
-        Device& operator=(const Device&) = delete;
-        int open(uint32_t id);
-        ~Device();
-        int close();
-        bool refresh();
-        int read(uint64_t firstBlock, uint32_t count, void* buffer,
-                 size_t capacity, uint32_t& completed);
-        int write(uint64_t firstBlock, uint32_t count, const void* buffer,
-                  size_t size, uint32_t& completed);
-        bool flush();
-        Error flushStatus();
-        Error statistics(Statistics& result);
+                    Device();
+                    Device(const Device&) = delete;
+                    Device& operator=(const Device&) = delete;
+                    int open(uint32_t id);
+                    ~Device();
+                    int close();
+                    bool refresh();
+                    int read(uint64_t firstBlock, uint32_t count, void* buffer,
+                             size_t capacity, uint32_t& completed);
+                    int write(uint64_t firstBlock, uint32_t count,
+                              const void* buffer, size_t size,
+                              uint32_t& completed);
+                    bool flush();
+                    Error flushStatus();
+                    Error statistics(Statistics& result);
 
                     uint64_t getBlockCount() const;
                     uint32_t getBlockSize() const;
@@ -138,6 +145,7 @@ class Storage {
                     bool openService(uint32_t device, uint64_t service);
                     void lock();
                     void unlock();
+
                     /* 在作用域内持有对应资源或锁，退出作用域时按拥有关系归还。
                      */
                     class Guard {
@@ -148,9 +156,11 @@ class Storage {
                         private:
                             Device& device_;
                     };
+
                     int transfer(uint64_t first, uint32_t count, void* output,
                                  const void* input, uint32_t& completed);
             };
+
             Storage();
             int refresh();
             int queryDevice(uint32_t id, Device& device);

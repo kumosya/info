@@ -18,7 +18,7 @@ namespace os {
                     explicit Guard(SpinLock& lock);
                     ~Guard();
 
-                    Guard(const Guard&)            = delete;
+                    Guard(const Guard&) = delete;
                     Guard& operator=(const Guard&) = delete;
 
                 private:
@@ -43,14 +43,15 @@ namespace os {
                 public:
                     explicit Guard(Mutex& mutex);
                     ~Guard();
-                    Guard(const Guard&)            = delete;
+                    Guard(const Guard&) = delete;
                     Guard& operator=(const Guard&) = delete;
 
                 private:
                     Mutex& mutex_;
             };
+
             Mutex();
-            Mutex(const Mutex&)            = delete;
+            Mutex(const Mutex&) = delete;
             Mutex& operator=(const Mutex&) = delete;
             void lock();
             bool tryLock();
@@ -59,6 +60,7 @@ namespace os {
         private:
             uint32_t locked_{};
     };
+
     /* 把用户地址上的值检查与线程等待、唤醒组合起来。 */
     class AddressWait {
         public:

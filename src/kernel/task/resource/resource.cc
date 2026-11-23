@@ -97,7 +97,7 @@ namespace task {
      * 查找编号不小于给定游标的最小线程，并复制其状态、优先级和 CPU
      * 等信息，供按编号枚举。
      */
-    bool Task::threadInfo(uint64_t minimumTid, os::wire::ThreadInfo& info) {
+    bool Task::threadInfo(uint64_t minimumTid, services::wire::ThreadInfo& info) {
         InterruptSpinLockGuard guard(lock_);
 
         // 用最小 TID 选择下一条记录，而不是返回某个不稳定的链表下标。

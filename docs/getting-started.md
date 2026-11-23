@@ -21,6 +21,8 @@
 
 ## 生成文件与输出目录
 
+编译目标文件和依赖文件保存在 `build/obj/`。使用 `--build-dir DIR` 时，默认目标文件目录为 `DIR/obj/`；`--object-dir DIR` 可以指定目标文件目录。
+
 默认情况下，`configure` 会在 `build/` 下生成：
 
 - `config.mk`

@@ -1,9 +1,15 @@
 #include "service/fs/ext4/filesystem.h"
+#include "service/fs/mount.h"
 
-namespace vfs {
+namespace fs {
 
-    bool ext4::Probe::detect(const uint8_t* data, size_t size) {
-        if (data == nullptr || size < 1124) return false;
+    bool ext4::Probe::detect() {
+        const uint8_t* data = data_;
+        const size_t size = size_;
+        if (data == nullptr || size < 1124) {
+            return false;
+        }
+
         const uint8_t* super = data + 1024;
         const uint16_t magic = static_cast<uint16_t>(super[56]) |
                                (static_cast<uint16_t>(super[57]) << 8);
@@ -14,4 +20,4 @@ namespace vfs {
         return magic == 0xef53 && (incompatible & 0x40U) != 0;
     }
 
-}  // namespace vfs
+}  // namespace fs

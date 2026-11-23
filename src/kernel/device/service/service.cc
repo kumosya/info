@@ -13,28 +13,28 @@
 #include "kernel/task.h"
 #include "kernel/time.h"
 #include "service/common/identity.h"
-#include "service/common/kernel-requests.h"
+#include "service/common/protocol.h"
 #include "service/common/records.h"
 #include <os/device.h>
 
 namespace task {
 
-    namespace DeviceService {
+    namespace device_service {
 
         /*
          * 校验设备能力、固定服务身份和消息格式，再分发显示、MMIO、DMA、中断及资源域请求；新对象句柄安装失败时归还刚创建的资源。
          */
         int call(Task& caller, const IpcMessage& request, IpcMessage& reply) {
             const uint64_t* args = request.data;
-            const os::DeviceOperation operation =
-                static_cast<os::DeviceOperation>(request.type);
+            const services::DeviceOperation operation =
+                static_cast<services::DeviceOperation>(request.type);
 
             // 启动磁盘代理只向固定存储服务开放；它的消息布局独立，先于一般设备参数检查分派。
-            if (operation == os::DeviceOperation::BootImageInfo ||
-                operation == os::DeviceOperation::BootImageRead ||
-                operation == os::DeviceOperation::BootImageWrite) {
+            if (operation == services::DeviceOperation::BootImageInfo ||
+                operation == services::DeviceOperation::BootImageRead ||
+                operation == services::DeviceOperation::BootImageWrite) {
                 if (!caller.hasCapability(taskCapabilityDevice) ||
-                    caller.serviceRole() != os::ServiceRole::Storage) {
+                    caller.serviceRole() != services::ServiceRole::Storage) {
                     return -3;
                 }
 
@@ -46,10 +46,10 @@ namespace task {
             }
 
             // 显示能力与普通设备控制能力分别检查，成功映射后用句柄管理这段映射的生命周期。
-            if (operation == os::DeviceOperation::Framebuffer) {
-                os::wire::DisplayInfo info{};
+            if (operation == services::DeviceOperation::Framebuffer) {
+                services::wire::DisplayInfo info{};
 
-                if (!caller.hasCapability(taskCapabilityDisplay)) {
+                if (!caller.hasCapability(services::taskCapabilityDisplay)) {
                     return -3;
                 }
 
@@ -73,18 +73,18 @@ namespace task {
                     return -5;
                 }
 
-                caller.handles().setFlags(handle, os::handleFlagCloseOnExec);
+                caller.handles().setFlags(handle, services::handleFlagCloseOnExec);
                 reply.data[0] = handle;
                 addCreatedHandle(reply, handle);
                 copyMessageData(&reply.data[1], &info, sizeof(info));
-            } else if (operation == os::DeviceOperation::FrameInfo) {
+            } else if (operation == services::DeviceOperation::FrameInfo) {
                 // 查询期间用 Pin
                 // 保持句柄对象有效，并检查读权限与旧映像映射是否仍存在。
                 HandleTable::Pin pin(caller.handles(), args[0],
                                      HandleType::FramebufferMapping,
                                      handleRightRead);
                 device::FrameMapping* mapping = pin.as<device::FrameMapping>();
-                os::wire::DisplayInfo info{};
+                services::wire::DisplayInfo info{};
 
                 if (!mapping || !mapping->query(caller, info)) {
                     return -2;
@@ -94,22 +94,46 @@ namespace task {
             } else {
                 // 只有内核配置的固定启动服务身份能获得设备控制权。
                 if (!caller.hasCapability(taskCapabilityDevice) ||
-                    (caller.serviceRole() != os::ServiceRole::Device &&
-                     caller.serviceRole() != os::ServiceRole::Storage)) {
+                    (caller.serviceRole() != services::ServiceRole::Device &&
+                     caller.serviceRole() != services::ServiceRole::Storage)) {
                     return -3;
                 }
 
                 switch (operation) {
+                    // IDE 端口请求必须持有该控制器的活动管理句柄，数据最多为 512 字节。
+                    case services::DeviceOperation::PortIo: {
+                        if (args[1] > UINT16_MAX || (args[2] != 1 && args[2] != 2) ||
+                            !args[3] || args[3] > 256 || args[4] > 1 ||
+                            (args[4] && request.length < 5 + (args[2] * args[3] + 7) / 8)) {
+                            return -1;
+                        }
+                        HandleTable::Pin pin(caller.handles(), args[0],
+                                             HandleType::DeviceDomain, handleRightManage);
+                        device::ResourceDomain* domain = pin.as<device::ResourceDomain>();
+                        if (!domain) {
+                            return -2;
+                        }
+                        uint8_t* bytes = reinterpret_cast<uint8_t*>(&reply.data[1]);
+                        if (args[4]) {
+                            copyMessageData(bytes, &args[5], args[2] * args[3]);
+                        }
+                        const int result = domain->portIo(caller, args[1], args[2],
+                                                           args[3], args[4], bytes);
+                        if (result) {
+                            return result;
+                        }
+                        break;
+                    }
                     // 输入初始化只给固定设备服务，存储服务即使有设备能力也不能操作键盘鼠标控制器。
-                    case os::DeviceOperation::InitializeInput:
-                        if (caller.serviceRole() != os::ServiceRole::Device) {
+                    case services::DeviceOperation::InitializeInput:
+                        if (caller.serviceRole() != services::ServiceRole::Device) {
                             return -3;
                         }
 
                         reply.data[0] = device::initPs2();
                         break;
-                    case os::DeviceOperation::ReadInput: {
-                        if (caller.serviceRole() != os::ServiceRole::Device) {
+                    case services::DeviceOperation::ReadInput: {
+                        if (caller.serviceRole() != services::ServiceRole::Device) {
                             return -3;
                         }
 
@@ -127,16 +151,20 @@ namespace task {
 
                     // 兼容接口允许调用者给出用户地址，实际映射仍要验证设备归属与
                     // BAR 边界。
-                    case os::DeviceOperation::MapMmio: {
-                        os::wire::PciFunctionInfo function{};
+                    case services::DeviceOperation::MapMmio: {
+                        services::wire::PciFunctionInfo function{};
                         copyMessageData(&function, &args[3], sizeof(function));
 
                         if (args[0] > 5) {
                             return -1;
                         }
 
-                        ::device::MmioRegion* object = device::MmioRegion::map(
-                            caller, function, args[0], args[1], args[2]);
+                        void* storage = mm::allocateHeap(sizeof(device::MmioRegion));
+                        device::MmioRegion* object = storage ? new (storage) device::MmioRegion : nullptr;
+                        if (object && !object->map(caller, function, args[0], args[1], args[2])) {
+                            mm::freeHeap(object);
+                            object = nullptr;
+                        }
                         reply.data[0] =
                             object ? caller.handles().add(
                                          object, HandleType::MmioRegion, 3)
@@ -148,7 +176,7 @@ namespace task {
 
                         if (reply.data[0]) {
                             caller.handles().setFlags(
-                                reply.data[0], os::handleFlagCloseOnExec);
+                                reply.data[0], services::handleFlagCloseOnExec);
                         }
 
                         addCreatedHandle(reply, reply.data[0]);
@@ -156,7 +184,7 @@ namespace task {
                     }
 
                     // 新接口由内核选地址；先检查长度和偏移，再固定设备域句柄，避免关闭并发导致对象失效。
-                    case os::DeviceOperation::MapBar: {
+                    case services::DeviceOperation::MapBar: {
                         if (request.length < 6 || args[0] >= 6 || !args[1] ||
                             args[1] > UINT64_MAX - 4095 || (args[2] & 4095)) {
                             return -1;
@@ -172,11 +200,15 @@ namespace task {
                             return -2;
                         }
 
-                        os::wire::PciFunctionInfo function{};
+                        services::wire::PciFunctionInfo function{};
                         copyMessageData(&function, &args[3], sizeof(function));
-                        ::device::MmioRegion* object = device::MmioRegion::map(
-                            caller, function, args[0], 0,
-                            (args[1] + 4095) & ~4095ULL, args[2]);
+                        void* storage = mm::allocateHeap(sizeof(device::MmioRegion));
+                        device::MmioRegion* object = storage ? new (storage) device::MmioRegion : nullptr;
+                        if (object && !object->map(caller, function, args[0], 0,
+                                                   (args[1] + 4095) & ~4095ULL, args[2])) {
+                            mm::freeHeap(object);
+                            object = nullptr;
+                        }
 
                         if (!object) {
                             return -5;
@@ -192,7 +224,7 @@ namespace task {
                         }
 
                         caller.handles().setFlags(handle,
-                                                  os::handleFlagCloseOnExec);
+                                                  services::handleFlagCloseOnExec);
                         reply.data[0] = handle;
                         reply.data[1] = object->address();
                         reply.data[2] = object->size();
@@ -202,8 +234,8 @@ namespace task {
 
                     // 两种 DMA 接口共用分配路径，成功后把设备地址和 CPU
                     // 地址连同句柄一起返回。
-                    case os::DeviceOperation::CreateDma:
-                    case os::DeviceOperation::AllocateDma: {
+                    case services::DeviceOperation::CreateDma:
+                    case services::DeviceOperation::AllocateDma: {
                         HandleTable::Pin pin(caller.handles(), args[1],
                                              HandleType::DeviceDomain,
                                              handleRightManage);
@@ -214,14 +246,18 @@ namespace task {
                             return -2;
                         }
 
-                        os::wire::DmaBufferInfo info{};
-                        ::device::DmaBuffer* object =
-                            operation == os::DeviceOperation::CreateDma
-                                ? device::DmaBuffer::create(caller, *domain, 0,
-                                                            info, args[0],
-                                                            args[2])
-                                : device::DmaBuffer::create(caller, *domain,
-                                                            args[0], info);
+                        services::wire::DmaBufferInfo info{};
+                        void* storage = mm::allocateHeap(sizeof(device::DmaBuffer));
+                        device::DmaBuffer* object = storage ? new (storage) device::DmaBuffer : nullptr;
+                        if (object) {
+                            const bool created = operation == services::DeviceOperation::CreateDma
+                                ? object->create(caller, *domain, 0, info, args[0], args[2])
+                                : object->create(caller, *domain, args[0], info);
+                            if (!created) {
+                                mm::freeHeap(object);
+                                object = nullptr;
+                            }
+                        }
 
                         if (!object) {
                             return -5;
@@ -237,15 +273,15 @@ namespace task {
                         }
 
                         caller.handles().setFlags(info.handle,
-                                                  os::handleFlagCloseOnExec);
+                                                  services::handleFlagCloseOnExec);
                         addCreatedHandle(reply, info.handle);
                         copyMessageData(&reply.data[1], &info, sizeof(info));
                         break;
                     }
 
                     // 认领域成功后还必须创建管理句柄；若失败，关闭租约以触发设备停机。
-                    case os::DeviceOperation::ClaimDevice: {
-                        os::wire::PciFunctionInfo function{};
+                    case services::DeviceOperation::ClaimDevice: {
+                        services::wire::PciFunctionInfo function{};
                         copyMessageData(&function, args, sizeof(function));
                         ::device::ResourceDomain* domain =
                             device::resourceDomains().claim(caller, function);
@@ -265,14 +301,14 @@ namespace task {
                         }
 
                         caller.handles().setFlags(handle,
-                                                  os::handleFlagCloseOnExec);
+                                                  services::handleFlagCloseOnExec);
                         reply.data[0] = handle;
                         addCreatedHandle(reply, handle);
                         break;
                     }
 
                     // 停机操作等待资源域确认，错误直接传回，不能把超时或隔离伪装为成功。
-                    case os::DeviceOperation::StopDevice: {
+                    case services::DeviceOperation::StopDevice: {
                         HandleTable::Pin pin(caller.handles(), args[0],
                                              HandleType::DeviceDomain,
                                              handleRightManage);
@@ -294,7 +330,7 @@ namespace task {
 
                     // 存储服务只能绑定自身设备声明的
                     // IRQ；输入服务只允许键盘一号和鼠标十二号。
-                    case os::DeviceOperation::BindIrq: {
+                    case services::DeviceOperation::BindIrq: {
                         HandleTable::Pin pin(caller.handles(), args[1],
                                              HandleType::Endpoint,
                                              handleRightRead);
@@ -307,7 +343,7 @@ namespace task {
                                                    HandleType::DeviceDomain,
                                                    handleRightManage);
 
-                        if (caller.serviceRole() == os::ServiceRole::Storage) {
+                        if (caller.serviceRole() == services::ServiceRole::Storage) {
                             device::ResourceDomain* domain =
                                 domainPin.as<device::ResourceDomain>();
 
@@ -319,9 +355,12 @@ namespace task {
                             return -3;
                         }
 
-                        ::device::InterruptBinding* object =
-                            device::InterruptBinding::create(
-                                caller, args[0], pin.as<Endpoint>(), args[2]);
+                        void* storage = mm::allocateHeap(sizeof(device::InterruptBinding));
+                        device::InterruptBinding* object = storage ? new (storage) device::InterruptBinding : nullptr;
+                        if (object && !object->create(caller, args[0], pin.as<Endpoint>(), args[2])) {
+                            mm::freeHeap(object);
+                            object = nullptr;
+                        }
                         reply.data[0] =
                             object
                                 ? caller.handles().add(
@@ -334,7 +373,7 @@ namespace task {
 
                         if (reply.data[0]) {
                             caller.handles().setFlags(
-                                reply.data[0], os::handleFlagCloseOnExec);
+                                reply.data[0], services::handleFlagCloseOnExec);
                         }
 
                         addCreatedHandle(reply, reply.data[0]);
@@ -343,7 +382,7 @@ namespace task {
 
                     // 确认必须持有管理权限且属于绑定所有者；电平 IRQ
                     // 在这里重新开放。
-                    case os::DeviceOperation::AcknowledgeIrq: {
+                    case services::DeviceOperation::AcknowledgeIrq: {
                         HandleTable::Pin pin(caller.handles(), args[0],
                                              HandleType::InterruptBinding,
                                              handleRightManage);
@@ -368,13 +407,13 @@ namespace task {
             return 0;
         }
 
-    }  // namespace DeviceService
+    }  // namespace device_service
 
     /*
      * 返回设备内核服务入口描述，供核心服务表建立端点。
      */
     EndpointService& deviceKernelService() {
-        static EndpointService service(DeviceService::call);
+        static EndpointService service(device_service::call);
 
         return service;
     }

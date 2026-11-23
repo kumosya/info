@@ -19,7 +19,7 @@
 #include "kernel/smp.h"
 #include "kernel/time.h"
 #include "service/common/identity.h"
-#include "service/common/kernel-requests.h"
+#include "service/common/protocol.h"
 #include "service/common/records.h"
 
 namespace task {
@@ -616,7 +616,7 @@ namespace task {
             }
 
             // 明确禁止继承的句柄直接跳过，不能因为编号存在就全部复制给孩子。
-            if (flags & os::handleFlagNoInherit) {
+            if (flags & services::handleFlagNoInherit) {
                 continue;
             }
 
@@ -732,7 +732,7 @@ namespace task {
             continuedPending_ = false;
             pendingSignals_   = 0;
             dumpable_         = uid_ == effectiveUid_ && gid_ == effectiveGid_;
-            serviceRole_      = os::ServiceRole::None;
+            serviceRole_      = services::ServiceRole::None;
 
             // exec
             // 保留明确忽略的信号动作，用户自定义处理入口则重置，因为它们指向旧映像地址。

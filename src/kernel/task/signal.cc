@@ -163,7 +163,7 @@ namespace task {
             return false;
         }
 
-        // 保留 x86-64 用户 ABI 的栈下方 128 字节区域，嵌套信号也不能覆盖它。
+        // 保留用户 ABI 的栈下方 128 字节区域，嵌套信号也不能覆盖它。
         const uint64_t address = (top - 128 - sizeof(frame)) & ~15ULL;
 
         // 选择普通用户栈或备用信号栈后，再为现场和栈对齐留空间，不能覆盖尚需保留的用户栈内容。

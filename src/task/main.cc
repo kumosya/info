@@ -18,15 +18,13 @@
  *   loadAndSpawn（读 ELF、准备 SpawnImageInfo）→ 内核 SpawnImage。
  */
 
-#include "service/common/kernel-requests.h"
+#include "service/common/protocol.h"
 #include "service/common/lifecycle.h"
-#include "service/common/queries.h"
+#include <os/detail/client.h>
 #include "service/common/records.h"
-#include "service/common/requests.h"
-#include "service/common/runtime.h"
-#include "service/console/client.h"
-#include "service/task/core_dump.h"
+#include <os/runtime.h>
 #include <os/console.h>
+#include "service/task/core_dump.h"
 #include <os/device.h>
 #include <os/elf.h>
 #include <os/file.h>
@@ -202,7 +200,7 @@ class TaskServer {
             // 按文件大小一次性分配映像缓冲；随后打开文件、循环读满。
             // 打开操作放在小 lambda 里，失败时返回 0；描述符的关闭由下面的
             // adopt/close 分支统一负责，读失败也不会泄漏。
-            void* image = os::Runtime::allocateMemory(
+            void* image = os::Runtime::current().allocateMemory(
                 static_cast<size_t>(stat.getSize()));
 
             if (image == nullptr) {
@@ -232,11 +230,11 @@ class TaskServer {
             }
 
             uint64_t task = 0;
-            os::wire::SharedImageInfo sharedImages[sharedImageCount]{};
+            services::wire::SharedImageInfo sharedImages[sharedImageCount]{};
             void* sharedBuffers[sharedImageCount]{};
             bool sharedRead = read;
             // 解析 ELF 头。getInterpreter 返回 1 表示这是动态程序，interpreter
-            // 里是 PT_INTERP 指定的解释器路径（如 /lib/ld-osinfo-x86-64.so）。
+            // 里是 PT_INTERP 指定的解释器路径（如 /lib/ld-osinfo-amd64.so）。
             // 只有解释器需要在这里预读；DT_NEEDED 的共享库由 Ring3 链接器处理。
             char interpreter[256]{};
             os::Executable executable;
@@ -263,7 +261,7 @@ class TaskServer {
                     break;
                 }
 
-                sharedBuffers[index] = os::Runtime::allocateMemory(
+                sharedBuffers[index] = os::Runtime::current().allocateMemory(
                     static_cast<size_t>(sharedStat.getSize()));
                 const uint64_t sharedDescriptor = ([&]() -> uint64_t {
                     os::File opened;
@@ -296,7 +294,7 @@ class TaskServer {
             // 内核会在 SpawnImage 调用中把它们复制到子进程的地址空间。
             if (sharedRead) {
                 // 文件数据、参数和标准句柄准备好后组装内核加载描述，真正创建进程由内核完成。
-                os::wire::SpawnImageInfo info{};
+                services::wire::SpawnImageInfo info{};
                 info.image                = image;
                 info.imageSize            = stat.getSize();
                 info.name                 = path;
@@ -309,24 +307,24 @@ class TaskServer {
                 // 识别 users/tty/console/guiw；内核还会再次核对调用链和能力，
                 // 不能因为路径匹配就认为身份已经可信。
                 if (managed) {
-                    info.flags |= os::spawnFlagManagedService;
+                    info.flags |= services::spawnFlagManagedService;
 
                     if (os::Runtime::stringsEqual(path,
                                                   "/sbin/sys/users.elf")) {
                         info.serviceRole =
-                            static_cast<uint32_t>(os::ServiceRole::Users);
+                            static_cast<uint32_t>(services::ServiceRole::Users);
                     } else if (os::Runtime::stringsEqual(path,
                                                          "/sbin/sys/tty.elf")) {
                         info.serviceRole =
-                            static_cast<uint32_t>(os::ServiceRole::Tty);
+                            static_cast<uint32_t>(services::ServiceRole::Tty);
                     } else if (os::Runtime::stringsEqual(
                                    path, "/sbin/sys/console.elf")) {
                         info.serviceRole =
-                            static_cast<uint32_t>(os::ServiceRole::Console);
+                            static_cast<uint32_t>(services::ServiceRole::Console);
                     } else if (os::Runtime::stringsEqual(
                                    path, "/sbin/sys/guiw.elf")) {
                         info.serviceRole =
-                            static_cast<uint32_t>(os::ServiceRole::Window);
+                            static_cast<uint32_t>(services::ServiceRole::Window);
                     }
                 }
 
@@ -334,26 +332,26 @@ class TaskServer {
                 // 后面会直接返回失败，不带着不存在的父任务去创建子任务。
                 // 终端关联分两种情况：stdin 是 PTY 时继承编号；Init 启动普通
                 // 程序时，从 "--os-terminal=N" 参数推导 console 终端槽位。
-                os::wire::TaskInfo parentInfo{};
+                services::wire::TaskInfo parentInfo{};
                 const bool parentValid = os::detail::TaskQuery().query(
                                              parentTaskId, parentInfo) == 0;
                 uint32_t pty = 0;
 
                 if (!parentInfo.terminalKind && standardInput &&
                     os::detail::PtyClient(standardInput).getNumber(pty)) {
-                    info.flags |= os::spawnFlagNewSession;
+                    info.flags |= services::spawnFlagNewSession;
                     info.terminalKind  = 2;
                     info.terminalIndex = pty;
                 }
 
                 if (!managed && !parentInfo.terminalKind &&
                     parentInfo.serviceRole ==
-                        static_cast<uint32_t>(os::ServiceRole::Init)) {
+                        static_cast<uint32_t>(services::ServiceRole::Init)) {
                     for (uint32_t i = 0; i < argumentCount; ++i) {
                         if (isTerminalArgument(arguments[i]) &&
                             arguments[i][14] >= '1' &&
                             arguments[i][14] <= '7' && !arguments[i][15]) {
-                            info.flags |= os::spawnFlagNewSession;
+                            info.flags |= services::spawnFlagNewSession;
                             info.terminalKind  = 1;
                             info.terminalIndex = arguments[i][14] - '1';
                         }
@@ -392,11 +390,11 @@ class TaskServer {
             // 子进程使用的是内核复制后的副本，不引用这里的地址。
             for (void* buffer : sharedBuffers) {
                 if (buffer != nullptr) {
-                    os::Runtime::freeMemory(buffer);
+                    os::Runtime::current().freeMemory(buffer);
                 }
             }
 
-            os::Runtime::freeMemory(image);
+            os::Runtime::current().freeMemory(image);
 
             return task;
         }
@@ -424,7 +422,7 @@ class TaskServer {
 
             if (registry == 0 || endpoint == 0 ||
                 !os::detail::RegistryClient(registry).registerName(
-                    os::taskServiceName, endpoint)) {
+                    services::taskServiceName, endpoint)) {
                 os::Sys().log("[TASK] registration failed\n");
 
                 return 1;
@@ -433,7 +431,7 @@ class TaskServer {
             uint64_t fs = 0;
             // core writer 是独立线程；启动失败不阻止 task 服务继续处理
             // 启动请求，只是崩溃时没有 core 可写，所以这里只记日志。
-            if (!taskCore::start()) {
+            if (!task::core::start()) {
                 os::Sys().log("[CORE] writer thread unavailable\n");
             }
 
@@ -449,11 +447,11 @@ class TaskServer {
                 // 发送者为 Init；普通 Execute 没有角色参数，不能借此提权。
                 const bool serviceRequest =
                     request.type ==
-                    static_cast<uint64_t>(os::TaskRequest::ExecuteService);
+                    static_cast<uint64_t>(services::TaskRequest::ExecuteService);
                 const bool executeRequest =
                     serviceRequest ||
                     request.type ==
-                        static_cast<uint64_t>(os::TaskRequest::Execute);
+                        static_cast<uint64_t>(services::TaskRequest::Execute);
                 const uint64_t bootstrap = executeRequest && request.handleCount
                                                ? request.handles[0]
                                                : 0;
@@ -464,14 +462,14 @@ class TaskServer {
                     uint32_t argumentCount = 0;
                     bool valid =
                         parseArguments(request, path, arguments, argumentCount);
-                    os::wire::TaskInfo caller{};
+                    services::wire::TaskInfo caller{};
                     // 不要相信消息里自报的身份：用内核记录的 senderPid 查询
                     // 真实角色，再决定是否接受 ExecuteService。
                     if (serviceRequest &&
                         (os::detail::TaskQuery().query(request.senderPid,
                                                        caller) ||
                          caller.serviceRole !=
-                             static_cast<uint32_t>(os::ServiceRole::Init))) {
+                             static_cast<uint32_t>(services::ServiceRole::Init))) {
                         valid = false;
                     }
 
@@ -484,7 +482,7 @@ class TaskServer {
                     // 句柄按 registry、stdin、stdout、stderr 的顺序排列；
                     // 只有标志位置位的才消费一个句柄。最后要求句柄数正好用完，
                     // 多传或少传都判为非法请求。
-                    if ((request.data[0] & os::taskExecuteHasStdin) != 0) {
+                    if ((request.data[0] & services::taskExecuteHasStdin) != 0) {
                         if (handleIndex < request.handleCount) {
                             standardInput = request.handles[handleIndex++];
                         } else {
@@ -492,7 +490,7 @@ class TaskServer {
                         }
                     }
 
-                    if ((request.data[0] & os::taskExecuteHasStdout) != 0) {
+                    if ((request.data[0] & services::taskExecuteHasStdout) != 0) {
                         if (handleIndex < request.handleCount) {
                             standardOutput = request.handles[handleIndex++];
                         } else {
@@ -500,7 +498,7 @@ class TaskServer {
                         }
                     }
 
-                    if ((request.data[0] & os::taskExecuteHasStderr) != 0) {
+                    if ((request.data[0] & services::taskExecuteHasStderr) != 0) {
                         if (handleIndex < request.handleCount) {
                             standardError = request.handles[handleIndex++];
                         } else {
@@ -537,7 +535,7 @@ class TaskServer {
                     // 30 秒是等待上限，超时只影响本次请求，下次还会重试。
                     if (fs == 0) {
                         fs = os::detail::RegistryClient(registry).lookup(
-                            os::fsServiceName, 30000);
+                            services::fsServiceName, 30000);
                     }
 
                     if (!valid) {
@@ -561,7 +559,7 @@ class TaskServer {
                         reply.handles[0]  = task;
                     }
                 } else if (request.type ==
-                               static_cast<uint64_t>(os::TaskRequest::Wait) &&
+                               static_cast<uint64_t>(services::TaskRequest::Wait) &&
                            request.handleCount == 1) {
                     // Wait 只查询一次状态，不在这里阻塞：state<0 统一回报 2，
                     // 0/1/2 分别表示运行、结束、停止或等待被中断。

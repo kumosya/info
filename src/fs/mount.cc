@@ -1,12 +1,12 @@
+#include <os/runtime.h>
+
 #include <cerrno>
 
-#include "service/common/kernel-requests.h"
-#include "service/common/requests.h"
-#include "service/common/runtime.h"
+#include "service/common/protocol.h"
 #include "service/fs/server.h"
 #include "service/fs/sysfs/filesystem.h"
 
-namespace vfs::server {
+namespace fs::server {
 
     /* 固定挂载生命周期，再分别刷新各文件系统；普通文件读写不用这把挂载操作锁。
      */
@@ -14,33 +14,46 @@ namespace vfs::server {
         std::lock_guard<std::mutex> operation(mountOperationLock_);
         int result = 0;
         for (uint32_t index = 0; index < mountCapacity; ++index) {
-            if (!mounted_[index] || !fileSystems_[index]) continue;
+            if (!mounted_[index] || !fileSystems_[index]) {
+                continue;
+            }
+
             std::lock_guard<std::mutex> filesystem(fileSystemLocks_[index]);
-            if (!fileSystems_[index]->sync()) result = -EIO;
+            if (!fileSystems_[index]->sync()) {
+                result = -EIO;
+            }
         }
+
         return result;
     }
 
-    class MountPolicy {
-        public:
-            static bool typeMatches(const MountSpec& spec,
-                                    const DeviceRecord& device);
-            static bool bounded(const char* text, size_t length);
-            static void failure(const char* text, const char* source);
-    };
+    namespace mount_policy {
 
-    bool MountPolicy::typeMatches(const MountSpec& spec,
-                                  const DeviceRecord& device) {
-        return os::Runtime::stringsEqual(spec.type, "auto") ||
+        static bool typeMatches(const MountSpec& spec,
+                                const DeviceRecord& device);
+        static bool bounded(const char* text, size_t length);
+        static void failure(const char* text, const char* source);
+    }  // namespace mount_policy
+
+    bool mount_policy::typeMatches(const MountSpec& spec,
+                                   const DeviceRecord& device) {
+        return os::Runtime::stringsEqual(spec.getType(), "auto") ||
                os::Runtime::stringsEqual(
-                   spec.type, FormatProbe().formatName(device.format));
+                   spec.getType(),
+                   FormatProbe().formatName(device.getFormat()));
     }
-    bool MountPolicy::bounded(const char* text, size_t length) {
-        for (size_t i = 0; i < length; ++i)
-            if (!text[i]) return true;
+
+    bool mount_policy::bounded(const char* text, size_t length) {
+        for (size_t i = 0; i < length; ++i) {
+            if (!text[i]) {
+                return true;
+            }
+        }
+
         return false;
     }
-    void MountPolicy::failure(const char* text, const char* source) {
+
+    void mount_policy::failure(const char* text, const char* source) {
         os::Sys().log("[FS] ");
         os::Sys().log(text);
         os::Sys().log(": ");
@@ -51,17 +64,22 @@ namespace vfs::server {
     bool FsServer::init(uint64_t storageEndpoint, uint64_t deviceEndpoint) {
         deviceEndpoint_ = deviceEndpoint;
         os::IpcMessage request{}, reply{};
-        request.type = static_cast<uint64_t>(os::StorageRequest::GetCount);
+        request.type =
+            static_cast<uint64_t>(services::StorageRequest::GetCount);
         if (!storageEndpoint || !deviceEndpoint ||
             os::callService(storageEndpoint, request, reply) != 0 ||
             reply.data[0] != 0 || !reply.data[1] ||
-            reply.data[1] > os::maximumStorageDevices)
+            reply.data[1] > services::maximumStorageDevices) {
             return false;
+        }
+
         const uint32_t count = static_cast<uint32_t>(reply.data[1]);
         for (uint32_t index = 0; index < count; ++index) {
             if (!devices_[index].init(storageEndpoint, index) ||
-                !catalog_.add(devices_[index].identity(), devices_[index]))
+                !catalog_.add(devices_[index].identity(), devices_[index])) {
                 return false;
+            }
+
             const DeviceRecord& record = *catalog_.get(index);
             os::Sys().log("[FS] detected /dev/");
             os::Sys().log(record.identity.name);
@@ -78,21 +96,26 @@ namespace vfs::server {
 
         // /etc/fstab lives on the root volume: a candidate must select itself.
         // Never choose the first readable partition when multiple roots match.
-        uint32_t selected = os::maximumStorageDevices;
+        uint32_t selected = services::maximumStorageDevices;
         for (uint32_t index = 0; index < count; ++index) {
             const DeviceRecord& record = *catalog_.get(index);
             if (record.format == Format::Unknown ||
-                record.format == Format::ExFat)
+                record.format == Format::ExFat) {
                 continue;
+            }
+
             const char* type = FormatProbe().formatName(record.format);
-            vfs::FileSystem* candidate =
-                FileSystemFactory::createFileSystem(type);
-            if (!candidate) return false;
-            vfs::FileStatus status{};
+            fs::FileSystem* candidate =
+                FileSystemFactory(type).createFileSystem();
+            if (!candidate) {
+                return false;
+            }
+
+            fs::FileStatus status{};
             char text[sizeof(fstabText_)]{};
             bool valid = candidate->mount(devices_[index]) &&
                          candidate->lookup("/etc/fstab", status) &&
-                         (status.mode & 0xf000U) == vfs::modeRegular &&
+                         (status.mode & 0xf000U) == fs::modeRegular &&
                          status.size && status.size < sizeof(text) &&
                          candidate->read(status, 0, text, status.size) ==
                              static_cast<int64_t>(status.size);
@@ -101,70 +124,94 @@ namespace vfs::server {
                 for (const char* cursor = text; *cursor;) {
                     MountSpec spec{};
                     bool present = false;
-                    if (!Fstab::next(cursor, spec, present)) {
+                    if (!Fstab(cursor).next(spec, present)) {
                         valid = false;
                         break;
                     }
+
                     if (!present ||
-                        !os::Runtime::stringsEqual(spec.target, "/"))
+                        !os::Runtime::stringsEqual(spec.target, "/")) {
                         continue;
+                    }
+
                     if (root) {
                         valid = false;
                         break;
                     }
-                    root               = true;
+
+                    root = true;
                     const int resolved = catalog_.resolve(spec.source);
-                    if (resolved == DeviceCatalog::ambiguous)
-                        MountPolicy::failure("ambiguous root identifier",
-                                             spec.source);
+                    if (resolved == DeviceCatalog::ambiguous) {
+                        mount_policy::failure("ambiguous root identifier",
+                                              spec.source);
+                    }
+
                     if (resolved != static_cast<int>(index) ||
-                        !MountPolicy::typeMatches(spec, record) ||
-                        !spec.automatic || !spec.required)
+                        !mount_policy::typeMatches(spec, record) ||
+                        !spec.automatic || !spec.required) {
                         valid = false;
+                    }
                 }
             }
+
             if (!valid || !root) {
-                FileSystemFactory::destroyFileSystem(candidate, type);
+                FileSystemFactory(type).destroyFileSystem(candidate);
                 continue;
             }
-            if (selected != os::maximumStorageDevices) {
-                MountPolicy::failure(
+
+            if (selected != services::maximumStorageDevices) {
+                mount_policy::failure(
                     "multiple root filesystems match their fstab", "/");
-                FileSystemFactory::destroyFileSystem(candidate, type);
+                FileSystemFactory(type).destroyFileSystem(candidate);
                 return false;
             }
-            selected        = index;
+
+            selected = index;
             fileSystems_[0] = candidate;
             os::Runtime::copyString(fstabText_, text, sizeof(fstabText_));
         }
-        if (selected == os::maximumStorageDevices) {
-            MountPolicy::failure("no uniquely identified root filesystem",
-                                 "/etc/fstab");
+
+        if (selected == services::maximumStorageDevices) {
+            mount_policy::failure("no uniquely identified root filesystem",
+                                  "/etc/fstab");
             return false;
         }
+
         mountTable_[0].deviceIndex = selected;
-        if (!loadMountTable()) return false;
-        if (!SystemFiles::init(*fileSystems_[0])) return false;
+        if (!loadMountTable()) {
+            return false;
+        }
+
+        if (!systemFiles_.init(*fileSystems_[0])) {
+            return false;
+        }
+
         mounted_[0] = true;
         os::Sys().log("[FS] root resolved to /dev/");
         os::Sys().log(catalog_.get(selected)->identity.name);
         os::Sys().log("\n");
         for (uint32_t index = 1; index < mountCapacity; ++index) {
             MountEntry& entry = mountTable_[index];
-            if (!entry.configured || !entry.spec.automatic) continue;
-            const PathBackend parent  = pathBackend(entry.spec.target);
-            vfs::FileSystem* parentFs = fileSystem(parent);
-            vfs::FileStatus target{};
+            if (!entry.configured || !entry.spec.automatic) {
+                continue;
+            }
+
+            const PathBackend parent = pathBackend(entry.spec.target);
+            fs::FileSystem* parentFs = fileSystem(parent);
+            fs::FileStatus target{};
             const bool exists =
                 parentFs &&
                 parentFs->lookup(relativePath(entry.spec.target, parent),
                                  target) &&
-                (target.mode & 0xf000U) == vfs::modeDirectory;
+                (target.mode & 0xf000U) == fs::modeDirectory;
             if (!exists || !attachMount(index)) {
-                MountPolicy::failure("mount failed", entry.spec.source);
-                if (entry.spec.required) return false;
+                mount_policy::failure("mount failed", entry.spec.source);
+                if (entry.spec.required) {
+                    return false;
+                }
             }
         }
+
         return true;
     }
 
@@ -173,60 +220,93 @@ namespace vfs::server {
         for (const char* cursor = fstabText_; *cursor;) {
             MountSpec spec{};
             bool present = false;
-            if (!Fstab::next(cursor, spec, present)) return false;
-            if (!present) continue;
-            if (PathText::startsWithPath(spec.target, "/dev")) return false;
+            if (!Fstab(cursor).next(spec, present)) {
+                return false;
+            }
+
+            if (!present) {
+                continue;
+            }
+
+            if (path_text::startsWithPath(spec.target, "/dev")) {
+                return false;
+            }
+
             const uint32_t index =
                 os::Runtime::stringsEqual(spec.target, "/") ? 0 : next++;
-            if (index >= mountCapacity) return false;
-            for (const MountEntry& prior : mountTable_)
+            if (index >= mountCapacity) {
+                return false;
+            }
+
+            for (const MountEntry& prior : mountTable_) {
                 if (prior.configured &&
-                    os::Runtime::stringsEqual(prior.spec.target, spec.target))
+                    os::Runtime::stringsEqual(prior.spec.target, spec.target)) {
                     return false;
+                }
+            }
+
             MountEntry& entry = mountTable_[index];
-            entry.spec        = spec;
-            entry.configured  = true;
+            entry.spec = spec;
+            entry.configured = true;
             if (index == 0) {
                 const DeviceRecord& root = *catalog_.get(entry.deviceIndex);
                 if (catalog_.resolve(spec.source) !=
                         static_cast<int>(entry.deviceIndex) ||
-                    !MountPolicy::typeMatches(spec, root))
+                    !mount_policy::typeMatches(spec, root)) {
                     return false;
+                }
             }
         }
+
         return mountTable_[0].configured;
     }
 
     bool FsServer::attachMount(uint32_t index) {
         MountEntry& entry = mountTable_[index];
-        const int device  = catalog_.resolve(entry.spec.source);
+        const int device = catalog_.resolve(entry.spec.source);
         if (device < 0) {
-            MountPolicy::failure(device == DeviceCatalog::ambiguous
-                                     ? "ambiguous device identifier"
-                                     : "device not found",
-                                 entry.spec.source);
+            mount_policy::failure(device == DeviceCatalog::ambiguous
+                                      ? "ambiguous device identifier"
+                                      : "device not found",
+                                  entry.spec.source);
             return false;
         }
+
         const DeviceRecord& record =
             *catalog_.get(static_cast<uint32_t>(device));
-        if (!MountPolicy::typeMatches(entry.spec, record)) return false;
-        for (uint32_t prior = 0; prior < mountCapacity; ++prior)
-            if (mounted_[prior] &&
-                mountTable_[prior].deviceIndex == static_cast<uint32_t>(device))
+        if (!mount_policy::typeMatches(entry.spec, record)) {
+            return false;
+        }
+
+        for (uint32_t prior = 0; prior < mountCapacity; ++prior) {
+            if (mounted_[prior] && mountTable_[prior].deviceIndex ==
+                                       static_cast<uint32_t>(device)) {
                 return false;
+            }
+        }
+
         // A configured mount keeps its instance and identity across
         // unmount/remount.
         if (entry.deviceIndex < catalog_.count() &&
-            entry.deviceIndex != static_cast<uint32_t>(device))
+            entry.deviceIndex != static_cast<uint32_t>(device)) {
             return false;
+        }
+
         entry.deviceIndex = static_cast<uint32_t>(device);
-        const char* type  = FormatProbe().formatName(record.format);
-        if (!fileSystems_[index])
-            fileSystems_[index] = FileSystemFactory::createFileSystem(type);
+        const char* type = FormatProbe().formatName(record.format);
+        if (!fileSystems_[index]) {
+            fileSystems_[index] = FileSystemFactory(type).createFileSystem();
+        }
+
         if (!fileSystems_[index] ||
-            !fileSystems_[index]->mount(devices_[device]))
+            !fileSystems_[index]->mount(devices_[device])) {
             return false;
-        if (fileSystems_[index]->readOnly()) entry.spec.readOnly = true;
+        }
+
+        if (fileSystems_[index]->readOnly()) {
+            entry.spec.readOnly = true;
+        }
+
         mounted_[index] = true;
         os::Sys().log("[FS] mounted /dev/");
         os::Sys().log(record.identity.name);
@@ -246,19 +326,23 @@ namespace vfs::server {
     bool FsServer::mount(const os::IpcMessage& request) {
         const char* source = reinterpret_cast<const char*>(request.data);
         const char* target = source + 64;
-        const char* type   = source + 128;
-        if (!MountPolicy::bounded(source, 64) ||
-            !MountPolicy::bounded(target, 64) ||
-            !MountPolicy::bounded(type, 16) || target[0] != '/' ||
-            PathText::startsWithPath(target, "/dev") ||
-            os::Runtime::stringsEqual(target, "/"))
+        const char* type = source + 128;
+        if (!mount_policy::bounded(source, 64) ||
+            !mount_policy::bounded(target, 64) ||
+            !mount_policy::bounded(type, 16) || target[0] != '/' ||
+            path_text::startsWithPath(target, "/dev") ||
+            os::Runtime::stringsEqual(target, "/")) {
             return false;
+        }
+
         char targetBuffer[128]{};
         os::Runtime::copyString(targetBuffer, target, sizeof(targetBuffer));
         if (!Fstab::canonicalTarget(targetBuffer) ||
-            PathText::startsWithPath(targetBuffer, "/dev") ||
-            os::Runtime::stringsEqual(targetBuffer, "/"))
+            path_text::startsWithPath(targetBuffer, "/dev") ||
+            os::Runtime::stringsEqual(targetBuffer, "/")) {
             return false;
+        }
+
         target = targetBuffer;
         std::lock_guard<std::mutex> operation(mountOperationLock_);
         uint32_t slot = mountCapacity;
@@ -269,84 +353,126 @@ namespace vfs::server {
                 slot = index;
                 break;
             }
-            if (!mountTable_[index].configured && slot == mountCapacity)
+
+            if (!mountTable_[index].configured && slot == mountCapacity) {
                 slot = index;
+            }
         }
-        if (slot == mountCapacity) return false;
+
+        if (slot == mountCapacity) {
+            return false;
+        }
+
         const int device = catalog_.resolve(source);
-        if (device < 0) return false;
+        if (device < 0) {
+            return false;
+        }
+
         MountSpec spec{};
         os::Runtime::copyString(spec.source, source, sizeof(spec.source));
         os::Runtime::copyString(spec.target, target, sizeof(spec.target));
         os::Runtime::copyString(spec.type, type, sizeof(spec.type));
         os::Runtime::copyString(spec.options, "defaults", sizeof(spec.options));
-        if (!MountPolicy::typeMatches(spec, *catalog_.get(device)))
+        if (!mount_policy::typeMatches(spec, *catalog_.get(device))) {
             return false;
+        }
+
         MountEntry& entry = mountTable_[slot];
-        const bool fresh  = !entry.configured;
+        const bool fresh = !entry.configured;
         if (entry.configured) {
-            if (catalog_.resolve(entry.spec.source) != device) return false;
-            if (mounted_[slot]) return true;
+            if (catalog_.resolve(entry.spec.source) != device) {
+                return false;
+            }
+
+            if (mounted_[slot]) {
+                return true;
+            }
         } else {
-            const PathBackend parent    = pathBackend(target);
-            vfs::FileSystem* filesystem = fileSystem(parent);
-            vfs::FileStatus status{};
-            if (!filesystem) return false;
+            const PathBackend parent = pathBackend(target);
+            fs::FileSystem* filesystem = fileSystem(parent);
+            fs::FileStatus status{};
+            if (!filesystem) {
+                return false;
+            }
+
             std::lock_guard<std::mutex> guard(fileSystemLock(parent));
             if (!filesystem->lookup(relativePath(target, parent), status) ||
-                (status.mode & 0xf000U) != vfs::modeDirectory)
+                (status.mode & 0xf000U) != fs::modeDirectory) {
                 return false;
+            }
         }
+
         std::lock_guard<std::mutex> volume(fileSystemLocks_[slot]);
         std::lock_guard<std::mutex> state(mountStateLock_);
         if (fresh) {
-            entry.spec       = spec;
+            entry.spec = spec;
             entry.configured = true;
         }
+
         const bool attached = attachMount(slot);
         if (!attached && fresh) {
             const char* actualType =
                 FormatProbe().formatName(catalog_.get(device)->format);
-            FileSystemFactory::destroyFileSystem(fileSystems_[slot],
-                                                 actualType);
+            FileSystemFactory(actualType).destroyFileSystem(fileSystems_[slot]);
             fileSystems_[slot] = nullptr;
-            entry              = {};
+            entry = {};
         }
+
         return attached;
     }
 
     bool FsServer::unmount(const os::IpcMessage& request) {
         const char* target = reinterpret_cast<const char*>(request.data);
-        if (!MountPolicy::bounded(target, 64)) return false;
+        if (!mount_policy::bounded(target, 64)) {
+            return false;
+        }
+
         char normalized[128]{};
         os::Runtime::copyString(normalized, target, sizeof(normalized));
-        if (!Fstab::canonicalTarget(normalized)) return false;
+        if (!Fstab::canonicalTarget(normalized)) {
+            return false;
+        }
+
         target = normalized;
         std::lock_guard<std::mutex> operation(mountOperationLock_);
         uint32_t slot = mountCapacity;
-        for (uint32_t index = 1; index < mountCapacity; ++index)
+        for (uint32_t index = 1; index < mountCapacity; ++index) {
             if (mountTable_[index].configured && mounted_[index] &&
                 os::Runtime::stringsEqual(mountTable_[index].spec.target,
                                           target)) {
                 slot = index;
                 break;
             }
-        if (slot == mountCapacity) return false;
+        }
+
+        if (slot == mountCapacity) {
+            return false;
+        }
+
         std::lock_guard<std::mutex> volume(fileSystemLocks_[slot]);
         std::lock_guard<std::mutex> state(mountStateLock_);
-        for (uint32_t index = 1; index < mountCapacity; ++index)
+        for (uint32_t index = 1; index < mountCapacity; ++index) {
             if (index != slot && mounted_[index] &&
-                PathText::startsWithPath(mountTable_[index].spec.target,
-                                         target))
+                path_text::startsWithPath(mountTable_[index].spec.target,
+                                          target)) {
                 return false;
+            }
+        }
+
         {
             std::lock_guard<std::mutex> descriptors(descriptorLock_);
-            for (const OpenFileDescription& entry : openDescriptions_)
+            for (const OpenFileDescription& entry : openDescriptions_) {
                 if (entry.filesystem &&
-                    entry.mountIndex == static_cast<PathBackend>(slot))
+                    entry.mountIndex == static_cast<PathBackend>(slot)) {
                     return false;
+                }
+            }
         }
-        if (!fileSystems_[slot]->sync()) return false;
+
+        if (!fileSystems_[slot]->sync()) {
+            return false;
+        }
+
         mounted_[slot] = false;
         return true;
     }
@@ -355,10 +481,13 @@ namespace vfs::server {
         std::lock_guard<std::mutex> state(mountStateLock_);
         uint32_t current = 0;
         for (uint32_t index = 0; index < mountCapacity; ++index) {
-            if (!mounted_[index] || current++ != requested) continue;
-            const MountEntry& entry    = mountTable_[index];
+            if (!mounted_[index] || current++ != requested) {
+                continue;
+            }
+
+            const MountEntry& entry = mountTable_[index];
             const DeviceRecord& device = *catalog_.get(entry.deviceIndex);
-            char path[64]              = "/dev/";
+            char path[64] = "/dev/";
             os::Runtime::copyString(path + 5, device.identity.name,
                                     sizeof(path) - 5);
             reply.data[0] = 0;
@@ -370,24 +499,30 @@ namespace vfs::server {
                                     FormatProbe().formatName(device.format),
                                     16);
             reply.data[19] = readOnly(static_cast<PathBackend>(index));
-            reply.length   = 20;
+            reply.length = 20;
             return;
         }
+
         reply.data[0] = 1;
     }
 
     PathBackend FsServer::pathBackend(const char* path) const {
-        if (!path || path[0] != '/') return PathBackend::Invalid;
-        if (PathText::startsWithPath(path, "/sys") ||
-            PathText::startsWithPath(path, "/proc"))
+        if (!path || path[0] != '/') {
             return PathBackend::Invalid;
+        }
+
+        if (path_text::startsWithPath(path, "/sys") ||
+            path_text::startsWithPath(path, "/proc")) {
+            return PathBackend::Invalid;
+        }
+
         std::lock_guard<std::mutex> guard(mountStateLock_);
         PathBackend result = PathBackend::Root;
-        size_t length      = 0;
+        size_t length = 0;
         for (uint32_t index = 1; index < mountCapacity; ++index) {
             const MountEntry& entry = mountTable_[index];
             if (entry.configured &&
-                PathText::startsWithPath(path, entry.spec.target)) {
+                path_text::startsWithPath(path, entry.spec.target)) {
                 const size_t size =
                     os::Runtime::stringLength(entry.spec.target);
                 if (size > length) {
@@ -400,16 +535,23 @@ namespace vfs::server {
                 }
             }
         }
+
         return mounted_[0] ? result : PathBackend::Invalid;
     }
+
     const char* FsServer::relativePath(const char* path,
                                        PathBackend backend) const {
-        if (backend == PathBackend::Root) return path;
-        const MountEntry* entry = mountEntry(backend);
-        if (!entry || !PathText::startsWithPath(path, entry->spec.target))
+        if (backend == PathBackend::Root) {
             return path;
+        }
+
+        const MountEntry* entry = mountEntry(backend);
+        if (!entry || !path_text::startsWithPath(path, entry->spec.target)) {
+            return path;
+        }
+
         const char* relative =
             path + os::Runtime::stringLength(entry->spec.target);
         return *relative ? relative : "/";
     }
-}  // namespace vfs::server
+}  // namespace fs::server

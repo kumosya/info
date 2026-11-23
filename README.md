@@ -2,10 +2,10 @@
 
 ## 介绍
 
-osinfo 运行在 x86-64 架构，采用混合内核架构：
+osinfo 运行在 amd64 架构，采用混合内核架构：
 
-- Ring0 提供页表、内存分配器、Task/Thread、调度、中断、Endpoint、句柄和受限硬件机制；所有服务进程及 pipe/msgq 服务状态运行于 Ring3。
-- init 服务管理器和 MM 内存策略运行于 Ring 3。
+- Ring0 提供页表、内存分配器、Task/Thread、调度、中断、Endpoint等机制与内核级服务
+- 所有服务进程及 pipe/msgq 服务状态运行于 Ring3。
 
 ## 配置
 
@@ -18,8 +18,6 @@ osinfo 运行在 x86-64 架构，采用混合内核架构：
 更新包或构建配置后要重新执行 `./configure`。make 不补建配置，失败配置不能继续构建。
 
 关于配置参数，`CC`、`CPP`、`AR`、`HOST_CPP` 可选择编译器；仅编译时可使用 `--disable-image-tools`。
-
-隔离 Linux 基线已使用 Debian GCC 12.2 和 GCC 14.2 完成构建及 SDK 校验。若遇到 openEuler GCC 12.3.1-110 的编译器内部错误，可用 `CC` 和 `CPP` 指定已验证的工具链，并用 `--build-dir` 和 `--object-dir` 指定新的输出目录。
 
 ## 编译与安装
 

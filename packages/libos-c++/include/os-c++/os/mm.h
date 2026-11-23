@@ -3,22 +3,26 @@
  */
 
 #pragma once
+#include <os/ipc.h>
+
 #include <cstddef>
 #include <cstdint>
 
-#include <os/ipc.h>
 namespace os {
+
     class File;
+
     /* 汇总用户态内存申请、映射和共享内存接口。 */
     class Mem {
         public:
             class Share;
+
             /* 管理内核页对象句柄，供显式映射物理内存使用。 */
             class Page {
                 public:
                     Page();
                     ~Page();
-                    Page(const Page&)            = delete;
+                    Page(const Page&) = delete;
                     Page& operator=(const Page&) = delete;
                     int create(uint32_t order, uint16_t node,
                                uint64_t owner = 0);
@@ -41,12 +45,13 @@ namespace os {
                     uint16_t node_{}, order_{};
                     int error_{};
             };
+
             /* 管理一段用户地址映射的建立、权限和解除。 */
             class Map {
                 public:
                     Map();
                     ~Map();
-                    Map(const Map&)            = delete;
+                    Map(const Map&) = delete;
                     Map& operator=(const Map&) = delete;
                     Map(Map&& other) noexcept;
                     Map& operator=(Map&& other) noexcept;
@@ -78,12 +83,13 @@ namespace os {
                     int bind(int64_t address, uint64_t identity, uint64_t size,
                              uint64_t offset, uint32_t protection, bool shared);
             };
+
             /* 管理命名共享内存的打开、大小和映射。 */
             class Share {
                 public:
                     Share();
                     ~Share();
-                    Share(const Share&)            = delete;
+                    Share(const Share&) = delete;
                     Share& operator=(const Share&) = delete;
                     Share(Share&& other) noexcept;
                     Share& operator=(Share&& other) noexcept;
@@ -105,6 +111,7 @@ namespace os {
                     uint64_t size_{};
                     int error_{};
             };
+
             Mem();
             int refresh(uint64_t taskId = 0);
             int64_t reclaimCaches();

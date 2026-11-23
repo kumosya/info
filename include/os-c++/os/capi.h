@@ -3,10 +3,9 @@
  */
 
 #pragma once
+#include <os/syscall.h>
 #include <stddef.h>
 #include <stdint.h>
-
-#include <os/syscall.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -64,6 +63,7 @@ typedef struct OsTaskInfo {
         int32_t nice;
         uint32_t threadCount;
 } OsTaskInfo;
+
 typedef struct OsCredentialInfo {
         uint32_t uid, effectiveUid, savedUid, gid, effectiveGid, savedGid,
             groupCount;
@@ -111,6 +111,7 @@ typedef struct OsIpcMessage {
         uint64_t data[515], handles[4];
         uint32_t handleRights[4], handleOptions[4];
 } OsIpcMessage;
+
 typedef struct OsMountStat {
         char device[64], target[64], type[16];
         uint64_t readOnly;
@@ -370,4 +371,5 @@ int osSysConnectionLookup(const char* name, uint64_t* endpoint,
 
 #ifdef __cplusplus
 }
+
 #endif

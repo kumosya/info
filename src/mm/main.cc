@@ -3,16 +3,16 @@
  * 用户态内存服务主循环，协调请求、锁页、映射修改及恢复检查点。
  */
 
-#include "service/common/kernel-requests.h"
-#include "service/common/queries.h"
-#include "service/common/records.h"
-#include "service/common/requests.h"
-#include "service/common/runtime.h"
-#include "service/mm/mm.h"
+#include <os/detail/client.h>
 #include <os/file.h>
 #include <os/ipc.h>
+#include <os/runtime.h>
 #include <os/service.h>
 #include <os/task.h>
+
+#include "service/common/protocol.h"
+#include "service/common/records.h"
+#include "service/mm/mm.h"
 
 namespace mm {
 
@@ -26,7 +26,7 @@ namespace mm {
                 const uint64_t registry = os::getBootstrapHandle();
 
                 if (!registry || !recovery_.open(endpoint_) ||
-                    KernelMemory::bindPager(endpoint_) ||
+                    KernelMemory().bindPager(endpoint_) ||
                     !os::detail::RegistryClient(registry).registerName(
                         "mm", endpoint_) ||
                     !recovery_.activate()) {
@@ -36,7 +36,7 @@ namespace mm {
                 os::Sys().log(
                     "[MM] Ring 3 memory policy and pager service ready\n");
                 uint64_t nextSweep = 0;
-                bool dirty         = false;
+                bool dirty = false;
 
                 while (true) {
                     const uint64_t now = os::Sys().readMonotonicTime();
@@ -64,17 +64,18 @@ namespace mm {
                         return 2;
                     }
 
-                    uint64_t id     = 0;
+                    uint64_t id = 0;
                     bool resumeOnly = false;
 
                     // 恢复协议把请求编号放在消息尾部，先剥离协议字段，再按原业务消息格式解析。
                     if (request.length >= 3 &&
                         request.data[request.length - 3] == recoveryRpcMarker) {
-                        id         = request.data[request.length - 2];
+                        id = request.data[request.length - 2];
                         resumeOnly = request.data[request.length - 1] != 0;
                         request.length -= 3;
-                    } else if (request.type == static_cast<uint64_t>(
-                                                   os::MmOperation::Fork) &&
+                    } else if (request.type ==
+                                   static_cast<uint64_t>(
+                                       services::MmOperation::Fork) &&
                                request.length == 1) {
                         id = request.data[0] | (1ULL << 63);
                     }
@@ -130,7 +131,6 @@ namespace mm {
             Recovery recovery_{state_};
             ReclaimManager reclaim_{state_};
             Pager pager_{state_, reclaim_};
-            SharedMemoryManager shared_;
             uint64_t endpoint_ = 0;
 
             /*
@@ -154,8 +154,8 @@ namespace mm {
                                 page->pinned = true;
                             }
                         }
-                    } else if (!(KernelMemory::pageState(task,
-                                                         address + offset) &
+                    } else if (!(KernelMemory().pageState(task,
+                                                          address + offset) &
                                  1)) {
                         return 12;
                     }
@@ -169,9 +169,9 @@ namespace mm {
              * 先检查覆盖范围和额度，再补齐页面并提交内核操作；失败时恢复临时固定状态。
              */
             int residency(const os::IpcMessage& request, unsigned operation) {
-                const uint64_t task    = request.senderPid,
+                const uint64_t task = request.senderPid,
                                address = request.data[0],
-                               size    = request.data[1];
+                               size = request.data[1];
 
                 if (operation <= 1) {
                     if (!RegionTable::validRange(address, size)) {
@@ -183,8 +183,8 @@ namespace mm {
                         for (uint64_t offset = 0; offset < size;
                              offset += 4096) {
                             if (!state_.regions.find(task, address + offset) &&
-                                !(KernelMemory::pageState(task,
-                                                          address + offset) &
+                                !(KernelMemory().pageState(task,
+                                                           address + offset) &
                                   1)) {
                                 return 12;
                             }
@@ -192,7 +192,7 @@ namespace mm {
                     }
 
                     // 先让内核只检查锁页条件，不真正修改；预检查失败就不继续分配页面。
-                    const int preflight = KernelMemory::residency(
+                    const int preflight = KernelMemory().residency(
                         task, address, size, operation == 0, true, true);
 
                     if (preflight) {
@@ -200,23 +200,23 @@ namespace mm {
                     }
 
                     // 保存原固定状态，补页过程可能触发回收，因此本次新补页面先固定，失败时恢复旧值。
-                    bool pinned[MemoryState::pageCapacity]{};
+                    ResidentPageFlags pinned;
 
                     for (size_t i = 0; i < MemoryState::pageCapacity; ++i) {
-                        pinned[i] = state_.pages[i].pinned;
+                        pinned.set(i, state_.pages[i].pinned);
                     }
 
                     int status =
                         !operation ? populate(task, address, size, true) : 0;
 
                     if (!status) {
-                        status = KernelMemory::residency(task, address, size,
-                                                         operation == 0);
+                        status = KernelMemory().residency(task, address, size,
+                                                          operation == 0);
                     }
 
                     if (status) {
                         for (size_t i = 0; i < MemoryState::pageCapacity; ++i) {
-                            state_.pages[i].pinned = pinned[i];
+                            state_.pages[i].pinned = pinned.get(i);
                         }
                     }
 
@@ -242,7 +242,7 @@ namespace mm {
 
                     for (uint64_t offset = 0; offset < size; offset += 4096) {
                         if (!state_.regions.find(task, address + offset) &&
-                            !(KernelMemory::pageState(task, address + offset) &
+                            !(KernelMemory().pageState(task, address + offset) &
                               1)) {
                             return 12;
                         }
@@ -260,16 +260,16 @@ namespace mm {
                 }
 
                 os::IpcMessage command{}, reply{};
-                command.type    = uint64_t(os::MemoryOperation::LockAll);
-                command.length  = 5;
+                command.type = uint64_t(services::MemoryOperation::LockAll);
+                command.length = 5;
                 command.data[0] = task;
                 command.data[1] = flags;
-                unsigned count  = 0;
+                unsigned count = 0;
 
                 // 用局部对象保存原固定状态；任意提前返回都会恢复，只有明确提交后才保留新状态。
                 struct PinTransaction {
                         MemoryState& state;
-                        bool original[MemoryState::pageCapacity]{};
+                        ResidentPageFlags original;
                         bool committed = false;
 
                         /*
@@ -279,7 +279,7 @@ namespace mm {
                             : state(value) {
                             for (size_t i = 0; i < MemoryState::pageCapacity;
                                  ++i) {
-                                original[i] = state.pages[i].pinned;
+                                original.set(i, state.pages[i].pinned);
                             }
                         }
 
@@ -290,7 +290,7 @@ namespace mm {
                             if (!committed) {
                                 for (size_t i = 0;
                                      i < MemoryState::pageCapacity; ++i) {
-                                    state.pages[i].pinned = original[i];
+                                    state.pages[i].pinned = original.get(i);
                                 }
                             }
                         }
@@ -327,9 +327,9 @@ namespace mm {
                     command.length = 3 + count * 2;
                 }
 
-                const int status =
-                    services::RequestChannel(os::CoreServiceKind::Memory)
-                        .result(command, reply);
+                const int status = os::detail::RequestChannel(
+                                       services::CoreServiceKind::Memory)
+                                       .result(command, reply);
 
                 if (status) {
                     return 5;
@@ -365,12 +365,12 @@ namespace mm {
                     return -1;
                 }
 
-                if (KernelMemory::residency(task, address, size, false, true,
-                                            true)) {
+                if (KernelMemory().residency(task, address, size, false, true,
+                                             true)) {
                     return -5;
                 }
 
-                bool wasMapped[MemoryState::pageCapacity]{};
+                ResidentPageFlags wasMapped;
 
                 for (size_t i = 0; i < MemoryState::pageCapacity; ++i) {
                     ResidentPage& page = state_.pages[i];
@@ -381,13 +381,13 @@ namespace mm {
                         continue;
                     }
 
-                    wasMapped[i] = true;
+                    wasMapped.set(i, true);
 
                     if (os::detail::MemoryControl().unmapTarget(
                             page.address, 4096, task, true)) {
                         // 解除映射事务提交之前，继续保留后备对象引用。
                         for (size_t n = 0; n < i; ++n) {
-                            if (wasMapped[n]) {
+                            if (wasMapped.get(n)) {
                                 const Region* old = state_.regions.find(
                                     task, state_.pages[n].address);
 
@@ -406,7 +406,7 @@ namespace mm {
                     page.mapped = false;
                 }
 
-                if (KernelMemory::residency(task, address, size, false)) {
+                if (KernelMemory().residency(task, address, size, false)) {
                     return -11;
                 }
 
@@ -446,7 +446,7 @@ namespace mm {
                     return -3;
                 }
 
-                bool changed[MemoryState::pageCapacity]{};
+                ResidentPageFlags changed;
 
                 for (size_t index = 0; index < MemoryState::pageCapacity;
                      ++index) {
@@ -459,13 +459,13 @@ namespace mm {
                     }
 
                     page.dirty = page.dirty ||
-                                 (KernelMemory::pageState(task, page.address) &
+                                 (KernelMemory().pageState(task, page.address) &
                                   (1ULL << 6));
                     const int result =
                         protection
                             ? os::detail::MemoryControl().protectTarget(
                                   page.address, 4096,
-                                  KernelMemory::nativeProtection(protection) &
+                                  KernelMemory().nativeProtection(protection) &
                                       (page.cow ? ~1ULL : ~0ULL),
                                   task)
                             : os::detail::MemoryControl().unmapTarget(
@@ -474,7 +474,7 @@ namespace mm {
                     if (result) {
                         // 权限修改失败时，按尚未提交的原区域表恢复页表权限。
                         for (size_t n = 0; n < index; ++n) {
-                            if (changed[n]) {
+                            if (changed.get(n)) {
                                 ResidentPage& previous = state_.pages[n];
                                 const Region* old =
                                     state_.regions.find(task, previous.address);
@@ -491,7 +491,7 @@ namespace mm {
                                 } else {
                                     os::detail::MemoryControl().protectTarget(
                                         previous.address, 4096,
-                                        KernelMemory::nativeProtection(
+                                        KernelMemory().nativeProtection(
                                             old->protection) &
                                             (previous.cow ? ~1ULL : ~0ULL),
                                         task);
@@ -502,7 +502,7 @@ namespace mm {
                         return result;
                     }
 
-                    changed[index] = true;
+                    changed.set(index, true);
 
                     if (!protection) {
                         page.mapped = false;
@@ -520,8 +520,8 @@ namespace mm {
              * 检查范围、权限和文件租用信息，选定地址后登记区域，按标志决定是否立即补页。
              */
             int64_t reserve(const os::IpcMessage& request, BackingKind kind) {
-                const uint64_t* args      = request.data;
-                const uint64_t size       = args[0];
+                const uint64_t* args = request.data;
+                const uint64_t size = args[0];
                 const uint32_t protection = static_cast<uint32_t>(args[1]);
                 const uint64_t hint =
                     kind == BackingKind::Anonymous ? args[3] : args[4];
@@ -539,19 +539,19 @@ namespace mm {
                 }
 
                 Region region{};
-                region.task              = request.senderPid;
-                region.size              = size;
-                region.backing           = backing->id;
-                region.protection        = protection;
+                region.task = request.senderPid;
+                region.size = size;
+                region.backing = backing->id;
+                region.protection = protection;
                 region.maximumProtection = 7;
-                region.kind              = kind;
-                region.lazy              = !(args[2] & os::mmFlagEager);
-                region.shared            = args[2] & os::mmFlagShared;
+                region.kind = kind;
+                region.lazy = !(args[2] & services::mmFlagEager);
+                region.shared = args[2] & services::mmFlagShared;
 
                 // 共享来源通过传入句柄建立长期引用，区域权限上限也由原句柄权限决定。
                 if (kind == BackingKind::Shared) {
                     const int result =
-                        shared_.attach(*backing, region, request);
+                        SharedMemoryManager(*backing, region).attach(request);
 
                     if (result) {
                         state_.collectBackings();
@@ -562,8 +562,9 @@ namespace mm {
 
                 // 文件来源先兑现文件服务发出的映射授权，取得描述符和租用编号，不能相信调用者自报文件身份。
                 if (kind == BackingKind::File) {
-                    if ((args[2] & os::mmFlagShared) || (args[3] & 4095) ||
-                        args[3] > UINT64_MAX - size || request.length < 6) {
+                    if ((args[2] & services::mmFlagShared) ||
+                        (args[3] & 4095) || args[3] > UINT64_MAX - size ||
+                        request.length < 6) {
                         state_.collectBackings();
 
                         return -1;
@@ -573,11 +574,11 @@ namespace mm {
                     const uint64_t fs =
                         os::detail::RegistryClient(
                             os::detail::RegistryClient().endpoint())
-                            .lookup(os::fsServiceName, 1);
+                            .lookup(services::fsServiceName, 1);
                     os::IpcMessage claim{}, reply{};
-                    claim.type =
-                        static_cast<uint64_t>(os::FsRequest::ClaimMapping);
-                    claim.length  = 2;
+                    claim.type = static_cast<uint64_t>(
+                        services::FsRequest::ClaimMapping);
+                    claim.length = 2;
                     claim.data[0] = args[5];
                     claim.data[1] = request.senderPid;
                     const int result =
@@ -594,10 +595,10 @@ namespace mm {
                                       : static_cast<int64_t>(reply.data[0]);
                     }
 
-                    backing->fs         = fs;
+                    backing->fs = fs;
                     backing->descriptor = reply.data[1];
-                    backing->lease      = reply.length >= 4 ? reply.data[3] : 0;
-                    region.offset       = args[3];
+                    backing->lease = reply.length >= 4 ? reply.data[3] : 0;
+                    region.offset = args[3];
                 }
 
                 uint64_t candidate = hint ? hint : 0x50000000;
@@ -613,8 +614,8 @@ namespace mm {
 
                     int availabilityError = 0;
 
-                    if (KernelMemory::available(region.task, region.address,
-                                                size, &availabilityError)) {
+                    if (KernelMemory().available(region.task, region.address,
+                                                 size, &availabilityError)) {
                         break;
                     }
 
@@ -624,7 +625,7 @@ namespace mm {
                         return availabilityError;
                     }
 
-                    candidate      = region.address + size;
+                    candidate = region.address + size;
                     region.address = 0;
                 }
 
@@ -638,8 +639,8 @@ namespace mm {
                 uint64_t lockedBytes = 0, limit = 0;
                 bool future = false;
 
-                if (KernelMemory::lockState(region.task, lockedBytes, future,
-                                            limit)) {
+                if (KernelMemory().lockState(region.task, lockedBytes, future,
+                                             limit)) {
                     unmap(region.task, region.address, region.size);
 
                     return -11;
@@ -647,8 +648,8 @@ namespace mm {
 
                 // 任务要求未来映射自动锁定时，先检查并落实锁页约定，失败应撤销刚建立的区域。
                 if (future) {
-                    if (KernelMemory::residency(region.task, region.address,
-                                                region.size, true)) {
+                    if (KernelMemory().residency(region.task, region.address,
+                                                 region.size, true)) {
                         unmap(region.task, region.address, region.size);
 
                         return -5;
@@ -710,21 +711,24 @@ namespace mm {
                     return;
                 }
 
-                const os::MmOperation operation =
-                    static_cast<os::MmOperation>(request.type);
+                const services::MmOperation operation =
+                    static_cast<services::MmOperation>(request.type);
 
+                // exec 后内核已复制新程序的页表；旧代记录清理完即可为 fork 建立子记录。
+                // 子任务的父子关系和未运行状态仍由 Pager::clone 核对。
                 if (synchronized &&
-                    operation != os::MmOperation::MapAnonymous &&
-                    operation != os::MmOperation::MapShared &&
-                    operation != os::MmOperation::MapFile) {
+                    operation != services::MmOperation::MapAnonymous &&
+                    operation != services::MmOperation::MapShared &&
+                    operation != services::MmOperation::MapFile &&
+                    operation != services::MmOperation::Fork) {
                     reply.data[0] =
                         static_cast<int64_t>(os::ErrorCode::PeerDied);
 
                     return;
                 }
 
-                if (operation >= os::MmOperation::Lock &&
-                    operation <= os::MmOperation::Advise) {
+                if (operation >= services::MmOperation::Lock &&
+                    operation <= services::MmOperation::Advise) {
                     reply.data[0] = 0;
 
                     if (request.length < 3) {
@@ -732,7 +736,7 @@ namespace mm {
                     } else {
                         reply.data[1] = residency(
                             request, unsigned(operation) -
-                                         unsigned(os::MmOperation::Lock));
+                                         unsigned(services::MmOperation::Lock));
                     }
 
                     return;
@@ -741,13 +745,13 @@ namespace mm {
                 // 把请求先按操作分类，再由每个分支检查自己的长度、句柄数量和访问范围，不让格式错误进入内存状态修改。
                 switch (operation) {
                     // 偏移查询只针对允许导出的共享对象，返回引用前仍要核对区域和后备来源，不能提供任意物理地址。
-                    case os::MmOperation::MemoryOffset: {
+                    case services::MmOperation::MemoryOffset: {
                         if (request.length != 2) {
                             break;
                         }
 
                         const uint64_t address = request.data[0],
-                                       size    = request.data[1];
+                                       size = request.data[1];
 
                         if (!size || address < 0x10000 ||
                             address >= 0x800000000000ULL ||
@@ -803,19 +807,20 @@ namespace mm {
                             break;
                         }
 
-                        reply.data[0]          = 0;
-                        reply.data[1]          = offset;
-                        reply.data[2]          = end - address;
-                        reply.data[3]          = rights;
-                        reply.handleCount      = 1;
-                        reply.handles[0]       = duplicate.release();
-                        reply.handleRights[0]  = rights;
-                        reply.handleOptions[0] = os::ipcHandleRestrictRights;
+                        reply.data[0] = 0;
+                        reply.data[1] = offset;
+                        reply.data[2] = end - address;
+                        reply.data[3] = rights;
+                        reply.handleCount = 1;
+                        reply.handles[0] = duplicate.release();
+                        reply.handleRights[0] = rights;
+                        reply.handleOptions[0] =
+                            services::ipcHandleRestrictRights;
                         break;
                     }
 
                     // 匿名映射没有文件或共享对象来源，登记区域后按延迟标志决定何时实际分配页面。
-                    case os::MmOperation::MapAnonymous:
+                    case services::MmOperation::MapAnonymous:
                         if (request.length >= 4) {
                             reply.data[0] =
                                 reserve(request, BackingKind::Anonymous);
@@ -833,7 +838,7 @@ namespace mm {
                         break;
 
                     // 共享映射需要从消息句柄取得授权，返回的虚拟地址属于调用者，后备引用则由内存服务保存。
-                    case os::MmOperation::MapShared:
+                    case services::MmOperation::MapShared:
                         if (request.length >= 5) {
                             reply.data[0] =
                                 reserve(request, BackingKind::Shared);
@@ -851,7 +856,7 @@ namespace mm {
                         break;
 
                     // 文件映射使用文件服务签发的授权，避免把普通整数描述符误当跨进程可用权限。
-                    case os::MmOperation::MapFile:
+                    case services::MmOperation::MapFile:
                         if (request.length >= 6) {
                             reply.data[0] = reserve(request, BackingKind::File);
                         }
@@ -869,7 +874,7 @@ namespace mm {
 
                     // 缺页请求交给 pager
                     // 核对区域权限并准备实际页面，不能仅因收到请求就增加访问权限。
-                    case os::MmOperation::Fault:
+                    case services::MmOperation::Fault:
                         if (request.length >= 2) {
                             reply.data[0] =
                                 pager_.fault(request.senderPid, request.data[0],
@@ -880,14 +885,14 @@ namespace mm {
 
                     // fork
                     // 只复制符合亲子关系的未运行子任务记录，页面共享及写时复制规则由专用路径处理。
-                    case os::MmOperation::Fork:
+                    case services::MmOperation::Fork:
                         if (request.length == 1) {
                             reply.data[0] = pager_.clone(request.senderPid,
                                                          request.data[0]);
                         }
 
                         break;
-                    case os::MmOperation::Unmap:
+                    case services::MmOperation::Unmap:
                         if (request.length >= 2) {
                             reply.data[0] =
                                 unmap(request.senderPid, request.data[0],
@@ -895,7 +900,7 @@ namespace mm {
                         }
 
                         break;
-                    case os::MmOperation::Protect:
+                    case services::MmOperation::Protect:
                         if (request.length >= 3 && request.data[2] <= 7) {
                             reply.data[0] =
                                 protect(request.senderPid, request.data[0],
@@ -905,9 +910,9 @@ namespace mm {
                         break;
 
                     // 按对象操作涉及多段映射时，先检查与调用者归属相符的区域，再执行删除或改权限。
-                    case os::MmOperation::UnmapOwned:
-                    case os::MmOperation::ProtectOwned:
-                    case os::MmOperation::SyncOwned: {
+                    case services::MmOperation::UnmapOwned:
+                    case services::MmOperation::ProtectOwned:
+                    case services::MmOperation::SyncOwned: {
                         if (request.length != 5 ||
                             !RegionTable::validRange(request.data[0],
                                                      request.data[1]) ||
@@ -915,16 +920,16 @@ namespace mm {
                             break;
                         }
 
-                        if (operation == os::MmOperation::ProtectOwned &&
+                        if (operation == services::MmOperation::ProtectOwned &&
                             request.data[3] > 7) {
                             break;
                         }
 
-                        const uint64_t address  = request.data[0],
-                                       size     = request.data[1],
+                        const uint64_t address = request.data[0],
+                                       size = request.data[1],
                                        identity = request.data[2];
 
-                        if (operation == os::MmOperation::UnmapOwned) {
+                        if (operation == services::MmOperation::UnmapOwned) {
                             reply.data[0] = 0;
 
                             for (size_t index = 0;
@@ -978,7 +983,7 @@ namespace mm {
                             }
 
                             reply.data[0] =
-                                operation == os::MmOperation::ProtectOwned
+                                operation == services::MmOperation::ProtectOwned
                                     ? protect(request.senderPid, address, size,
                                               request.data[3])
                                     : 0;
@@ -988,8 +993,8 @@ namespace mm {
                     }
 
                     // 用管理状态计算任务的区域与驻留用量，同时向内核查询真实物理内存数据，区分虚拟长度与物理占用。
-                    case os::MmOperation::Usage: {
-                        os::wire::MemoryUsage usage{};
+                    case services::MmOperation::Usage: {
+                        services::wire::MemoryUsage usage{};
                         const int result = os::detail::MemoryQuery().usage(
                             usage, request.senderPid);
                         reply.data[0] = result;
@@ -1002,10 +1007,10 @@ namespace mm {
                         break;
                     }
 
-                    case os::MmOperation::Reclaim:
+                    case services::MmOperation::Reclaim:
                         reply.data[0] = reclaim_.reclaim(4096);
                         break;
-                    case os::MmOperation::Sync:
+                    case services::MmOperation::Sync:
                         if (request.length == 2) {
                             reply.data[0] =
                                 state_.regions.covered(request.senderPid,
@@ -1018,8 +1023,8 @@ namespace mm {
                         break;
 
                     // 共享对象名称操作和地址映射分别管理，打开名称本身不会立刻建立用户页表映射。
-                    case os::MmOperation::SharedOpen:
-                    case os::MmOperation::SharedUnlink: {
+                    case services::MmOperation::SharedOpen:
+                    case services::MmOperation::SharedUnlink: {
                         if (request.length != 9) {
                             break;
                         }
@@ -1036,7 +1041,7 @@ namespace mm {
                             break;
                         }
 
-                        if (operation == os::MmOperation::SharedUnlink) {
+                        if (operation == services::MmOperation::SharedUnlink) {
                             reply.data[0] =
                                 os::detail::MemoryControl().unlinkSharedMemory(
                                     name);
@@ -1050,11 +1055,11 @@ namespace mm {
 
                             if (handle > 0) {
                                 reply.handleCount = 1;
-                                reply.handles[0]  = handle;
+                                reply.handles[0] = handle;
                                 reply.handleRights[0] =
                                     (request.data[0] & 3) == 0 ? 1 : 7;
                                 reply.handleOptions[0] =
-                                    os::ipcHandleRestrictRights;
+                                    services::ipcHandleRestrictRights;
                             }
                         }
 

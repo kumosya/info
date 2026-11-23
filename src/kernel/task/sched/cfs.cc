@@ -46,7 +46,7 @@ namespace task {
         }
 
         uint32_t targetCpuId           = thread->getCpuId();
-        ::cpu::CpuLocalData* targetCpu = cpu::getCpuLocalData(targetCpuId);
+        ::cpu::LocalData* targetCpu = cpu::getLocalData(targetCpuId);
 
         if (targetCpu == nullptr || targetCpu->getRunQueue() == nullptr ||
             (thread->getCpuAffinity() & (1ULL << targetCpuId)) == 0) {
@@ -126,7 +126,7 @@ namespace task {
             return;
         }
 
-        ::cpu::CpuLocalData* cpu = cpu::getCpuLocalData(thread->getCpuId());
+        ::cpu::LocalData* cpu = cpu::getLocalData(thread->getCpuId());
 
         if (cpu == nullptr || cpu->getRunQueue() == nullptr) {
             return;
@@ -179,7 +179,7 @@ namespace task {
                    bool privileged, uint64_t limit, int& result) {
         while (true) {
             const uint64_t id              = thread.getCpuId();
-            ::cpu::CpuLocalData* targetCpu = cpu::getCpuLocalData(id);
+            ::cpu::LocalData* targetCpu = cpu::getLocalData(id);
 
             if (!targetCpu || !targetCpu->getRunQueue()) {
                 return 3;

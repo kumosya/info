@@ -14,7 +14,7 @@ namespace task {
     /*
      * 在任务锁内复制真实、有效、保存的用户和组身份以及附加组，给调用方一份完整身份快照。
      */
-    void Task::credentials(os::wire::CredentialInfo& info) {
+    void Task::credentials(services::wire::CredentialInfo& info) {
         InterruptSpinLockGuard guard(lock_);
         info = {uid_,          effectiveUid_, savedUid_,           gid_,
                 effectiveGid_, savedGid_,     supplementaryCount_, {}};
@@ -44,7 +44,7 @@ namespace task {
                 return 1;
             }
 
-            if (first > os::maximumSupplementaryGroups || (first && !groups)) {
+            if (first > services::maximumSupplementaryGroups || (first && !groups)) {
                 return 22;
             }
 
@@ -215,7 +215,7 @@ namespace task {
 
         if (state_ == TaskState::Terminated || managedService_ ||
             uid >= 65535 || gid >= 65535 ||
-            groupCount > os::maximumSupplementaryGroups ||
+            groupCount > services::maximumSupplementaryGroups ||
             (groupCount && !groups) ||
             (preserveCredentials &&
              (effectiveUid_ != uid || effectiveGid_ != gid))) {

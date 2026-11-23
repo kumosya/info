@@ -7,7 +7,7 @@
  */
 
 #include <os/syscall.h>
-#include "service/common/entry.h"
+#include "service/common/identity.h"
 
 // 启动流程把两个导出标签之间的机器码复制到用户页；代码必须与装载位置无关。RDI 最初保存任务内核端点句柄。
 .section .rodata.user_probe,"a"

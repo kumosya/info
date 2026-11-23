@@ -305,7 +305,7 @@ namespace task {
             return;
         }
 
-        os::wire::ExitInfo info{};
+        services::wire::ExitInfo info{};
 
         // 先取得已经确定的退出详情，再写入父任务事件；是否真的生成转储决定事件代码。
         child.getExitInfo(info);
@@ -318,9 +318,9 @@ namespace task {
             childSignalInfo_.code =
                 !info.signal ? 1
                 : (info.coreState ==
-                       static_cast<uint32_t>(os::wire::CoreState::Complete) ||
+                       static_cast<uint32_t>(services::wire::CoreState::Complete) ||
                    info.coreState ==
-                       static_cast<uint32_t>(os::wire::CoreState::Truncated))
+                       static_cast<uint32_t>(services::wire::CoreState::Truncated))
                     ? 3
                     : 2;
             childSignalInfo_.status = info.signal

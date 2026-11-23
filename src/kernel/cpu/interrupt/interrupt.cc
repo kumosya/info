@@ -137,7 +137,7 @@ namespace cpu {
      * 为当前 CPU 准备或复用 IDT 副本，然后用 LIDT 装入硬件寄存器。
      */
     void loadIdt() {
-        CpuLocalData* cpu = cpu::getCurrent();
+        LocalData* cpu = cpu::getCurrent();
 
         // 新 CPU 复制已经准备好的入口表，使用自己的表存储；引导 CPU
         // 可直接复用启动表。

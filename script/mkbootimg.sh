@@ -25,11 +25,18 @@ GRUB
 grub-mkimage -O i386-pc -p /boot/grub -c "$stage/early.cfg" -o "$stage/core.img" \
     biosdisk part_msdos ext2 normal multiboot2 configfile all_video gfxterm font
 cp /usr/lib/grub/i386-pc/boot.img "$stage/boot.img"
-truncate -s 128M "$stage/root.ext3"
+# 根据已安装内容计算根分区容量，额外保留编译和安装软件的空间。
+used_kib=$(du -sk "$stage/root" | awk '{print $1}')
+required_mib=$(((used_kib + 1023) / 1024 + 64))
+root_mib=128
+while [ "$root_mib" -lt "$required_mib" ]; do root_mib=$((root_mib + 64)); done
+disk_mib=$((root_mib + 32))
+root_sectors=$((root_mib * 2048))
+truncate -s "${root_mib}M" "$stage/root.ext3"
 mkfs.ext3 -q -F -b 4096 -L OSINFO_ROOT -d "$stage/root" "$stage/root.ext3"
 tools/osinfo-host layout --root "$stage/root" --image "$stage/root.ext3"
-truncate -s 160M "$stage/osinfo.img"
-printf 'label: dos\nunit: sectors\n\n2048,262144,83,*\n' | sfdisk "$stage/osinfo.img" >/dev/null
+truncate -s "${disk_mib}M" "$stage/osinfo.img"
+printf 'label: dos\nunit: sectors\n\n2048,%s,83,*\n' "$root_sectors" | sfdisk "$stage/osinfo.img" >/dev/null
 dd if="$stage/root.ext3" of="$stage/osinfo.img" bs=1M seek=1 conv=notrunc status=none
 tools/osinfo-host image --argument embed-grub --output "$stage" --image "$stage/osinfo.img"
 cp "$stage/osinfo.img" "$temporary"

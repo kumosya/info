@@ -116,10 +116,10 @@ flowchart LR
 
 普通磁盘程序不能通过启动参数申请特权。 即使指定了 capabilities 或 ServiceRole，也不能借此把自己变成系统服务。否则，任意程序都可以申请访问硬件。
 
-普通磁盘程序通过 Ring3 `/lib/ld-osinfo-x86-64.so` 加载 `DT_NEEDED` 依赖。内核只验证、映射主 ELF 与 `PT_INTERP` 解释器；文件搜索、符号查找、重定位和共享库初始化不进入内核。文件系统可用之前的 boot 模块保留封闭的引导链接路径。开发环境 Info IDE 的仓库在 [这里](https://github.com/kumosya/infoide)。infoide 通过由 osinfo 导出的 SDK 交叉编译和打包。
+普通磁盘程序通过 Ring3 `/lib/ld-osinfo-amd64.so` 加载 `DT_NEEDED` 依赖。内核只验证、映射主 ELF 与 `PT_INTERP` 解释器；文件搜索、符号查找、重定位和共享库初始化不进入内核。文件系统可用之前的 boot 模块保留封闭的引导链接路径。开发环境 Info IDE 的仓库在 [这里](https://github.com/kumosya/infoide)。infoide 通过由 osinfo 导出的 SDK 交叉编译和打包。
 
 guiw 服务、osgui 库与图形界面的实现位于 [GUI Window](https://github.com/kumosya/guiw) 项目的 `server/`、`src/`；inpkg 位于 [这里](https://github.com/kumosya/inpkg)。
 
 ## 相关架构的文档
 
-- [x86-64](x86-64/overview.md)
+- [amd64](amd64/overview.md)

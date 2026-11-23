@@ -20,9 +20,9 @@ namespace task {
 namespace cpu {
 
     /* 记录 CPU 支持的硬件功能，供启动和指令选择判断。 */
-    class CpuFeatures {
+    class Features {
         public:
-            constexpr CpuFeatures()
+            constexpr Features()
                 : longMode(false),
                   noExecute(false),
                   sse(false),
@@ -77,7 +77,7 @@ namespace cpu {
     };
 
     /* 保存当前 CPU 的架构相关状态，例如描述符和特权栈。 */
-    class CpuArchData {
+    class ArchData {
         public:
             TssTable& getTss() { return tss; }
             uint64_t* getGdt() { return gdt; }
@@ -88,9 +88,9 @@ namespace cpu {
     };
 
     /* 保存每个 CPU 独立的当前线程、任务和调度信息。 */
-    class CpuLocalData {
+    class LocalData {
         public:
-            constexpr CpuLocalData()
+            constexpr LocalData()
                 : self_(this),
                   cpuId(0),
                   apicId(0),
@@ -106,12 +106,12 @@ namespace cpu {
                   syscallUserStack(0),
                   archData(nullptr),
                   preemptionCount(0) {}
-            static CpuLocalData* prepare(uint32_t cpuId, uint32_t apicId);
+            static LocalData* prepare(uint32_t cpuId, uint32_t apicId);
             void disablePreemption();
             void enablePreemption();
             bool isPreemptionEnabled() const;
             void initApplicationTaskorCpu();
-            void initDescriptorTables(CpuArchData* arch);
+            void initDescriptorTables(ArchData* arch);
 
             void setCpuId(uint32_t id) { cpuId = id; }
             void setApicId(uint32_t id) { apicId = id; }
@@ -144,15 +144,15 @@ namespace cpu {
             bool isRescheduleRequested() const { return rescheduleRequested; }
             uint32_t getPreemptionCount() const { return preemptionCount; }
             static constexpr bool hasAssemblyLayout() {
-                return __builtin_offsetof(CpuLocalData, self_) == 0 &&
-                       __builtin_offsetof(CpuLocalData, kernelStack) ==
+                return __builtin_offsetof(LocalData, self_) == 0 &&
+                       __builtin_offsetof(LocalData, kernelStack) ==
                            KERNEL_CPU_STACK_OFFSET &&
-                       __builtin_offsetof(CpuLocalData, syscallUserStack) ==
+                       __builtin_offsetof(LocalData, syscallUserStack) ==
                            KERNEL_CPU_USER_STACK_OFFSET;
             }
 
         private:
-            CpuLocalData* self_;
+            LocalData* self_;
             uint32_t cpuId;
             uint32_t apicId;
             task::Thread* currentThread;
@@ -172,7 +172,7 @@ namespace cpu {
     /* 在作用域内限制调度抢占，离开作用域时自动恢复原状态。 */
     class PreemptionGuard {
         public:
-            explicit PreemptionGuard(CpuLocalData& owner) : owner_(owner) {
+            explicit PreemptionGuard(LocalData& owner) : owner_(owner) {
                 owner_.disablePreemption();
             }
             PreemptionGuard();
@@ -181,13 +181,14 @@ namespace cpu {
             PreemptionGuard& operator=(const PreemptionGuard&) = delete;
 
         private:
-            CpuLocalData& owner_;
+            LocalData& owner_;
     };
 
     void init();
+    bool hasWriteCombining();
 
-    const CpuFeatures& getCpuFeatures();
-    CpuLocalData* getCurrent();
+    const Features& getFeatures();
+    LocalData* getCurrent();
     uint32_t getCurrentId();
 
     uint64_t readMsr(uint32_t msr);

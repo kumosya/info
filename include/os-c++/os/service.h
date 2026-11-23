@@ -4,36 +4,54 @@
 
 #pragma once
 #include <os/ipc.h>
-namespace os {
-    namespace wire {
-        struct ServiceStatus;
-    }
-    namespace detail {
-        class RegistryClient;
-        class ManagerClient;
-    }  // namespace detail
+
+namespace services {
+
     enum class CoreServiceKind : uint64_t;
     enum class TaskOperation : uint64_t;
     enum class ServiceOperation : uint64_t;
+}  // namespace services
+
+namespace services::wire {
+
+    struct ServiceStatus;
+}
+
+namespace os {
+
+    namespace detail {
+
+        class RegistryClient;
+        class ManagerClient;
+    }  // namespace detail
+
     /* 封装系统信息、时间和日志等核心服务请求。 */
     class Sys {
         public:
+            enum class Architecture : uint32_t {
+                Unknown = 0,
+                Amd64 = 1
+            };
+
             class Manager;
+
             /* 封装与服务端点的消息交换及错误传播。 */
             class Transport {
                 protected:
                     friend class Sys;
-                    explicit Transport(CoreServiceKind kind);
+                    friend class SessionIdentity;
+                    explicit Transport(services::CoreServiceKind kind);
                     uint64_t openHandle();
                     int call(IpcMessage& request, IpcMessage& reply,
                              uint64_t deadline = UINT64_MAX);
                     int64_t result(IpcMessage& request, IpcMessage& reply);
 
                 private:
-                    CoreServiceKind kind_;
+                    services::CoreServiceKind kind_;
                     int callOnce(IpcMessage& request, IpcMessage& reply,
                                  uint64_t deadline);
             };
+
             /* 保存服务状态查询结果。 */
             class Status {
                 public:
@@ -65,6 +83,7 @@ namespace os {
                     int32_t exitCode_{};
                     char blockedBy_[24]{};
             };
+
             /* 保存服务恢复会话并提供检查点调用操作。 */
             class Recovery : public Transport {
                 public:
@@ -83,6 +102,7 @@ namespace os {
                     int invoke(uint64_t operation, uint64_t a, uint64_t b,
                                uint64_t c, IpcMessage& reply);
             };
+
             /* 按名称注册和查询服务端点。 */
             class Registry {
                 public:
@@ -91,10 +111,10 @@ namespace os {
                 private:
                     friend class detail::RegistryClient;
                     uint64_t lookupRaw(const char* name,
-                                       uint32_t attempts    = 100,
+                                       uint32_t attempts = 100,
                                        uint64_t* generation = nullptr);
                     bool registerRaw(const char* name, uint64_t endpoint,
-                                     uint64_t access      = 0,
+                                     uint64_t access = 0,
                                      uint64_t* generation = nullptr);
                     bool unregisterRaw(const char* name, uint64_t generation);
 
@@ -111,6 +131,7 @@ namespace os {
                     uint64_t registry_;
                     bool putName(IpcMessage& message, const char* name);
             };
+
             /* 保存服务连接及重连所需信息。 */
             class Connection {
                 public:
@@ -125,9 +146,10 @@ namespace os {
                 private:
                     Ipc::Handle endpoint_;
                     char name_[24]{};
-                    uint64_t registry_   = 0;
+                    uint64_t registry_ = 0;
                     uint64_t generation_ = 0;
             };
+
             /* 向启动管理服务查询、启动和停止受管理服务。 */
             class Manager {
                 public:
@@ -135,8 +157,9 @@ namespace os {
 
                 private:
                     friend class detail::ManagerClient;
-                    int call(ServiceOperation operation, const char* name,
-                             uint64_t index, wire::ServiceStatus& status);
+                    int call(services::ServiceOperation operation,
+                             const char* name, uint64_t index,
+                             services::wire::ServiceStatus& status);
 
                 public:
                     int list(uint32_t index, Status& status);
@@ -148,18 +171,19 @@ namespace os {
                     int disable(const char* name);
 
                 private:
-                    int queryResult(ServiceOperation operation,
+                    int queryResult(services::ServiceOperation operation,
                                     const char* name, uint64_t index,
                                     Status& status);
                     int update(uint64_t operation, const char* name);
                     char manager_[24];
             };
+
             /* 封装服务检查点的准备、保存、提交和恢复对象操作。 */
             class Checkpoint {
                 public:
                     Checkpoint();
                     ~Checkpoint();
-                    Checkpoint(const Checkpoint&)            = delete;
+                    Checkpoint(const Checkpoint&) = delete;
                     Checkpoint& operator=(const Checkpoint&) = delete;
                     int close();
                     bool getValid() const;
@@ -191,13 +215,13 @@ namespace os {
                     uint64_t epoch_ = 0, sequence_ = 0, bytes_ = 0, schema_ = 0,
                              staging_ = 0, capacity_ = 0;
                     uint64_t baseSequence_ = 0;
-                    uint32_t records_      = 0;
+                    uint32_t records_ = 0;
                     int openSnapshot(void* state, uint64_t bytes,
                                      uint64_t schema);
                     int ensureStaging(uint64_t total);
                     int publish(const void* state, uint64_t bytes, bool append);
                     uint64_t checksum(const void* data, uint64_t size);
-                    int call(TaskOperation op, uint64_t a, uint64_t b,
+                    int call(services::TaskOperation op, uint64_t a, uint64_t b,
                              uint64_t c, IpcMessage& reply);
             };
 
@@ -212,6 +236,7 @@ namespace os {
             uint64_t getTotalMemoryBytes() const;
             uint64_t getFreeMemoryBytes() const;
             uint32_t getOnlineCpus() const;
+            Architecture getArchitecture() const;
             uint64_t readClockResolution();
             uint64_t readWallClockTime();
             uint64_t readMonotonicTime();
@@ -223,6 +248,6 @@ namespace os {
             uint64_t totalMemoryBytes_{};
             uint64_t freeMemoryBytes_{};
             uint32_t onlineCpus_{};
-            uint32_t reserved_{};
+            Architecture architecture_{};
     };
 }  // namespace os

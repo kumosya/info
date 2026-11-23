@@ -12,7 +12,7 @@ else
 endif
 BUILD_DIR ?= build
 PACKAGE_DIR ?= packages
-OBJECT_DIR ?= obj
+OBJECT_DIR ?= $(BUILD_DIR)/obj
 INCLUDE_DIR := include
 SOURCE_DIR := src
 KERNEL_LINKER_SCRIPT := script/kernel.lds
@@ -75,7 +75,7 @@ GRAPHIC_OBJECTS := $(OBJECT_DIR)/lib/graphic/font.o $(OBJECT_DIR)/lib/graphic/fo
 LIBC_SO := $(PACKAGE_DIR)/libc++/libc.so
 LIBCPP_SO := $(PACKAGE_DIR)/libc++/libc++.so
 USER_SHARED_LIBRARIES := $(LIBOS_CPP_SO) $(LIBC_SO) $(LIBCPP_SO)
-INTERPRETER := $(BUILD_DIR)/lib/ld-osinfo-x86-64.so
+INTERPRETER := $(BUILD_DIR)/lib/ld-osinfo-amd64.so
 IMAGE_INPUTS := $(KERNEL) $(APPLICATION_PROGRAMS) $(SERVICE_PROGRAMS) \
 	$(USER_SHARED_LIBRARIES) $(INTERPRETER) script/lib/version.1 script/etc/hostname
 USER_SHARED_LDFLAGS := -shared -nostdlib -nostartfiles -nodefaultlibs \
@@ -137,18 +137,18 @@ applications: $(APPLICATION_PROGRAMS)
 
 libraries: $(LIBC) $(LIBCPP) $(LIBCPPABI) $(USER_SHARED_LIBRARIES) $(PACKAGE_DIR)/libc++/COPYRIGHT $(INTERPRETER)
 
-$(OBJECT_DIR)/lib/ld-x86-64/main.o: lib/ld-x86-64/main.cc
+$(OBJECT_DIR)/lib/ld-amd64/main.o: lib/ld-amd64/main.cc
 	@mkdir -p $(@D)
 	@$(CPP) $(CPPFLAGS) $(USER_CPPFLAGS) -mcmodel=large $(DEPENDENCY_FLAGS) -c $< -o $@
 
-$(OBJECT_DIR)/lib/ld-x86-64/start.o: lib/ld-x86-64/start.S
+$(OBJECT_DIR)/lib/ld-amd64/start.o: lib/ld-amd64/start.S
 	@mkdir -p $(@D)
 	@$(CC) -m64 -c $< -o $@
 
-$(INTERPRETER): $(OBJECT_DIR)/lib/ld-x86-64/main.o $(OBJECT_DIR)/lib/ld-x86-64/start.o $(USER_RUNTIME_OBJECTS) script/interpreter.lds
+$(INTERPRETER): $(OBJECT_DIR)/lib/ld-amd64/main.o $(OBJECT_DIR)/lib/ld-amd64/start.o $(USER_RUNTIME_OBJECTS) script/interpreter.lds
 	@mkdir -p $(@D)
 	@$(CPP) -no-pie -nostdlib -nostartfiles -nodefaultlibs -Wl,--build-id=none,--no-relax -Wl,-T,script/interpreter.lds \
-		-o $@ $(OBJECT_DIR)/lib/ld-x86-64/main.o $(OBJECT_DIR)/lib/ld-x86-64/start.o $(USER_RUNTIME_OBJECTS) -lgcc
+		-o $@ $(OBJECT_DIR)/lib/ld-amd64/main.o $(OBJECT_DIR)/lib/ld-amd64/start.o $(USER_RUNTIME_OBJECTS) -lgcc
 
 $(PACKAGE_DIR)/libc++/COPYRIGHT: lib/libc/portable/COPYRIGHT
 	@mkdir -p $(@D)

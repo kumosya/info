@@ -1,6 +1,6 @@
 # 任务管理服务：用户态怎样启动一个程序
 
-上一篇[任务管理](../../x86-64/task/task.md)讲的是内核里的 Task、Thread 和调度器。这一篇讲用户态的 `task` 服务：它负责把磁盘上的 ELF 读进来、解析参数、创建子进程，并监护 `pipe`、`msgq` 等子服务。
+上一篇[任务管理](../../amd64/task/task.md)讲的是内核里的 Task、Thread 和调度器。这一篇讲用户态的 `task` 服务：它负责把磁盘上的 ELF 读进来、解析参数、创建子进程，并监护 `pipe`、`msgq` 等子服务。
 
 你可能会问：内核已经有 `Task` 了，为什么还要一个用户态服务来“启动程序”？答案在于**机制与策略分离**：
 
@@ -83,7 +83,7 @@ flowchart LR
 
 `task` 服务解析 ELF 的 `PT_INTERP` 段：
 
-- 如果程序是动态链接的，先加载解释器（`/lib/ld-osinfo-x86-64.so`）。
+- 如果程序是动态链接的，先加载解释器（`/lib/ld-osinfo-amd64.so`）。
 - `DT_NEEDED` 列出的共享库不在这里加载，由 Ring3 动态链接器在用户态处理。内核只验证和映射主 ELF 与解释器。
 - 没有解释器的固定角色服务，使用引导运行库完成重定位。运行库来自哪个地址空间、主映像属于哪个任务地址空间，要分别记录，不能混为一谈。
 
@@ -120,7 +120,7 @@ v0.1.3 增加了一个独立的 core writer 线程（`src/task/core_dump.cc`）�
 - 复用 `fs` 服务写出 ELF core。
 - 不占用程序加载请求端点，转储失败或超时不会阻止进程回收。
 
-core dump 的完整流程、异常分类、信号 ABI 和权限，见[用户态异常与 core](../../x86-64/task/core.md)。
+core dump 的完整流程、异常分类、信号 ABI 和权限，见[用户态异常与 core](../../amd64/task/core.md)。
 
 ## 7. 和其他服务的关系
 
@@ -132,4 +132,4 @@ core dump 的完整流程、异常分类、信号 ABI 和权限，见[用户态�
 | `task.kernel` | 真正执行创建线程、fork、exec、等待和回收的机制 |
 | `/proc` | 全系统进程信息的来源，替代旧的 `List` 请求 |
 
-内核侧的任务机制见 [task.kernel](../../x86-64/task/service.md)，系统对象见 [system.kernel](../../x86-64/task/sys.md)，内核总览见[任务管理](../../x86-64/task/task.md)。`pipe`、`msgq` 的用户态协议见 [pipe](pipe.md) 和 [msgq](msgq.md)。
+内核侧的任务机制见 [task.kernel](../../amd64/task/service.md)，系统对象见 [system.kernel](../../amd64/task/sys.md)，内核总览见[任务管理](../../amd64/task/task.md)。`pipe`、`msgq` 的用户态协议见 [pipe](pipe.md) 和 [msgq](msgq.md)。

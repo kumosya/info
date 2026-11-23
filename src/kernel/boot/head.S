@@ -46,8 +46,10 @@ _start:
 
     /* 装入临时 GDT，配置浮点、SSE 和 PAE，再让 CR3 指向新建页表。 */
     lgdt gdtPointer
+    /* 统一引导入口的缓存状态，避免继承固件留下的禁缓存标志。 */
+    wbinvd
     movl %cr0, %eax
-    andl $~((1 << 2) | (1 << 3)), %eax
+    andl $~((1 << 30) | (1 << 29) | (1 << 2) | (1 << 3)), %eax
     orl $((1 << 1) | (1 << 5) | (1 << 18)), %eax
     movl %eax, %cr0
     movl %cr4, %eax

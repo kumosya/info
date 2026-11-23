@@ -1,38 +1,38 @@
-/*
- * 对应文件系统的格式识别和实现。
- */
+/* ext4 卷对象与磁盘字段编码。 */
 
 #pragma once
-
 #include <cstddef>
 #include <cstdint>
 
-#include "service/fs/block.h"
+#include "service/fs/vfs.h"
 
 namespace fs::ext4 {
 
-    using vfs::SectorDevice;
+    using fs::SectorDevice;
 
-    constexpr uint16_t superMagic    = 0xef53;
-    constexpr uint32_t rootInode     = 2;
-    constexpr uint16_t modeDirectory = vfs::modeDirectory;
-    constexpr uint16_t modeRegular   = vfs::modeRegular;
+    constexpr uint16_t superMagic = 0xef53;
+    constexpr uint32_t rootInode = 2;
+    constexpr uint16_t modeDirectory = fs::modeDirectory;
+    constexpr uint16_t modeRegular = fs::modeRegular;
 
-    using FileStatus     = vfs::FileStatus;
-    using DirectoryEntry = vfs::DirectoryEntry;
+    using FileStatus = fs::FileStatus;
+    using DirectoryEntry = fs::DirectoryEntry;
 
     /* 实现本头文件对应的磁盘文件系统，并管理挂载实例的打开状态。 */
-    class Filesystem final : public vfs::FileSystem {
+    class Filesystem final : public fs::FileSystem {
         public:
-            bool mount(vfs::SectorDevice& device) override;
+            bool mount(fs::SectorDevice& device) override;
             bool lookup(const char* path, FileStatus& status) override;
             bool statInode(uint32_t inode, FileStatus& status) override;
+
             bool retainOpenFile(uint32_t inode) override {
                 return retainInode(inode);
             }
+
             bool releaseOpenFile(uint32_t inode) override {
                 return releaseInode(inode);
             }
+
             int64_t read(const FileStatus& status, uint64_t offset,
                          void* buffer, size_t size) override;
             int64_t write(const FileStatus& status, uint64_t offset,
@@ -84,19 +84,19 @@ namespace fs::ext4 {
             uint64_t findExtent(const uint8_t* node, uint32_t logical,
                                 uint16_t depth, bool root);
 
-            SectorDevice* device_          = nullptr;
-            uint64_t blocksCount_          = 0;
-            uint32_t inodesCount_          = 0;
-            uint32_t firstDataBlock_       = 0;
-            uint32_t blockSize_            = 0;
-            uint32_t blocksPerGroup_       = 0;
-            uint32_t inodesPerGroup_       = 0;
-            uint32_t groupCount_           = 0;
-            uint16_t inodeSize_            = 0;
-            uint16_t descriptorSize_       = 0;
+            SectorDevice* device_ = nullptr;
+            uint64_t blocksCount_ = 0;
+            uint32_t inodesCount_ = 0;
+            uint32_t firstDataBlock_ = 0;
+            uint32_t blockSize_ = 0;
+            uint32_t blocksPerGroup_ = 0;
+            uint32_t inodesPerGroup_ = 0;
+            uint32_t groupCount_ = 0;
+            uint16_t inodeSize_ = 0;
+            uint16_t descriptorSize_ = 0;
             uint32_t incompatibleFeatures_ = 0;
-            uint32_t readOnlyFeatures_     = 0;
-            bool writeSupported_           = false;
+            uint32_t readOnlyFeatures_ = 0;
+            bool writeSupported_ = false;
             uint8_t superblock_[1024]{};
             uint8_t inodeBuffer_[4096]{};
             uint8_t inodeScratch_[2][4096]{};
@@ -105,10 +105,63 @@ namespace fs::ext4 {
 
 }  // namespace fs::ext4
 
-namespace vfs::ext4 {
-    /* 检查磁盘内容是否符合该文件系统格式，并提供实例创建入口。 */
-    class Probe {
-        public:
-            bool detect(const uint8_t* data, size_t size);
-    };
-}  // namespace vfs::ext4
+// namespace fs::ext4
+
+namespace fs::ext4::detail {
+
+    /* 封装磁盘结构的字节序和字段读写，避免依赖本机结构体布局。 */
+    namespace disk_encoding {
+
+        inline uint16_t read16(const uint8_t* data) {
+            return static_cast<uint16_t>(data[0]) |
+                   (static_cast<uint16_t>(data[1]) << 8);
+        }
+
+        uint32_t read32(const uint8_t* data);
+
+        inline uint64_t read64(const uint8_t* data) {
+            return static_cast<uint64_t>(read32(data)) |
+                   (static_cast<uint64_t>(read32(data + 4)) << 32);
+        }
+
+        inline uint64_t read48(const uint8_t* data) {
+            return static_cast<uint64_t>(read32(data)) |
+                   (static_cast<uint64_t>(read16(data + 4)) << 32);
+        }
+
+        inline void write16(uint8_t* data, uint16_t value) {
+            data[0] = static_cast<uint8_t>(value);
+            data[1] = static_cast<uint8_t>(value >> 8);
+        }
+
+        void write32(uint8_t* data, uint32_t value);
+
+        inline uint64_t readFreeBlocks(const uint8_t* superblock) {
+            return read32(superblock + 12);
+        }
+
+        inline void writeFreeBlocks(uint8_t* superblock, uint64_t count) {
+            write32(superblock + 12, static_cast<uint32_t>(count));
+        }
+
+        inline uint32_t readFreeInodes(const uint8_t* superblock) {
+            return read32(superblock + 16);
+        }
+
+        inline void writeFreeInodes(uint8_t* superblock, uint32_t count) {
+            write32(superblock + 16, count);
+        }
+
+        uint32_t extentLength(const uint8_t* entry);
+
+        void setExtent(uint8_t* entry, uint32_t logical, uint64_t physical,
+                       uint16_t length);
+
+        inline uint16_t alignedDirectoryEntry(uint32_t length) {
+            return static_cast<uint16_t>((length + 3U) & ~3U);
+        }
+
+        bool namesEqual(const char* left, const char* right, size_t length);
+    }  // namespace disk_encoding
+
+}  // namespace fs::ext4::detail

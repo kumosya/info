@@ -9,26 +9,34 @@
 #include <os/service.h>
 #include <os/syscall.h>
 
-namespace os {
-    namespace detail {
-        class TaskControl;
-    }
-    namespace wire {
-        struct TaskIdentifiers;
-        struct SignalAction;
-    }  // namespace wire
+namespace services {
 
     enum class ProgramId : uint64_t;
     enum class ServiceRole : uint32_t;
+}  // namespace services
+
+namespace services::wire {
+
+    struct TaskIdentifiers;
+    struct SignalAction;
+}  // namespace services::wire
+
+namespace os {
+
+    namespace detail {
+
+        class TaskControl;
+    }
 
     /* 封装用户态任务句柄及创建、等待、信号、身份和资源控制请求，类似于 PCB。 */
     class Task : private Sys::Transport {
         public:
             Task();
             ~Task();
-            Task(const Task&)            = delete;
+            Task(const Task&) = delete;
             Task& operator=(const Task&) = delete;
             Task& operator=(Task&& other) noexcept;
+
             /* 描述待加载程序映像的数据位置及其相关信息。 */
             class Image {
                 public:
@@ -49,7 +57,7 @@ namespace os {
             class Spawn {
                 public:
                     enum class Flag : uint32_t {
-                        NewSession     = 1,
+                        NewSession = 1,
                         ManagedService = 2
                     };
                     const void* getImage() const;
@@ -145,6 +153,7 @@ namespace os {
                     uint32_t sharedReserved_{};
                     const Image* sharedImages_{};
             };
+
             /* 提供核心转储策略和票据操作的用户态接口。 */
             class Core {
                 public:
@@ -290,8 +299,9 @@ namespace os {
             int enumerate(uint64_t minimumId);
             int refreshHandle(uint64_t taskHandle);
             [[noreturn]] void signalReturn(void* frame);
-            uint64_t spawnProgram(ProgramId program, uint64_t bootstrapHandle,
-                                  uint32_t argumentCount       = 0,
+            uint64_t spawnProgram(services::ProgramId program,
+                                  uint64_t bootstrapHandle,
+                                  uint32_t argumentCount = 0,
                                   const char* const* arguments = nullptr);
             uint64_t spawnImage(const Spawn& image);
             int64_t waitChild(int64_t taskId, int& status, int options);
@@ -313,13 +323,13 @@ namespace os {
 
             uint64_t getThreadId();
             int getState(uint64_t taskHandle, int& exitCode);
-            int getIdentifiers(wire::TaskIdentifiers& identifiers,
+            int getIdentifiers(services::wire::TaskIdentifiers& identifiers,
                                uint64_t taskId = 0);
             int getPendingSignals(uint64_t& mask);
             int setGroupTarget(uint64_t taskGroupId, uint64_t taskId = 0);
             int setSignalAction(uint32_t signal,
-                                const wire::SignalAction* action,
-                                wire::SignalAction* oldAction);
+                                const services::wire::SignalAction* action,
+                                services::wire::SignalAction* oldAction);
             int setSignalMask(int how, uint64_t mask, uint64_t& oldMask);
             int setCredentials(uint64_t taskId, uint32_t uid, uint32_t gid,
                                bool effectiveOnly = false);
@@ -435,6 +445,7 @@ namespace os {
             uint64_t address_{}, size_{};
             uint32_t flags_{};
     };
+
     /* 封装子任务等待及退出事件查询。 */
     class Task::Child {
         public:
@@ -449,6 +460,7 @@ namespace os {
             uint32_t uid_{}, code_{};
             int32_t status_{};
     };
+
     /* 向内核登记程序映像的文件路径和地址范围，供调试与转储使用。 */
     class Task::ImageMapping {
         public:
@@ -461,12 +473,13 @@ namespace os {
             uint64_t begin_{}, end_{}, offset_{};
             char path_[192]{};
     };
+
     /* 保存调度状态、内核栈、用户现场及等待关系，是 CPU 实际执行的单位。 */
     class Task::Thread {
         public:
             Thread();
             ~Thread();
-            Thread(const Thread&)            = delete;
+            Thread(const Thread&) = delete;
             Thread& operator=(const Thread&) = delete;
             Thread& operator=(Thread&& other) noexcept;
             int refresh();
@@ -492,12 +505,13 @@ namespace os {
             uint32_t state_{};
             int error_{};
     };
+
     /* 保存一个登录或终端会话的启动状态和关联任务。 */
     class Task::Session {
         public:
             Session();
             ~Session();
-            Session(const Session&)            = delete;
+            Session(const Session&) = delete;
             Session& operator=(const Session&) = delete;
             Session& operator=(Session&& other) noexcept;
             int refresh();

@@ -20,9 +20,9 @@ namespace cpu {
     constexpr uint64_t stackSize        = 16 * 1024;
     constexpr uint64_t startupStackSize = 32 * 1024;
 
-    static CpuFeatures cpuFeatures{};
-    static CpuLocalData bootstrapCpu{};
-    static CpuArchData bootstraparch{};
+    static Features cpuFeatures{};
+    static LocalData bootstrapCpu{};
+    static ArchData bootstraparch{};
     static volatile uint32_t* localApic;
 
     /*
@@ -57,7 +57,7 @@ namespace cpu {
     /*
      * 把 64 位 TSS 地址和长度写成占两个 GDT 槽的系统描述符，供 CPU 找到特权栈。
      */
-    static void installTssDescriptor(CpuArchData* arch, uint64_t base,
+    static void installTssDescriptor(ArchData* arch, uint64_t base,
                                      uint32_t limit) {
         // TSS
         // 描述符的地址和长度被硬件分散存放；先拼低槽，再把地址高位写入相邻槽。
@@ -73,7 +73,7 @@ namespace cpu {
     /*
      * 装入当前 CPU 的 GDT，通过远返回刷新代码段，再装入数据段和 TSS 选择子。
      */
-    static void loadGdt(CpuArchData* arch) {
+    static void loadGdt(ArchData* arch) {
         const DescriptorTablePointer pointer{
             7 * sizeof(uint64_t) - 1,
             reinterpret_cast<uint64_t>(arch->getGdt())};
@@ -144,7 +144,7 @@ namespace cpu {
      * 查询处理器基本和扩展功能，记录内核需要的长模式、不可执行页、浮点与 APIC
      * 等能力。
      */
-    void CpuFeatures::detect() {
+    void Features::detect() {
         uint32_t eax;
         uint32_t ebx;
         uint32_t ecx;
@@ -179,8 +179,24 @@ namespace cpu {
     /*
      * 为本 CPU 建立 GDT、TSS 和严重异常使用的独立栈，最后加载这些描述符。
      */
-    void CpuLocalData::initDescriptorTables(CpuArchData* arch) {
-        clearMemory(arch, sizeof(CpuArchData));
+    void LocalData::initDescriptorTables(ArchData* arch) {
+        // INIT 后副核的 CD/NW 位仍可能禁用缓存；在加入调度前统一开启。
+        uint64_t control;
+        asm volatile("mov %%cr0, %0" : "=r"(control));
+        if (control & ((1ULL << 30) | (1ULL << 29))) {
+            control &= ~((1ULL << 30) | (1ULL << 29));
+            asm volatile("wbinvd; mov %0, %%cr0" : : "r"(control) : "memory");
+        }
+
+        // 每个 CPU 使用相同的 PAT 第 1 项表示合并写入显存，其他项保持原值。
+        uint32_t eax, ebx, ecx, edx;
+        cpuid(1, 0, eax, ebx, ecx, edx);
+        if (edx & (1U << 16)) {
+            const uint64_t previous = readMsr(0x277);
+            writeMsr(0x277, (previous & ~(0xffULL << 8)) | (1ULL << 8));
+        }
+
+        clearMemory(arch, sizeof(ArchData));
         arch->getGdt()[0] = 0;
 
         // 前四个有效槽分别供内核代码、内核数据、用户数据、用户代码使用；权限位决定哪些执行级别可以加载它们。
@@ -216,13 +232,13 @@ namespace cpu {
      * 为一个尚未启动的 CPU 准备局部状态、架构数据和初始内核栈；后续由该 CPU
      * 自己完成寄存器初始化。
      */
-    CpuLocalData* CpuLocalData::prepare(uint32_t cpuId, uint32_t apicId) {
+    LocalData* LocalData::prepare(uint32_t cpuId, uint32_t apicId) {
         // 引导 CPU 代新 CPU
         // 分配局部状态、描述符存储和启动栈；此时还不能切换当前 CPU 的寄存器。
-        CpuLocalData* cpu =
-            static_cast<CpuLocalData*>(mm::allocateHeap(sizeof(CpuLocalData)));
-        CpuArchData* arch =
-            static_cast<CpuArchData*>(mm::allocateHeap(sizeof(CpuArchData)));
+        LocalData* cpu =
+            static_cast<LocalData*>(mm::allocateHeap(sizeof(LocalData)));
+        ArchData* arch =
+            static_cast<ArchData*>(mm::allocateHeap(sizeof(ArchData)));
         void* stackTop = allocateStack(startupStackSize);
 
         if (cpu == nullptr || arch == nullptr || stackTop == nullptr) {
@@ -231,8 +247,8 @@ namespace cpu {
 
         // 在已分配存储上构造对象，再记录两个不同的编号：内核连续编号和硬件 APIC
         // 编号。
-        new (cpu) CpuLocalData{};
-        clearMemory(arch, sizeof(CpuArchData));
+        new (cpu) LocalData{};
+        clearMemory(arch, sizeof(ArchData));
         cpu->setCpuId(cpuId);
         cpu->setApicId(apicId);
         cpu->setKernelStack(stackTop);
@@ -244,7 +260,7 @@ namespace cpu {
     /*
      * 在新启动 CPU 上设置 GS 局部数据地址，加载自己的描述符表并启用本地 APIC。
      */
-    void CpuLocalData::initApplicationTaskorCpu() {
+    void LocalData::initApplicationTaskorCpu() {
         if (archData == nullptr) {
             cpu::halt();
         }
@@ -253,15 +269,15 @@ namespace cpu {
         // getCurrent 访问。
         cpu::writeMsr(ia32GsBase, reinterpret_cast<uint64_t>(this));
         cpu::writeMsr(ia32KernelGsBase, 0);
-        initDescriptorTables(static_cast<CpuArchData*>(archData));
+        initDescriptorTables(static_cast<ArchData*>(archData));
         cpu::initLocalApic();
     }
 
     /*
      * 更新当前线程的内核栈顶，同时更新 TSS 的用户态进入内核时使用的栈地址。
      */
-    void CpuLocalData::setKernelStack(void* stackTop) {
-        // CpuLocalData* cpu = cpu::getCurrent();
+    void LocalData::setKernelStack(void* stackTop) {
+        // LocalData* cpu = cpu::getCurrent();
         kernelStack = stackTop;
 
         if (tss != nullptr) {
@@ -319,13 +335,20 @@ namespace cpu {
     /*
      * 返回启动时检测得到的 CPU 功能集合，不重新执行硬件检测。
      */
-    const CpuFeatures& getCpuFeatures() { return cpuFeatures; }
+    const Features& getFeatures() { return cpuFeatures; }
+
+    /* 查询本 CPU 已配置的写合并类型，缺少 PAT 时沿用禁缓存显存映射。 */
+    bool hasWriteCombining() {
+        uint32_t eax, ebx, ecx, edx;
+        cpuid(1, 0, eax, ebx, ecx, edx);
+        return (edx & (1U << 16)) && ((readMsr(0x277) >> 8) & 0xff) == 1;
+    }
 
     /*
      * 从 GS 指向的 CPU 局部结构取出自身指针，使每个 CPU 得到自己的当前状态。
      */
-    CpuLocalData* getCurrent() {
-        CpuLocalData* cpu;
+    LocalData* getCurrent() {
+        LocalData* cpu;
         asm volatile("movq %%gs:0, %0" : "=r"(cpu));
 
         return cpu;
@@ -339,12 +362,12 @@ namespace cpu {
     /*
      * 增加本 CPU 的禁止抢占层数，支持多个内层操作嵌套保护。
      */
-    void CpuLocalData::disablePreemption() { ++preemptionCount; }
+    void LocalData::disablePreemption() { ++preemptionCount; }
 
     /*
      * 归还一层禁止抢占计数；仍有外层保护时保持不可抢占。
      */
-    void CpuLocalData::enablePreemption() {
+    void LocalData::enablePreemption() {
         if (preemptionCount) {
             --preemptionCount;
         }
@@ -353,7 +376,7 @@ namespace cpu {
     /*
      * 只有禁止抢占计数归零才允许调度器抢占当前执行流。
      */
-    bool CpuLocalData::isPreemptionEnabled() const {
+    bool LocalData::isPreemptionEnabled() const {
         return preemptionCount == 0;
     }
 
@@ -528,6 +551,6 @@ namespace cpu {
      */
     void enableInterrupts() { asm volatile("sti" : : : "memory"); }
 
-    static_assert(CpuLocalData::hasAssemblyLayout());
+    static_assert(LocalData::hasAssemblyLayout());
 
 }  // namespace cpu

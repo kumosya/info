@@ -17,7 +17,7 @@ namespace host {
     using Table  = std::vector<Row>;
     struct Context {
             fs::path repository = fs::current_path(), build = "build",
-                     packages = "packages", objects = "obj", root, output,
+                     packages = "packages", objects, root, output,
                      image;
             std::string argument;
             unsigned clicks     = 100;

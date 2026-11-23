@@ -7,7 +7,9 @@
 #include <os/input.h>
 #include <os/storage.h>
 #include <os/task.h>
-namespace os::wire {
+
+namespace services::wire {
+
     /* 保存任务的通信字段；字段顺序和宽度属于接口约定。 */
     struct TaskInfo {
             uint64_t id;
@@ -29,37 +31,43 @@ namespace os::wire {
             int32_t nice;
             uint32_t threadCount;
     };
+
     /* 保存线程的通信字段；字段顺序和宽度属于接口约定。 */
     struct ThreadInfo {
             uint64_t id, taskId, cpuNanoseconds;
             int32_t nice;
             uint32_t state;
     };
+
     /* 保存用户及组凭据的通信字段；字段顺序和宽度属于接口约定。 */
     struct CredentialInfo {
             uint32_t uid, effectiveUid, savedUid, gid, effectiveGid, savedGid;
             uint32_t groupCount;
             uint32_t groups[32];
     };
+
     /* 保存页对象的通信字段；字段顺序和宽度属于接口约定。 */
     struct PageObjectInfo {
             uint64_t owner, size;
             uint32_t references;
             uint16_t node, order;
     };
+
     /* 保存内存用量的通信字段；字段顺序和宽度属于接口约定。 */
     struct MemoryUsage {
             uint64_t total, free, owned, generation;
             uint32_t nodes, reserved;
     };
+
     /* 保存系统的通信字段；字段顺序和宽度属于接口约定。 */
     struct SystemInfo {
             uint64_t uptimeNanoseconds;
             uint64_t totalMemoryBytes;
             uint64_t freeMemoryBytes;
             uint32_t onlineCpus;
-            uint32_t reserved;
+            uint32_t architecture;
     };
+
     /* 保存PCI 功能的通信字段；字段顺序和宽度属于接口约定。 */
     struct PciFunctionInfo {
             uint16_t segment;
@@ -74,6 +82,7 @@ namespace os::wire {
             uint8_t headerType;
             uint8_t reserved[3];
     };
+
     /* 保存DMA 缓冲区的通信字段；字段顺序和宽度属于接口约定。 */
     struct DmaBufferInfo {
             uint64_t handle;
@@ -82,6 +91,7 @@ namespace os::wire {
             uint64_t size;
     };
     enum class PixelFormat : uint8_t { Unknown, Rgb, Bgr, Argb, Rgba, Bgra };
+
     /* 保存显示设备的通信字段；字段顺序和宽度属于接口约定。 */
     struct DisplayInfo {
             uint64_t address;
@@ -95,12 +105,13 @@ namespace os::wire {
             uint8_t greenPosition;
             uint8_t bluePosition;
     };
+
     /* 保存块设备的通信字段；字段顺序和宽度属于接口约定。 */
     struct BlockDeviceInfo {
             uint64_t blockCount;
             uint32_t blockSize;
             uint32_t maxTransferBlocks;
-            Storage::Device::Type type;
+            os::Storage::Device::Type type;
             bool readOnly;
     };
 
@@ -117,14 +128,15 @@ namespace os::wire {
             char partitionUuid[40];
             char hardwarePath[64];
     };
-    static_assert(sizeof(os::wire::TaskInfo) == 552);
-    static_assert(sizeof(os::wire::ThreadInfo) == 32);
-    static_assert(sizeof(os::wire::PciFunctionInfo) == 16);
-    static_assert(sizeof(os::wire::DmaBufferInfo) == 32);
-    static_assert(sizeof(os::wire::DisplayInfo) == 40);
-    static_assert(sizeof(os::wire::MemoryUsage) == 40);
-    static_assert(sizeof(os::wire::PageObjectInfo) == 24);
-    static_assert(sizeof(os::wire::StorageDeviceIdentity) == 168);
+
+    static_assert(sizeof(services::wire::TaskInfo) == 552);
+    static_assert(sizeof(services::wire::ThreadInfo) == 32);
+    static_assert(sizeof(services::wire::PciFunctionInfo) == 16);
+    static_assert(sizeof(services::wire::DmaBufferInfo) == 32);
+    static_assert(sizeof(services::wire::DisplayInfo) == 40);
+    static_assert(sizeof(services::wire::MemoryUsage) == 40);
+    static_assert(sizeof(services::wire::PageObjectInfo) == 24);
+    static_assert(sizeof(services::wire::StorageDeviceIdentity) == 168);
 
     /* 保存程序启动映像的通信字段；字段顺序和宽度属于接口约定。 */
     struct SpawnImageInfo {
@@ -145,12 +157,14 @@ namespace os::wire {
             uint32_t terminalKind, terminalIndex;
             const struct SharedImageInfo* sharedImages;
     };
+
     /* 保存共享程序映像的通信字段；字段顺序和宽度属于接口约定。 */
     struct SharedImageInfo {
             const void* image;
             uint64_t imageSize;
             const char* name;
     };
+
     /* 保存程序替换映像的通信字段；字段顺序和宽度属于接口约定。 */
     struct ExecImageInfo {
             const void* image;
@@ -166,6 +180,7 @@ namespace os::wire {
             uint32_t sharedReserved;
             const SharedImageInfo* sharedImages;
     };
+
     /* 保存退出原因的通信字段；字段顺序和宽度属于接口约定。 */
     struct ExitInfo {
             uint32_t signal, coreState;
@@ -173,6 +188,7 @@ namespace os::wire {
             uint32_t addressValid;
             int32_t signalCode;
     };
+
     /* 保存挂载点的通信字段；字段顺序和宽度属于接口约定。 */
     struct MountInfo {
             char device[64];
@@ -180,9 +196,7 @@ namespace os::wire {
             char type[16];
             bool readOnly;
     };
-}  // namespace os::wire
 
-namespace os::wire {
     enum class CoreState : uint32_t {
         None,
         Requested,
@@ -202,6 +216,7 @@ namespace os::wire {
             uint64_t taskGroupId;
             uint64_t sessionId;
     };
+
     /* 保存信号处理入口、标志和处理期间需要屏蔽的信号集合。 */
     struct SignalAction {
             uint64_t handler;
@@ -209,22 +224,26 @@ namespace os::wire {
             uint64_t flags;
             uint64_t restorer;
     };
+
     /* 保存子任务状态事件的通信字段；字段顺序和宽度属于接口约定。 */
     struct ChildEvent {
             uint64_t id;
             uint32_t uid, code;
             int32_t status;
     };
+
     /* 保存核心转储策略的通信字段；字段顺序和宽度属于接口约定。 */
     struct CorePolicy {
             uint64_t enabled, maximumBytes, maximumConcurrent,
                 timeoutMilliseconds;
     };
+
     /* 保存核心转储读取票据的通信字段；字段顺序和宽度属于接口约定。 */
     struct CoreTicket {
             uint64_t id, pid, started, bytes, deadline;
             uint32_t signal, truncated;
     };
+
     /* 保存程序映像映射的通信字段；字段顺序和宽度属于接口约定。 */
     struct ImageMapping {
             uint64_t begin, end, offset;
@@ -235,59 +254,78 @@ namespace os::wire {
     static_assert(sizeof(SignalAction) == 32);
     static_assert(sizeof(CorePolicy) == 32);
     static_assert(sizeof(CoreTicket) == 48);
-}  // namespace os::wire
 
-namespace os::wire {
     /* 保存目录遍历返回的名称、类型和对象标识。 */
     struct DirectoryEntry {
             uint64_t type;
             char name[256];
             uint64_t inode, nextOffset;
     };
-    static_assert(sizeof(DirectoryEntry) == 280);
-}  // namespace os::wire
 
-namespace os::wire {
+    static_assert(sizeof(DirectoryEntry) == 280);
+
     /* 保存键盘事件的通信字段；字段顺序和宽度属于接口约定。 */
     struct KeyEvent {
-            Input::Key keyCode;
+            os::Input::Key keyCode;
             uint32_t modifiers;
             uint8_t pressed;
             uint8_t reserved[3];
     };
+
     /* 保存鼠标事件的通信字段；字段顺序和宽度属于接口约定。 */
     struct MouseEvent {
             int32_t deltaX, deltaY, wheel;
             uint32_t buttons;
     };
+
     /* 保存输入事件的通信字段；字段顺序和宽度属于接口约定。 */
     struct InputEvent {
-            Input::Event::Type type;
+            os::Input::Event::Type type;
             uint32_t reserved;
             uint64_t timestamp;
+
             union {
                     KeyEvent key;
                     MouseEvent mouse;
             };
     };
+
     /* 保存输入状态的通信字段；字段顺序和宽度属于接口约定。 */
     struct InputState {
             uint32_t modifiers, buttons;
             uint8_t keys[128];
     };
+
     static_assert(sizeof(InputEvent) == 32);
     static_assert(sizeof(InputState) == 136);
-}  // namespace os::wire
 
-namespace os::wire {
     /* 保存服务状态的通信字段；字段顺序和宽度属于接口约定。 */
     struct ServiceStatus {
             char name[24]{}, owner[24]{}, executable[128]{};
             uint64_t pid{};
-            Sys::Status::State state{};
+            os::Sys::Status::State state{};
             uint32_t enabled{}, desired{}, builtin{}, restarts{};
             int32_t exitCode{};
             char blockedBy[24]{};
     };
-    static_assert(sizeof(wire::ServiceStatus) == 232);
-}  // namespace os::wire
+
+    static_assert(sizeof(services::wire::ServiceStatus) == 232);
+
+    // Fixed users-service message layout. Public user objects are encoded
+    // explicitly.
+
+    /* 保存用户编号、组编号、名称、主目录及登录程序等账户资料。 */
+    struct UserProfile {
+            uint32_t uid, gid;
+            char name[32], home[96], shell[64];
+    };
+
+    /* 保存认证请求携带的账户名与凭据字段，使用时应遵守消息边界。 */
+    struct UserCredentials {
+            uint32_t id;
+            char name[32], password[128], replacement[128];
+    };
+
+    static_assert(sizeof(UserProfile) == 200);
+    static_assert(sizeof(UserCredentials) == 292);
+}  // namespace services::wire

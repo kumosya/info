@@ -12,7 +12,7 @@ class BootInfo;
 
 namespace cpu {
 
-    class CpuLocalData;
+    class LocalData;
 
     enum class CpuState : uint8_t {
         Offline,
@@ -49,8 +49,8 @@ namespace cpu {
             const ::Atomic<uint32_t>& getStartupStage() const {
                 return startupStage;
             }
-            CpuLocalData* getLocalData() const { return localData; }
-            CpuLocalData* setLocalData(CpuLocalData* value) {
+            LocalData* getLocalData() const { return localData; }
+            LocalData* setLocalData(LocalData* value) {
                 localData = value;
                 return localData;
             }
@@ -62,7 +62,7 @@ namespace cpu {
             bool enabled;
             ::Atomic<CpuState> state;
             ::Atomic<uint32_t> startupStage;
-            CpuLocalData* localData;
+            LocalData* localData;
     };
 
     constexpr uint8_t rescheduleIpiVector   = 0xf0;
@@ -73,10 +73,10 @@ namespace cpu {
     uint32_t getDiscoveredCpuCount();
     uint32_t getOnlineCpuCount();
     CpuDescriptor* getCpuDescriptor(uint32_t cpuId);
-    CpuLocalData* getCpuLocalData(uint32_t cpuId);
+    LocalData* getLocalData(uint32_t cpuId);
     void requestRemoteReschedule(uint32_t cpuId);
     void requestTlbShootdown(uint64_t virtualAddress, uint64_t size = 4096);
 
-    extern "C" [[noreturn]] void applicationTaskorEntry(CpuLocalData* cpu);
+    extern "C" [[noreturn]] void applicationTaskorEntry(LocalData* cpu);
 
 }  // namespace cpu

@@ -12,7 +12,7 @@
 #include "kernel/sync.h"
 #include "kernel/task.h"
 #include "service/common/identity.h"
-#include "service/common/kernel-requests.h"
+#include "service/common/protocol.h"
 
 namespace mm {
 
@@ -603,7 +603,7 @@ namespace mm {
             task.addressSpace().residency();
         const bool pager =
             task::getCurrent() && task::getCurrent() != &task &&
-            task::getCurrent()->serviceRole() == os::ServiceRole::Memory;
+            task::getCurrent()->serviceRole() == services::ServiceRole::Memory;
 
         if (!pager && task.addressSpace().lockFuture() &&
             (!residency.set(address, size, true) ||
@@ -651,7 +651,7 @@ namespace mm {
         mapping->used = true;
         mapping->pagerManaged =
             task::getCurrent() != &task &&
-            task::getCurrent()->serviceRole() == os::ServiceRole::Memory;
+            task::getCurrent()->serviceRole() == services::ServiceRole::Memory;
         mapping->task    = &task;
         mapping->object  = object;
         mapping->address = address;

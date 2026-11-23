@@ -328,7 +328,7 @@ namespace cpu {
         for (uint32_t cpuId = 1; cpuId < discoveredCpuCount; ++cpuId) {
             CpuDescriptor& descriptor = cpuDescriptors[cpuId];
             descriptor.setLocalData(
-                CpuLocalData::prepare(cpuId, descriptor.getApicId()));
+                LocalData::prepare(cpuId, descriptor.getApicId()));
 
             if (descriptor.getLocalData() == nullptr) {
                 descriptor.getState().store(CpuState::Failed,
@@ -413,7 +413,7 @@ namespace cpu {
     /*
      * 取得指定 CPU 已准备的局部状态，尚未准备或编号无效时返回空指针。
      */
-    CpuLocalData* getCpuLocalData(uint32_t cpuId) {
+    LocalData* getLocalData(uint32_t cpuId) {
         CpuDescriptor* descriptor = cpu::getCpuDescriptor(cpuId);
 
         return descriptor == nullptr ? nullptr : descriptor->getLocalData();
@@ -486,7 +486,7 @@ namespace cpu {
      * 新 CPU 从汇编跳板进入 C++ 后的初始化入口。
      * 建立局部寄存器、描述符、系统调用和调度，再发布在线状态并退出启动线程。
      */
-    extern "C" [[noreturn]] void applicationTaskorEntry(CpuLocalData* cpu) {
+    extern "C" [[noreturn]] void applicationTaskorEntry(LocalData* cpu) {
         CpuDescriptor* descriptor =
             cpu == nullptr ? nullptr : cpu::getCpuDescriptor(cpu->getCpuId());
 

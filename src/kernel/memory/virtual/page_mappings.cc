@@ -12,7 +12,7 @@
 #include "kernel/page.h"
 #include "kernel/task.h"
 #include "service/common/identity.h"
-#include "service/common/kernel-requests.h"
+#include "service/common/protocol.h"
 
 namespace mm {
 
@@ -25,13 +25,28 @@ namespace mm {
     Maps& maps() { return mappingRegistry; }
 
     /*
-     * 从固定记录池取一个映射节点。
-     * 没有空闲记录时返回空指针。
+     * 优先复用启动时的固定记录池，池满后从内核堆申请节点。
+     * 节点容量随实际映射增长，申请失败时保持原来的失败返回规则。
      */
     Map* Maps::allocate() {
         void* value = pool.allocate();
 
+        if (!value) {
+            value = allocateHeap(sizeof(Map));
+        }
+
         return value ? new (value) Map{} : nullptr;
+    }
+
+    /* 根据节点来源归还记录，保留固定池的重复释放检查。 */
+    void Maps::release(Map* record) {
+        const uint64_t address = reinterpret_cast<uint64_t>(record);
+        const uint64_t first = reinterpret_cast<uint64_t>(storage);
+        if (address >= first && address - first < sizeof(storage)) {
+            pool.release(record);
+        } else {
+            freeHeap(record);
+        }
     }
 
     /*
@@ -106,13 +121,13 @@ namespace mm {
             target.addressSpace().residency();
         const bool pager =
             task::getCurrent() && task::getCurrent() != &target &&
-            task::getCurrent()->serviceRole() == os::ServiceRole::Memory;
+            task::getCurrent()->serviceRole() == services::ServiceRole::Memory;
 
         // 普通任务开启未来锁页时，新区间也计入额度；先在副本中计算，失败时不改原锁页表。
         if (!pager && target.addressSpace().lockFuture() &&
             (!residency.set(address, size, true) ||
              residency.bytes > target.memlockLimit())) {
-            pool.release(record);
+            release(record);
 
             return false;
         }
@@ -135,7 +150,7 @@ namespace mm {
                 mm::unmapPageInAddressSpace(root, address + mapped);
             }
 
-            pool.release(record);
+            release(record);
 
             return false;
         }
@@ -149,7 +164,7 @@ namespace mm {
         // 映射来源由正在执行的内存服务身份确认，不能相信用户自行提供的来源标志。
         record->pagerManaged =
             task::getCurrent() && task::getCurrent() != &target &&
-            task::getCurrent()->serviceRole() == os::ServiceRole::Memory;
+            task::getCurrent()->serviceRole() == services::ServiceRole::Memory;
         mappings = record;
 
         return true;
@@ -226,7 +241,7 @@ namespace mm {
             if (address <= r->address && end >= oldEnd) {
                 *link = r->next;
                 r->object->release();
-                pool.release(r);
+                release(r);
                 continue;
             }
 
@@ -254,7 +269,7 @@ namespace mm {
         }
 
         if (spare) {
-            pool.release(spare);
+            release(spare);
         }
     }
 
@@ -276,7 +291,7 @@ namespace mm {
 
             *link = r->next;
             r->object->release();
-            pool.release(r);
+            release(r);
         }
     }
 

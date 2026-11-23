@@ -7,9 +7,8 @@
 #include "kernel/ipc.h"
 #include "kernel/page.h"
 #include "kernel/task.h"
-#include "service/common/entry.h"
 #include "service/common/identity.h"
-#include "service/common/kernel-requests.h"
+#include "service/common/protocol.h"
 
 namespace task {
 
@@ -28,7 +27,7 @@ namespace task {
             uint64_t sourceAddress;
             uint64_t size;
             uint64_t capabilities;
-            os::ServiceRole role;
+            services::ServiceRole role;
             bool builtin;
     };
 
@@ -139,7 +138,7 @@ namespace task {
     /*
      * 由固定服务角色查询允许的能力位，不接受程序自己随意声明内核权限。
      */
-    bool serviceCapabilities(os::ServiceRole role, uint64_t& capabilities) {
+    bool serviceCapabilities(services::ServiceRole role, uint64_t& capabilities) {
         for (const ProgramImage& image : PROGRAM_IMAGES) {
             if (image.role == role && !image.builtin) {
                 capabilities = image.capabilities;
@@ -336,7 +335,7 @@ namespace task {
     /*
      * 从已登记引导模块启动内置服务，准备身份、引导句柄、动态映像和用户栈；任何准备失败都销毁未完成任务。
      */
-    TaskReference loadProgram(os::ProgramId program, Task* parent,
+    TaskReference loadProgram(services::ProgramId program, Task* parent,
                               uint64_t bootstrapHandle, uint32_t argumentCount,
                               const char* const* arguments,
                               ::elf::ElfLoadError* loadError) {
@@ -346,7 +345,7 @@ namespace task {
 
         const uint64_t index = static_cast<uint64_t>(program);
 
-        if (index >= static_cast<uint64_t>(os::ProgramId::Count) ||
+        if (index >= static_cast<uint64_t>(services::ProgramId::Count) ||
             parent == nullptr || !bootProgramsReady) {
             if (loadError != nullptr) {
                 *loadError = ::elf::ElfLoadError::InvalidArgument;
@@ -450,7 +449,7 @@ namespace task {
         uint64_t standardOutputHandle, uint64_t standardErrorHandle,
         uint32_t argumentCount, const char* const* arguments,
         const ::elf::ElfSharedImage* sharedImages, uint32_t sharedImageCount,
-        ::elf::ElfLoadError* loadError, os::ServiceRole serviceRole,
+        ::elf::ElfLoadError* loadError, services::ServiceRole serviceRole,
         bool newSession, bool managedService, uint32_t terminalKind,
         uint32_t terminalIndex) {
         if (loadError != nullptr) {
@@ -482,7 +481,7 @@ namespace task {
         TaskReference lifetime(task);
         task->setServiceRole(serviceRole);
         task->setManagedService(managedService ||
-                                serviceRole != os::ServiceRole::None);
+                                serviceRole != services::ServiceRole::None);
         task->setCommandLine(argumentCount, arguments);
 
         // 引导句柄从真实来源任务复制，失败时销毁新任务，不能留下没有启动通信通道的半成品。
@@ -557,7 +556,7 @@ namespace task {
         // source。
         ::elf::ElfLoadResult result{};
         ::elf::ElfLoadError error =
-            serviceRole != os::ServiceRole::None
+            serviceRole != services::ServiceRole::None
                 ? ::elf::Loader(task->addressSpace().rootPhysicalAddress())
                       .loadDynamicSetFromAddressSpace(
                           source->addressSpace().rootPhysicalAddress(),
@@ -617,7 +616,7 @@ namespace task {
         // Init；具体加载错误会转成日志，启动成功后保留其任务引用用于孤儿收养。
         ::elf::ElfLoadError error;
         ::task::TaskReference init = loadProgram(
-            os::ProgramId::Init, task::getIdle(), 0, 0, nullptr, &error);
+            services::ProgramId::Init, task::getIdle(), 0, 0, nullptr, &error);
 
         if (init == nullptr) {
             device::serialWrite("[ELF] unable to load init: ");

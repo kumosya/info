@@ -1,10 +1,8 @@
-#include "service/common/channel.h"
-#include "service/common/kernel-requests.h"
+#include <os/detail/client.h>
+#include "service/common/protocol.h"
 #include "service/common/lifecycle.h"
-#include "service/common/queries.h"
 #include "service/common/records.h"
-#include "service/common/requests.h"
-#include "service/common/runtime.h"
+#include <os/runtime.h>
 #include <os/device.h>
 #include <os/input.h>
 #include <os/ipc.h>
@@ -36,7 +34,7 @@ constexpr uint64_t irqNotification = 0x495251;
 
 class InputQueue {
     public:
-        bool enqueue(const os::wire::InputEvent& event) {
+        bool enqueue(const services::wire::InputEvent& event) {
             os::SpinLock::Guard guard(lock_);
             if (event.type == os::Input::Event::Type::KeyDown ||
                 event.type == os::Input::Event::Type::KeyUp) {
@@ -46,7 +44,7 @@ class InputQueue {
             } else
                 buttons_ = event.mouse.buttons;
             if (nextSequence_ != firstSequence_ && canCoalesceLast()) {
-                os::wire::InputEvent& previous =
+                services::wire::InputEvent& previous =
                     events_[(nextSequence_ - 1) % capacity];
                 if (event.type == os::Input::Event::Type::MouseMove &&
                     previous.type == os::Input::Event::Type::MouseMove) {
@@ -70,7 +68,7 @@ class InputQueue {
             return true;
         }
 
-        bool dequeue(uint64_t taskId, os::wire::InputEvent& event) {
+        bool dequeue(uint64_t taskId, services::wire::InputEvent& event) {
             os::SpinLock::Guard guard(lock_);
             Subscriber* subscriber = findSubscriber(taskId);
             if (subscriber == nullptr) {
@@ -163,7 +161,7 @@ class InputQueue {
             subscriber->closing = true;
             return subscriber->wakeEndpoint;
         }
-        void snapshot(os::wire::InputState& state) {
+        void snapshot(services::wire::InputState& state) {
             os::SpinLock::Guard guard(lock_);
             state.modifiers = modifiers_;
             state.buttons   = buttons_;
@@ -223,7 +221,7 @@ class InputQueue {
         static constexpr uint32_t capacity = 256;
         uint8_t keys_[128]{};
         uint32_t modifiers_{}, buttons_{};
-        os::wire::InputEvent events_[capacity];
+        services::wire::InputEvent events_[capacity];
         Subscriber subscribers_[4]{};
         uint64_t firstSequence_ = 0;
         uint64_t nextSequence_  = 0;
@@ -235,10 +233,10 @@ class Ps2Controller {
         bool init() {
             os::IpcMessage request{}, reply{};
             request.type =
-                static_cast<uint64_t>(os::DeviceOperation::InitializeInput);
+                static_cast<uint64_t>(services::DeviceOperation::InitializeInput);
             request.length = 5;
             const int64_t result =
-                services::RequestChannel(os::CoreServiceKind::Device)
+                os::detail::RequestChannel(services::CoreServiceKind::Device)
                     .result(request, reply);
             if (result < 3 || result > 4) return false;
             packetSize_ = result;
@@ -247,9 +245,9 @@ class Ps2Controller {
         bool readInterruptByte(uint8_t& value, bool& mouse) {
             os::IpcMessage request{}, reply{};
             request.type =
-                static_cast<uint64_t>(os::DeviceOperation::ReadInput);
+                static_cast<uint64_t>(services::DeviceOperation::ReadInput);
             request.length = 5;
-            if (services::RequestChannel(os::CoreServiceKind::Device)
+            if (os::detail::RequestChannel(services::CoreServiceKind::Device)
                     .result(request, reply))
                 return false;
             value = reply.data[1];
@@ -277,7 +275,7 @@ class KeyboardDriver {
                 return;
             }
             updateModifiers(key, pressed);
-            os::wire::InputEvent event{};
+            services::wire::InputEvent event{};
             event.type          = pressed ? os::Input::Event::Type::KeyDown
                                           : os::Input::Event::Type::KeyUp;
             event.timestamp     = os::Sys().readMonotonicTime();
@@ -559,7 +557,7 @@ class MouseDriver {
         static void emit(InputQueue& queue, os::Input::Event::Type type,
                          int32_t deltaX, int32_t deltaY, int32_t wheel,
                          uint32_t buttons) {
-            os::wire::InputEvent event{};
+            services::wire::InputEvent event{};
             event.type      = type;
             event.timestamp = os::Sys().readMonotonicTime();
             event.mouse     = {deltaX, deltaY, wheel, buttons};
@@ -576,12 +574,12 @@ class InputService {
     public:
         bool bindInputIrq(uint8_t irq) {
             os::IpcMessage request{}, reply{};
-            request.type = static_cast<uint64_t>(os::DeviceOperation::BindIrq);
+            request.type = static_cast<uint64_t>(services::DeviceOperation::BindIrq);
             request.length  = 5;
             request.data[0] = irq;
             request.data[1] = irqEndpoint_;
             const int64_t handle =
-                services::RequestChannel(os::CoreServiceKind::Device)
+                os::detail::RequestChannel(services::CoreServiceKind::Device)
                     .result(request, reply);
             if (handle <= 0) return false;
             inputBindings_[irq == 1 ? 0 : 1].reset(handle, true);
@@ -593,7 +591,7 @@ class InputService {
             if (requestEndpoint_ == 0 || irqEndpoint_ == 0 ||
                 !controller_.init() || !bindInputIrq(1) || !bindInputIrq(12) ||
                 !os::detail::RegistryClient(registry).registerName(
-                    os::inputServiceName, requestEndpoint_)) {
+                    services::inputServiceName, requestEndpoint_)) {
                 return false;
             }
             mouse_.init(controller_.mousePacketSize());
@@ -610,7 +608,7 @@ class InputService {
                     continue;
                 }
                 os::IpcMessage reply{};
-                os::wire::TaskInfo caller{};
+                services::wire::TaskInfo caller{};
                 // Subscription already authenticated this immutable
                 // managed-service role. Avoid a synchronous task-service round
                 // trip for each event.
@@ -618,9 +616,9 @@ class InputService {
                     (os::detail::TaskQuery().query(request.senderPid, caller) ||
                      !caller.managedService ||
                      (caller.serviceRole !=
-                          uint32_t(os::ServiceRole::Console) &&
+                          uint32_t(services::ServiceRole::Console) &&
                       caller.serviceRole !=
-                          uint32_t(os::ServiceRole::Window)))) {
+                          uint32_t(services::ServiceRole::Window)))) {
                     for (uint32_t i = 0; i < request.handleCount; ++i)
                         os::closeHandle(request.handles[i]);
                     reply.length = 1;
@@ -631,17 +629,17 @@ class InputService {
                     continue;
                 }
                 if (request.type ==
-                    static_cast<uint64_t>(os::InputRequest::GetState)) {
+                    static_cast<uint64_t>(services::InputRequest::GetState)) {
                     reply.data[0] = 0;
                     reply.data[1] = queue_.size(request.senderPid);
-                    os::wire::InputState state{};
+                    services::wire::InputState state{};
                     queue_.snapshot(state);
                     os::Runtime::copyBytes(&reply.data[2], &state,
                                            sizeof(state));
                     reply.length = 2 + sizeof(state) / 8;
                 } else if (request.type ==
-                           static_cast<uint64_t>(os::InputRequest::GetEvent)) {
-                    os::wire::InputEvent event{};
+                           static_cast<uint64_t>(services::InputRequest::GetEvent)) {
+                    services::wire::InputEvent event{};
                     if (!queue_.dequeue(request.senderPid, event)) {
                         reply.data[0] =
                             static_cast<uint64_t>(os::ErrorCode::WouldBlock);
@@ -657,7 +655,7 @@ class InputService {
                         reply.length = sizeof(event) / sizeof(uint64_t);
                     }
                 } else if (request.type ==
-                           static_cast<uint64_t>(os::InputRequest::Subscribe)) {
+                           static_cast<uint64_t>(services::InputRequest::Subscribe)) {
                     const bool subscribed =
                         request.handleCount == 1 &&
                         queue_.subscribe(request.senderPid, request.handles[0]);
@@ -667,7 +665,7 @@ class InputService {
                         os::closeHandle(request.handles[0]);
                     }
                 } else if (request.type == static_cast<uint64_t>(
-                                               os::InputRequest::Unsubscribe)) {
+                                               services::InputRequest::Unsubscribe)) {
                     reply.length = 1;
                     reply.data[0] =
                         static_cast<int64_t>(os::ErrorCode::InvalidArgument);
@@ -708,8 +706,17 @@ class InputService {
     private:
         void waitForInterrupt() {
             os::IpcMessage notification{};
-            if (os::receiveMessage(irqEndpoint_, notification) != 0 ||
-                notification.type != irqNotification) {
+            const int status = os::receiveMessage(irqEndpoint_, notification,
+                os::Sys().readMonotonicTime() + 25000000ULL);
+            // IRQ 及时唤醒输入线程；定期核对 8042，处理初始化或调度延迟时
+            // 已经留在缓冲区、不会再次产生上升沿的数据。
+            if (status && status != static_cast<int>(os::ErrorCode::Timeout) &&
+                status != static_cast<int>(os::ErrorCode::WouldBlock)) {
+                os::sleep(1);
+                return;
+            }
+
+            if (!status && notification.type != irqNotification) {
                 return;
             }
             // One IRQ can represent several bytes already buffered by the 8042.
@@ -739,7 +746,7 @@ class InputService {
             const uint32_t count = queue_.collectWakeEndpoints(endpoints, 4);
             for (uint32_t index = 0; index < count; ++index) {
                 os::IpcMessage notification{};
-                notification.type = os::inputEventNotification;
+                notification.type = services::inputEventNotification;
                 const int result =
                     os::sendMessage(endpoints[index], notification, 0);
                 if (result == static_cast<int>(os::ErrorCode::WouldBlock) ||
@@ -916,7 +923,7 @@ class DeviceApplication {
             const uint64_t endpoint = os::detail::EndpointControl().create();
             if (registry == 0 || endpoint == 0 ||
                 !os::detail::RegistryClient(registry).registerName(
-                    os::deviceServiceName, endpoint)) {
+                    services::deviceServiceName, endpoint)) {
                 os::Sys().log("[DEVICE] registration failed\n");
                 return 1;
             }
@@ -957,7 +964,7 @@ class DeviceApplication {
                 }
                 os::IpcMessage reply{};
                 if (request.type ==
-                    static_cast<uint64_t>(os::DeviceRequest::List)) {
+                    static_cast<uint64_t>(services::DeviceRequest::List)) {
                     reply.data[0] = 0;
                     reply.data[1] = manager.deviceCount();
                     reply.data[2] = manager.driverCount();
@@ -969,7 +976,7 @@ class DeviceApplication {
                         manager.categoryCount(DeviceCategory::Display);
                     reply.length = 6;
                 } else if (request.type ==
-                           static_cast<uint64_t>(os::DeviceRequest::ListNode)) {
+                           static_cast<uint64_t>(services::DeviceRequest::ListNode)) {
                     constexpr const char* nodes[] = {
                         "zero", "null", "tty1", "tty2", "tty3", "tty4",
                         "tty5", "tty6", "tty7", "ptmx", "pts"};
@@ -989,7 +996,7 @@ class DeviceApplication {
                         reply.length = 8;
                     }
                 } else if (request.type ==
-                           static_cast<uint64_t>(os::DeviceRequest::ReadNode)) {
+                           static_cast<uint64_t>(services::DeviceRequest::ReadNode)) {
                     const char* name =
                         reinterpret_cast<const char*>(request.data);
                     uint64_t size = request.data[6];

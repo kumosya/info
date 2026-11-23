@@ -2,11 +2,9 @@
 #include <csignal>
 #include <devctl.h>
 
-#include "service/common/channel.h"
-#include "service/common/kernel-requests.h"
-#include "service/common/queries.h"
-#include "service/common/requests.h"
-#include "service/common/runtime.h"
+#include <os/detail/client.h>
+#include "service/common/protocol.h"
+#include <os/runtime.h>
 #include "service/tty/records.h"
 #include <os/device.h>
 #include <os/ipc.h>
@@ -30,8 +28,8 @@ class TtyServer {
                 uint64_t masterIdentity;
                 uint64_t slaveIdentity;
                 uint64_t foregroundGroup;
-                os::wire::TerminalAttributes attributes;
-                os::wire::TerminalWindowSize windowSize;
+                services::wire::TerminalAttributes attributes;
+                services::wire::TerminalWindowSize windowSize;
                 uint8_t line[lineCapacity];
                 uint32_t lineLength;
                 bool active;
@@ -306,9 +304,9 @@ class TtyServer {
                 os::closeHandle(handle);
                 return;
             }
-            const auto operation = static_cast<os::TtyRequest>(request.type);
+            const auto operation = static_cast<services::TtyRequest>(request.type);
             switch (operation) {
-                case os::TtyRequest::DeviceControl: {
+                case services::TtyRequest::DeviceControl: {
                     // Possession of the transferred PTY endpoint identifies the
                     // device; clients cannot select another terminal by its
                     // numeric index.
@@ -322,7 +320,7 @@ class TtyServer {
                         reply.data[0] = ENOTTY;
                         break;
                     }
-                    if (length != sizeof(os::wire::TerminalWindowSize) ||
+                    if (length != sizeof(services::wire::TerminalWindowSize) ||
                         request.length !=
                             (command == OSINFO_DEVCTL_TTY_SET_SIZE ? 4U : 2U))
                         break;
@@ -340,7 +338,7 @@ class TtyServer {
                         break;
                     }
                     if (command == OSINFO_DEVCTL_TTY_SET_SIZE) {
-                        os::wire::TerminalWindowSize size{};
+                        services::wire::TerminalWindowSize size{};
                         copyRaw(&size, &request.data[2], sizeof(size));
                         if (!size.rows || !size.columns || size.rows > 65535 ||
                             size.columns > 65535) {
@@ -353,19 +351,19 @@ class TtyServer {
                                 sizeof(state->windowSize));
                     break;
                 }
-                case os::TtyRequest::GetForegroundGroup: {
+                case services::TtyRequest::GetForegroundGroup: {
                     os::SpinLock::Guard guard(state->lock);
                     reply.data[0] = 0;
                     reply.data[1] = state->foregroundGroup;
                     reply.length  = 2;
                     break;
                 }
-                case os::TtyRequest::GetNumber:
+                case services::TtyRequest::GetNumber:
                     reply.data[0] = 0;
                     reply.data[1] = static_cast<uint64_t>(state - states);
                     reply.length  = 2;
                     break;
-                case os::TtyRequest::GetAttributes: {
+                case services::TtyRequest::GetAttributes: {
                     os::SpinLock::Guard guard(state->lock);
                     copyRaw(&reply.data[1], &state->attributes,
                             sizeof(state->attributes));
@@ -373,7 +371,7 @@ class TtyServer {
                     reply.data[0] = 0;
                     break;
                 }
-                case os::TtyRequest::SetAttributes:
+                case services::TtyRequest::SetAttributes:
                     if (request.length * 8 >= sizeof(state->attributes)) {
                         os::SpinLock::Guard guard(state->lock);
                         copyRaw(&state->attributes, request.data,
@@ -381,7 +379,7 @@ class TtyServer {
                         reply.data[0] = 0;
                     }
                     break;
-                case os::TtyRequest::GetWindowSize: {
+                case services::TtyRequest::GetWindowSize: {
                     os::SpinLock::Guard guard(state->lock);
                     copyRaw(&reply.data[1], &state->windowSize,
                             sizeof(state->windowSize));
@@ -389,7 +387,7 @@ class TtyServer {
                     reply.data[0] = 0;
                     break;
                 }
-                case os::TtyRequest::SetWindowSize:
+                case services::TtyRequest::SetWindowSize:
                     if (request.length * 8 >= sizeof(state->windowSize)) {
                         os::SpinLock::Guard guard(state->lock);
                         copyRaw(&state->windowSize, request.data,
@@ -397,23 +395,23 @@ class TtyServer {
                         reply.data[0] = 0;
                     }
                     break;
-                case os::TtyRequest::SetForegroundGroup:
+                case services::TtyRequest::SetForegroundGroup:
                     if (request.length >= 1) {
                         os::SpinLock::Guard guard(state->lock);
                         state->foregroundGroup = request.data[0];
                         os::IpcMessage metadata{}, result{};
                         metadata.type = static_cast<uint64_t>(
-                            os::TaskOperation::SetTerminalForeground);
+                            services::TaskOperation::SetTerminalForeground);
                         metadata.length  = 4;
                         metadata.data[0] = 2;
                         metadata.data[1] = state - states;
                         metadata.data[2] = state->foregroundGroup;
                         reply.data[0] =
-                            services::RequestChannel(os::CoreServiceKind::Task)
+                            os::detail::RequestChannel(services::CoreServiceKind::Task)
                                 .result(metadata, result);
                     }
                     break;
-                case os::TtyRequest::SetNonblocking:
+                case services::TtyRequest::SetNonblocking:
                     if (request.length >= 1 &&
                         os::detail::PipeClient(handle).setNonblocking(
                             request.data[0] != 0))
@@ -430,7 +428,7 @@ class TtyServer {
             const uint64_t endpoint = os::detail::EndpointControl().create();
             if (!registry || !endpoint ||
                 !os::detail::RegistryClient(registry).registerName(
-                    os::ttyServiceName, endpoint))
+                    services::ttyServiceName, endpoint))
                 return 1;
             os::Sys().log("[TTY] PTY service started\n");
             while (true) {
@@ -443,7 +441,7 @@ class TtyServer {
                 os::IpcMessage reply{};
                 uint64_t masterClient = 0, slaveClient = 0;
                 if (request.type ==
-                    static_cast<uint64_t>(os::TtyRequest::CreatePty)) {
+                    static_cast<uint64_t>(services::TtyRequest::CreatePty)) {
                     reply.data[0] =
                         createPty(reply, masterClient, slaveClient) ? 0 : 1;
                     reply.length = 1;

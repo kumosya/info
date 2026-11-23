@@ -235,9 +235,14 @@ int libcDuplicateDescriptor(int fileDescriptor, int minimum, int closeOnExec) {
     }
     for (index = minimum; index < LIBC_DESCRIPTOR_CAPACITY; ++index) {
         if (libcDescriptors[index].description != NULL) continue;
+
+        // 标准输入输出尚未首次使用时也占有 0、1、2；只有明确关闭后才可复用编号。
+        if (index < 3 && !standardClosed[index]) continue;
+
         ++libcDescriptors[index].generation;
         libcDescriptors[index].description = description;
         libcDescriptors[index].closeOnExec = closeOnExec;
+        if (index < 3) standardClosed[index] = 0;
         ++description->referenceCount;
         unlockWord(&descriptorLock);
         return index;

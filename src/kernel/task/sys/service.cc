@@ -21,25 +21,25 @@
 
 namespace task {
 
-    namespace Sys {
+    namespace system_service {
 
         /*
          * 分发系统信息和时间等请求，检查消息格式后把查询结果写入回复。
          */
         int call(Task& caller, const IpcMessage& request, IpcMessage& reply) {
-            switch (static_cast<os::SystemOperation>(request.type)) {
-                case os::SystemOperation::MonotonicTime:
+            switch (static_cast<services::SystemOperation>(request.type)) {
+                case services::SystemOperation::MonotonicTime:
                     reply.data[0] = time::getMonotonicTime();
                     break;
-                case os::SystemOperation::WallClockTime:
+                case services::SystemOperation::WallClockTime:
                     reply.data[0] = time::getWallClockTime();
                     break;
-                case os::SystemOperation::ClockResolution:
+                case services::SystemOperation::ClockResolution:
                     reply.data[0] = time::getClockResolution();
                     break;
-                case os::SystemOperation::SetWallClockTime: {
+                case services::SystemOperation::SetWallClockTime: {
                     if (request.length != 1) return -1;
-                    os::wire::CredentialInfo identity{};
+                    services::wire::CredentialInfo identity{};
                     caller.credentials(identity);
                     if (identity.effectiveUid != 0) return -3;
                     if (!time::clock().setWallClockTime(request.data[0]))
@@ -49,17 +49,18 @@ namespace task {
 
                 // 系统信息由时间、物理内存和在线 CPU
                 // 的当前读数组成，不把它当所有指标同一瞬间的原子快照。
-                case os::SystemOperation::Info: {
-                    const os::wire::SystemInfo info{
+                case services::SystemOperation::Info: {
+                    const services::wire::SystemInfo info{
                         time::getMonotonicTime(), mm::getTotalMemoryBytes(),
-                        mm::getFreeMemoryBytes(), cpu::getOnlineCpuCount(), 0};
+                        mm::getFreeMemoryBytes(), cpu::getOnlineCpuCount(),
+                        static_cast<uint32_t>(os::Sys::Architecture::Amd64)};
                     copyMessageData(&reply.data[1], &info, sizeof(info));
                     break;
                 }
 
                 // 日志字符串在消息数据中，不是任意用户指针；同时受消息长度和
                 // 512 字节日志上限约束，并要求结尾空字符。
-                case os::SystemOperation::Log: {
+                case services::SystemOperation::Log: {
                     const char* text;
 
                     if (!readMessageName(request, 0, text, 512)) {
@@ -80,13 +81,13 @@ namespace task {
             return 0;
         }
 
-    }  // namespace Sys
+    }  // namespace system_service
 
     /*
      * 返回系统内核服务入口，供核心服务表创建端点。
      */
     EndpointService& systemKernelService() {
-        static EndpointService service(Sys::call);
+        static EndpointService service(system_service::call);
 
         return service;
     }

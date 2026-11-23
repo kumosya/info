@@ -4,7 +4,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../ld-x86-64/loader-api.h"
+#include "../ld-amd64/loader-api.h"
 #include "internal.h"
 
 static const OsDynamicLoader* loader;

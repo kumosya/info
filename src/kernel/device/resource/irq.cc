@@ -10,6 +10,7 @@
 #include "kernel/ipc.h"
 #include "kernel/mm.h"
 #include "kernel/task.h"
+#include "kernel/smp.h"
 
 namespace device {
 
@@ -46,11 +47,11 @@ namespace device {
      * 独占绑定一个 IRQ
      * 到任务端点，安装中断入口和控制器路由后才公布记录；失败时按准备顺序撤销。
      */
-    InterruptBinding* InterruptBinding::create(::task::Task& task, uint8_t irq,
+    bool InterruptBinding::create(::task::Task& task, uint8_t irq,
                                                ::task::Endpoint* endpoint,
                                                bool levelTriggered) {
-        if (irq > maximumIrq || endpoint == nullptr) {
-            return nullptr;
+        if (endpoint_ || irq > maximumIrq || endpoint == nullptr) {
+            return false;
         }
 
         ::task::InterruptSpinLockGuard guard(bindingLock);
@@ -58,40 +59,36 @@ namespace device {
         // 每条传统 IRQ
         // 只绑定一个接收者；持锁完成安装，避免两个任务同时抢到同一条线。
         if (bindings[irq] != nullptr) {
-            return nullptr;
+            return false;
         }
 
-        void* storage = mm::allocateHeap(sizeof(InterruptBinding));
-        InterruptBinding* binding =
-            storage == nullptr ? nullptr : new (storage) InterruptBinding;
-
-        if (binding == nullptr ||
-            !cpu::registerHandler(irqVectorBase + irq, irqHandler)) {
-            mm::freeHeap(binding);
-
-            return nullptr;
+        if (!cpu::registerHandler(irqVectorBase + irq, irqHandler)) {
+            return false;
         }
 
         // 先登记处理函数再配置硬件路由；配置失败要撤掉函数登记并释放对象。
-        const uint32_t apicId = cpu::getCurrent()->getApicId();
+        // PS/2 是传统边沿中断，固定送往引导核，避免路由取决于绑定时
+        // 恰好运行在哪个插槽。接收消息的服务线程仍由调度器正常分配。
+        const cpu::CpuDescriptor* bootCpu = cpu::getCpuDescriptor(0);
+        const uint32_t apicId = (irq == 1 || irq == 12) && bootCpu
+            ? bootCpu->getApicId() : cpu::getCurrent()->getApicId();
 
         if (!cpu::setIrq(irq, irqVectorBase + irq, apicId, levelTriggered)) {
             cpu::unregisterHandler(irqVectorBase + irq);
-            mm::freeHeap(binding);
 
-            return nullptr;
+            return false;
         }
 
         // 中断仍受本地关中断与绑定锁保护，填好全部字段并保留端点后，最后才把对象放进可见表。
-        binding->irq_      = irq;
-        binding->endpoint_ = endpoint;
+        irq_      = irq;
+        endpoint_ = endpoint;
         endpoint->retain();
-        binding->owner_          = &task;
-        binding->apicId_         = apicId;
-        binding->levelTriggered_ = levelTriggered;
-        bindings[irq]            = binding;
+        owner_          = &task;
+        apicId_         = apicId;
+        levelTriggered_ = levelTriggered;
+        bindings[irq]   = this;
 
-        return binding;
+        return true;
     }
 
     /*

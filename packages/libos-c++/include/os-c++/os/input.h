@@ -4,7 +4,9 @@
 
 #pragma once
 #include <cstdint>
+
 namespace os {
+
     /* 读取键盘、鼠标等输入服务事件。 */
     class Input {
         public:
@@ -112,26 +114,28 @@ namespace os {
                 LeftSuper,
                 RightSuper
             };
+
             enum Modifier : uint32_t {
-                Shift      = 1,
-                Control    = 2,
-                Alt        = 4,
-                CapsLock   = 8,
-                NumLock    = 16,
+                Shift = 1,
+                Control = 2,
+                Alt = 4,
+                CapsLock = 8,
+                NumLock = 16,
                 ScrollLock = 32,
-                Super      = 64
+                Super = 64
             };
+
             /* 保存输入事件类别及对应负载。 */
             class Event {
                 public:
                     enum class Type : uint32_t {
-                        None            = 0,
-                        KeyDown         = 1,
-                        KeyUp           = 2,
-                        MouseMove       = 3,
+                        None = 0,
+                        KeyDown = 1,
+                        KeyUp = 2,
+                        MouseMove = 3,
                         MouseButtonDown = 4,
-                        MouseButtonUp   = 5,
-                        MouseWheel      = 6
+                        MouseButtonUp = 5,
+                        MouseWheel = 6
                     };
                     Type getType() const;
                     uint64_t getTimestamp() const;
@@ -153,9 +157,10 @@ namespace os {
                     int32_t deltaX_{}, deltaY_{}, wheel_{};
                     uint32_t buttons_{};
             };
+
             Input();
             ~Input();
-            Input(const Input&)            = delete;
+            Input(const Input&) = delete;
             Input& operator=(const Input&) = delete;
             int open();
             int close();

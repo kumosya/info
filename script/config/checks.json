@@ -20,7 +20,7 @@
     "numa.h"
   ],
   "auditRoots": [
-    "lib/ld-x86-64",
+    "lib/ld-amd64",
     "lib/os",
     "include/os-c++"
   ],

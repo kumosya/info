@@ -7,7 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "service/common/kernel-requests.h"
+#include "service/common/protocol.h"
 #include "service/common/records.h"
 #include <os/device.h>
 #include <os/ipc.h>
@@ -78,7 +78,7 @@ namespace task {
 
     uint64_t serviceResolve(const char* symbol);
     uint64_t serviceCreateEndpoint();
-    uint64_t serviceCoreHandle(os::CoreServiceKind kind);
+    uint64_t serviceCoreHandle(services::CoreServiceKind kind);
     uint64_t serviceStandardHandle(uint32_t index);
     uint64_t serviceThreadId();
     bool serviceUnmapMemory(uint64_t address, uint64_t size);
@@ -112,11 +112,11 @@ namespace task {
     int serviceCancel(uint64_t endpoint, uint64_t thread);
     uint64_t serviceMonotonicTime();
     void serviceLog(const char* text);
-    int serviceQueryTask(uint64_t id, os::wire::TaskInfo& info);
-    uint64_t serviceMapMmio(const os::wire::PciFunctionInfo& function,
+    int serviceQueryTask(uint64_t id, services::wire::TaskInfo& info);
+    uint64_t serviceMapMmio(const services::wire::PciFunctionInfo& function,
                             uint8_t bar, uint64_t address, uint64_t size);
     int serviceAllocateDma(uint64_t device, uint64_t address,
-                           os::wire::DmaBufferInfo& info);
+                           services::wire::DmaBufferInfo& info);
     uint64_t serviceBindIrq(uint8_t irq, uint64_t endpoint,
                             bool levelTriggered);
     int serviceAcknowledgeIrq(uint64_t handle);

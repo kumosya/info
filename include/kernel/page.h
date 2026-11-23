@@ -20,7 +20,8 @@ namespace mm {
     constexpr uint64_t pagePresent      = 1ULL << 0;
     constexpr uint64_t pageWritable     = 1ULL << 1;
     constexpr uint64_t pageUser         = 1ULL << 2;
-    constexpr uint64_t pageWriteThrough = 1ULL << 3;
+    // PWT 位选择内核在每个 CPU 上配置的 PAT 第 1 项（WC）。
+    constexpr uint64_t pageWriteCombining = 1ULL << 3;
     constexpr uint64_t pageCacheDisable = 1ULL << 4;
     constexpr uint64_t pageGlobal       = 1ULL << 8;
     constexpr uint64_t pageExternal     = 1ULL << 9;
@@ -35,6 +36,7 @@ namespace mm {
     };
 
     void initVir(const ::BootInfo* bootInfo);
+    bool configureFramebufferCache(uint64_t physical, uint64_t size, uint64_t flags);
     bool mapPage(uint64_t virtualAddress, uint64_t physicalAddress,
                  uint64_t flags);
     bool unmapPage(uint64_t virtualAddress);
@@ -287,6 +289,7 @@ namespace mm {
 
         private:
             Map* allocate();
+            void release(Map* record);
             alignas(16) Map storage[2048]{};
             FixedPool pool;
             task::SpinLock lock;

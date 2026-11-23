@@ -20,6 +20,7 @@ namespace device {
 
     constexpr uint64_t pageSize = 4096;
     static ::FramebufferInfo bootFramebuffer{};
+    static uint64_t framebufferCache = mm::pageCacheDisable;
 
     /*
      * 把地址向下对齐到包含它的页面起点。
@@ -41,6 +42,21 @@ namespace device {
     void initDevices(const BootInfo* bootInfo) {
         bootFramebuffer = bootInfo == nullptr ? FramebufferInfo{}
                                               : bootInfo->getFramebuffer();
+        const uint64_t bytes = uint64_t(bootFramebuffer.getPitch()) * bootFramebuffer.getHeight();
+        const uint64_t cache = cpu::hasWriteCombining()
+            ? mm::pageWriteCombining : mm::pageCacheDisable;
+        if (bytes && bootFramebuffer.getAddress()) {
+            if (!mm::configureFramebufferCache(bootFramebuffer.getAddress(), bytes, cache)) {
+                device::serialWrite("[DISPLAY] framebuffer cache setup failed\n");
+                cpu::halt();
+            }
+
+            framebufferCache = cache;
+        }
+
+        device::serialWrite(framebufferCache == mm::pageWriteCombining
+            ? "[DISPLAY] framebuffer write combining enabled\n"
+            : "[DISPLAY] framebuffer uncached fallback\n");
         device::serialWrite("[DISPLAY] boot framebuffer address=");
         device::serialWriteHex(bootFramebuffer.getAddress());
         device::serialWrite(" width=");
@@ -57,10 +73,10 @@ namespace device {
     }
 
     /*
-     * 检查显示能力和像素缓冲区范围，为任务逐页建立不可执行、禁缓存的设备映射；部分失败时撤销本次已建页面。
+     * 检查显示能力和像素缓冲区范围，为任务建立不可执行的显存映射，缓存类型与内核别名一致。
      */
     bool mapFramebuffer(::task::Task& task, uint64_t userAddress,
-                        os::wire::DisplayInfo& info, uint64_t* generation) {
+                        services::wire::DisplayInfo& info, uint64_t* generation) {
         if (!userAddress) {
             userAddress = reserveDisplayAddress(64 * 1024 * 1024ULL);
         }
@@ -98,7 +114,7 @@ namespace device {
             return false;
         }
 
-        // 在地址空间锁内逐页建立设备映射；禁缓存、不可执行，且不把显存当作普通可回收内存。
+        // 在地址空间锁内逐页建立同类型显存映射，不可执行，并保留外部所有权。
         ::task::PreemptionSpinLockGuard addressGuard(
             task.addressSpace().lock());
         uint64_t mapped = 0;
@@ -108,7 +124,7 @@ namespace device {
                     task.addressSpace().rootPhysicalAddress(),
                     userAddress + mapped, physicalBase + mapped,
                     ::mm::pageUser | ::mm::pageWritable | ::mm::pageNoExecute |
-                        ::mm::pageCacheDisable | ::mm::pageExternal)) {
+                        framebufferCache | ::mm::pageExternal)) {
                 device::serialWrite(
                     "[DISPLAY] framebuffer page mapping failed at ");
                 device::serialWriteHex(mapped);
@@ -137,7 +153,7 @@ namespace device {
     /*
      * 把引导显示布局转换成用户可见的地址、大小与像素格式信息，不在这里建立映射。
      */
-    bool describeDisplay(uint64_t userAddress, os::wire::DisplayInfo& info) {
+    bool describeDisplay(uint64_t userAddress, services::wire::DisplayInfo& info) {
         if (!bootFramebuffer.getAddress() || !bootFramebuffer.getPitch() ||
             !bootFramebuffer.getHeight()) {
             return false;
@@ -165,14 +181,14 @@ namespace device {
             bootFramebuffer.getRedPosition() == 16 &&
             bootFramebuffer.getGreenPosition() == 8 &&
             bootFramebuffer.getBluePosition() == 0) {
-            info.format = os::wire::PixelFormat::Bgra;
+            info.format = services::wire::PixelFormat::Bgra;
         } else if (bootFramebuffer.getBitsPerPixel() == 32 &&
                    bootFramebuffer.getRedPosition() == 0 &&
                    bootFramebuffer.getGreenPosition() == 8 &&
                    bootFramebuffer.getBluePosition() == 16) {
-            info.format = os::wire::PixelFormat::Rgba;
+            info.format = services::wire::PixelFormat::Rgba;
         } else {
-            info.format = os::wire::PixelFormat::Unknown;
+            info.format = services::wire::PixelFormat::Unknown;
         }
 
         return true;
@@ -182,7 +198,7 @@ namespace device {
      * 创建显示映射包装，保存所属任务与映像代号并保留任务引用；实际映射失败时释放包装。
      */
     FrameMapping* FrameMapping::create(::task::Task& task, uint64_t address,
-                                       os::wire::DisplayInfo& info) {
+                                       services::wire::DisplayInfo& info) {
         void* storage = mm::allocateHeap(sizeof(FrameMapping));
 
         if (!storage) {
@@ -213,7 +229,7 @@ namespace device {
     /*
      * 核对调用者、映像代号和逐页物理对应关系，只有原显示映射仍有效时才返回显示信息。
      */
-    bool FrameMapping::query(::task::Task& task, os::wire::DisplayInfo& info) {
+    bool FrameMapping::query(::task::Task& task, services::wire::DisplayInfo& info) {
         if (owner_ != &task) {
             return false;
         }

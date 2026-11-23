@@ -39,6 +39,18 @@ namespace cpu {
 
         // 区分地址不存在、权限不足以及文件末尾或读写错误；把硬件报告的读、写、执行方式一并记入信号信息。
         if (userFault && !(context->errorCode & 8)) {
+            // 即使程序安装了信号处理器，也保留第一次无法补页的现场。
+            device::serialWrite("[MEMORY] user page fault pid=");
+            device::serialWriteDecimal(current && current->getTask() ? current->getTask()->id() : 0);
+            device::serialWrite(" address=");
+            device::serialWriteHex(faultAddress);
+            device::serialWrite(" rip=");
+            device::serialWriteHex(context->rip);
+            device::serialWrite(" rsp=");
+            device::serialWriteHex(context->rsp);
+            device::serialWrite(" error=");
+            device::serialWriteHex(context->errorCode);
+            device::serialWrite("\n");
             const bool bus = reason == -11 || reason == -18;
             task::raiseException(
                 context, bus ? 7 : 11,

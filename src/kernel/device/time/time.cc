@@ -235,7 +235,7 @@ namespace time {
      * 检测并标定 TSC，记录启动计数与 RTC 时间基准，初始化全局单调时间下限。
      */
     void Clock::init() {
-        if (!cpu::getCpuFeatures().hasTsc()) {
+        if (!cpu::getFeatures().hasTsc()) {
             device::serialWrite("[TIME] TSC is unavailable\n");
             cpu::halt();
         }
@@ -255,7 +255,7 @@ namespace time {
             readWallClockSeconds() * nanoseconds_per_second;
         last_monotonic_nanoseconds.store(0, MemoryOrder::Release);
         device::serialWrite(
-            cpu::getCpuFeatures().hasInvariantTsc()
+            cpu::getFeatures().hasInvariantTsc()
                 ? "[TIME] invariant TSC monotonic clock initialized at "
                 : "[TIME] calibrated TSC monotonic clock initialized at ");
         device::serialWriteDecimal(tsc_frequency);

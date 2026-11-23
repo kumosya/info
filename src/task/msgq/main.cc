@@ -3,11 +3,10 @@
  * 命名消息队列服务，管理容量、等待请求、消息收发与对象回收。
  */
 
-#include "service/common/kernel-requests.h"
-#include "service/common/queries.h"
+#include "service/common/protocol.h"
+#include <os/detail/client.h>
 #include "service/common/records.h"
-#include "service/common/requests.h"
-#include "service/common/runtime.h"
+#include <os/runtime.h>
 #include "service/task/msgq-records.h"
 #include <os/device.h>
 #include <os/ipc.h>
@@ -93,7 +92,7 @@ class MessageQueueServer {
         void collect() {
             for (Queue& queue : queues_) {
                 if (queue.used && queue.notificationTask) {
-                    os::wire::TaskInfo owner{};
+                    services::wire::TaskInfo owner{};
 
                     if (os::detail::TaskQuery().query(queue.notificationTask,
                                                       owner) ||
@@ -335,7 +334,7 @@ class MessageQueueServer {
                     os::IpcMessage result{};
                     result.handleCount      = 1;
                     result.handles[0]       = tag;
-                    result.handleOptions[0] = os::ipcHandleRestrictRights;
+                    result.handleOptions[0] = services::ipcHandleRestrictRights;
                     result.handleRights[0]  = (flags & 3) == 0   ? 1
                                               : (flags & 3) == 1 ? 2
                                                                  : 3;
@@ -373,16 +372,16 @@ class MessageQueueServer {
                 return;
             }
 
-            const os::MessageQueueOperation operation =
-                static_cast<os::MessageQueueOperation>(request.type);
+            const services::MessageQueueOperation operation =
+                static_cast<services::MessageQueueOperation>(request.type);
 
-            if (operation == os::MessageQueueOperation::Open) {
+            if (operation == services::MessageQueueOperation::Open) {
                 open(request);
 
                 return;
             }
 
-            if (operation == os::MessageQueueOperation::Unlink) {
+            if (operation == services::MessageQueueOperation::Unlink) {
                 const char* value = name(request);
 
                 if (!value) {
@@ -427,8 +426,8 @@ class MessageQueueServer {
                 Queue& queue = queues_[opened.queue];
 
                 // 属性查询只读取队列容量和当前数量，同时返回当前打开记录自己的非阻塞标志。
-                if (operation == os::MessageQueueOperation::Attributes) {
-                    const os::wire::MessageQueueAttributes attributes{
+                if (operation == services::MessageQueueOperation::Attributes) {
+                    const services::wire::MessageQueueAttributes attributes{
                         opened.nonblocking ? 0x800ULL : 0, queue.maximum,
                         queue.size, queue.count};
                     os::IpcMessage result{};
@@ -441,7 +440,7 @@ class MessageQueueServer {
                 }
 
                 // 修改标志只作用于本次打开记录，先成功回复才提交，取消了的控制请求不能产生额外变化。
-                if (operation == os::MessageQueueOperation::Flags) {
+                if (operation == services::MessageQueueOperation::Flags) {
                     if (request.data[1] & ~0x800ULL) {
                         reply(request.replyToken, -1);
 
@@ -460,7 +459,7 @@ class MessageQueueServer {
                 }
 
                 // 通知注册是一次性的，并与注册者身份绑定；另一个打开者不能随意覆盖已有通知。
-                if (operation == os::MessageQueueOperation::Notify) {
+                if (operation == services::MessageQueueOperation::Notify) {
                     if (request.data[1] > 2 ||
                         (request.data[1] == 2 &&
                          (!request.data[2] || request.data[2] > 64))) {
@@ -499,10 +498,10 @@ class MessageQueueServer {
                     return;
                 }
 
-                const bool send = operation == os::MessageQueueOperation::Send;
+                const bool send = operation == services::MessageQueueOperation::Send;
 
                 if ((!send &&
-                     operation != os::MessageQueueOperation::Receive) ||
+                     operation != services::MessageQueueOperation::Receive) ||
                     request.data[1] > 256 ||
                     (send && (request.data[1] > queue.size ||
                               request.data[1] > (request.length - 3) * 8 ||

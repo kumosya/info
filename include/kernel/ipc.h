@@ -7,7 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "service/common/kernel-requests.h"
+#include "service/common/protocol.h"
 #include <os/device.h>
 #include <os/ipc.h>
 #include <os/mm.h>
@@ -115,12 +115,12 @@ namespace task {
     class CoreServices {
         public:
             bool init();
-            uint64_t getHandle(Task& caller, os::CoreServiceKind kind);
+            uint64_t getHandle(Task& caller, services::CoreServiceKind kind);
             uint64_t bootstrap(Task& caller);
 
         private:
             Endpoint* coreEndpoints[static_cast<uint64_t>(
-                os::CoreServiceKind::Count)]{};
+                services::CoreServiceKind::Count)]{};
     };
     CoreServices& coreServices();
 

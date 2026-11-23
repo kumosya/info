@@ -14,7 +14,7 @@
 #include "kernel/syscall.h"
 #include "kernel/task.h"
 #include "service/common/identity.h"
-#include "service/common/kernel-requests.h"
+#include "service/common/protocol.h"
 #include "service/common/records.h"
 #include <os/mm.h>
 
@@ -59,7 +59,7 @@ namespace mm {
      */
     static bool requestAuthorized(::task::Task& caller, uint64_t target) {
         return !target || target == caller.id() ||
-               (caller.serviceRole() == os::ServiceRole::Memory &&
+               (caller.serviceRole() == services::ServiceRole::Memory &&
                 caller.hasCapability(::task::taskCapabilityMemory) &&
                 ::task::serviceRecovery().current(caller));
     }
@@ -78,11 +78,11 @@ namespace mm {
         const uint64_t* args = request.data;
         const char* name     = nullptr;
 
-        switch (static_cast<os::MemoryOperation>(request.type)) {
+        switch (static_cast<services::MemoryOperation>(request.type)) {
             // 锁页请求既影响页表标志又影响额度记录，先定位目标，再交给整段预检查和提交路径。
-            case os::MemoryOperation::LockRange:
-            case os::MemoryOperation::LockAll:
-            case os::MemoryOperation::LockState: {
+            case services::MemoryOperation::LockRange:
+            case services::MemoryOperation::LockAll:
+            case services::MemoryOperation::LockState: {
                 if (!requestAuthorized(caller, args[0])) {
                     return -3;
                 }
@@ -94,13 +94,13 @@ namespace mm {
                     return -4;
                 }
 
-                if (request.type == uint64_t(os::MemoryOperation::LockRange)) {
+                if (request.type == uint64_t(services::MemoryOperation::LockRange)) {
                     if (args[3] > 7) {
                         return -1;
                     }
 
                     if ((args[3] & 6) &&
-                        caller.serviceRole() != os::ServiceRole::Memory) {
+                        caller.serviceRole() != services::ServiceRole::Memory) {
                         return -3;
                     }
 
@@ -108,10 +108,10 @@ namespace mm {
                         lockUserPages(*target, args[1], args[2], args[3] & 1,
                                       args[3] & 2, args[3] & 4);
                 } else if (request.type ==
-                           uint64_t(os::MemoryOperation::LockAll)) {
+                           uint64_t(services::MemoryOperation::LockAll)) {
                     if (args[1] > 3 || args[2] > 128 ||
                         (args[2] &&
-                         (caller.serviceRole() != os::ServiceRole::Memory ||
+                         (caller.serviceRole() != services::ServiceRole::Memory ||
                           request.length < 3 + args[2] * 2))) {
                         return -1;
                     }
@@ -130,7 +130,7 @@ namespace mm {
                 break;
             }
 
-            case os::MemoryOperation::Map:
+            case services::MemoryOperation::Map:
                 if (request.length < 6) {
                     return -1;
                 }
@@ -139,11 +139,11 @@ namespace mm {
                     map(args[0], args[1], args[2], args[3], args[4], args[5]);
                 break;
             // 不能解除或撤销同步回复缓冲区的写权限，否则操作成功后反而无法把结果写回调用者。
-            case os::MemoryOperation::Unmap:
-            case os::MemoryOperation::Protect: {
+            case services::MemoryOperation::Unmap:
+            case services::MemoryOperation::Protect: {
                 const bool protectOperation =
                     request.type ==
-                    static_cast<uint64_t>(os::MemoryOperation::Protect);
+                    static_cast<uint64_t>(services::MemoryOperation::Protect);
                 const uint64_t target = args[protectOperation ? 3 : 2];
                 ::task::SyscallContext* context =
                     ::task::currentThread()->syscallContext();
@@ -167,7 +167,7 @@ namespace mm {
             // 绑定期间固定具有接收权限的端点；桥接层还会检查端点所有者和当前内存服务身份。
 
             // 绑定对象必须是能接收请求的端点，并由桥接层进一步核对所有者与服务当前实例身份。
-            case os::MemoryOperation::BindPager: {
+            case services::MemoryOperation::BindPager: {
                 ::task::HandleTable::Pin pin(caller.handles(), args[0],
                                              ::task::HandleType::Endpoint,
                                              ::task::handleRightRead);
@@ -181,9 +181,9 @@ namespace mm {
 
             // 只有当前内存服务可以冻结或恢复其他进程；返回页表代号用于识别服务重启期间目标是否执行过
             // exec。
-            case os::MemoryOperation::Freeze:
-            case os::MemoryOperation::Thaw: {
-                if (caller.serviceRole() != os::ServiceRole::Memory ||
+            case services::MemoryOperation::Freeze:
+            case services::MemoryOperation::Thaw: {
+                if (caller.serviceRole() != services::ServiceRole::Memory ||
                     !caller.hasCapability(::task::taskCapabilityMemory) ||
                     !::task::serviceRecovery().current(caller)) {
                     return -3;
@@ -197,7 +197,7 @@ namespace mm {
 
                 if (!target->setMemoryFrozen(
                         request.type ==
-                        static_cast<uint64_t>(os::MemoryOperation::Freeze))) {
+                        static_cast<uint64_t>(services::MemoryOperation::Freeze))) {
                     return -8;
                 }
 
@@ -209,8 +209,8 @@ namespace mm {
 
             // 新内存服务按递增 PID
             // 查找旧实例留下的冻结任务，不依赖随时可能变化的链表位置。
-            case os::MemoryOperation::FrozenNext: {
-                if (caller.serviceRole() != os::ServiceRole::Memory ||
+            case services::MemoryOperation::FrozenNext: {
+                if (caller.serviceRole() != services::ServiceRole::Memory ||
                     !caller.hasCapability(::task::taskCapabilityMemory) ||
                     !::task::serviceRecovery().current(caller)) {
                     return -3;
@@ -240,8 +240,8 @@ namespace mm {
             // 要求目标已冻结，再按虚拟地址合并页对象与共享映射的枚举结果；外部页面不能冒充独立匿名页恢复。
 
             // 服务恢复枚举只面向已经冻结的目标，避免边枚举边被客户线程修改映射关系。
-            case os::MemoryOperation::MappingNext: {
-                if (caller.serviceRole() != os::ServiceRole::Memory ||
+            case services::MemoryOperation::MappingNext: {
+                if (caller.serviceRole() != services::ServiceRole::Memory ||
                     !caller.hasCapability(::task::taskCapabilityMemory) ||
                     !::task::serviceRecovery().current(caller)) {
                     return -3;
@@ -273,7 +273,7 @@ namespace mm {
             }
 
             // 只公开选定的状态、权限、访问和脏页标志，不泄露物理地址或全部内部页表位。
-            case os::MemoryOperation::PageState: {
+            case services::MemoryOperation::PageState: {
                 if (!requestAuthorized(caller, args[0])) {
                     return -3;
                 }
@@ -309,7 +309,7 @@ namespace mm {
             // 持页表根锁检查有界且对齐的区间；结果仅表示检查时可用，解锁后并不替调用者保留地址。
 
             // 地址可用性查询只观察当前状态，不保留该区间；后续真正映射仍需重新核对。
-            case os::MemoryOperation::RangeAvailable: {
+            case services::MemoryOperation::RangeAvailable: {
                 if (!requestAuthorized(caller, args[0])) {
                     return -3;
                 }
@@ -350,7 +350,7 @@ namespace mm {
             }
 
             // 名称、打开句柄和映射分别有自己的寿命；新建的调用方句柄必须在回复的句柄数组中明确列出。
-            case os::MemoryOperation::Open:
+            case services::MemoryOperation::Open:
                 if (!readRequestName(request, 5, name) ||
                     args[0] > UINT32_MAX) {
                     return -1;
@@ -363,20 +363,20 @@ namespace mm {
                 }
 
                 break;
-            case os::MemoryOperation::Unlink:
+            case services::MemoryOperation::Unlink:
                 if (!readRequestName(request, 5, name)) {
                     return -1;
                 }
 
                 reply.data[0] = sharedMemory().unlink(name) ? 0 : -1;
                 break;
-            case os::MemoryOperation::Resize:
+            case services::MemoryOperation::Resize:
                 reply.data[0] =
                     sharedMemory().resize(caller, args[0], args[1]) ? 0 : -1;
                 break;
 
             // 类型化内存句柄描述的是池和分配策略，实际页面由后续分配请求独立取得。
-            case os::MemoryOperation::TypedOpen: {
+            case services::MemoryOperation::TypedOpen: {
                 if (!readRequestName(request, 5, name)) {
                     return -1;
                 }
@@ -404,7 +404,7 @@ namespace mm {
                 break;
             }
 
-            case os::MemoryOperation::TypedAllocate: {
+            case services::MemoryOperation::TypedAllocate: {
                 const int64_t handle =
                     sharedMemory().allocateTyped(caller, args[0], args[1]);
 
@@ -417,22 +417,22 @@ namespace mm {
                 break;
             }
 
-            case os::MemoryOperation::TypedInfo:
+            case services::MemoryOperation::TypedInfo:
                 return sharedMemory().typedInfo(caller, args[0], reply.data[1]);
-            case os::MemoryOperation::SharedInfo:
+            case services::MemoryOperation::SharedInfo:
                 if (!sharedMemory().querySize(caller, args[0], reply.data[1])) {
                     return -2;
                 }
 
                 break;
-            case os::MemoryOperation::UnlinkSharedHandle:
+            case services::MemoryOperation::UnlinkSharedHandle:
                 if (!sharedMemory().unlink(caller, args[0])) {
                     return -4;
                 }
 
                 break;
             // 先建立无名称的后备对象并调整大小，再公布句柄；失败时关闭唯一句柄，使无人使用的对象可以回收。
-            case os::MemoryOperation::AnonymousShared: {
+            case services::MemoryOperation::AnonymousShared: {
                 if (!args[0] || args[0] > 64 * 4096) {
                     return -1;
                 }
@@ -458,7 +458,7 @@ namespace mm {
             // 只有对象包装还不够，必须实际分配并清零页面后才能安装句柄；安装失败时归还引用，不能留下无主物理块。
 
             // 页对象包装和实际物理页都成功后才安装句柄；失败不能发布一个没有页面的对象。
-            case os::MemoryOperation::AllocatePages: {
+            case services::MemoryOperation::AllocatePages: {
                 if (args[0] > 12 || args[1] > UINT16_MAX ||
                     !requestAuthorized(caller, args[2])) {
                     return -3;
@@ -501,7 +501,7 @@ namespace mm {
             }
 
             // 读取物理信息期间固定对象，避免读取字段与填写回复之间被关闭释放。
-            case os::MemoryOperation::PageInfo: {
+            case services::MemoryOperation::PageInfo: {
                 ::task::HandleTable::Pin pin(caller.handles(), args[0],
                                              ::task::HandleType::PageObject,
                                              ::task::handleRightRead);
@@ -513,7 +513,7 @@ namespace mm {
 
                 PhysicalPageInfo physical{};
                 queryPhysicalPage(object->physical(), physical);
-                const os::wire::PageObjectInfo info{
+                const services::wire::PageObjectInfo info{
                     object->owner(), object->size(), physical.getReferences(),
                     physical.getNode(), static_cast<uint16_t>(object->order())};
                 copyRequestBytes(&reply.data[1], &info, sizeof(info));
@@ -523,7 +523,7 @@ namespace mm {
             // 这里分别采样映像代号和内存计数，不保证全局同时刻快照；物理占用也不能把所有虚拟别名重复相加。
 
             // 物理占用按所有者统计，虚拟地址的多个别名不能重复累计成多份物理内存。
-            case os::MemoryOperation::Usage: {
+            case services::MemoryOperation::Usage: {
                 if (!requestAuthorized(caller, args[0])) {
                     return -3;
                 }
@@ -542,7 +542,7 @@ namespace mm {
                     generation = target->addressSpace().generation();
                 }
 
-                const os::wire::MemoryUsage info{
+                const services::wire::MemoryUsage info{
                     getTotalMemoryBytes(),
                     getFreeMemoryBytes(),
                     getOwnedMemoryBytes(target->id()),
@@ -554,7 +554,7 @@ namespace mm {
             }
 
             // 清空公共内核缓存需要明确的内存管理能力，不能因为它不直接修改用户映射就跳过权限检查。
-            case os::MemoryOperation::ReclaimCaches:
+            case services::MemoryOperation::ReclaimCaches:
                 if (!caller.hasCapability(::task::taskCapabilityMemory)) {
                     return -3;
                 }

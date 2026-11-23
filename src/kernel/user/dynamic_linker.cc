@@ -950,7 +950,7 @@ namespace elf {
     }
 
     /*
-     * 逐条读取并应用支持的 x86-64 RELA
+     * 逐条读取并应用支持的  RELA
      * 重定位，按类型计算目标值；符号解析或地址访问失败时立即返回加载错误。
      */
     static ElfLoadError applyRelocationTable(uint64_t root, const Image* images,

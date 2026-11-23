@@ -4,10 +4,14 @@
 
 #pragma once
 #include <os/ipc.h>
+
 namespace os {
+
     namespace detail {
+
         class PtyClient;
     }
+
     /* 封装伪终端主从端的创建和终端控制。 */
     class Pty {
         public:
@@ -18,7 +22,7 @@ namespace os {
             int open(Ipc::Handle&& master);
             int close();
             int queryForegroundGroup(uint64_t& group);
-            Pty(const Pty&)            = delete;
+            Pty(const Pty&) = delete;
             Pty& operator=(const Pty&) = delete;
             Pty(Pty&&) noexcept;
             Pty& operator=(Pty&&) noexcept;

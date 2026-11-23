@@ -244,7 +244,7 @@ namespace cpu {
      */
     bool setIrq(uint8_t irq, uint8_t vector, uint32_t apicId,
                 bool levelTriggered) {
-        if (irq >= legacyIrqCount || vector < 32) {
+        if (irq >= legacyIrqCount || vector < 32 || apicId > 255) {
             return false;
         }
 

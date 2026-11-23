@@ -3,17 +3,29 @@
  * 管理区域、驻留页、后备对象和任务映像代号，清理过期记录。
  */
 
-#include "service/common/kernel-requests.h"
-#include "service/common/queries.h"
-#include "service/common/records.h"
-#include "service/common/requests.h"
-#include "service/common/runtime.h"
-#include "service/mm/mm.h"
+#include <os/detail/client.h>
 #include <os/file.h>
 #include <os/mm.h>
+#include <os/runtime.h>
 #include <os/task.h>
 
+#include "service/common/protocol.h"
+#include "service/common/records.h"
+#include "service/mm/mm.h"
+
 namespace mm {
+
+    /* 读取指定驻留记录在事务开始时的状态。 */
+    bool ResidentPageFlags::get(size_t index) const {
+        return (words_[index / 64] >> (index % 64)) & 1ULL;
+    }
+
+    /* 每个记录占一位，修改时保留相邻记录的状态。 */
+    void ResidentPageFlags::set(size_t index, bool value) {
+        const uint64_t mask = 1ULL << (index % 64);
+        uint64_t& word = words_[index / 64];
+        word = value ? word | mask : word & ~mask;
+    }
 
     /*
      * 按任务和页地址查找驻留记录。
@@ -62,10 +74,7 @@ namespace mm {
         for (Backing& b : backings) {
             if (!b.used) {
                 // 空槽复用前完整清零，旧文件句柄、共享对象或租用编号不能带进新后备对象。
-                b      = {};
-                b.used = true;
-                b.kind = kind;
-                b.id   = nextBacking_++;
+                b = Backing(nextBacking_++, kind);
 
                 return &b;
             }
@@ -137,8 +146,8 @@ namespace mm {
 
                 os::IpcMessage request{}, reply{};
                 request.type =
-                    static_cast<uint64_t>(os::FsRequest::ReleaseMapping);
-                request.length  = 1;
+                    static_cast<uint64_t>(services::FsRequest::ReleaseMapping);
+                request.length = 1;
                 request.data[0] = b.lease;
 
                 if (!b.fs || os::callService(b.fs, request, reply) ||
@@ -198,16 +207,12 @@ namespace mm {
         collectBackings();
     }
 
-}  // namespace mm
-
-namespace mm {
-
     /*
      * 将服务记录的任务映像代号与内核对齐。
      * 任务不存在或已经 exec 时清理旧记录，防止旧虚拟地址被误用于新程序。
      */
     int MemoryState::synchronize(uint64_t task) {
-        os::wire::MemoryUsage usage{};
+        services::wire::MemoryUsage usage{};
 
         if (os::detail::MemoryQuery().usage(usage, task)) {
             releaseTask(task);
@@ -251,7 +256,7 @@ namespace mm {
             if (domain.task) {
                 // 先判断任务是否已退出，再检查内存映像代号，覆盖同一 PID
                 // 执行新程序的情况。
-                os::wire::TaskInfo info{};
+                services::wire::TaskInfo info{};
 
                 if (os::detail::TaskQuery().query(domain.task, info) ||
                     info.state == 2) {
@@ -260,7 +265,7 @@ namespace mm {
                     continue;
                 }
 
-                os::wire::MemoryUsage usage{};
+                services::wire::MemoryUsage usage{};
 
                 if (os::detail::MemoryQuery().usage(usage, domain.task) ||
                     usage.generation != domain.generation) {
@@ -280,7 +285,7 @@ namespace mm {
     void MemoryState::pruneRecovered() {
         for (Domain& domain : domains_) {
             if (domain.task) {
-                os::wire::MemoryUsage usage{};
+                services::wire::MemoryUsage usage{};
 
                 if (!os::detail::MemoryQuery().usage(usage, domain.task) &&
                     usage.generation == domain.generation) {

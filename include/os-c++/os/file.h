@@ -3,21 +3,24 @@
  */
 
 #pragma once
+#include <fcntl.h>
+#include <os/ipc.h>
+#include <sys/types.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
-#include <fcntl.h>
 
-#include <os/ipc.h>
-#include <sys/types.h>
 namespace os {
+
     class Fs;
+
     /* 保存挂载点查询结果或挂载操作参数。 */
     class Mount {
         public:
             Mount();
             ~Mount();
-            Mount(const Mount&)            = delete;
+            Mount(const Mount&) = delete;
             Mount& operator=(const Mount&) = delete;
             Mount(Mount&& other) noexcept;
             Mount& operator=(Mount&& other) noexcept;
@@ -39,22 +42,24 @@ namespace os {
             bool readOnly_{}, mounted_{}, owned_{};
             int error_{};
     };
+
     /* 管理文件服务连接和描述符，封装打开、读写、查询与关闭。 */
     class File {
         public:
             enum class Type : uint64_t { None = 0, File = 1, Directory = 2 };
             enum class Backend : int {
-                Filesystem   = 0,
-                Pipe         = 1,
-                Terminal     = 2,
+                Filesystem = 0,
+                Pipe = 1,
+                Terminal = 2,
                 SharedMemory = 3
             };
+
             /* 汇总文件打开和访问选项。 */
             class Opt {
                 public:
                     Opt();
                     ~Opt();
-                    Opt(const Opt&)            = delete;
+                    Opt(const Opt&) = delete;
                     Opt& operator=(const Opt&) = delete;
                     Opt(Opt&& other) noexcept;
                     Opt& operator=(Opt&& other) noexcept;
@@ -76,11 +81,12 @@ namespace os {
                     bool submitted_{}, completed_{}, reading_{};
                     unsigned char data_[4088]{};
             };
+
             File();
             ~File();
             File(File&& other) noexcept;
             File& operator=(File&& other) noexcept;
-            File(const File&)            = delete;
+            File(const File&) = delete;
             File& operator=(const File&) = delete;
             int open(const char* path, int flags, mode_t mode = 0666);
             int close();
@@ -146,12 +152,13 @@ namespace os {
             bool ownsHandle_{}, ownsService_{}, metadataValid_{}, opened_{};
             Backend backend_{Backend::Filesystem};
     };
+
     /* 封装文件系统级查询与控制操作。 */
     class Fs {
         public:
             Fs();
             ~Fs();
-            Fs(const Fs&)            = delete;
+            Fs(const Fs&) = delete;
             Fs& operator=(const Fs&) = delete;
             int open(const char* path, int flags, mode_t mode, File& file);
             int query(const char* path, File& file);

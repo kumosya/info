@@ -127,7 +127,7 @@ namespace task {
      * 为有截止时间的等待登记计时器，使没有消息到达时也能及时结束等待。
      */
     static void armTimer(Waiter& waiter) {
-        if (waiter.deadline == os::ipcInfiniteDeadline) {
+        if (waiter.deadline == services::ipcInfiniteDeadline) {
             return;
         }
 
@@ -244,7 +244,7 @@ namespace task {
             return failure(os::ErrorCode::WouldBlock);
         }
 
-        return deadline != os::ipcInfiniteDeadline &&
+        return deadline != services::ipcInfiniteDeadline &&
                        time::getMonotonicTime() >= deadline
                    ? failure(os::ErrorCode::Timeout)
                    : 0;
@@ -922,11 +922,11 @@ namespace task {
         return implementation &&
                implementation->service == &taskKernelService() &&
                ((operation >=
-                     static_cast<uint64_t>(os::TaskOperation::ExitTask) &&
+                     static_cast<uint64_t>(services::TaskOperation::ExitTask) &&
                  operation <= static_cast<uint64_t>(
-                                  os::TaskOperation::StandardHandle)) ||
+                                  services::TaskOperation::StandardHandle)) ||
                 operation ==
-                    static_cast<uint64_t>(os::TaskOperation::SignalReturn));
+                    static_cast<uint64_t>(services::TaskOperation::SignalReturn));
     }
 
     /*
@@ -1007,7 +1007,7 @@ namespace task {
             }
 
             Waiter waiter{currentThread(), nullptr, nullptr,
-                          deadline ? deadline : os::ipcInfiniteDeadline};
+                          deadline ? deadline : services::ipcInfiniteDeadline};
             IpcMessage copy = *request;
             stampSender(copy);
             copy.replyToken = nextReplyToken.fetchAdd(1, MemoryOrder::Relaxed);

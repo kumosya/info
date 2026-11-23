@@ -3,8 +3,9 @@
  * 为补页申请单页对象，失败时回收后重试。
  */
 
-#include "service/common/queries.h"
-#include "service/common/runtime.h"
+#include <os/detail/client.h>
+#include <os/runtime.h>
+
 #include "service/mm/mm.h"
 
 namespace mm {
@@ -15,7 +16,7 @@ namespace mm {
      */
     int64_t PageAllocator::allocate(uint64_t task) {
         // 补页器已经预留本次驻留记录，包括用于替换页面的记录，不能再次占用同一个名额。
-        if (state_.pagesUsed(task) > 2048) {
+        if (state_.pagesUsed(task) > MemoryState::taskPageLimit) {
             return static_cast<int64_t>(os::ErrorCode::OutOfMemory);
         }
 

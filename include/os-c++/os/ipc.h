@@ -3,16 +3,21 @@
  */
 
 #pragma once
+#include <os/syscall.h>
+
 #include <cstddef>
 #include <cstdint>
 
-#include <os/syscall.h>
 namespace os {
+
     namespace detail {
+
         class PipeClient;
         class QueueClient;
     }  // namespace detail
+
     constexpr uint32_t ipcDataWordCount = 515;
+
     /* 保存消息类型、来源、数据和附带句柄；布局必须与通信双方一致。 */
     struct IpcMessage {
             uint64_t type;
@@ -26,6 +31,7 @@ namespace os {
             uint32_t handleRights[4];
             uint32_t handleOptions[4];
     };
+
     /* 提供消息收发、端点及句柄操作的用户态封装。 */
     class Ipc {
         public:
@@ -33,12 +39,12 @@ namespace os {
             class Handle {
                 public:
                     enum class Flag : uint32_t {
-                        NoInherit   = 1,
+                        NoInherit = 1,
                         CloseOnExec = 2
                     };
                     explicit Handle(uint64_t value = 0, bool owned = true);
                     ~Handle();
-                    Handle(const Handle&)            = delete;
+                    Handle(const Handle&) = delete;
                     Handle& operator=(const Handle&) = delete;
                     Handle(Handle&& other) noexcept;
                     Handle& operator=(Handle&& other) noexcept;
@@ -66,16 +72,17 @@ namespace os {
                     uint64_t value_{};
                     bool owned_{};
             };
+
             /* 封装消息数据和随消息传递的句柄。 */
             class Msg {
                 public:
                     enum class HandleOption : uint32_t {
                         RestrictRights = 1,
-                        Move           = 2
+                        Move = 2
                     };
                     Msg();
                     ~Msg();
-                    Msg(const Msg&)            = delete;
+                    Msg(const Msg&) = delete;
                     Msg& operator=(const Msg&) = delete;
                     Msg(Msg&& other) noexcept;
                     Msg& operator=(Msg&& other) noexcept;
@@ -100,12 +107,13 @@ namespace os {
                     void sent(bool success);
                     int accepted();
             };
+
             /* 提供管道创建、读写及状态查询接口。 */
             class Pipe {
                 public:
                     Pipe();
                     ~Pipe();
-                    Pipe(const Pipe&)            = delete;
+                    Pipe(const Pipe&) = delete;
                     Pipe& operator=(const Pipe&) = delete;
                     Pipe(Pipe&&) noexcept;
                     Pipe& operator=(Pipe&&) noexcept;
@@ -135,12 +143,13 @@ namespace os {
                     uint64_t identity_{};
                     int error_{};
             };
+
             /* 提供命名消息队列的打开、发送、接收和属性操作。 */
             class MsgQueue {
                 public:
                     MsgQueue();
                     ~MsgQueue();
-                    MsgQueue(const MsgQueue&)            = delete;
+                    MsgQueue(const MsgQueue&) = delete;
                     MsgQueue& operator=(const MsgQueue&) = delete;
                     int close();
                     int open(const char* name, int flags,
@@ -175,9 +184,10 @@ namespace os {
                     Handle cleanup_[4];
                     char name_[64]{};
             };
+
             Ipc();
             ~Ipc();
-            Ipc(const Ipc&)            = delete;
+            Ipc(const Ipc&) = delete;
             Ipc& operator=(const Ipc&) = delete;
             Ipc& operator=(Ipc&& other) noexcept;
             int destroy();

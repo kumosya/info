@@ -11,7 +11,7 @@
 #include "kernel/sync.h"
 #include "kernel/syscall.h"
 #include "service/common/identity.h"
-#include "service/common/kernel-requests.h"
+#include "service/common/protocol.h"
 #include "service/common/records.h"
 #include <os/device.h>
 #include <os/ipc.h>
@@ -908,7 +908,7 @@ namespace task {
             int exitCode();
             void recordSignalExit(uint32_t signal,
                                   const FaultRecord* fault = nullptr);
-            void getExitInfo(os::wire::ExitInfo& info);
+            void getExitInfo(services::wire::ExitInfo& info);
             OsSignalInfo childSignalInfo();
             void notifyChildExit(Task& child);
             bool dumpable() const {
@@ -927,12 +927,12 @@ namespace task {
             int32_t initialNice() const { return initialNice_; }
             uint64_t mainThreadId();
             uint32_t threadCount();
-            bool threadInfo(uint64_t minimumTid, os::wire::ThreadInfo& info);
-            void credentials(os::wire::CredentialInfo& info);
+            bool threadInfo(uint64_t minimumTid, services::wire::ThreadInfo& info);
+            void credentials(services::wire::CredentialInfo& info);
             int changeCredentials(unsigned operation, uint32_t first,
                                   uint32_t second, uint32_t third,
                                   const uint32_t* groups = nullptr);
-            bool recordImage(const os::wire::ImageMapping& mapping);
+            bool recordImage(const services::wire::ImageMapping& mapping);
             void recordAuxiliary(uint64_t headers, uint64_t count,
                                  uint64_t entry, uint64_t loader);
             bool inheritForFork(Task& parent);
@@ -940,7 +940,7 @@ namespace task {
                             Thread* currentThread);
             int waitForChild(int64_t taskId, Thread* waiter, int& status,
                              uint32_t options, uint64_t& childId,
-                             os::wire::ChildEvent* event = nullptr);
+                             services::wire::ChildEvent* event = nullptr);
             void notifyChildStateChange();
             bool attachThread(Thread* thread);
             void retireJoinedThread(Thread* thread);
@@ -953,10 +953,10 @@ namespace task {
             bool hasCapability(uint64_t capability) const;
             bool isSystemService() const { return systemService_; }
             void setSystemService(bool value) { systemService_ = value; }
-            os::ServiceRole serviceRole() const { return serviceRole_; }
-            void setServiceRole(os::ServiceRole role) {
+            services::ServiceRole serviceRole() const { return serviceRole_; }
+            void setServiceRole(services::ServiceRole role) {
                 serviceRole_ = role;
-                if (role != os::ServiceRole::None) managedService_ = true;
+                if (role != services::ServiceRole::None) managedService_ = true;
             }
             bool managedService() const { return managedService_; }
             void setManagedService(bool value) { managedService_ = value; }
@@ -1008,7 +1008,7 @@ namespace task {
         private:
             uint32_t uid_ = 0, gid_ = 0, effectiveUid_ = 0, effectiveGid_ = 0;
             uint32_t savedUid_ = 0, savedGid_ = 0, supplementaryCount_ = 0;
-            uint32_t supplementaryGroups_[os::maximumSupplementaryGroups]{};
+            uint32_t supplementaryGroups_[services::maximumSupplementaryGroups]{};
             uint32_t terminalId_         = 0;
             uint32_t terminalKind_       = 0;
             uint64_t startedNanoseconds_ = 0, cpuNanoseconds_ = 0;
@@ -1016,7 +1016,7 @@ namespace task {
             uint32_t commandLineSize_    = 0;
             bool systemService_          = false;
             bool managedService_         = false;
-            os::ServiceRole serviceRole_ = os::ServiceRole::None;
+            services::ServiceRole serviceRole_ = services::ServiceRole::None;
             friend void task::init();
             friend class TaskReclaimer;
             friend class CoreDump;
@@ -1052,7 +1052,7 @@ namespace task {
             Thread* childWaiters_;
             int exitCode_;
             uint32_t exitSignal_           = 0;
-            os::wire::CoreState coreState_ = os::wire::CoreState::None;
+            services::wire::CoreState coreState_ = services::wire::CoreState::None;
             uint64_t coreDeadline_         = 0;
             uint64_t coreLimit_            = 8 * 1024 * 1024,
                      coreHardLimit_        = 8 * 1024 * 1024;
@@ -1063,7 +1063,7 @@ namespace task {
             bool exitNotified_   = false;
             FaultRecord exitFault_{};
             OsSignalInfo childSignalInfo_{};
-            os::wire::ImageMapping imageMappings_[64]{};
+            services::wire::ImageMapping imageMappings_[64]{};
             uint32_t imageMappingCount_ = 0;
             uint64_t auxiliary_[14]{};
             bool acceptsThreads_;
@@ -1208,7 +1208,7 @@ namespace task {
     void expireUserAddressWaits(uint64_t now);
     uint32_t getSchedulerWeight(int32_t nice);
 
-    bool serviceCapabilities(os::ServiceRole role, uint64_t& capabilities);
+    bool serviceCapabilities(services::ServiceRole role, uint64_t& capabilities);
     elf::ElfLoadError buildUserStack(
         uint64_t rootPhysicalAddress, const char* programName,
         uint32_t argumentCount, const char* const* arguments,
@@ -1218,7 +1218,7 @@ namespace task {
 
     Task* startInitialProgram(const ::BootInfo* bootInfo);
 
-    TaskReference loadProgram(os::ProgramId program, Task* parent,
+    TaskReference loadProgram(services::ProgramId program, Task* parent,
                               uint64_t bootstrapHandle     = 0,
                               uint32_t argumentCount       = 0,
                               const char* const* arguments = nullptr,
@@ -1231,7 +1231,7 @@ namespace task {
         uint32_t argumentCount, const char* const* arguments,
         const elf::ElfSharedImage* sharedImages, uint32_t sharedImageCount,
         elf::ElfLoadError* loadError = nullptr,
-        os::ServiceRole serviceRole  = os::ServiceRole::None,
+        services::ServiceRole serviceRole  = services::ServiceRole::None,
         bool newSession = false, bool managedService = false,
         uint32_t terminalKind = 0, uint32_t terminalIndex = 0);
 
@@ -1243,9 +1243,9 @@ namespace task {
             void request(Task& task);
             void capture(Task& task);
             bool pending(Task& task);
-            void query(os::wire::CorePolicy& result);
-            int configure(Task& caller, const os::wire::CorePolicy& policy);
-            int acquire(Task& caller, os::wire::CoreTicket& ticket);
+            void query(services::wire::CorePolicy& result);
+            int configure(Task& caller, const services::wire::CorePolicy& policy);
+            int acquire(Task& caller, services::wire::CoreTicket& ticket);
             int read(Task& caller, uint64_t ticket, uint64_t offset,
                      void* destination, uint64_t size);
             int finish(Task& caller, uint64_t ticket, bool success);
@@ -1262,13 +1262,13 @@ namespace task {
                 private:
                     Task* task    = nullptr;
                     uint8_t* data = nullptr;
-                    os::wire::CoreTicket ticket{};
+                    services::wire::CoreTicket ticket{};
                     uint64_t writer = 0;
                     bool capturing  = false;
             };
             SpinLock lock;
             Slot slots[2]{};
-            os::wire::CorePolicy policy{0, 8 * 1024 * 1024, 2, 10000};
+            services::wire::CorePolicy policy{0, 8 * 1024 * 1024, 2, 10000};
             uint64_t nextTicket = 1;
             bool watchdogReady  = false;
     };
@@ -1331,7 +1331,7 @@ namespace task {
             };
 
             Domain
-                domains[static_cast<uint32_t>(os::ServiceRole::MessageQueue) +
+                domains[static_cast<uint32_t>(services::ServiceRole::MessageQueue) +
                         1]{};
             SpinLock lock;
     };

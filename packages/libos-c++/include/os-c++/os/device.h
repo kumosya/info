@@ -4,8 +4,11 @@
 
 #pragma once
 #include <cstdint>
+
 namespace os {
+
     class Ipc;
+
     /* 封装对应设备类别的查询、访问及资源操作。 */
     class Device {
         public:
@@ -47,12 +50,16 @@ namespace os {
             class Mmio;
             class Frame;
             class Irq;
-            Device(const Device&)            = delete;
+            Device(const Device&) = delete;
             Device& operator=(const Device&) = delete;
             ~Device();
             Device();
             Device& operator=(Device&& other) noexcept;
             int stop();
+            int readPort(uint16_t port, uint32_t width, void* data,
+                         uint32_t count = 1);
+            int writePort(uint16_t port, uint32_t width, const void* data,
+                          uint32_t count = 1);
             int open(const Pci& function);
             int close();
             uint64_t getHandle() const;
@@ -63,11 +70,14 @@ namespace os {
             uint64_t handle_{};
             Pci function_;
             int error_{};
+            int portIo(uint16_t port, uint32_t width, void* data,
+                       uint32_t count, bool write);
     };
+
     /* 管理设备 DMA 缓冲区的申请、查询和释放。 */
     class Device::Dma {
         public:
-            Dma(const Dma&)            = delete;
+            Dma(const Dma&) = delete;
             Dma& operator=(const Dma&) = delete;
             ~Dma();
             Dma();
@@ -86,10 +96,11 @@ namespace os {
             uint64_t handle_{}, virtualAddress_{}, deviceAddress_{}, size_{};
             int error_{};
     };
+
     /* 管理设备寄存器物理区间到当前任务的映射。 */
     class Device::Mmio {
         public:
-            Mmio(const Mmio&)            = delete;
+            Mmio(const Mmio&) = delete;
             Mmio& operator=(const Mmio&) = delete;
             ~Mmio();
             Mmio();
@@ -108,18 +119,19 @@ namespace os {
             uint8_t bar_{};
             int error_{};
     };
+
     /* 管理显示缓冲区映射，让用户态显示服务可以访问像素存储。 */
     class Device::Frame {
         public:
             enum class Format : uint8_t {
                 Unknown = 0,
-                Rgb     = 1,
-                Bgr     = 2,
-                Argb    = 3,
-                Rgba    = 4,
-                Bgra    = 5
+                Rgb = 1,
+                Bgr = 2,
+                Argb = 3,
+                Rgba = 4,
+                Bgra = 5
             };
-            Frame(const Frame&)            = delete;
+            Frame(const Frame&) = delete;
             Frame& operator=(const Frame&) = delete;
             ~Frame();
             Frame();
@@ -149,10 +161,11 @@ namespace os {
             Format format_{};
             int error_{};
     };
+
     /* 管理硬件中断与消息端点的绑定，以及处理后的确认。 */
     class Device::Irq {
         public:
-            Irq(const Irq&)            = delete;
+            Irq(const Irq&) = delete;
             Irq& operator=(const Irq&) = delete;
             ~Irq();
             Irq();

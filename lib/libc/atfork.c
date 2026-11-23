@@ -16,6 +16,8 @@ extern void __libc_errno_fork_child(uint64_t);
 extern void __libc_stdio_fork_prepare(void), __libc_stdio_fork_parent(void), __libc_stdio_fork_child(void);
 extern int __libc_fork_child_runtime(void);
 extern void __osinfo_runtime_fork_prepare(void), __osinfo_runtime_fork_parent(void), __osinfo_runtime_fork_child(void);
+extern void __libc_allocator_fork_prepare(void), __libc_allocator_fork_parent(void), __libc_allocator_fork_child(void);
+extern void __libc_exit_fork_prepare(void), __libc_exit_fork_parent(void), __libc_exit_fork_child(void);
 
 int pthread_atfork(void (*prepare)(void), void (*parent)(void), void (*child)(void)) {
     libcWaitLock(&handlersLock);
@@ -46,12 +48,16 @@ int64_t __libc_fork(void) {
     __libc_random_fork_prepare();
     /* Keep concurrent registration coherent for future forks in the child. */
     libcWaitLock(&handlersLock);
+    __libc_allocator_fork_prepare();
+    __libc_exit_fork_prepare();
     __osinfo_runtime_fork_prepare();
     const uint64_t previous = __libc_os_get_thread_id();
     int64_t result = __libc_os_fork_task();
     if (!result) {
         handlersLock = 0; forkLock = 0;
         __osinfo_runtime_fork_child();
+        __libc_exit_fork_child();
+        __libc_allocator_fork_child();
         __libc_errno_fork_child(previous);
         __libc_random_fork_child();
         __libc_environment_fork_child();
@@ -69,6 +75,8 @@ int64_t __libc_fork(void) {
         const int handshake = result > 0 ? __libc_os_fork_receive(endpoint, result) : 0;
         __libc_os_close_handle(endpoint);
         __osinfo_runtime_fork_parent();
+        __libc_exit_fork_parent();
+        __libc_allocator_fork_parent();
         libcWaitUnlock(&handlersLock);
         __libc_random_fork_parent();
         __libc_environment_fork_parent();

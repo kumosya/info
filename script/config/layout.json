@@ -184,7 +184,13 @@
     },
     {
       "type": "copy",
-      "source": "{build}/lib/ld-osinfo-x86-64.so",
+      "source": "{build}/lib/ld-osinfo-amd64.so",
+      "target": "lib/ld-osinfo-amd64.so",
+      "mode": "0755"
+    },
+    {
+      "type": "copy",
+      "source": "{build}/lib/ld-osinfo-amd64.so",
       "target": "lib/ld-osinfo-x86-64.so",
       "mode": "0755"
     },
@@ -282,8 +288,8 @@
     },
     {
       "type": "sdk-file",
-      "source": "{build}/lib/ld-osinfo-x86-64.so",
-      "target": "lib/ld-osinfo-x86-64.so"
+      "source": "{build}/lib/ld-osinfo-amd64.so",
+      "target": "lib/ld-osinfo-amd64.so"
     },
     {
       "type": "sdk-file",

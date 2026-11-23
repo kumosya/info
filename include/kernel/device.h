@@ -7,12 +7,13 @@
 
 #include <cstdint>
 
-#include "kernel/sync.h"
 #include <os/device.h>
 #include <os/ipc.h>
 #include <os/mm.h>
 #include <os/service.h>
 #include <os/task.h>
+
+#include "kernel/sync.h"
 
 namespace task {
     class Task;
@@ -32,6 +33,7 @@ namespace device {
     void emergencyHex(uint64_t value);
 
     void initDevices(const ::BootInfo* bootInfo);
+    
     /* 保存启动映像的内存位置，向存储服务提供只读访问。 */
     class BootImage {
         public:
@@ -51,8 +53,8 @@ namespace device {
     class FrameMapping {
         public:
             static FrameMapping* create(task::Task& task, uint64_t address,
-                                        os::wire::DisplayInfo& info);
-            bool query(task::Task& task, os::wire::DisplayInfo& info);
+                                        services::wire::DisplayInfo& info);
+            bool query(task::Task& task, services::wire::DisplayInfo& info);
             void destroy();
 
         private:
@@ -61,9 +63,9 @@ namespace device {
     };
 
     uint64_t reserveDisplayAddress(uint64_t size);
-    bool describeDisplay(uint64_t address, os::wire::DisplayInfo& info);
+    bool describeDisplay(uint64_t address, services::wire::DisplayInfo& info);
     bool mapFramebuffer(task::Task& task, uint64_t userAddress,
-                        os::wire::DisplayInfo& info,
+                        services::wire::DisplayInfo& info,
                         uint64_t* generation = nullptr);
 
     int initPs2();
@@ -72,8 +74,11 @@ namespace device {
     /* 记录设备寄存器的物理区间及映射状态。 */
     class MmioRegion {
         public:
-            static MmioRegion* map(task::Task& task,
-                                   const os::wire::PciFunctionInfo& function,
+            MmioRegion() = default;
+            MmioRegion(const MmioRegion&) = delete;
+            MmioRegion& operator=(const MmioRegion&) = delete;
+            bool map(task::Task& task,
+                                   const services::wire::PciFunctionInfo& function,
                                    uint8_t barIndex, uint64_t userAddress,
                                    uint64_t size, uint64_t offset = 0);
             uint64_t address() const;
@@ -94,9 +99,12 @@ namespace device {
     /* 记录设备可直接访问的内存及其任务、设备归属。 */
     class DmaBuffer {
         public:
-            static DmaBuffer* create(task::Task& task, ResourceDomain& domain,
+            DmaBuffer() = default;
+            DmaBuffer(const DmaBuffer&) = delete;
+            DmaBuffer& operator=(const DmaBuffer&) = delete;
+            bool create(task::Task& task, ResourceDomain& domain,
                                      uint64_t userAddress,
-                                     os::wire::DmaBufferInfo& info,
+                                     services::wire::DmaBufferInfo& info,
                                      uint64_t size      = 4096,
                                      uint64_t alignment = 4096);
             void destroy();
@@ -115,6 +123,9 @@ namespace device {
     /* 把任务持有的设备映射、DMA 等资源归为一个可统一回收的集合。 */
     class ResourceDomain {
         public:
+            ResourceDomain() = default;
+            ResourceDomain(const ResourceDomain&) = delete;
+            ResourceDomain& operator=(const ResourceDomain&) = delete;
             /* 汇总设备资源占用数量，供状态查询使用。 */
             class Statistics {
                     friend class ResourceDomains;
@@ -136,6 +147,8 @@ namespace device {
             bool attach(DmaBuffer& buffer);
             void closeLease();
             int stop(task::Task& owner);
+            int portIo(task::Task& owner, uint16_t port, uint32_t width,
+                       uint32_t count, bool write, uint8_t* data);
 
         private:
             friend class ResourceDomains;
@@ -151,12 +164,16 @@ namespace device {
             };
             State state_       = State::Free;
             task::Task* owner_ = nullptr;
-            os::wire::PciFunctionInfo function_{};
+            services::wire::PciFunctionInfo function_{};
             uint32_t references_ = 0, dmaPages_ = 0;
             bool exiting_ = false, addressSpaceGone_ = false;
             uint64_t controlMapping_ = 0, controlSize_ = 0;
             uint64_t addressGeneration_ = 0;
             volatile uint8_t* status_   = nullptr;
+            bool ide_ = false;
+            bool ahci_ = false;
+            uint32_t ahciPorts_ = 0;
+            uint16_t commandPorts_[2]{}, controlPorts_[2]{};
             uint64_t barBases_[6]{}, barSizes_[6]{};
             MmioRegion* mmio_ = nullptr;
             DmaBuffer* dma_   = nullptr;
@@ -164,6 +181,9 @@ namespace device {
             void unmap(uint64_t address, uint64_t size, bool& mapped,
                        uint64_t physical);
             bool reset();
+            void recycle();
+            bool claimAhci(task::Task& owner, const services::wire::PciFunctionInfo& function,
+                           uint64_t controlAddress);
     };
 
     /* 管理各任务的设备资源，在任务退出或更换地址空间时按顺序清理。 */
@@ -174,11 +194,11 @@ namespace device {
             bool owned(task::Task& owner);
             Statistics statistics();
             ResourceDomain* claim(task::Task& owner,
-                                  const os::wire::PciFunctionInfo& function);
+                                  const services::wire::PciFunctionInfo& function);
             ResourceDomain* find(task::Task& owner,
-                                 const os::wire::PciFunctionInfo& function);
+                                 const services::wire::PciFunctionInfo& function);
             bool writeConfiguration(uint64_t owner,
-                                    const os::wire::PciFunctionInfo& function,
+                                    const services::wire::PciFunctionInfo& function,
                                     uint16_t offset, uint32_t value);
             void ownerExiting(task::Task& owner);
             void addressSpaceReleased(task::Task& owner);
@@ -196,7 +216,10 @@ namespace device {
     /* 把硬件中断关联到通知端点，并管理屏蔽、确认和关闭。 */
     class InterruptBinding {
         public:
-            static InterruptBinding* create(task::Task& task, uint8_t irq,
+            InterruptBinding() = default;
+            InterruptBinding(const InterruptBinding&) = delete;
+            InterruptBinding& operator=(const InterruptBinding&) = delete;
+            bool create(task::Task& task, uint8_t irq,
                                             task::Endpoint* endpoint,
                                             bool levelTriggered = false);
             uint8_t irq() const;
@@ -206,11 +229,11 @@ namespace device {
             void destroy();
 
         private:
-            uint8_t irq_;
-            task::Endpoint* endpoint_;
-            task::Task* owner_;
-            uint32_t apicId_;
-            bool levelTriggered_;
+            uint8_t irq_ = 0;
+            task::Endpoint* endpoint_ = nullptr;
+            task::Task* owner_ = nullptr;
+            uint32_t apicId_ = 0;
+            bool levelTriggered_ = false;
     };
 
 }  // namespace device

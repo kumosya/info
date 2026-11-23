@@ -20,13 +20,13 @@
 #include "kernel/task.h"
 #include "kernel/time.h"
 #include "service/common/identity.h"
-#include "service/common/kernel-requests.h"
+#include "service/common/protocol.h"
 #include "service/common/records.h"
 #include <os/device.h>
 
 namespace task {
 
-    // 这些 MSR 配置 x86-64
+    // 这些 MSR 配置 amd64
     // 硬件系统调用入口，不增加服务操作；用户范围排除低地址保护区及高半区。
     constexpr uint32_t ia32Efer           = 0xc0000080;
     constexpr uint32_t ia32Star           = 0xc0000081;
@@ -38,7 +38,7 @@ namespace task {
 
     // 消息复制和 entry.S
     // 都依赖这些布局；前十五个字保存通用寄存器，最后三个保存返回用户态的信息，改顺序必须同步修改汇编。
-    static_assert(sizeof(SignalAction) == sizeof(os::wire::SignalAction));
+    static_assert(sizeof(SignalAction) == sizeof(services::wire::SignalAction));
     static_assert(__is_standard_layout(SignalAction));
     static_assert(sizeof(SyscallContext) == 18 * sizeof(uint64_t));
     static_assert(__builtin_offsetof(SyscallContext, rax) == 14 * 8);
@@ -73,7 +73,7 @@ namespace task {
     }
 
     /*
-     * 配置 x86-64 系统调用入口寄存器和入口地址，使用户态 syscall
+     * 配置系统调用入口寄存器和入口地址，使用户态 syscall
      * 指令进入内核公共入口。
      */
     void initSyscall() {
@@ -378,10 +378,10 @@ namespace task {
         ServiceCall call(operation);
         const bool context = endpoint->handlesContext(operation);
         const bool large =
-            operation == static_cast<uint64_t>(os::TaskOperation::Fork) ||
+            operation == static_cast<uint64_t>(services::TaskOperation::Fork) ||
             operation ==
-                static_cast<uint64_t>(os::TaskOperation::ReplaceImage) ||
-            operation == static_cast<uint64_t>(os::TaskOperation::SignalReturn);
+                static_cast<uint64_t>(services::TaskOperation::ReplaceImage) ||
+            operation == static_cast<uint64_t>(services::TaskOperation::SignalReturn);
 
         return context && large
                    ? call.context(*endpoint, userRequest, userReply, deadline)

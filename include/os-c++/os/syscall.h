@@ -22,6 +22,9 @@
 #define OS_SYS_READINESS 20U
 #define OS_SYS_COUNT 7U
 
+/* exec 和任务创建共同采用的单个 ELF 文件大小上限。 */
+#define OS_TASK_IMAGE_MAX_BYTES (128ULL * 1024 * 1024)
+
 #ifndef __ASSEMBLER__
 #include <stddef.h>
 #include <stdint.h>
@@ -31,7 +34,7 @@ typedef struct {
         uint64_t generation, signalGeneration, token;
 } OsReadinessState;
 
-/* Native x86-64 signal ABI. Keep in sync with POSIX ucontext_t/siginfo_t. */
+/* Native amd64 signal ABI. Keep in sync with POSIX ucontext_t/siginfo_t. */
 typedef struct {
         int signo, code, error, pid;
         unsigned uid;
@@ -45,11 +48,13 @@ typedef struct {
         int flags;
         size_t size;
 } OsSignalStack;
+
 typedef struct {
         int64_t registers[23];
         void* fpregs;
         uint64_t reserved[8];
 } OsMachineContext;
+
 typedef struct {
         uint64_t flags;
         void* link;
@@ -87,34 +92,36 @@ enum {
 
 #ifdef __cplusplus
 #include <cstdint>
+
 namespace os {
+
     enum class SyscallNumber : uint64_t {
-        SendMessage    = OS_SYS_SEND_MESSAGE,
+        SendMessage = OS_SYS_SEND_MESSAGE,
         ReceiveMessage = OS_SYS_RECEIVE_MESSAGE,
-        CallService    = OS_SYS_CALL_SERVICE,
-        ReplyMessage   = OS_SYS_REPLY_MESSAGE,
-        WaitAddress    = OS_SYS_WAIT_ADDRESS,
-        WakeAddress    = OS_SYS_WAKE_ADDRESS,
-        Readiness      = OS_SYS_READINESS,
-        Count          = OS_SYS_COUNT
+        CallService = OS_SYS_CALL_SERVICE,
+        ReplyMessage = OS_SYS_REPLY_MESSAGE,
+        WaitAddress = OS_SYS_WAIT_ADDRESS,
+        WakeAddress = OS_SYS_WAKE_ADDRESS,
+        Readiness = OS_SYS_READINESS,
+        Count = OS_SYS_COUNT
     };
     enum class ErrorCode : int64_t {
-        Success          = 0,
-        InvalidArgument  = -1,
-        InvalidHandle    = -2,
+        Success = 0,
+        InvalidArgument = -1,
+        InvalidHandle = -2,
         PermissionDenied = -3,
-        NotFound         = -4,
-        OutOfMemory      = -5,
-        WouldBlock       = -6,
-        NotSupported     = -7,
-        Busy             = -8,
-        Timeout          = -9,
-        Interrupted      = -10,
-        IoError          = -11,
-        Cancelled        = -12,
-        EndpointClosed   = -13,
-        PeerDied         = -14,
-        BadAddress       = -15
+        NotFound = -4,
+        OutOfMemory = -5,
+        WouldBlock = -6,
+        NotSupported = -7,
+        Busy = -8,
+        Timeout = -9,
+        Interrupted = -10,
+        IoError = -11,
+        Cancelled = -12,
+        EndpointClosed = -13,
+        PeerDied = -14,
+        BadAddress = -15
     };
     struct IpcMessage;
     void notifyReadiness();

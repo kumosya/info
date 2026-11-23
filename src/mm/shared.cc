@@ -11,8 +11,9 @@ namespace mm {
      * 解析共享内存请求中的句柄和偏移，检查对象大小，再把区域关联到该后备对象。
      * 取得的引用由后备记录统一管理。
      */
-    int SharedMemoryManager::attach(Backing& backing, Region& region,
-                                    const os::IpcMessage& request) {
+    int SharedMemoryManager::attach(const os::IpcMessage& request) {
+        Backing& backing = backing_;
+        Region& region = region_;
         if (request.handleCount != 1 || (request.data[3] & 4095) ||
             request.data[3] > UINT64_MAX - region.size) {
             return -1;
@@ -37,14 +38,14 @@ namespace mm {
             return -2;
         }
 
-        backing.handle   = duplicate;
+        backing.handle = duplicate;
         backing.writable = rights & 2;
 
         // 最高权限来源于原句柄是否可写，后续 mprotect
         // 不能把只读共享对象提升成可写。
         region.maximumProtection = backing.writable ? 7 : 5;
-        region.offset            = request.data[3];
-        region.shared            = true;
+        region.offset = request.data[3];
+        region.shared = true;
 
         return 0;
     }

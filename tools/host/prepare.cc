@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <functional>
 #include <unistd.h>
 
 #include "host.h"
@@ -80,6 +81,18 @@ namespace host {
             cursor = next;
         }
         if (cursor != end) throw std::runtime_error("invalid ZIP entry count");
+
+        // ZIP 内容未变化时保留已解出的本地包，避免再次配置把新编译的 INPK 覆盖回旧版本。
+        const std::string identity = fs::absolute(archive).lexically_normal().string();
+        const std::string digest = capture({"tools/inpkg", "digest", identity});
+        const fs::path marker = build / "bundle-imports" /
+            (std::to_string(std::hash<std::string>{}(identity)) + ".state");
+        const std::string stamp = identity + '\n' + digest;
+        const bool complete = std::all_of(paths.begin(), paths.end(),
+            [&](const std::string& name) { return fs::exists(inside(root, name)); });
+        if (complete && fs::is_regular_file(marker) && read(marker) == stamp) {
+            return;
+        }
         fs::create_directories(build);
         std::string pattern = (build / ".unpack-XXXXXX").string();
         std::vector<char> temporary(pattern.begin(), pattern.end());
@@ -104,6 +117,7 @@ namespace host {
                     fs::create_directories(destination);
             }
             fs::remove_all(stage);
+            write(marker, stamp);
         } catch (...) {
             fs::remove_all(stage);
             throw;

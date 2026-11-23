@@ -1,6 +1,6 @@
 # 存储服务（src/device/storage）
 
-storage 管理 PCI 发现的 VirtIO Block，以及 GRUB 从光盘加载的 rootfs 内存块设备，提供 512 字节块 I/O、刷新和分区枚举。fs 负责格式探测与挂载。
+storage 管理 PCI 发现的 VirtIO Block、AHCI SATA、IDE ATA 硬盘，以及 GRUB 加载的 rootfs 内存块设备，提供 512 字节块 I/O、刷新和分区枚举。fs 负责格式探测与挂载。
 
 纯光盘启动时，ISO 中包含完整 /boot/rootfs.ext3，GRUB 通过 module2 加载并命名 rootfs。Ring0 的 `src/kernel/device/storage/boot_image.cc` 仅允许固定 storage 身份访问该保留模块，校验扇区范围并复制数据；Ring3 的 `include/service/device/storage/boot_image.h` 将其接入现有存储协议，节点为 /dev/ram0，类型 BootImage，主号 1，路径身份 boot-rootfs。根卷通过 LABEL=OSINFO_ROOT 挂载，写入只在本次启动内存中保留。
 
@@ -9,9 +9,9 @@ storage 管理 PCI 发现的 VirtIO Block，以及 GRUB 从光盘加载的 rootf
 每块整盘和每个有效分区都有独立节点，明确保存驱动索引、起始 LBA、长度、父设备和分区号。不按节点序号猜测所属磁盘。
 
 - 最多 8 个存储后端、32 个块节点；rootfs 内存模块存在时占一个后端槽位。
-- 整盘命名 vda、vdb，分区命名 vda1、vda2 等。
-- 主号 252，次号为“控制器索引 × 256 + 分区号”，整盘分区号为 0。
-- PCI 位置形成 pci-0000:BB:DD.F[-partN]，供 fs 提供 by-path。
+- VirtIO 整盘使用 vd 名称和主号 252，AHCI 使用 sd 名称和主号 8，IDE 使用 hd 名称和主号 3。分区号追加在整盘名称后。
+- 次号为“驱动索引 × 256 + 分区号”，整盘分区号为 0。
+- PCI 位置形成 pci-0000:BB:DD.F[-ata-N][-partN]，ATA 设备包含端口或通道编号，供 fs 提供 by-path。
 - partition.h 解析 MBR 主分区与全部有效 GPT 分区，校验 GPT 头及分区表 CRC。
 - GPT PARTUUID 来自唯一分区 GUID；MBR 使用磁盘签名和原始分区槽号。
 - 相同 PCI IRQ 只绑定一次，按 PCI INTx 配置为低电平触发。内核先屏蔽该 IRQ，通知后检查各控制器完成队列并读取设备 ISR，最后使用绑定句柄调用 acknowledgeIrq 重新启用中断，避免未确认的高优先级中断压住调度时钟。
@@ -33,7 +33,7 @@ storage 管理 PCI 发现的 VirtIO Block，以及 GRUB 从光盘加载的 rootf
 
 完成通知为 storageCompletionNotification。设备 ID 在请求首字高 8 位，低 56 位是相对 LBA。每次请求按明确映射路由并校验边界。
 
-统计按父后端归集，以工作线程收到的读、写或刷新 IPC 为单位。客户端拆分后的每批计一次，内部队列与分区探测不重复计数。无法识别目标的请求和 SDK 在本地拒绝的请求不计入设备统计。超时计数来自服务处理结果，客户端提前结束 IPC 等待不会另加一次。异步通知投递失败不改变对应 I/O 的结果。统计在服务重启后重新开始。
+统计按父后端归集，以接收线程接受的读、写或刷新 IPC 为单位。在途数量包括排队和执行中的请求。每条原请求完成时分别更新其确认字节数和结果；合并后的硬件命令共用这些原请求的统计记录。分区探测使用独立的驱动访问路径。统计在服务重启后重新开始。
 
 StorageDeviceIdentity 位于 `include/service/common/records.h`，包含节点 ID、主次号、父节点、分区号、起始块、名字、PARTUUID、PCI 路径。文件系统 UUID/LABEL 由 fs 读取卷元数据获得。
 
@@ -41,7 +41,75 @@ StorageDeviceIdentity 位于 `include/service/common/records.h`，包含节点 I
 
 ## 驱动与验证
 
-VirtIO 1.0  transport 发现 common/notify/ISR/device capability，映射 BAR、协商只读/flush、分配 DMA 队列及请求缓冲。每个请求槽使用独立 DMA 页，可传输连续扇区，短暂轮询后才让出 CPU；提交与完成由锁保护。fs 的 BlockDeviceClient 用同步批量请求代替逐扇区传递完成端点，IPC 缓冲放在受锁保护的实例内，避免挤占启动线程栈。多设备采用独立 MMIO/DMA 区域。当前不包括 AHCI/NVMe、MBR 扩展分区链或热插拔。
+VirtIO 1.0 transport 发现 common/notify/ISR/device capability，映射 BAR、协商只读与刷新能力，分配 DMA 队列和请求缓冲。每个请求槽使用独立 DMA 页；一批命令全部发布后通知设备，再逐条收取完成结果。AHCI 使用命令表和 DMA 数据缓冲访问 SATA ATA 磁盘；IDE 使用 ATA PIO，通过通道锁保持命令和数据传输的顺序。ATA IDENTIFY 提供寻址方式、容量、逻辑扇区大小和缓存刷新能力。
+
+## 请求队列对象
+
+| 对象 | 用途 |
+| --- | --- |
+| `storage::QueuePolicy` | 设备调度策略对象，保存批次大小、并行深度和传输上限。 |
+| `storage::RequestQueue` | 请求队列对象，保存等待和执行中的请求以及父设备的执行状态。 |
+| `storage::MergePlan` | 请求合并对象，记录合并后的范围及每条原请求在命令中的位置。 |
+| `storage::BlockTransfer` | 驱动命令对象，保存块范围、缓冲区、方向和完成结果。 |
+
+### 枚举
+
+| 枚举 | 成员 | 用途 |
+| --- | --- | --- |
+| `storage::QueueDirection` | `Read`、`Write`、`Barrier` | 读取、写入和单独执行的顺序边界。 |
+| `storage::QueueMode` | `Memory`、`Serial`、`Parallel` | 内存盘短批次、ATA 串行命令和 VirtIO 并行提交。 |
+
+### 常量
+
+| 名称 | 值 | 用途 |
+| --- | --- | --- |
+| `RequestQueue::capacity` | `64` | 排队和执行中的请求槽位总数。 |
+| `RequestQueue::maximumDevices` | `8` | 物理设备数量上限。 |
+| `RequestQueue::batchCapacity` | `7` | 一批原请求的数量上限。 |
+
+### 构造函数
+
+| 函数 | 用途 | 参数 |
+| --- | --- | --- |
+| `QueuePolicy(QueueMode mode, uint32_t blocks)` | 建立设备策略。 | `mode`：设备执行方式；`blocks`：设备单次传输的最大块数。 |
+| `RequestQueue()` | 建立空请求队列。 | — |
+| `MergePlan(uint32_t limit)` | 建立空合并计划。 | `limit`：每条合并命令的最大块数。 |
+| `BlockTransfer(uint64_t first, uint32_t count, void* buffer, size_t bytes, bool write)` | 保存驱动命令。 | `first`：物理起始块；`count`：块数；`buffer`：数据缓冲区；`bytes`：缓冲区字节数；`write`：写入方向。 |
+
+### 实例函数
+
+| 函数 | 用途 | 参数 |
+| --- | --- | --- |
+| `RequestQueue::enqueue(uint32_t device, QueueDirection direction, uint64_t first, uint32_t blocks)` | 接受一条请求并返回槽位。 | `device`：物理设备索引；`direction`：操作方向；`first`：物理起始块；`blocks`：块数。 |
+| `RequestQueue::take(const QueuePolicy* policies, uint32_t devices, uint32_t* indices)` | 领取一个可执行批次，返回请求数量。 | `policies`：各设备策略；`devices`：设备数量；`indices`：接收槽位编号的数组，容量为 `batchCapacity`。 |
+| `RequestQueue::finish(const uint32_t* indices, uint32_t count)` | 释放完成请求的槽位。 | `indices`：已完成的槽位编号；`count`：槽位数量。 |
+| `MergePlan::append(uint64_t first, uint32_t blocks)` | 把一个原请求加入合并计划。 | `first`：物理起始块；`blocks`：原请求块数。 |
+| `MergePlan::completed(uint32_t member, uint32_t prefix)` | 计算原请求已完成的块数。 | `member`：原请求索引；`prefix`：所属命令确认完成的连续块数。 |
+
+### Getter
+
+| 函数 | 用途 | 参数 |
+| --- | --- | --- |
+| `QueuePolicy::getBatchSize()` | 读取每批请求数量上限。 | — |
+| `QueuePolicy::getDepth()` | 读取同时发布的命令数量上限。 | — |
+| `QueuePolicy::getBlockLimit()` | 读取合并命令块数上限。 | — |
+| `MergePlan::getGroupCount()` | 读取合并后的命令数量。 | — |
+| `MergePlan::getGroup(uint32_t member)` | 读取原请求所属的命令索引。 | `member`：原请求索引。 |
+| `MergePlan::getOffset(uint32_t member)` | 读取原请求在所属命令中的块偏移。 | `member`：原请求索引。 |
+| `MergePlan::getFirst(uint32_t group)` | 读取命令的物理起始块。 | `group`：命令索引。 |
+| `MergePlan::getBlocks(uint32_t group)` | 读取命令块数。 | `group`：命令索引。 |
+| `BlockTransfer::getFirst()` | 读取物理起始块。 | — |
+| `BlockTransfer::getCount()` | 读取块数。 | — |
+| `BlockTransfer::getBuffer()` | 读取数据缓冲区地址。 | — |
+| `BlockTransfer::getBytes()` | 读取缓冲区字节数。 | — |
+| `BlockTransfer::isWrite()` | 读取写入方向。 | — |
+| `BlockTransfer::getResult()` | 读取驱动完成结果。 | — |
+
+### Setter
+
+| 函数 | 用途 | 参数 |
+| --- | --- | --- |
+| `BlockTransfer::setResult(TransferResult result)` | 保存驱动完成结果。 | `result`：状态与确认完成的连续块数。 |
 
 OS 本体默认使用 `make mkimg run` 从 VirtIO 硬盘启动。存储回归使用隔离镜像。InfoIDE 项目默认从项目内的 osinfo.img 启动；仅选择 --boot cdrom 时，才使用上述可选 rootfs 内存模块路径。
 

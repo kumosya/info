@@ -16,13 +16,13 @@
 #include "kernel/task.h"
 #include "kernel/time.h"
 #include "service/common/identity.h"
-#include "service/common/kernel-requests.h"
+#include "service/common/protocol.h"
 
 namespace task {
 
     // 每个受监护角色有独立恢复域；快照和日志保存在有上限的内存中，不是断电持久化，令牌属于域自己的对象表。
     constexpr uint32_t roles =
-        static_cast<uint32_t>(os::ServiceRole::MessageQueue) + 1;
+        static_cast<uint32_t>(services::ServiceRole::MessageQueue) + 1;
     constexpr uint64_t maximumBytes       = 4ULL * 1024 * 1024;
     constexpr uint32_t maximumObjects     = 16384;
     constexpr uint32_t maximumRecords     = 128;
@@ -137,8 +137,8 @@ namespace task {
             return -3;
         }
 
-        const os::TaskOperation op =
-            static_cast<os::TaskOperation>(request.type);
+        const services::TaskOperation op =
+            static_cast<services::TaskOperation>(request.type);
         const uint64_t* args = request.data;
         PreemptionSpinLockGuard guard(lock);
         Domain& domain = domains[role];
@@ -146,7 +146,7 @@ namespace task {
         // 等待旧实例退出且资源回收完成再更换实例代号；丢弃准备中的数据，保留已经提交的快照和日志。
 
         // 取得恢复域时先确认旧实例已停止并回收；其他协议阶段还需核对当前拥有者和实例代号。
-        if (op == os::TaskOperation::RecoveryAcquire) {
+        if (op == services::TaskOperation::RecoveryAcquire) {
             if (domain.owner != caller.id()) {
                 ::task::TaskReference previous = task::find(domain.owner);
 
@@ -206,7 +206,7 @@ namespace task {
         }
 
         // 检查恢复记录是否仍对应目标进程当前的 exec 代号。
-        if (op == os::TaskOperation::RecoveryGeneration) {
+        if (op == services::TaskOperation::RecoveryGeneration) {
             ::task::TaskReference target = task::find(args[1]);
 
             if (!target || target->isTerminated()) {
@@ -225,7 +225,7 @@ namespace task {
         }
 
         // 调用者取得一份只读日志引用，恢复域保留自己的原引用。
-        if (op == os::TaskOperation::RecoveryReadLog) {
+        if (op == services::TaskOperation::RecoveryReadLog) {
             if (args[1] >= domain.recordCount) {
                 return static_cast<int>(os::ErrorCode::NotFound);
             }
@@ -251,7 +251,7 @@ namespace task {
         // 预留阶段不发布数据；追加日志需要已有快照，并同时检查记录数和实际分配空间，不能只看有效数据长度。
 
         // 预留阶段只准备缓冲区，不让读者看见新快照；提交操作才推进公开序号。
-        if (op == os::TaskOperation::RecoveryPrepare) {
+        if (op == services::TaskOperation::RecoveryPrepare) {
             if (!args[1] || args[1] > maximumBytes || args[2] > 1) {
                 return -1;
             }
@@ -313,14 +313,14 @@ namespace task {
         }
 
         // 先检查模式、大小和序号，再固定源对象并复制；提交的是域内私有缓冲区，不保留调用者的临时内存。
-        if (op == os::TaskOperation::RecoveryCommit ||
-            op == os::TaskOperation::RecoveryAppend) {
+        if (op == services::TaskOperation::RecoveryCommit ||
+            op == services::TaskOperation::RecoveryAppend) {
             if (!domain.prepared || args[2] != domain.preparedBytes ||
                 args[3] != domain.sequence) {
                 return -1;
             }
 
-            const bool append = op == os::TaskOperation::RecoveryAppend;
+            const bool append = op == services::TaskOperation::RecoveryAppend;
 
             if (append != domain.preparedLog) {
                 return -1;
@@ -389,7 +389,7 @@ namespace task {
         }
 
         // 按对象身份去重；端点还须匹配接收者和角色保护条件，才能在原服务退出后继续存在。
-        if (op == os::TaskOperation::RecoveryPut) {
+        if (op == services::TaskOperation::RecoveryPut) {
             void* object    = nullptr;
             HandleType type = HandleType::None;
             uint32_t rights = 0;
@@ -452,7 +452,7 @@ namespace task {
         }
 
         // 将恢复域令牌转换成新实例本地句柄；受保护端点同时交接接收者，但其对象身份保持稳定。
-        if (op == os::TaskOperation::RecoveryGet) {
+        if (op == services::TaskOperation::RecoveryGet) {
             void* object    = nullptr;
             HandleType type = HandleType::None;
             uint32_t rights = 0;
@@ -480,7 +480,7 @@ namespace task {
         }
 
         // 丢弃已提交状态仍需要的代管引用之前，必须核对提交序号。
-        if (op == os::TaskOperation::RecoveryDrop) {
+        if (op == services::TaskOperation::RecoveryDrop) {
             if (args[2] != domain.sequence) {
                 return -1;
             }
@@ -507,7 +507,7 @@ namespace task {
         }
 
         // 令牌与下次枚举槽位分别返回，两者编码不同，不能互相替代。
-        if (op == os::TaskOperation::RecoveryList) {
+        if (op == services::TaskOperation::RecoveryList) {
             if (args[1] > UINT32_MAX) {
                 return -1;
             }

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  *
  * src/kernel/memory/virtual/virtual.cc
- * 操作 x86-64 页表，管理地址空间寿命，并按页跨地址空间复制数据。
+ * 操作页表，管理地址空间寿命，并按页跨地址空间复制数据。
  */
 
 #include "kernel/boot.h"
@@ -56,7 +56,7 @@ namespace mm {
                 continue;
             }
 
-            if (entry & (pageCacheDisable | pageWriteThrough)) {
+            if (entry & (pageCacheDisable | pageWriteCombining)) {
                 continue;
             }
 
@@ -434,6 +434,48 @@ namespace mm {
     /*
      * 记录并启用内核地址空间，初始化页表操作所需的锁和基础状态。
      */
+    /* 在启动其他 CPU 前，统一显存的内核别名与后续用户映射的缓存类型。 */
+    bool configureFramebufferCache(uint64_t physical, uint64_t size, uint64_t flags) {
+        if (!size || physical >= 64ULL * 1024 * 1024 * 1024 ||
+            size > 64ULL * 1024 * 1024 * 1024 - physical) {
+            return false;
+        }
+
+        const uint64_t first = physical & ~4095ULL;
+        const uint64_t end = (physical + size + 4095) & ~4095ULL;
+        task::InterruptSpinLockGuard guard(virtualMemoryLock);
+        asm volatile("wbinvd" : : : "memory");
+
+        for (uint64_t page = first; page < end; page += 4096) {
+            const uint64_t address = directMapBase + page;
+            PageTable* pml4 = getTable(kernelAddressSpaceRoot);
+            PageTable* pdpt = getTable(pml4->entries[(address >> 39) & 511]);
+            const uint64_t pdptEntry = pdpt->entries[(address >> 30) & 511];
+            if (!(pdptEntry & pagePresent) || (pdptEntry & (1ULL << 7))) {
+                return false;
+            }
+
+            PageTable* directory = getTable(pdptEntry);
+            const uint32_t index = (address >> 21) & 511;
+            if (!(directory->entries[index] & pagePresent)) {
+                return false;
+            }
+
+            PageTable* table = directory->entries[index] & (1ULL << 7)
+                ? splitLargePage(directory, index) : getTable(directory->entries[index]);
+            if (!table) {
+                return false;
+            }
+
+            uint64_t& entry = table->entries[(address >> 12) & 511];
+            entry = (entry & ~(pageCacheDisable | pageWriteCombining)) | flags;
+            asm volatile("invlpg (%0)" : : "r"(address) : "memory");
+        }
+
+        asm volatile("wbinvd" : : : "memory");
+        return true;
+    }
+
     void initVir(const BootInfo* bootInfo) {
         if (bootInfo == nullptr || bootInfo->getPageTableRoot() == 0) {
             device::serialWrite("[MEMORY] missing bootstrap page table root\n");
@@ -680,7 +722,7 @@ namespace mm {
             }
 
             if (!(flags & pageUser) ||
-                (flags & (pageCacheDisable | pageWriteThrough | (1ULL << 7)))) {
+                (flags & (pageCacheDisable | pageWriteCombining | (1ULL << 7)))) {
                 return 12;
             }
         }
@@ -1035,7 +1077,7 @@ namespace mm {
 
         constexpr uint64_t largePage = 1ULL << 7;
         constexpr uint64_t preservedFlags =
-            pageWritable | pageUser | pageWriteThrough | pageCacheDisable |
+            pageWritable | pageUser | pageWriteCombining | pageCacheDisable |
             pageGlobal | pageExternal | pageNoExecute;
         ::task::InterruptSpinLockGuard guard(virtualMemoryLock);
         PageTable* sourcePml4 = getTable(sourceRootPhysicalAddress);

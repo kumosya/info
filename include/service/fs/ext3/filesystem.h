@@ -1,28 +1,27 @@
-/*
- * 对应文件系统的格式识别和实现。
- */
+/* ext3 卷对象与磁盘字段编码。 */
 
 #pragma once
-
 #include <cstddef>
 #include <cstdint>
 
-#include "service/fs/block.h"
+#include "service/fs/vfs.h"
 
 namespace fs::ext3 {
 
-    using vfs::SectorDevice;
+    using fs::SectorDevice;
 
-    constexpr uint16_t superMagic          = 0xef53;
-    constexpr uint32_t rootInode           = 2;
-    constexpr uint16_t modeDirectory       = vfs::modeDirectory;
-    constexpr uint16_t modeRegular         = vfs::modeRegular;
-    constexpr uint32_t blockCacheSlotCount = 4096;
-    constexpr uint32_t cacheHashBuckets    = 8192;
-    constexpr uint32_t cacheNoSlot         = 0xffffffffU;
-    constexpr uint32_t readaheadWindow     = 4;
+    constexpr uint16_t superMagic = 0xef53;
+    constexpr uint32_t rootInode = 2;
+    constexpr uint16_t modeDirectory = fs::modeDirectory;
+    constexpr uint16_t modeRegular = fs::modeRegular;
+    // 保留 48 MiB 的最近数据，使重复启动大型程序时能复用文件内容。
+    constexpr uint32_t blockCacheSlotCount = 12288;
+    constexpr uint32_t cacheHashBuckets = 16384;
+    constexpr uint32_t cacheNoSlot = 0xffffffffU;
+    constexpr uint32_t readaheadWindow = 4;
 
 #pragma pack(push, 1)
+
     /* 按磁盘格式保存文件系统总体布局和容量信息。 */
     struct Superblock {
             uint32_t inodesCount;
@@ -100,27 +99,31 @@ namespace fs::ext3 {
             uint8_t nameLength;
             uint8_t fileType;
     };
+
 #pragma pack(pop)
 
     static_assert(sizeof(Superblock) == 1024);
     static_assert(sizeof(GroupDescriptor) == 32);
     static_assert(sizeof(Inode) == 128);
 
-    using FileStatus     = vfs::FileStatus;
-    using DirectoryEntry = vfs::DirectoryEntry;
+    using FileStatus = fs::FileStatus;
+    using DirectoryEntry = fs::DirectoryEntry;
 
     /* 实现本头文件对应的磁盘文件系统，并管理挂载实例的打开状态。 */
-    class Filesystem final : public vfs::FileSystem {
+    class Filesystem final : public fs::FileSystem {
         public:
-            bool mount(vfs::SectorDevice& device) override;
+            bool mount(fs::SectorDevice& device) override;
             bool lookup(const char* path, FileStatus& status) override;
             bool statInode(uint32_t inode, FileStatus& status) override;
+
             bool retainOpenFile(uint32_t inode) override {
                 return retainInode(inode);
             }
+
             bool releaseOpenFile(uint32_t inode) override {
                 return releaseInode(inode);
             }
+
             int64_t read(const FileStatus& status, uint64_t offset,
                          void* buffer, size_t size) override;
             int64_t read(uint32_t inode, uint64_t offset, void* buffer,
@@ -151,6 +154,8 @@ namespace fs::ext3 {
             bool reclaimUnlinked(uint32_t inode) override;
             bool readBlock(uint32_t block, void* buffer);
             bool fetchBlock(uint32_t block, void* buffer);
+            int64_t readRun(const Inode& inode, uint32_t logical,
+                            uint32_t physical, void* buffer, size_t bytes);
             bool writeBlock(uint32_t block, const void* buffer);
             bool readSuperblock();
             bool writeSuperblock();
@@ -190,7 +195,7 @@ namespace fs::ext3 {
 
             SectorDevice* device_ = nullptr;
             Superblock superblock_{};
-            uint32_t blockSize_  = 0;
+            uint32_t blockSize_ = 0;
             uint32_t groupCount_ = 0;
             uint8_t blockCache_[blockCacheSlotCount][4096]{};
             uint32_t cachedBlocks_[blockCacheSlotCount]{};
@@ -201,16 +206,32 @@ namespace fs::ext3 {
             bool cacheValid_[blockCacheSlotCount]{};
             uint32_t cacheUsed_ = 0, cacheNewest_ = cacheNoSlot,
                      cacheOldest_ = cacheNoSlot, cacheSpare_ = cacheNoSlot;
-            uint32_t readaheadInode_       = 0;
+            uint32_t readaheadInode_ = 0;
             uint32_t readaheadLastLogical_ = 0;
     };
 
 }  // namespace fs::ext3
 
-namespace vfs::ext3 {
-    /* 检查磁盘内容是否符合该文件系统格式，并提供实例创建入口。 */
-    class Probe {
-        public:
-            bool detect(const uint8_t* data, size_t size);
-    };
-}  // namespace vfs::ext3
+// namespace fs::ext3
+
+namespace fs::ext3::detail {
+
+    inline constexpr uint32_t sectorSize = 512;
+    inline constexpr uint32_t directBlockCount = 12;
+    inline constexpr uint32_t singlyIndirectIndex = 12;
+    inline constexpr uint32_t doublyIndirectIndex = 13;
+    inline constexpr uint32_t triplyIndirectIndex = 14;
+    inline constexpr uint32_t maximumBlockSize = 4096;
+
+    /* 解析和生成磁盘目录项，处理记录长度及名字边界。 */
+    namespace directory_encoding {
+
+        inline uint16_t alignedEntrySize(uint32_t nameLength) {
+            return static_cast<uint16_t>(
+                (sizeof(RawDirectoryEntry) + nameLength + 3) & ~3U);
+        }
+
+        bool namesEqual(const char* left, const char* right, size_t length);
+    }  // namespace directory_encoding
+
+}  // namespace fs::ext3::detail

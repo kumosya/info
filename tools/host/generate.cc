@@ -84,18 +84,18 @@ namespace host {
         make << '\n';
         images << "ProgramImage PROGRAM_IMAGES[] = {\n";
         grub << "set timeout=0\nset default=0\nset gfxmode=1024x768x32\nset "
-                "gfxpayload=keep\nmenuentry \"OS Info x86-64\" {\n    "
+                "gfxpayload=keep\nmenuentry \"OS Info amd64\" {\n    "
                 "multiboot2 "
                 "/boot/kernel.elf\n";
         for (const auto& service : boot) {
             assertions
-                << "static_assert(static_cast<uint64_t>(os::ProgramId::"
+                << "static_assert(static_cast<uint64_t>(services::ProgramId::"
                 << service[3] << ") == " << service[4]
-                << ");\nstatic_assert(static_cast<uint32_t>(os::ServiceRole::"
+                << ");\nstatic_assert(static_cast<uint32_t>(services::ServiceRole::"
                 << service[5] << ") == " << service[6] << ");\n";
             images << "    {" << quote(service[0]) << ", " << quote(service[12])
                    << ", 0, 0, " << capabilityExpression(service[7])
-                   << ", os::ServiceRole::" << service[5] << ", "
+                   << ", services::ServiceRole::" << service[5] << ", "
                    << (service[15] == "boot" ? "true" : "false") << "},\n";
             if (service[8] != "external")
                 make << "SERVICE_DIR_" << service[0] << " := " << service[2]
@@ -134,13 +134,13 @@ namespace host {
             return std::stoi(a[11]) < std::stoi(b[11]);
         });
         startup
-            << "struct ConfiguredService { os::ProgramId program; const char* "
+            << "struct ConfiguredService { services::ProgramId program; const char* "
                "ready; const char* name; const char* owner; };\nstatic const "
                "ConfiguredService "
                "configuredServices[] = {\n";
         for (const auto& service : boot)
             if (service[0] != "init" && service[15] == "boot")
-                startup << "    {os::ProgramId::" << service[3] << ", "
+                startup << "    {services::ProgramId::" << service[3] << ", "
                         << quote(service[9]) << ", " << quote(service[0])
                         << ", " << quote(service[16]) << "},\n";
         startup << "};\n";

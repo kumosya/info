@@ -149,12 +149,27 @@ int fcntl(int fileDescriptor, int command, ...) {
         result = slot->description->flags;
     } else if (command == F_SETFL) {
         int flags = va_arg(arguments, int);
-        if ((flags & O_NONBLOCK) != 0) {
+        const int pipe = slot->description->kind == DESCRIPTOR_PIPE_READ ||
+                         slot->description->kind == DESCRIPTOR_PIPE_WRITE;
+
+        if (pipe && ((flags ^ slot->description->flags) & O_NONBLOCK)) {
+            result = __libc_os_pipe_nonblocking(slot->description->handle,
+                                               (flags & O_NONBLOCK) != 0);
+
+            if (result < 0) {
+                errno = -result;
+                va_end(arguments);
+                return -1;
+            }
+        }
+
+        if (!pipe && (flags & O_NONBLOCK) != 0) {
             errno  = ENOSYS;
             result = -1;
         } else {
             slot->description->flags =
-                (slot->description->flags & ~O_APPEND) | (flags & O_APPEND);
+                (slot->description->flags & ~(O_APPEND | O_NONBLOCK)) |
+                (flags & (O_APPEND | O_NONBLOCK));
             __libc_file_set_flags(slot->description->fileObject,
                                   slot->description->flags);
         }

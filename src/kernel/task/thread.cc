@@ -19,7 +19,7 @@
 #include "kernel/task.h"
 #include "kernel/time.h"
 #include "service/common/identity.h"
-#include "service/common/kernel-requests.h"
+#include "service/common/protocol.h"
 
 namespace task {
 
@@ -60,7 +60,7 @@ namespace task {
                 continue;
             }
 
-            ::cpu::CpuLocalData* local = descriptor->getLocalData();
+            ::cpu::LocalData* local = descriptor->getLocalData();
             task::RunQueue* queue      = local ? local->getRunQueue() : nullptr;
 
             if (!queue) {
@@ -124,7 +124,7 @@ namespace task {
         asm volatile("movq %%rsp, %0" : "=r"(stackPointer));
         bootThread->setKernelStackTop(reinterpret_cast<void*>(stackPointer));
 
-        ::cpu::CpuLocalData* cpu = cpu::getCurrent();
+        ::cpu::LocalData* cpu = cpu::getCurrent();
         cpu->setCurrentThread(bootThread);
         cpu->setCurrentTask(nullptr);
         device::serialWrite("[THREAD] bootstrap thread initialized\n");
@@ -158,7 +158,7 @@ namespace task {
         // 服务线程可能在深调用链上处理大消息，使用较大的内核栈；普通线程使用默认栈大小。
         const uint64_t stackSize =
             type == ThreadType::Sys ||
-                    (task && task->serviceRole() != os::ServiceRole::None)
+                    (task && task->serviceRole() != services::ServiceRole::None)
                 ? 256 * 1024
                 : kernelStackSize;
         uint8_t* stack = static_cast<uint8_t*>(mm::allocateHeap(stackSize));
@@ -267,7 +267,7 @@ namespace task {
                 // 保留栈顶处 bootstrap 的 CPU 现场不动；服务线程执行时使用的
                 // 是一份由所有地址空间共享的特权栈。
                 // 这里留出 32 KiB 的间隔，再把初始栈内容放在它下面，并对齐到
-                // 16 字节，满足 x86-64 的栈对齐要求。
+                // 16 字节，满足 amd64 的栈对齐要求。
                 uint64_t stack =
                     (reinterpret_cast<uint64_t>(thread->getKernelStackTop()) -
                      32 * 1024 - initialStackSize) &

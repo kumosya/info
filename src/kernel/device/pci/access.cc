@@ -14,7 +14,7 @@ namespace device {
     /*
      * 将总线、设备、功能和配置偏移编码成传统 PCI 配置地址，并设置访问使能位。
      */
-    static uint32_t pciAddress(const os::wire::PciFunctionInfo& function,
+    static uint32_t pciAddress(const services::wire::PciFunctionInfo& function,
                                uint16_t offset) {
         return 0x80000000U | (static_cast<uint32_t>(function.bus) << 16) |
                (static_cast<uint32_t>(function.device) << 11) |
@@ -26,7 +26,7 @@ namespace device {
      * 通过 0xcf8 选择配置地址，再由 0xcfc 读取一个 32
      * 位配置值；调用者负责持总线锁。
      */
-    static uint32_t readConfigRaw(const os::wire::PciFunctionInfo& function,
+    static uint32_t readConfigRaw(const services::wire::PciFunctionInfo& function,
                                   uint16_t offset) {
         const uint32_t address = pciAddress(function, offset);
         asm volatile("outl %0, %1" : : "a"(address), "Nd"(0xcf8));
@@ -40,7 +40,7 @@ namespace device {
      * 通过传统配置端口写入一个 32
      * 位值；必须与其他配置访问串行，避免地址选择被改写。
      */
-    static void writeConfigRaw(const os::wire::PciFunctionInfo& function,
+    static void writeConfigRaw(const services::wire::PciFunctionInfo& function,
                                uint16_t offset, uint32_t value) {
         const uint32_t address = pciAddress(function, offset);
         asm volatile("outl %0, %1" : : "a"(address), "Nd"(0xcf8));
@@ -50,7 +50,7 @@ namespace device {
     /*
      * 检查当前配置机制支持的段号、设备号和功能号范围。
      */
-    static bool validFunction(const os::wire::PciFunctionInfo& function) {
+    static bool validFunction(const services::wire::PciFunctionInfo& function) {
         return function.segment == 0 && function.device < 32 &&
                function.function < 8;
     }
@@ -63,7 +63,7 @@ namespace device {
     /*
      * 遍历总线与设备，先检测功能零，再按多功能标志枚举其余功能，最多填满调用方数组。
      */
-    uint32_t PciBus::enumerate(os::wire::PciFunctionInfo* functions,
+    uint32_t PciBus::enumerate(services::wire::PciFunctionInfo* functions,
                                uint32_t capacity) {
         if (functions == nullptr || capacity == 0) {
             return 0;
@@ -75,7 +75,7 @@ namespace device {
         for (uint16_t bus = 0; bus < 256 && count < capacity; ++bus) {
             for (uint8_t device = 0; device < 32 && count < capacity;
                  ++device) {
-                os::wire::PciFunctionInfo probe{};
+                services::wire::PciFunctionInfo probe{};
                 probe.bus      = static_cast<uint8_t>(bus);
                 probe.device   = device;
                 probe.function = 0;
@@ -107,7 +107,7 @@ namespace device {
                     read(probe, 0x0c, header);
 
                     // 把硬件定位信息和设备类别分开填入返回记录，上层随后可按身份与类别选择驱动。
-                    os::wire::PciFunctionInfo& result = functions[count++];
+                    services::wire::PciFunctionInfo& result = functions[count++];
                     result                            = probe;
                     result.vendorId                   = identity & 0xffff;
                     result.deviceId                   = identity >> 16;
@@ -125,7 +125,7 @@ namespace device {
     /*
      * 检查目标与四字节偏移后，在总线锁内完成配置读取。
      */
-    bool PciBus::read(const os::wire::PciFunctionInfo& function,
+    bool PciBus::read(const services::wire::PciFunctionInfo& function,
                       uint16_t offset, uint32_t& value) {
         if (!validFunction(function) || offset >= 256 || (offset & 3) != 0) {
             return false;
@@ -140,7 +140,7 @@ namespace device {
     /*
      * 检查目标与四字节偏移后，在总线锁内完成配置写入；更高层仍负责设备所有权限制。
      */
-    bool PciBus::write(const os::wire::PciFunctionInfo& function,
+    bool PciBus::write(const services::wire::PciFunctionInfo& function,
                        uint16_t offset, uint32_t value) {
         if (!validFunction(function) || offset >= 256 || (offset & 3) != 0) {
             return false;
@@ -156,7 +156,7 @@ namespace device {
      * 探测内存 BAR 的地址和大小，兼容 32 位与 64
      * 位布局；探测期间临时关闭地址解码，读完掩码后恢复原配置。
      */
-    bool PciBus::getMemoryBar(const os::wire::PciFunctionInfo& function,
+    bool PciBus::getMemoryBar(const services::wire::PciFunctionInfo& function,
                               uint8_t barIndex, uint64_t& base,
                               uint64_t& size) {
         if (!validFunction(function) || barIndex >= 6) {

@@ -4,18 +4,17 @@
  */
 
 #include <fcntl.h>
-#include <poll.h>
-
-#include "service/common/kernel-requests.h"
-#include "service/common/queries.h"
-#include "service/common/replay.h"
-#include "service/common/requests.h"
-#include "service/common/runtime.h"
+#include <os/detail/client.h>
 #include <os/device.h>
 #include <os/ipc.h>
 #include <os/mm.h>
+#include <os/runtime.h>
 #include <os/service.h>
 #include <os/task.h>
+#include <poll.h>
+
+#include "service/common/protocol.h"
+#include "service/common/recovery.h"
 
 class PipeServer {
         static constexpr size_t capacity = 64, pendingCapacity = 128,
@@ -39,9 +38,9 @@ class PipeServer {
 
         // 等待记录保存客户端令牌和操作参数，原请求函数返回后仍能继续处理阻塞读写。
         struct Pending {
-                bool used     = false;
+                bool used = false;
                 uint32_t pair = 0, end = 0, size = 0;
-                os::PipeOperation operation{};
+                services::PipeOperation operation{};
                 uint64_t token = 0, handle = 0;
                 uint32_t outcome = services::ReplayCache::noRecord;
                 unsigned char data[512]{};
@@ -70,7 +69,7 @@ class PipeServer {
 
         // 增量记录只保存本次变化；恢复时先读取完整快照，再按提交顺序应用这些变化。
         struct Delta {
-                uint32_t pair    = capacity,
+                uint32_t pair = capacity,
                          outcome = services::ReplayCache::noRecord;
                 PairState value;
                 services::ReplayCache::Record result;
@@ -95,8 +94,8 @@ class PipeServer {
                 return true;
             }
 
-            char name[]         = "/pipe-events-0000000000000000";
-            uint64_t stamp      = os::Sys().readMonotonicTime();
+            char name[] = "/pipe-events-0000000000000000";
+            uint64_t stamp = os::Sys().readMonotonicTime();
             const char digits[] = "0123456789abcdef";
             for (size_t index = 0; index < 16; ++index) {
                 name[sizeof(name) - 2 - index] = digits[stamp & 15];
@@ -106,6 +105,7 @@ class PipeServer {
             if (eventMemory_.open(name, O_CREAT | O_EXCL | O_RDWR)) {
                 return false;
             }
+
             const int unlinked = eventMemory_.unlink();
             if (unlinked || eventMemory_.resize(4096) ||
                 eventMapping_.open(eventMemory_, 4096, 0, 3)) {
@@ -145,14 +145,15 @@ class PipeServer {
                 if (!pair.used) {
                     continue;
                 }
+
                 for (size_t side = 0; side < 2; ++side) {
                     if (!identity || pair.ends[side].id != identity) {
                         continue;
                     }
 
-                    const bool peer            = live(pair, 1 - side);
+                    const bool peer = live(pair, 1 - side);
                     watchedUntil_[index][side] = UINT64_MAX;
-                    watchedLive_[index][side]  = peer;
+                    watchedLive_[index][side] = peer;
                     const Stream& input = pair.streams[pair.channel ? side : 0];
                     const Stream& output =
                         pair.streams[pair.channel ? 1 - side : 0];
@@ -161,10 +162,12 @@ class PipeServer {
                         if (input.count || input.eof || !peer) {
                             ready |= POLLIN | POLLRDNORM;
                         }
+
                         if (!peer) {
                             ready |= POLLHUP;
                         }
                     }
+
                     if (request.handleRights[0] & 2) {
                         if (!peer) {
                             ready |= POLLERR;
@@ -172,10 +175,12 @@ class PipeServer {
                             ready |= POLLOUT | POLLWRNORM;
                         }
                     }
+
                     reply(request.replyToken, ready);
                     return;
                 }
             }
+
             reply(request.replyToken, -2);
         }
 
@@ -238,7 +243,7 @@ class PipeServer {
             }
 
             snapshot_.endpoint = capabilities_.encode(endpoint_);
-            snapshot_.results  = results_;
+            snapshot_.results = results_;
 
             for (uint32_t i = 0; i < capacity; ++i) {
                 serialize(snapshot_.pairs[i], pairs_[i]);
@@ -249,7 +254,7 @@ class PipeServer {
             }
 
             for (uint32_t i = 0; i < services::ReplayCache::capacity; ++i) {
-                durableResults_[i] = results_.records[i].task != 0;
+                durableResults_[i] = results_.getRecord(i).task != 0;
             }
 
             return capabilities_.collect();
@@ -285,28 +290,29 @@ class PipeServer {
 
             // 每条增量从全零开始，只填本次实际变动，避免把上次日志的字节当新变化重放。
             os::Runtime::clearMemory(&delta_, sizeof(delta_));
-            delta_.pair    = pair;
+            delta_.pair = pair;
             delta_.outcome = outcome;
 
             if (pair < capacity && pairs_[pair].used) {
                 const Pair& source = pairs_[pair];
-                PairState& target  = delta_.value;
-                target.used        = true;
-                target.channel     = source.channel;
+                PairState& target = delta_.value;
+                target.used = true;
+                target.channel = source.channel;
 
                 for (uint32_t i = 0; i < 2; ++i) {
-                    target.ends[i]        = source.ends[i];
+                    target.ends[i] = source.ends[i];
                     target.ends[i].handle = target.ends[i].token;
-                    target.streams[i]     = {source.streams[i].head,
-                                             source.streams[i].count,
-                                             source.streams[i].eof};
+                    target.streams[i] = {source.streams[i].head,
+                                         source.streams[i].count,
+                                         source.streams[i].eof};
                 }
 
                 // 写入请求除了保存缓冲区计数，还要记下新增字节及环形位置，重启后才能重建相同数据。
-                if (request && request->operation == os::PipeOperation::Write) {
+                if (request &&
+                    request->operation == services::PipeOperation::Write) {
                     delta_.stream = source.channel ? 1 - request->end : 0;
                     const Stream& stream = source.streams[delta_.stream];
-                    delta_.size          = request->size;
+                    delta_.size = request->size;
                     delta_.offset =
                         (stream.head + stream.count - request->size) %
                         bufferSize;
@@ -317,7 +323,7 @@ class PipeServer {
 
             // 对应请求结果跟管道状态放进同一次提交，不能出现数据已消费而结果尚未保存的窗口。
             if (outcome < services::ReplayCache::capacity) {
-                delta_.result = results_.records[outcome];
+                delta_.result = results_.getRecord(outcome);
             }
 
             if (checkpoint_.append(&delta_, sizeof(delta_))) {
@@ -325,7 +331,8 @@ class PipeServer {
             }
 
             if (outcome < services::ReplayCache::capacity) {
-                durableResults_[outcome] = results_.records[outcome].task != 0;
+                durableResults_[outcome] =
+                    results_.getRecord(outcome).task != 0;
             }
 
             if (!capabilities_.collect()) {
@@ -367,20 +374,20 @@ class PipeServer {
                 }
 
                 if (delta_.pair < capacity) {
-                    Pair& target            = snapshot_.pairs[delta_.pair];
+                    Pair& target = snapshot_.pairs[delta_.pair];
                     const PairState& source = delta_.value;
 
                     if (!source.used) {
                         os::Runtime::clearMemory(&target, sizeof(target));
                     } else {
-                        target.used    = true;
+                        target.used = true;
                         target.channel = source.channel;
 
                         for (uint32_t n = 0; n < 2; ++n) {
-                            target.ends[n]          = source.ends[n];
-                            target.streams[n].head  = source.streams[n].head;
+                            target.ends[n] = source.ends[n];
+                            target.streams[n].head = source.streams[n].head;
                             target.streams[n].count = source.streams[n].count;
-                            target.streams[n].eof   = source.streams[n].eof;
+                            target.streams[n].eof = source.streams[n].eof;
                         }
 
                         if (delta_.size) {
@@ -394,7 +401,7 @@ class PipeServer {
                 }
 
                 if (delta_.outcome < services::ReplayCache::capacity) {
-                    snapshot_.results.records[delta_.outcome] = delta_.result;
+                    snapshot_.results.setRecord(delta_.outcome, delta_.result);
                 }
             }
 
@@ -414,18 +421,21 @@ class PipeServer {
             }
 
             for (uint32_t i = 0; i < services::ReplayCache::capacity; ++i) {
-                durableResults_[i] = results_.records[i].task != 0;
+                durableResults_[i] = results_.getRecord(i).task != 0;
             }
 
             // 未完成请求没有已提交副作用，由客户端重试，不能当作已完成结果恢复。
-            for (services::ReplayCache::Record& record : results_.records) {
+            for (uint32_t index = 0; index < services::ReplayCache::capacity;
+                 ++index) {
+                const services::ReplayCache::Record& record =
+                    results_.getRecord(index);
                 if (!record.complete) {
-                    record = {};
+                    results_.clearRecord(index);
                 }
             }
 
             for (uint32_t i = 0; i < capacity; ++i) {
-                pairs_[i]  = snapshot_.pairs[i];
+                pairs_[i] = snapshot_.pairs[i];
                 Pair& pair = pairs_[i];
 
                 if (!pair.used) {
@@ -471,8 +481,10 @@ class PipeServer {
                 }
             }
 
-            for (const services::ReplayCache::Record& record :
-                 results_.records) {
+            for (uint32_t index = 0; index < services::ReplayCache::capacity;
+                 ++index) {
+                const services::ReplayCache::Record& record =
+                    results_.getRecord(index);
                 for (uint32_t n = 0; n < record.handleCount; ++n) {
                     bool found = false;
 
@@ -547,7 +559,7 @@ class PipeServer {
                    os::IpcMessage* value = nullptr) {
             os::IpcMessage empty{};
             os::IpcMessage& result = value ? *value : empty;
-            result.data[0]         = status;
+            result.data[0] = status;
 
             if (!result.length) {
                 result.length = 1;
@@ -565,7 +577,7 @@ class PipeServer {
                     os::IpcMessage* value = nullptr) {
             os::IpcMessage empty{};
             os::IpcMessage& result = value ? *value : empty;
-            result.data[0]         = status;
+            result.data[0] = status;
 
             if (!result.length) {
                 result.length = 1;
@@ -588,11 +600,11 @@ class PipeServer {
          * 按普通管道或双向通道选择缓冲区，检查对端是否存活，数据不足或空间不足时继续等待。
          */
         bool attempt(Pending& request) {
-            Pair& pair         = pairs_[request.pair];
+            Pair& pair = pairs_[request.pair];
             const uint32_t end = request.end;
-            End& self          = pair.ends[end];
+            End& self = pair.ends[end];
 
-            if (request.operation == os::PipeOperation::Read) {
+            if (request.operation == services::PipeOperation::Read) {
                 Stream& stream = pair.streams[pair.channel ? end : 0];
 
                 // 没数据但对端仍活着不代表读结束；阻塞模式继续等，非阻塞模式才立即报告暂时不可读。
@@ -721,7 +733,7 @@ class PipeServer {
 
                 for (uint32_t i = 0; i < services::ReplayCache::capacity; ++i) {
                     const services::ReplayCache::Record& record =
-                        results_.records[i];
+                        results_.getRecord(i);
 
                     if (!record.task) {
                         continue;
@@ -737,7 +749,7 @@ class PipeServer {
                         (!status && generation != record.generation);
 
                     if (dead && prepare()) {
-                        results_.records[i] = {};
+                        results_.clearRecord(i);
                         commit(capacity, i);
                     }
                 }
@@ -760,7 +772,7 @@ class PipeServer {
                     Pair& pair = pairs_[i];
 
                     // 先占槽并初始化两条流，再创建端点；失败要撤销本次资源，不能对外暴露只有一端的管道。
-                    pair.used    = true;
+                    pair.used = true;
                     pair.channel = channel;
 
                     for (Stream& stream : pair.streams) {
@@ -787,18 +799,19 @@ class PipeServer {
 
                     os::IpcMessage result{};
                     result.handleCount = 2;
-                    result.length      = 1;
+                    result.length = 1;
 
                     for (size_t n = 0; n < 2; ++n) {
-                        result.handles[n]       = pair.ends[n].handle;
-                        result.handleOptions[n] = os::ipcHandleRestrictRights;
-                        result.handleRights[n]  = channel ? 3 : n == 0 ? 1 : 2;
+                        result.handles[n] = pair.ends[n].handle;
+                        result.handleOptions[n] =
+                            services::ipcHandleRestrictRights;
+                        result.handleRights[n] = channel ? 3 : n == 0 ? 1 : 2;
                     }
 
                     Pending transaction{};
-                    transaction.pair    = i;
+                    transaction.pair = i;
                     transaction.outcome = outcome;
-                    transaction.token   = request.replyToken;
+                    transaction.token = request.replyToken;
                     finish(transaction, 0, &result);
 
                     return;
@@ -812,36 +825,38 @@ class PipeServer {
          * 分发管道创建、读写、查询和关闭请求，使用请求编号识别重试，阻塞读写登记到等待表。
          */
         void handle(os::IpcMessage& request) {
-            const os::PipeOperation operation =
-                static_cast<os::PipeOperation>(request.type);
+            const services::PipeOperation operation =
+                static_cast<services::PipeOperation>(request.type);
 
-            if (operation == os::PipeOperation::Readiness) {
+            if (operation == services::PipeOperation::Readiness) {
                 queryReadiness(request);
                 return;
             }
-            if (operation == os::PipeOperation::EventPage) {
+
+            if (operation == services::PipeOperation::EventPage) {
                 if (!ensureEventPage()) {
                     reply(request.replyToken, -5);
                     return;
                 }
+
                 os::IpcMessage result{};
-                result.handleCount      = 1;
-                result.handles[0]       = eventMemory_.getHandle();
-                result.handleRights[0]  = 1;
+                result.handleCount = 1;
+                result.handles[0] = eventMemory_.getHandle();
+                result.handleRights[0] = 1;
                 result.handleOptions[0] = 1;
                 reply(request.replyToken, 0, &result);
                 return;
             }
 
             // 客户端明确确认已收到结果后，才能提交删除重试缓存，避免服务重启后重复完成请求。
-            if (operation == os::PipeOperation::Acknowledge) {
+            if (operation == services::PipeOperation::Acknowledge) {
                 const uint32_t slot =
                     results_.acknowledge(request, checkpoint_);
 
                 if (slot != services::ReplayCache::noRecord) {
                     if (!durableResults_[slot] &&
-                        !results_.records[slot].complete) {
-                        results_.records[slot] = {};
+                        !results_.getRecord(slot).complete) {
+                        results_.clearRecord(slot);
                         reply(request.replyToken, 0);
 
                         return;
@@ -853,7 +868,7 @@ class PipeServer {
                         return;
                     }
 
-                    results_.records[slot] = {};
+                    results_.clearRecord(slot);
                     commit(capacity, slot);
                 }
 
@@ -896,9 +911,10 @@ class PipeServer {
             }
 
             // 新建类请求与已有端点操作分开，前者不应要求提供一个已经存在的管道句柄。
-            if (operation == os::PipeOperation::Create ||
-                operation == os::PipeOperation::CreateChannel) {
-                create(request, operation == os::PipeOperation::CreateChannel,
+            if (operation == services::PipeOperation::Create ||
+                operation == services::PipeOperation::CreateChannel) {
+                create(request,
+                       operation == services::PipeOperation::CreateChannel,
                        replay.slot);
 
                 return;
@@ -922,7 +938,7 @@ class PipeServer {
                             continue;
                         }
 
-                        if (operation == os::PipeOperation::Identity) {
+                        if (operation == services::PipeOperation::Identity) {
                             reply(request.replyToken,
                                   pair.channel ? identity : 0);
 
@@ -930,7 +946,7 @@ class PipeServer {
                         }
 
                         // 非阻塞标志属于管道端，修改也要写入恢复记录，否则服务重启后客户端语义会改变。
-                        if (operation == os::PipeOperation::Nonblocking) {
+                        if (operation == services::PipeOperation::Nonblocking) {
                             if (request.data[1] > 1) {
                                 reply(request.replyToken, -1);
 
@@ -945,15 +961,15 @@ class PipeServer {
 
                             pair.ends[side].nonblocking = request.data[1];
                             Pending transaction{};
-                            transaction.pair    = index;
+                            transaction.pair = index;
                             transaction.outcome = replay.slot;
-                            transaction.token   = request.replyToken;
+                            transaction.token = request.replyToken;
                             finish(transaction, 0);
 
                             return;
                         }
 
-                        if (operation == os::PipeOperation::Eof) {
+                        if (operation == services::PipeOperation::Eof) {
                             if (!pair.channel ||
                                 !(request.handleRights[0] & 2)) {
                                 reply(request.replyToken, -3);
@@ -970,16 +986,16 @@ class PipeServer {
 
                             ++pair.streams[1 - side].eof;
                             Pending transaction{};
-                            transaction.pair    = index;
+                            transaction.pair = index;
                             transaction.outcome = replay.slot;
-                            transaction.token   = request.replyToken;
+                            transaction.token = request.replyToken;
                             finish(transaction, 0);
 
                             return;
                         }
 
-                        if ((operation != os::PipeOperation::Read &&
-                             operation != os::PipeOperation::Write) ||
+                        if ((operation != services::PipeOperation::Read &&
+                             operation != services::PipeOperation::Write) ||
                             !request.data[1] || request.data[1] > 512) {
                             reply(request.replyToken, -1);
 
@@ -987,7 +1003,8 @@ class PipeServer {
                         }
 
                         // 正式读写前根据操作方向检查端点权限，不能用只读句柄发起写入。
-                        const bool read = operation == os::PipeOperation::Read;
+                        const bool read =
+                            operation == services::PipeOperation::Read;
 
                         if (!(request.handleRights[0] & (read ? 1 : 2)) ||
                             (!read &&
@@ -998,13 +1015,13 @@ class PipeServer {
                         }
 
                         Pending pending{};
-                        pending.used      = true;
-                        pending.pair      = index;
-                        pending.end       = side;
+                        pending.used = true;
+                        pending.pair = index;
+                        pending.end = side;
                         pending.operation = operation;
-                        pending.size      = request.data[1];
-                        pending.token     = request.replyToken;
-                        pending.outcome   = replay.slot;
+                        pending.size = request.data[1];
+                        pending.token = request.replyToken;
+                        pending.outcome = replay.slot;
 
                         if (!read) {
                             os::Runtime::copyBytes(
@@ -1019,8 +1036,8 @@ class PipeServer {
                         // progress 再尝试推进。
                         for (Pending& slot : pending_) {
                             if (!slot.used) {
-                                pending.handle      = request.handles[0];
-                                slot                = pending;
+                                pending.handle = request.handles[0];
+                                slot = pending;
                                 request.handleCount = 0;
 
                                 return;

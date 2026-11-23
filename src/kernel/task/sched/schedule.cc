@@ -93,7 +93,7 @@ namespace task {
      * 前提：在调度可用之前由每个 CPU 的启动路径调用；不需要外部持锁。
      */
     void initScheduler() {
-        ::cpu::CpuLocalData* cpu = cpu::getCurrent();
+        ::cpu::LocalData* cpu = cpu::getCurrent();
         RunQueue* queue =
             static_cast<RunQueue*>(mm::allocateHeap(sizeof(RunQueue)));
 
@@ -169,7 +169,7 @@ namespace task {
         }
 
         const uint64_t flags     = cpu::disableInterrupts();
-        ::cpu::CpuLocalData* cpu = cpu::getCurrent();
+        ::cpu::LocalData* cpu = cpu::getCurrent();
         RunQueue* queue          = cpu->getRunQueue();
         queue->getLock().lock();
         cpu->setRescheduleRequested(false);
@@ -275,7 +275,7 @@ namespace task {
             return;
         }
 
-        ::cpu::CpuLocalData* target = cpu::getCpuLocalData(thread->getCpuId());
+        ::cpu::LocalData* target = cpu::getLocalData(thread->getCpuId());
 
         if (target && target->getRunQueue()) {
             InterruptSpinLockGuard guard(target->getRunQueue()->getLock());
@@ -335,7 +335,7 @@ namespace task {
                     continue;
                 }
 
-                ::cpu::CpuLocalData* target = cpu::getCpuLocalData(id);
+                ::cpu::LocalData* target = cpu::getLocalData(id);
 
                 if (!target || !target->getRunQueue()) {
                     continue;
@@ -439,7 +439,7 @@ namespace task {
             return;
         }
 
-        ::cpu::CpuLocalData* target = cpu::getCpuLocalData(thread->getCpuId());
+        ::cpu::LocalData* target = cpu::getLocalData(thread->getCpuId());
 
         if (target == nullptr || target->getRunQueue() == nullptr) {
             return;
@@ -522,7 +522,7 @@ namespace task {
      * 也可唤醒线程，但定时唤醒只由这里按截止时间驱动。
      */
     void schedulerTick() {
-        ::cpu::CpuLocalData* cpu = cpu::getCurrent();
+        ::cpu::LocalData* cpu = cpu::getCurrent();
 
         if (!task::isSchedulerInitialized() || cpu->getRunQueue() == nullptr) {
             return;

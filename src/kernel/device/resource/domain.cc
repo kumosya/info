@@ -2,6 +2,8 @@
  * 管理设备所有权、停机与 DMA 页面延迟回收。
  */
 
+#include <new>
+
 #include "kernel/device.h"
 #include "kernel/mm.h"
 #include "kernel/page.h"
@@ -9,7 +11,7 @@
 #include "kernel/task.h"
 #include "kernel/time.h"
 #include "service/common/identity.h"
-#include "service/common/kernel-requests.h"
+#include "service/common/protocol.h"
 #include "service/common/records.h"
 
 namespace device {
@@ -21,8 +23,8 @@ namespace device {
     /*
      * 比较 PCI 设备的稳定定位字段，区分同一设备不同功能。
      */
-    static bool same(const os::wire::PciFunctionInfo& a,
-                     const os::wire::PciFunctionInfo& b) {
+    static bool same(const services::wire::PciFunctionInfo& a,
+                     const services::wire::PciFunctionInfo& b) {
         return a.segment == b.segment && a.bus == b.bus &&
                a.device == b.device && a.function == b.function;
     }
@@ -100,9 +102,9 @@ namespace device {
      * 和复位控制位置后建立独占资源域；已有未回收域时拒绝重复认领。
      */
     ResourceDomain* ResourceDomains::claim(
-        ::task::Task& owner, const os::wire::PciFunctionInfo& function) {
+        ::task::Task& owner, const services::wire::PciFunctionInfo& function) {
         // 当前只允许具有设备能力的固定存储服务认领，避免任意任务拿到直接控制硬件的权限。
-        if (owner.serviceRole() != os::ServiceRole::Storage ||
+        if (owner.serviceRole() != services::ServiceRole::Storage ||
             !owner.hasCapability(::task::taskCapabilityDevice)) {
             return nullptr;
         }
@@ -131,8 +133,55 @@ namespace device {
             }
         }
 
-        uint32_t identity = 0, command = 0, capabilities = 0;
-        // 当前只有现代 VirtIO
+        uint32_t identity = 0, command = 0, capabilities = 0, classInfo = 0;
+        if (!domain || !Pci(pciBus(), function).read(0, identity) ||
+            !Pci(pciBus(), function).read(8, classInfo)) {
+            return nullptr;
+        }
+
+        /* IDE 的 PIO 只需要经过验证的端口，不向服务开放任意 in/out 指令权限。 */
+        if ((classInfo >> 16) == 0x0101) {
+            uint16_t commands[2]{}, controls[2]{};
+            const uint8_t interface = (classInfo >> 8) & 0xff;
+            for (uint32_t channel = 0; channel < 2; ++channel) {
+                commands[channel] = channel ? 0x170 : 0x1f0;
+                controls[channel] = channel ? 0x376 : 0x3f6;
+                if (interface & (1U << (channel * 2))) {
+                    uint32_t commandBar = 0, controlBar = 0;
+                    if (!Pci(pciBus(), function).read(0x10 + channel * 8, commandBar) ||
+                        !Pci(pciBus(), function).read(0x14 + channel * 8, controlBar) ||
+                        !(commandBar & 1) || !(controlBar & 1) ||
+                        (commandBar & ~3U) < 0x100 || (commandBar & ~3U) > 0xfff8 ||
+                        (controlBar & ~3U) < 0x100 || (controlBar & ~3U) > 0xfffc) {
+                        return nullptr;
+                    }
+                    commands[channel] = commandBar & ~3U;
+                    controls[channel] = (controlBar & ~3U) + 2;
+                }
+            }
+            if (!Pci(pciBus(), function).read(4, command) ||
+                !Pci(pciBus(), function).write(4, ((command & 0xffff) | 1U) & ~4U)) {
+                return nullptr;
+            }
+            owner.retain();
+            domain->owner_ = &owner;
+            domain->function_ = function;
+            domain->references_ = 1;
+            domain->addressGeneration_ = owner.addressSpace().generation();
+            domain->ide_ = true;
+            for (uint32_t channel = 0; channel < 2; ++channel) {
+                domain->commandPorts_[channel] = commands[channel];
+                domain->controlPorts_[channel] = controls[channel];
+            }
+            domain->state_ = State::Active;
+            return domain;
+        }
+        if ((classInfo >> 8) == 0x010601) {
+            return domain->claimAhci(owner, function, controlBase + slot * 8192ULL)
+                ? domain : nullptr;
+        }
+
+        // 现代 VirtIO
         // 块设备具有内核认可的复位流程，其他硬件暂不允许认领。
         if (!domain || !Pci(pciBus(), function).read(0, identity) ||
             identity != 0x10421af4 ||
@@ -212,7 +261,7 @@ namespace device {
         }
 
         // 每个资源域保留一个仅供内核使用的控制页映射，用户映射撤销后仍能操作停机寄存器。
-        const uint64_t mapped = controlBase + slot * 4096ULL;
+        const uint64_t mapped = controlBase + slot * 8192ULL;
 
         if (!mm::mapPage(mapped, statusPhysical & ~4095ULL,
                          ::mm::pageWritable | ::mm::pageNoExecute |
@@ -243,10 +292,66 @@ namespace device {
     }
 
     /*
+     * AHCI 的控制寄存器始终由内核保留一份映射，驱动退出后仍能停止命令引擎。
+     * 成功之前不发布资源域；任何映射失败都撤回本次建立的页。
+     */
+    bool ResourceDomain::claimAhci(::task::Task& owner,
+                                   const services::wire::PciFunctionInfo& function,
+                                   uint64_t controlAddress) {
+        uint64_t base = 0, size = 0;
+        uint32_t command = 0;
+        Pci configuration(pciBus(), function);
+        if (!configuration.getMemoryBar(5, base, size) || (base & 4095) || size < 4096 ||
+            !configuration.read(4, command) ||
+            !configuration.write(4, ((command & 0xffff) | 2U) & ~4U)) {
+            return false;
+        }
+        const uint64_t bytes = size >= 8192 ? 8192 : 4096;
+        uint64_t mapped = 0;
+        for (; mapped < bytes; mapped += 4096) {
+            if (!mm::mapPage(controlAddress + mapped, base + mapped,
+                             mm::pageWritable | mm::pageNoExecute |
+                             mm::pageCacheDisable | mm::pageExternal)) {
+                break;
+            }
+        }
+        if (mapped != bytes) {
+            while (mapped) {
+                mapped -= 4096;
+                mm::unmapPage(controlAddress + mapped);
+            }
+            return false;
+        }
+        volatile uint32_t* registers = reinterpret_cast<volatile uint32_t*>(controlAddress);
+        const uint32_t ports = (registers[0] & 31) + 1;
+        if (0x100 + ports * 0x80 > bytes || 0x100 + ports * 0x80 > size ||
+            (registers[3] & ~static_cast<uint32_t>((1ULL << ports) - 1))) {
+            for (uint64_t offset = 0; offset < bytes; offset += 4096) {
+                mm::unmapPage(controlAddress + offset);
+            }
+            return false;
+        }
+        owner.retain();
+        owner_ = &owner;
+        function_ = function;
+        references_ = 1;
+        addressGeneration_ = owner.addressSpace().generation();
+        controlMapping_ = controlAddress;
+        controlSize_ = bytes;
+        status_ = reinterpret_cast<volatile uint8_t*>(controlAddress);
+        barBases_[5] = base;
+        barSizes_[5] = size;
+        ahci_ = true;
+        ahciPorts_ = registers[3];
+        state_ = State::Active;
+        return true;
+    }
+
+    /*
      * 查找任务拥有的活动设备域，找到后增加一份临时引用，调用者使用结束须归还。
      */
     ResourceDomain* ResourceDomains::find(
-        ::task::Task& owner, const os::wire::PciFunctionInfo& function) {
+        ::task::Task& owner, const services::wire::PciFunctionInfo& function) {
         ::task::InterruptSpinLockGuard guard(domainLock);
 
         for (ResourceDomain& domain : domains) {
@@ -277,7 +382,7 @@ namespace device {
      * 和能力布局不可改，命令寄存器写入必须符合当前所有权及停机状态。
      */
     bool ResourceDomains::writeConfiguration(
-        uint64_t owner, const os::wire::PciFunctionInfo& function,
+        uint64_t owner, const services::wire::PciFunctionInfo& function,
         uint16_t offset, uint32_t value) {
         ::task::InterruptSpinLockGuard guard(domainLock);
 
@@ -288,7 +393,8 @@ namespace device {
                 // 与能力布局固定；只允许活动所有者修改命令寄存器，不能重新启动旧资源域。
                 return domain.owner_ && domain.owner_->id() == owner &&
                        domain.state_ == State::Active && offset == 4 &&
-                       Pci(pciBus(), function).write(offset, value & 0xffff);
+                       Pci(pciBus(), function).write(offset,
+                           domain.ide_ ? (value & 0xffff & ~4U) : (value & 0xffff));
             }
         }
 
@@ -452,6 +558,40 @@ namespace device {
             return false;
         }
 
+    // PIO 后端从未开启总线主控，撤销端口调用资格后无需等待 DMA 完成。
+    if (ide_) {
+        return Pci(pciBus(), function_).read(4, command) && !(command & 4);
+    }
+
+    if (ahci_) {
+        volatile uint32_t* registers = reinterpret_cast<volatile uint32_t*>(controlMapping_);
+        registers[1] &= ~2U;
+        const uint32_t implemented = ahciPorts_;
+        const uint64_t deadline = time::getMonotonicTime() + 100000000ULL;
+        for (uint32_t port = 0; port < 32; ++port) {
+            if (!(implemented & (1U << port))) {
+                continue;
+            }
+            volatile uint32_t* engine = registers + (0x100 + port * 0x80) / 4;
+            engine[5] = 0;
+            engine[6] &= ~1U;
+            while (engine[6] & (1U << 15)) {
+                if (time::getMonotonicTime() >= deadline) {
+                    return false;
+                }
+                task::yieldThread();
+            }
+            engine[6] &= ~(1U << 4);
+            while (engine[6] & (1U << 14)) {
+                if (time::getMonotonicTime() >= deadline) {
+                    return false;
+                }
+                task::yieldThread();
+            }
+        }
+        return Pci(pciBus(), function_).read(4, command) && !(command & 4);
+    }
+
     *status_ = 0;
     asm volatile("mfence" ::: "memory");
     const uint64_t start = time::getMonotonicTime();
@@ -461,18 +601,71 @@ namespace device {
     }
     return Pci(pciBus(), function_).read(4, command) && !(command & 4);
 }
-int ResourceDomain::stop(::kernel::task::Task& owner) {
+/*
+ * 每次访问重新核对活动租约和 PCI 端口范围；一次最多传一个 ATA 扇区的数据字。
+ * 不提升用户态 IOPL，也不允许通过该接口访问 IDE 总线主控寄存器。
+ */
+int ResourceDomain::portIo(::task::Task& owner, uint16_t port, uint32_t width,
+                           uint32_t count, bool write, uint8_t* data) {
+    ::task::InterruptSpinLockGuard guard(resourceDomains().domainLock);
+    if (!ide_ || owner_ != &owner || state_ != State::Active || !data ||
+        !count || count > 256 || (width != 1 && width != 2) ||
+        (width == 1 && count != 1)) {
+        return -3;
+    }
+
+    bool permitted = false;
+    for (uint32_t channel = 0; channel < 2; ++channel) {
+        if (width == 2) {
+            permitted |= port == commandPorts_[channel];
+        } else {
+            permitted |= (port >= commandPorts_[channel] &&
+                          port - commandPorts_[channel] < 8) ||
+                         port == controlPorts_[channel];
+        }
+    }
+    if (!permitted) {
+        return -3;
+    }
+
+    for (uint32_t index = 0; index < count; ++index) {
+        if (width == 1) {
+            if (write) {
+                asm volatile("outb %0, %1" : : "a"(data[index]), "Nd"(port) : "memory");
+            } else {
+                asm volatile("inb %1, %0" : "=a"(data[index]) : "Nd"(port) : "memory");
+            }
+        } else {
+            uint16_t value = 0;
+            if (write) {
+                value = uint16_t(data[index * 2]) | (uint16_t(data[index * 2 + 1]) << 8);
+                asm volatile("outw %0, %1" : : "a"(value), "Nd"(port) : "memory");
+            } else {
+                asm volatile("inw %1, %0" : "=a"(value) : "Nd"(port) : "memory");
+                data[index * 2] = value;
+                data[index * 2 + 1] = value >> 8;
+            }
+        }
+    }
+    return 0;
+}
+
+/*
+ * 由后台线程执行设备停机，调用者只提交请求并等待结果。
+ * 等待期间不持资源锁，让后台可以撤销映射、复位设备并发布最终状态。
+ */
+int ResourceDomain::stop(::task::Task& owner) {
     {
-        ::kernel::task::InterruptSpinLockGuard guard(
+        ::task::InterruptSpinLockGuard guard(
             resourceDomains().domainLock);
         if (owner_ != &owner) return -3;
         if (state_ == State::Active) state_ = State::Pending;
-        ::kernel::task::wakeThread(resourceDomains().worker);
+        ::task::wakeThread(resourceDomains().worker);
     }
     const uint64_t start = time::getMonotonicTime();
     while (true) {
         {
-            ::kernel::task::InterruptSpinLockGuard guard(
+            ::task::InterruptSpinLockGuard guard(
                 resourceDomains().domainLock);
             if (state_ == State::Stopped) return 0;
             if (state_ == State::Quarantined) return -11;
@@ -481,12 +674,15 @@ int ResourceDomain::stop(::kernel::task::Task& owner) {
         task::yieldThread();
     }
 }
+/*
+ * 先确认设备停止 DMA，再回收其物理页；停机失败的资源域保留页面，避免设备继续写入已复用内存。
+ */
 void ResourceDomains::work() {
     while (true) {
         ResourceDomain* pending = nullptr;
         {
-            ::kernel::task::InterruptSpinLockGuard guard(domainLock);
-            for (auto& domain : domains) {
+            ::task::InterruptSpinLockGuard guard(domainLock);
+            for (ResourceDomain& domain : domains) {
                 if (domain.state_ == State::Pending) {
                     pending       = &domain;
                     domain.state_ = State::Stopping;
@@ -498,16 +694,16 @@ void ResourceDomains::work() {
                     break;
                 }
             }
-            if (!pending) ::kernel::task::prepareCurrentWait();
+            if (!pending) ::task::prepareCurrentWait();
         }
         if (!pending) {
-            ::kernel::task::blockWaitingThread();
+            ::task::blockWaitingThread();
             continue;
         }
         if (pending->state_ == State::Stopping) {
             const bool stopped = pending->reset();
             {
-                ::kernel::task::InterruptSpinLockGuard guard(domainLock);
+                ::task::InterruptSpinLockGuard guard(domainLock);
                 pending->state_ = stopped ? State::Stopped : State::Quarantined;
             }
             device::serialWrite(
@@ -541,17 +737,25 @@ void ResourceDomains::work() {
                 region = next;
             }
 
-            mm::unmapPage(pending->controlMapping_);
+            for (uint64_t offset = 0; offset < pending->controlSize_; offset += 4096) {
+                mm::unmapPage(pending->controlMapping_ + offset);
+            }
             {
                 ::task::InterruptSpinLockGuard guard(domainLock);
 
                 // 锁内清空槽使它重新可认领，锁外归还任务引用，避免析构路径与资源锁互相等待。
-                *pending = ResourceDomain{};
+                pending->recycle();
             }
 
             owner->release();
             device::serialWrite("[DEVICE] DMA domain reclaimed\n");
         }
+    }
+
+    /* 资源已全部回收后重新构造空槽，不允许复制带有所有权和映射的资源域。 */
+    void ResourceDomain::recycle() {
+        this->~ResourceDomain();
+        new (this) ResourceDomain;
     }
 
     /*

@@ -106,7 +106,7 @@ static task::Task* createSyscallProbe() {
     // CPU，兼顾多核路径。
     task::Thread* thread = task::Thread::createUser(
         task, userProbeCode, userProbeStackBase + 4 * pageSize,
-        task::coreServices().getHandle(*task, os::CoreServiceKind::Task), 0,
+        task::coreServices().getHandle(*task, services::CoreServiceKind::Task), 0,
         cpu::getOnlineCpuCount() > 1 ? 1ULL << 1 : 1ULL);
 
     if (thread == nullptr) {
@@ -338,7 +338,7 @@ extern "C" void kernelEntry(uint64_t multibootAddress, uint64_t pageTableRoot,
     // 最早打开串口，之后引导信息或内存初始化失败也能报告原因。
     device::initSerial();
     // device::serialWrite("[BOOT] osinfo starting\n");
-    // device::serialWrite("[BOOT] Entered x86-64 long mode\n");
+    // device::serialWrite("[BOOT] Entered long mode\n");
 
     // 把引导器的标签整理为内核统一结构；解析失败时不能继续使用不完整的内存地图。
     ::BootInfo bootInfo{};

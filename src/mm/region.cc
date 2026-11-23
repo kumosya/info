@@ -3,7 +3,7 @@
  * 维护虚拟区域的查找、空洞选择、拆分、删除和合并。
  */
 
-#include "service/mm/page.h"
+#include "service/mm/mm.h"
 
 namespace mm {
 
@@ -133,7 +133,7 @@ namespace mm {
             return false;
         }
 
-        *slot      = region;
+        *slot = region;
         slot->used = true;
 
         // 新区域可能恰好连接两段同属性区域，提交后做合并可以节省后续拆分所需槽位。
@@ -202,17 +202,17 @@ namespace mm {
                 r = {};
             } else if (address > r.address && end < oldEnd) {
                 // 从区域中间删除会留下左右两段；右段要同步前移文件偏移，才能仍然指向原数据。
-                Region* right  = vacant();
-                *right         = r;
+                Region* right = vacant();
+                *right = r;
                 right->address = end;
-                right->size    = oldEnd - end;
+                right->size = oldEnd - end;
                 right->offset += end - r.address;
                 r.size = address - r.address;
             } else if (address <= r.address) {
                 // 删除前缀时，虚拟地址起点和后备对象偏移必须同时移动，否则余下区域会读取错误位置。
                 r.offset += end - r.address;
                 r.address = end;
-                r.size    = oldEnd - end;
+                r.size = oldEnd - end;
             } else {
                 r.size = address - r.address;
             }
@@ -273,18 +273,18 @@ namespace mm {
             }
 
             if (address > r->address) {
-                Region* middle  = vacant();
-                *middle         = *r;
+                Region* middle = vacant();
+                *middle = *r;
                 middle->address = address;
                 middle->size -= address - r->address;
                 middle->offset += address - r->address;
                 r->size = address - r->address;
-                r       = middle;
+                r = middle;
             }
 
             if (end < r->address + r->size) {
-                Region* right  = vacant();
-                *right         = *r;
+                Region* right = vacant();
+                *right = *r;
                 right->address = end;
                 right->size -= end - r->address;
                 right->offset += end - r->address;
@@ -328,7 +328,7 @@ namespace mm {
 
                         // 由左段吞并右段并清空右槽，不移动实际页面，仅压缩管理记录。
                         a.size += b.size;
-                        b       = {};
+                        b = {};
                         changed = true;
                     }
                 }

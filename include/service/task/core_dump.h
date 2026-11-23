@@ -3,6 +3,8 @@
  */
 
 #pragma once
-namespace taskCore {
+
+namespace task::core {
+
     bool start();
 }

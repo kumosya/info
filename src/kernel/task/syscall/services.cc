@@ -6,6 +6,8 @@
  * 封装内核服务调用、句柄检查及设备访问的公共入口。
  */
 
+#include <new>
+
 #include "kernel/device.h"
 #include "kernel/ipc.h"
 #include "kernel/mm.h"
@@ -39,7 +41,7 @@ namespace task {
     /*
      * 取得指定核心服务句柄，安装和授权由核心服务注册表负责。
      */
-    uint64_t serviceCoreHandle(os::CoreServiceKind kind) {
+    uint64_t serviceCoreHandle(services::CoreServiceKind kind) {
         return coreServices().getHandle(*task::getCurrent(), kind);
     }
 
@@ -277,7 +279,7 @@ namespace task {
     /*
      * 查询任务信息并按接口格式返回，查找期间保留目标任务引用。
      */
-    int serviceQueryTask(uint64_t id, os::wire::TaskInfo& info) {
+    int serviceQueryTask(uint64_t id, services::wire::TaskInfo& info) {
         ::task::TaskReference target = task::find(id);
 
         if (!target) {
@@ -295,14 +297,18 @@ namespace task {
     /*
      * 检查设备权限并映射 PCI 设备的 MMIO 区间，使调用者可以访问设备寄存器。
      */
-    uint64_t serviceMapMmio(const os::wire::PciFunctionInfo& function,
+    uint64_t serviceMapMmio(const services::wire::PciFunctionInfo& function,
                             uint8_t bar, uint64_t address, uint64_t size) {
         if (!deviceAccess()) {
             return 0;
         }
 
-        ::device::MmioRegion* region = device::MmioRegion::map(
-            *task::getCurrent(), function, bar, address, size);
+        void* storage = mm::allocateHeap(sizeof(device::MmioRegion));
+        device::MmioRegion* region = storage ? new (storage) device::MmioRegion : nullptr;
+        if (region && !region->map(*task::getCurrent(), function, bar, address, size)) {
+            mm::freeHeap(region);
+            region = nullptr;
+        }
 
         // 映射资源对象准备好后再安装句柄，失败时销毁对象以撤销尚未交给调用者的设备资源。
         const uint64_t handle = region ? task::getCurrent()->handles().add(
@@ -320,7 +326,7 @@ namespace task {
      * 为设备申请 DMA 缓冲区，记录设备与任务归属，并返回物理和映射信息。
      */
     int serviceAllocateDma(uint64_t device, uint64_t address,
-                           os::wire::DmaBufferInfo& info) {
+                           services::wire::DmaBufferInfo& info) {
         if (!deviceAccess()) {
             return static_cast<int>(os::ErrorCode::PermissionDenied);
         }
@@ -335,8 +341,12 @@ namespace task {
             return static_cast<int>(os::ErrorCode::InvalidHandle);
         }
 
-        ::device::DmaBuffer* buffer = device::DmaBuffer::create(
-            *task::getCurrent(), *domain, address, info);
+        void* storage = mm::allocateHeap(sizeof(device::DmaBuffer));
+        device::DmaBuffer* buffer = storage ? new (storage) device::DmaBuffer : nullptr;
+        if (buffer && !buffer->create(*task::getCurrent(), *domain, address, info)) {
+            mm::freeHeap(buffer);
+            buffer = nullptr;
+        }
 
         if (!buffer) {
             return static_cast<int>(os::ErrorCode::OutOfMemory);
@@ -364,13 +374,18 @@ namespace task {
             return 0;
         }
 
-        ::device::InterruptBinding* binding = device::InterruptBinding::create(
-            *task::getCurrent(), irq, target, levelTriggered);
-
-        return binding ? task::getCurrent()->handles().add(
-                             binding, HandleType::InterruptBinding,
-                             handleRightManage)
-                       : 0;
+        void* storage = mm::allocateHeap(sizeof(device::InterruptBinding));
+        device::InterruptBinding* binding = storage ? new (storage) device::InterruptBinding : nullptr;
+        if (binding && !binding->create(*task::getCurrent(), irq, target, levelTriggered)) {
+            mm::freeHeap(binding);
+            binding = nullptr;
+        }
+        const uint64_t result = binding ? task::getCurrent()->handles().add(
+            binding, HandleType::InterruptBinding, handleRightManage) : 0;
+        if (binding && !result) {
+            binding->destroy();
+        }
+        return result;
     }
 
     /*

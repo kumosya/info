@@ -187,6 +187,7 @@ int __libc_os_wait_file_operation(uint64_t completion_endpoint,
 
 int __libc_os_create_pipe(OsPipeHandles* handles);
 int64_t __libc_os_read_pipe(uint64_t handle, void* buffer, size_t size);
+int __libc_os_pipe_nonblocking(uint64_t handle, int enabled);
 int64_t __libc_os_write_pipe(uint64_t handle, const void* buffer, size_t size);
 uint64_t __libc_os_get_standard_handle(uint32_t index);
 int __libc_os_close_handle(uint64_t handle);

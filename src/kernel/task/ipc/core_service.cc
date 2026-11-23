@@ -57,10 +57,10 @@ namespace task {
     /*
      * 按服务类别为调用任务安装句柄，并给予对应服务所需的访问权限。
      */
-    uint64_t CoreServices::getHandle(Task& caller, os::CoreServiceKind kind) {
+    uint64_t CoreServices::getHandle(Task& caller, services::CoreServiceKind kind) {
         const uint64_t index = static_cast<uint64_t>(kind);
 
-        return index < static_cast<uint64_t>(os::CoreServiceKind::Count) &&
+        return index < static_cast<uint64_t>(services::CoreServiceKind::Count) &&
                        coreEndpoints[index]
                    ? caller.handles().add(coreEndpoints[index],
                                           HandleType::Endpoint,
@@ -72,7 +72,7 @@ namespace task {
      * 返回调用任务的引导服务句柄，供新进程连接启动时提供的服务。
      */
     uint64_t CoreServices::bootstrap(Task& caller) {
-        const uint64_t index = static_cast<uint64_t>(os::CoreServiceKind::Ipc);
+        const uint64_t index = static_cast<uint64_t>(services::CoreServiceKind::Ipc);
         HandleTable::Pin pin =
             HandleTable::Pin(caller.handles(), caller.kernelHandle(),
                              HandleType::Endpoint, handleRightWrite);
@@ -85,7 +85,7 @@ namespace task {
         }
 
         // 原缓存句柄无效或指错对象时重新安装，再记录到任务，不能仅凭旧编号继续调用。
-        const uint64_t handle = getHandle(caller, os::CoreServiceKind::Ipc);
+        const uint64_t handle = getHandle(caller, services::CoreServiceKind::Ipc);
         caller.setKernelHandle(handle);
 
         return handle;

@@ -6,7 +6,7 @@
 #include "kernel/device.h"
 #include "kernel/ipc.h"
 #include "kernel/sync.h"
-#include "service/common/kernel-requests.h"
+#include "service/common/protocol.h"
 #include <os/storage.h>
 
 namespace device {
@@ -54,11 +54,11 @@ namespace device {
      */
     int BootImage::call(const ::task::IpcMessage& request,
                         ::task::IpcMessage& reply) {
-        const os::DeviceOperation operation =
-            static_cast<os::DeviceOperation>(request.type);
+        const services::DeviceOperation operation =
+            static_cast<services::DeviceOperation>(request.type);
 
         // 存储协议以五百一十二字节块计量，信息请求只返回完整块数。
-        if (operation == os::DeviceOperation::BootImageInfo) {
+        if (operation == services::DeviceOperation::BootImageInfo) {
             reply.data[0] = size / 512;
             reply.length  = 1;
 
@@ -72,12 +72,12 @@ namespace device {
         const uint64_t block = request.data[0], count = request.data[1];
 
         // 用剩余块数验证范围，避免起始块加数量溢出；单次传输还受消息容量限制。
-        if (!bytes || count == 0 || count > os::maximumStorageTransferBlocks ||
+        if (!bytes || count == 0 || count > services::maximumStorageTransferBlocks ||
             block >= size / 512 || count > size / 512 - block) {
             return -1;
         }
 
-        const bool write = operation == os::DeviceOperation::BootImageWrite;
+        const bool write = operation == services::DeviceOperation::BootImageWrite;
 
         if (write && request.length < 2 + count * 64) {
             return -1;

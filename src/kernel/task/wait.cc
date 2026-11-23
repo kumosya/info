@@ -30,7 +30,7 @@ namespace task {
      */
     int Task::waitForChild(int64_t taskId, Thread* waiter, int& status,
                            uint32_t options, uint64_t& childId,
-                           os::wire::ChildEvent* event) {
+                           services::wire::ChildEvent* event) {
         if (waiter == nullptr) {
             return -1;
         }
@@ -82,9 +82,9 @@ namespace task {
                             child->exitSignal_
                                 ? static_cast<int>(child->exitSignal_) |
                                       ((child->coreState_ ==
-                                            os::wire::CoreState::Complete ||
+                                            services::wire::CoreState::Complete ||
                                         child->coreState_ ==
-                                            os::wire::CoreState::Truncated)
+                                            services::wire::CoreState::Truncated)
                                            ? 0x80
                                            : 0)
                                 : (child->exitCode_ & 0xff) << 8;
@@ -95,9 +95,9 @@ namespace task {
                                 child->id_, child->uid_,
                                 child->exitSignal_
                                     ? ((child->coreState_ ==
-                                            os::wire::CoreState::Complete ||
+                                            services::wire::CoreState::Complete ||
                                         child->coreState_ ==
-                                            os::wire::CoreState::Truncated)
+                                            services::wire::CoreState::Truncated)
                                            ? 3U
                                            : 2U)
                                     : 1U,

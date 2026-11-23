@@ -11,7 +11,7 @@
 #include "kernel/task.h"
 #include "kernel/time.h"
 #include "service/common/identity.h"
-#include "service/common/kernel-requests.h"
+#include "service/common/protocol.h"
 #include <os/elf.h>
 
 namespace task {
@@ -39,8 +39,6 @@ namespace task {
         return (n + a - 1) & ~(a - 1);
     }
 
-    // 布局与 Linux x86-64
-    // 的线程状态说明一致，包括明确的填充；数据直接写给调试器读取，不能随意调整字段。
     struct PrStatus {
             int32_t signo, code, error;
             int16_t currentSignal;
@@ -54,7 +52,6 @@ namespace task {
 
     static_assert(sizeof(PrStatus) == 336);
 
-    // 进程说明使用固定宽度及填充，保持 Linux x86-64 调试格式兼容。
     struct PrPsInfo {
             char state, stateName, zombie, nice;
             uint32_t padding;
@@ -132,17 +129,17 @@ namespace task {
      * 检查调用者是否有资格作为转储写入服务读取任务内存。
      */
     static bool writerAllowed(Task& caller) {
-        return caller.serviceRole() == os::ServiceRole::Task;
+        return caller.serviceRole() == services::ServiceRole::Task;
     }
 
     /*
      * 判断转储是否仍在准备或写出中，用来决定退出通知能否继续以及请求是否超时。
      */
-    static bool busy(os::wire::CoreState state) {
-        return state == os::wire::CoreState::Requested ||
-               state == os::wire::CoreState::Capturing ||
-               state == os::wire::CoreState::Ready ||
-               state == os::wire::CoreState::Writing;
+    static bool busy(services::wire::CoreState state) {
+        return state == services::wire::CoreState::Requested ||
+               state == services::wire::CoreState::Capturing ||
+               state == services::wire::CoreState::Ready ||
+               state == services::wire::CoreState::Writing;
     }
 
     /*
@@ -183,7 +180,7 @@ namespace task {
         // 异常入口只登记有界请求，等任务停止执行后再分配缓冲区和复制内存。
         if (!__atomic_load_n(&policy.enabled, __ATOMIC_ACQUIRE) ||
             !task.dumpable() || !task.coreLimit_) {
-            task.coreState_ = os::wire::CoreState::Skipped;
+            task.coreState_ = services::wire::CoreState::Skipped;
 
             return;
         }
@@ -192,7 +189,7 @@ namespace task {
             time::getMonotonicTime() +
             __atomic_load_n(&policy.timeoutMilliseconds, __ATOMIC_RELAXED) *
                 1000000;
-        __atomic_store_n(&task.coreState_, os::wire::CoreState::Requested,
+        __atomic_store_n(&task.coreState_, services::wire::CoreState::Requested,
                          __ATOMIC_RELEASE);
     }
 
@@ -200,11 +197,11 @@ namespace task {
      * 查询任务转储是否尚未完成，超过截止时间时把请求改为超时，使退出流程能够继续。
      */
     bool CoreDump::pending(Task& task) {
-        const os::wire::CoreState state =
+        const services::wire::CoreState state =
             __atomic_load_n(&task.coreState_, __ATOMIC_ACQUIRE);
 
         if (busy(state) && time::getMonotonicTime() >= task.coreDeadline_) {
-            __atomic_store_n(&task.coreState_, os::wire::CoreState::TimedOut,
+            __atomic_store_n(&task.coreState_, services::wire::CoreState::TimedOut,
                              __ATOMIC_RELEASE);
 
             return false;
@@ -219,7 +216,7 @@ namespace task {
      */
     void CoreDump::capture(Task& task) {
         if (!pending(task) ||
-            task.coreState_ != os::wire::CoreState::Requested) {
+            task.coreState_ != services::wire::CoreState::Requested) {
             return;
         }
 
@@ -247,7 +244,7 @@ namespace task {
             }
 
             if (!slot) {
-                task.coreState_ = os::wire::CoreState::Skipped;
+                task.coreState_ = services::wire::CoreState::Skipped;
 
                 return;
             }
@@ -257,7 +254,7 @@ namespace task {
                                                           : policy.maximumBytes;
 
             if (limit < dataOffset + 4096) {
-                task.coreState_ = os::wire::CoreState::Skipped;
+                task.coreState_ = services::wire::CoreState::Skipped;
 
                 return;
             }
@@ -273,7 +270,7 @@ namespace task {
                                task.coreDeadline_,
                                task.exitSignal_,
                                0};
-            task.coreState_ = os::wire::CoreState::Capturing;
+            task.coreState_ = services::wire::CoreState::Capturing;
         }
 
         // 大缓冲区分配放在管理锁外，槽位已标记正在捕获，超时扫描不会误释放正在组装的内容。
@@ -345,7 +342,7 @@ namespace task {
             uint32_t pathBytes = 0;
 
             for (uint32_t i = 0; i < task.imageMappingCount_; ++i) {
-                const os::wire::ImageMapping& image = task.imageMappings_[i];
+                const services::wire::ImageMapping& image = task.imageMappings_[i];
                 files.ranges[i][0]                  = image.begin;
                 files.ranges[i][1]                  = image.end;
                 files.ranges[i][2]                  = image.offset / 4096;
@@ -477,9 +474,9 @@ namespace task {
             slot->data      = data;
             slot->capturing = false;
             task.coreState_ = time::getMonotonicTime() >= task.coreDeadline_
-                                  ? os::wire::CoreState::TimedOut
-                              : data ? os::wire::CoreState::Ready
-                                     : os::wire::CoreState::Failed;
+                                  ? services::wire::CoreState::TimedOut
+                              : data ? services::wire::CoreState::Ready
+                                     : services::wire::CoreState::Failed;
         }
 
         expire();
@@ -488,7 +485,7 @@ namespace task {
     /*
      * 在锁内复制当前转储策略，供管理服务查询。
      */
-    void CoreDump::query(os::wire::CorePolicy& result) {
+    void CoreDump::query(services::wire::CorePolicy& result) {
         InterruptSpinLockGuard guard(lock);
         result = policy;
     }
@@ -496,7 +493,7 @@ namespace task {
     /*
      * 校验管理权限和策略参数，再整体更新转储配置，拒绝不合理的大小和时间上限。
      */
-    int CoreDump::configure(Task& caller, const os::wire::CorePolicy& value) {
+    int CoreDump::configure(Task& caller, const services::wire::CorePolicy& value) {
         if (!writerAllowed(caller)) {
             return -3;
         }
@@ -525,7 +522,7 @@ namespace task {
     /*
      * 为有权限的写入者领取一份待写转储，记录领取者身份并返回票据，避免多个写入者重复处理同一份数据。
      */
-    int CoreDump::acquire(Task& caller, os::wire::CoreTicket& ticket) {
+    int CoreDump::acquire(Task& caller, services::wire::CoreTicket& ticket) {
         if (!writerAllowed(caller)) {
             return -3;
         }
@@ -536,10 +533,10 @@ namespace task {
 
         for (Slot& s : slots) {
             if (s.task && s.data &&
-                s.task->coreState_ == os::wire::CoreState::Ready) {
+                s.task->coreState_ == services::wire::CoreState::Ready) {
                 // 在同一管理锁下把槽标成正在写并登记领取任务，其他写入者不能再领取同一份内容。
                 s.writer           = caller.id();
-                s.task->coreState_ = os::wire::CoreState::Writing;
+                s.task->coreState_ = services::wire::CoreState::Writing;
                 ticket             = s.ticket;
 
                 return 0;
@@ -564,7 +561,7 @@ namespace task {
         for (Slot& s : slots) {
             if (s.task && s.data && s.ticket.id == id &&
                 s.writer == caller.id() &&
-                s.task->coreState_ == os::wire::CoreState::Writing) {
+                s.task->coreState_ == services::wire::CoreState::Writing) {
                 // 用总长减偏移检查长度，避免偏移加长度溢出，同时拒绝超过票据有效期的读取。
                 if (offset > s.ticket.bytes || size > s.ticket.bytes - offset ||
                     time::getMonotonicTime() >= s.ticket.deadline) {
@@ -601,13 +598,13 @@ namespace task {
                     // 写入成功报告仍要核对截止时间和当前阶段，不能让迟到结果把已超时任务改回成功。
                     const bool valid =
                         time::getMonotonicTime() < s.ticket.deadline &&
-                        task->coreState_ == os::wire::CoreState::Writing;
+                        task->coreState_ == services::wire::CoreState::Writing;
                     accepted         = valid;
-                    task->coreState_ = !valid ? os::wire::CoreState::TimedOut
-                                       : !success ? os::wire::CoreState::Failed
+                    task->coreState_ = !valid ? services::wire::CoreState::TimedOut
+                                       : !success ? services::wire::CoreState::Failed
                                        : s.ticket.truncated
-                                           ? os::wire::CoreState::Truncated
-                                           : os::wire::CoreState::Complete;
+                                           ? services::wire::CoreState::Truncated
+                                           : services::wire::CoreState::Complete;
 
                     // 在锁内撤销槽的所有权并释放数据，后续相同票据将无法再次命中。
                     mm::freeHeap(s.data);
@@ -650,7 +647,7 @@ namespace task {
                 }
 
                 if (pending(*s.task) &&
-                    s.task->coreState_ != os::wire::CoreState::Failed) {
+                    s.task->coreState_ != services::wire::CoreState::Failed) {
                     continue;
                 }
 
@@ -712,7 +709,7 @@ namespace task {
     /*
      * 在任务锁内读取退出信号、转储状态和故障信息，填充对外的退出详情。
      */
-    void Task::getExitInfo(os::wire::ExitInfo& info) {
+    void Task::getExitInfo(services::wire::ExitInfo& info) {
         InterruptSpinLockGuard guard(lock_);
         coreDump().pending(*this);
         info = {exitSignal_,         static_cast<uint32_t>(coreState_),
@@ -726,7 +723,7 @@ namespace task {
     /*
      * 登记一个程序映像的地址范围和文件信息，供转储描述使用；记录表满时返回失败。
      */
-    bool Task::recordImage(const os::wire::ImageMapping& mapping) {
+    bool Task::recordImage(const services::wire::ImageMapping& mapping) {
         InterruptSpinLockGuard guard(lock_);
 
         if (imageMappingCount_ == 64) {

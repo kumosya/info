@@ -2,139 +2,94 @@
  * 文件服务请求与描述符管理。
  */
 
-#include "service/common/queries.h"
-#include "service/common/records.h"
 #pragma once
-#include <mutex>
-
-#include "service/common/kernel-requests.h"
-#include "service/common/requests.h"
-#include "service/common/runtime.h"
-#include "service/fs/block.h"
-#include "service/fs/devices.h"
-#include "service/fs/ext3/filesystem.h"
-#include "service/fs/ext4/filesystem.h"
-#include "service/fs/fat/filesystem.h"
-#include "service/fs/fstab.h"
-#include "service/fs/iso/filesystem.h"
-#include "service/fs/procfs/filesystem.h"
-#include "service/fs/sysfs/filesystem.h"
-#include "service/fs/vfs.h"
+#include <os/detail/client.h>
 #include <os/device.h>
 #include <os/file.h>
 #include <os/ipc.h>
 #include <os/mm.h>
+#include <os/runtime.h>
 #include <os/service.h>
 #include <os/storage.h>
 #include <os/task.h>
 
-namespace vfs::server {
+#include <mutex>
+
+#include "service/common/protocol.h"
+#include "service/common/records.h"
+#include "service/fs/ext3/filesystem.h"
+#include "service/fs/ext4/filesystem.h"
+#include "service/fs/fat/filesystem.h"
+#include "service/fs/iso/filesystem.h"
+#include "service/fs/mount.h"
+#include "service/fs/procfs/filesystem.h"
+#include "service/fs/sysfs/filesystem.h"
+#include "service/fs/vfs.h"
+
+namespace fs::server {
 
     constexpr uint32_t descriptorCapacity = 64;
-    constexpr uint32_t mountCapacity      = 16;
+    constexpr uint32_t mountCapacity = 16;
     constexpr uint64_t workerStackAddress = 0x0000000050000000ULL;
-    constexpr uint64_t workerStackSize    = 64 * 1024;
-    constexpr uint32_t workerThreadCount  = 3;
+    constexpr uint64_t workerStackSize = 64 * 1024;
+    constexpr uint32_t workerThreadCount = 3;
 
     /* 在固定容量内保存路径并处理规范化和拼接。 */
-    class PathText {
+    namespace path_text {
+
+        bool collapseSlashes(char* path, size_t capacity);
+        bool startsWithPath(const char* path, const char* prefix);
+
+        bool containsText(const char* text, const char* token);
+    }  // namespace path_text
+
+    class BlockDeviceClient final : public fs::SectorDevice {
         public:
-            static bool collapseSlashes(char* path, size_t capacity) {
-                size_t read = 0, write = 0;
-                while (read < capacity && path[read]) {
-                    const char value = path[read++];
-                    if (value == '/' && write && path[write - 1] == '/')
-                        continue;
-                    path[write++] = value;
-                }
-                if (read == capacity) return false;
-                path[write] = 0;
-                return true;
-            }
-            static bool startsWithPath(const char* path, const char* prefix) {
-                uint32_t index = 0;
-                while (prefix[index] != '\0' && path[index] == prefix[index])
-                    ++index;
-                return prefix[index] == '\0' &&
-                       (path[index] == '\0' || path[index] == '/');
+            bool init(uint64_t endpoint, uint32_t id);
+
+            bool readSector(uint64_t block, void* buffer) override {
+                uint32_t done = 0;
+                return usable() &&
+                       device_.read(block, 1, buffer, 512, done) == 0;
             }
 
-            static bool containsText(const char* text, const char* token) {
-                if (text == nullptr || token == nullptr || token[0] == '\0')
-                    return false;
-                for (uint32_t start = 0; text[start] != '\0'; ++start) {
-                    uint32_t index = 0;
-                    while (token[index] != '\0' &&
-                           text[start + index] == token[index]) {
-                        ++index;
-                    }
-                    if (token[index] == '\0') return true;
-                }
-                return false;
+            bool writeSector(uint64_t block, const void* buffer) override {
+                uint32_t done = 0;
+                return usable() &&
+                       device_.write(block, 1, buffer, 512, done) == 0;
             }
-    };
 
-class BlockDeviceClient final : public vfs::SectorDevice {
-   public:
-    bool init(uint64_t endpoint, uint32_t id) {
-        if (!os::detail::StorageClient().open(device_, id, endpoint))
-            return false;
-        identity_.id              = device_.getId();
-        identity_.major           = device_.getMajor();
-        identity_.minor           = device_.getMinor();
-        identity_.parentId        = device_.getParentId();
-        identity_.partitionNumber = device_.getPartitionNumber();
-        identity_.startBlock      = device_.getStartBlock();
-        os::Runtime::copyString(identity_.name, device_.getName(),
-                                sizeof(identity_.name));
-        os::Runtime::copyString(identity_.partitionUuid,
-                                device_.getPartitionUuid(),
-                                sizeof(identity_.partitionUuid));
-        os::Runtime::copyString(identity_.hardwarePath,
-                                device_.getHardwarePath(),
-                                sizeof(identity_.hardwarePath));
-        return true;
-    }
-    bool readSector(uint64_t block, void* buffer) override {
-        uint32_t done = 0;
-        return usable() && device_.read(block, 1, buffer, 512, done) == 0;
-    }
-    bool writeSector(uint64_t block, const void* buffer) override {
-        uint32_t done = 0;
-        return usable() && device_.write(block, 1, buffer, 512, done) == 0;
-    }
-    bool readSectors(uint64_t block, uint32_t count, void* buffer) override {
-        uint32_t done = 0;
-        return usable() && device_.read(block, count, buffer,
-                                        uint64_t(count) * 512, done) == 0;
-    }
-    bool writeSectors(uint64_t block, uint32_t count,
-                      const void* buffer) override {
-        uint32_t done = 0;
-        return usable() && device_.write(block, count, buffer,
-                                         uint64_t(count) * 512, done) == 0;
-    }
-    bool flush() override { return usable() && device_.flush(); }
-    uint64_t sectorCount() const override {
-        return usable() ? device_.getBlockCount() : 0;
-    }
-    bool usable() const {
-        return device_.getBlockSize() == 512 && device_.getMaxTransferBlocks();
-    }
-    bool readOnly() const override { return device_.getReadOnly(); }
-    bool probe() {
-        uint8_t block[512]{};
-        uint32_t done = 0;
-        return usable() && device_.getBlockCount() &&
-               device_.read(0, 1, block, sizeof(block), done) == 0;
-    }
-    const os::wire::StorageDeviceIdentity& identity() const {
-        return identity_;
-    }
+            bool readSectors(uint64_t block, uint32_t count,
+                             void* buffer) override;
+            bool writeSectors(uint64_t block, uint32_t count,
+                              const void* buffer) override;
+
+            bool flush() override {
+                return usable() && device_.flush();
+            }
+
+            uint64_t sectorCount() const override {
+                return usable() ? device_.getBlockCount() : 0;
+            }
+
+            bool usable() const {
+                return device_.getBlockSize() == 512 &&
+                       device_.getMaxTransferBlocks();
+            }
+
+            bool readOnly() const override {
+                return device_.getReadOnly();
+            }
+
+            bool probe();
+
+            const services::wire::StorageDeviceIdentity& identity() const {
+                return identity_;
+            }
 
         private:
             os::Storage::Device device_;
-            os::wire::StorageDeviceIdentity identity_{};
+            services::wire::StorageDeviceIdentity identity_{};
     };
 
     enum class DescriptorBackend : uint8_t {
@@ -150,14 +105,50 @@ class BlockDeviceClient final : public vfs::SectorDevice {
     enum class PathBackend : uint8_t { Root = 0, Invalid = 0xff };
 
     /* 登记一个挂载点与其文件系统实例。 */
-    struct MountEntry {
+    class MountEntry {
+        public:
+            MountEntry() = default;
+            ~MountEntry() = default;
+
+            const MountSpec& getSpecification() const {
+                return spec;
+            }
+
+            uint32_t getDeviceIndex() const {
+                return deviceIndex;
+            }
+
+        private:
+            friend class FsServer;
             MountSpec spec{};
-            uint32_t deviceIndex = os::maximumStorageDevices;
-            bool configured      = false;
+            uint32_t deviceIndex = services::maximumStorageDevices;
+            bool configured = false;
     };
 
     /* 保存可由多个描述符共享的打开文件位置、访问方式和后端对象。 */
-    struct OpenFileDescription {
+    class OpenFileDescription {
+        public:
+            OpenFileDescription() = default;
+            ~OpenFileDescription() = default;
+
+            const char* getPath() const {
+                return path;
+            }
+
+            uint64_t getOffset() const {
+                return offset;
+            }
+
+            uint64_t getSize() const {
+                return size;
+            }
+
+            uint32_t getReferenceCount() const {
+                return referenceCount;
+            }
+
+        private:
+            friend class FsServer;
             char snapshot[1536]{};
             uint32_t inode;
             uint16_t mode;
@@ -169,19 +160,35 @@ class BlockDeviceClient final : public vfs::SectorDevice {
             uint64_t size;
             uint64_t privateData;
             uint32_t referenceCount;
-            vfs::FileSystem* filesystem;
+            fs::FileSystem* filesystem;
             DescriptorBackend backend;
             PathBackend mountIndex;
     };
 
     /* 记录进程可见描述符对打开文件对象的引用及标志。 */
-    struct FileDescriptor {
+    class FileDescriptor {
+        public:
+            FileDescriptor() = default;
+            FileDescriptor(uint64_t owner, OpenFileDescription* description,
+                           int flags);
+            ~FileDescriptor() = default;
+
+            uint64_t getOwner() const {
+                return ownerPid;
+            }
+
+            int getFlags() const {
+                return flags;
+            }
+
+        private:
+            friend class FsServer;
             uint64_t ownerPid;
             OpenFileDescription* description;
-            int flags              = O_RDONLY;
+            int flags = O_RDONLY;
             uint64_t mappingIssuer = 0;
-            uint64_t mappingToken  = 0;
-            bool mappingClaimed    = false;
+            uint64_t mappingToken = 0;
+            bool mappingClaimed = false;
     };
 
     /* 分发文件服务请求，管理挂载、打开文件以及进程描述符关系。 */
@@ -194,9 +201,12 @@ class BlockDeviceClient final : public vfs::SectorDevice {
             void reapDescriptors();
 
         private:
-            using FileSystemPtr = vfs::FileSystem*;
+            using FileSystemPtr = fs::FileSystem*;
             bool permitted(const os::IpcMessage& request);
-            bool pathAccess(const char* path, const os::wire::TaskInfo& caller,
+            bool removalAccess(const char* path,
+                               const services::wire::TaskInfo& caller);
+            bool pathAccess(const char* path,
+                            const services::wire::TaskInfo& caller,
                             unsigned access, bool parent = false);
 
             void handleAsync(const os::IpcMessage& request,
@@ -207,7 +217,7 @@ class BlockDeviceClient final : public vfs::SectorDevice {
                                        int flags, const char* path);
             int processObjectDirectory(const char* path, uint64_t index,
                                        uint64_t caller,
-                                       vfs::DirectoryEntry& entry);
+                                       fs::DirectoryEntry& entry);
 
             uint64_t close(uint64_t ownerPid, uint64_t descriptor);
 
@@ -250,7 +260,7 @@ class BlockDeviceClient final : public vfs::SectorDevice {
 
             void readDirectoryBatch(const char* path, uint64_t index,
                                     uint64_t requested, os::IpcMessage& reply,
-                                    uint64_t caller       = 0,
+                                    uint64_t caller = 0,
                                     bool filesystemLocked = false);
 
             bool mount(const os::IpcMessage& request);
@@ -289,11 +299,11 @@ class BlockDeviceClient final : public vfs::SectorDevice {
             bool loadMountTable();
             bool attachMount(uint32_t index);
             int deviceDirectory(const char* path, uint32_t index,
-                                vfs::DirectoryEntry& entry) const;
+                                fs::DirectoryEntry& entry) const;
 
             const MountEntry* mountEntry(PathBackend backend) const;
 
-            vfs::FileSystem* fileSystem(PathBackend backend) const;
+            fs::FileSystem* fileSystem(PathBackend backend) const;
 
             std::mutex& fileSystemLock(PathBackend backend);
 
@@ -321,9 +331,10 @@ class BlockDeviceClient final : public vfs::SectorDevice {
             static void setStat(os::IpcMessage& reply, os::File::Type type,
                                 uint64_t size, uint32_t mode);
 
-            BlockDeviceClient devices_[os::maximumStorageDevices];
+            BlockDeviceClient devices_[services::maximumStorageDevices];
             DeviceCatalog catalog_;
-            vfs::FileSystem* fileSystems_[mountCapacity]{};
+            fs::sysfs::SystemFiles systemFiles_;
+            fs::FileSystem* fileSystems_[mountCapacity]{};
             FileDescriptor descriptors_[descriptorCapacity]{};
             OpenFileDescription openDescriptions_[descriptorCapacity]{};
             uint64_t deviceEndpoint_ = 0;
@@ -337,4 +348,4 @@ class BlockDeviceClient final : public vfs::SectorDevice {
             mutable std::mutex mountStateLock_;
     };
 
-}  // namespace vfs::server
+}  // namespace fs::server

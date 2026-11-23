@@ -3,11 +3,11 @@
  * 保存内存管理快照和请求结果，使服务重启后可以接管原映射。
  */
 
-#include "service/common/kernel-requests.h"
-#include "service/common/queries.h"
+#include <os/detail/client.h>
+#include <os/runtime.h>
+
+#include "service/common/protocol.h"
 #include "service/common/records.h"
-#include "service/common/requests.h"
-#include "service/common/runtime.h"
 #include "service/mm/mm.h"
 
 namespace mm {
@@ -32,13 +32,13 @@ namespace mm {
     void Recovery::collectOutcomes() {
         for (Outcome& outcome : outcomes_) {
             if (outcome.task) {
-                os::wire::MemoryUsage usage{};
+                services::wire::MemoryUsage usage{};
                 bool dead =
                     os::detail::MemoryQuery().usage(usage, outcome.task) ||
                     usage.generation != outcome.generation;
 
                 if (!dead && (outcome.id >> 63)) {
-                    os::wire::TaskInfo child{};
+                    services::wire::TaskInfo child{};
                     dead = os::detail::TaskQuery().query(
                                outcome.id & ~(1ULL << 63), child) ||
                            child.state != 0;
@@ -64,7 +64,7 @@ namespace mm {
             return false;
         }
 
-        os::wire::MemoryUsage usage{};
+        services::wire::MemoryUsage usage{};
 
         if (os::detail::MemoryQuery().usage(usage, request.senderPid)) {
             return false;
@@ -102,10 +102,10 @@ namespace mm {
                         return true;
                     }
 
-                    reply.handleCount      = 1;
-                    reply.handles[0]       = handle;
-                    reply.handleRights[0]  = rights;
-                    reply.handleOptions[0] = os::ipcHandleRestrictRights;
+                    reply.handleCount = 1;
+                    reply.handles[0] = handle;
+                    reply.handleRights[0] = rights;
+                    reply.handleOptions[0] = services::ipcHandleRestrictRights;
                 }
 
                 return true;
@@ -144,7 +144,7 @@ namespace mm {
             return false;
         }
 
-        os::wire::MemoryUsage usage{};
+        services::wire::MemoryUsage usage{};
 
         if (os::detail::MemoryQuery().usage(usage, request.senderPid) ||
             usage.generation != state_.generation(request.senderPid)) {
@@ -180,13 +180,13 @@ namespace mm {
             os::closeHandle(target->handle);
         }
 
-        *target            = {};
-        target->task       = request.senderPid;
+        *target = {};
+        target->task = request.senderPid;
         target->generation = usage.generation;
-        target->id         = id;
-        target->digest     = digest(request);
-        target->handle     = handle;
-        target->rights     = reply.handleCount ? reply.handleRights[0] : 0;
+        target->id = id;
+        target->digest = digest(request);
+        target->handle = handle;
+        target->rights = reply.handleCount ? reply.handleRights[0] : 0;
         os::Runtime::copyBytes(target->result, reply.data,
                                sizeof(target->result));
 
@@ -213,14 +213,14 @@ namespace mm {
             return false;
         }
 
-        const os::MmOperation operation =
-            static_cast<os::MmOperation>(request.type);
+        const services::MmOperation operation =
+            static_cast<services::MmOperation>(request.type);
         const bool changesMappings =
-            operation != os::MmOperation::Usage &&
-            operation != os::MmOperation::Sync &&
-            operation != os::MmOperation::SharedOpen &&
-            operation != os::MmOperation::SharedUnlink &&
-            operation != os::MmOperation::SyncOwned;
+            operation != services::MmOperation::Usage &&
+            operation != services::MmOperation::Sync &&
+            operation != services::MmOperation::SharedOpen &&
+            operation != services::MmOperation::SharedUnlink &&
+            operation != services::MmOperation::SyncOwned;
 
         // 只读查询或不改地址映射的操作无需冻结客户进程，减少无意义的暂停。
         if (!changesMappings) {
@@ -238,8 +238,8 @@ namespace mm {
                         return true;
                     }
 
-                    const int result = KernelMemory::control(
-                        os::MemoryOperation::Freeze, task, 0, reply);
+                    const int result = KernelMemory().control(
+                        services::MemoryOperation::Freeze, task, 0, reply);
 
                     return !result ||
                            result == static_cast<int>(os::ErrorCode::NotFound);
@@ -258,7 +258,8 @@ namespace mm {
         }
 
         // fork 还涉及尚未运行的孩子，需要把孩子一起纳入冻结范围。
-        return operation != os::MmOperation::Fork || freeze(request.data[0]);
+        return operation != services::MmOperation::Fork ||
+               freeze(request.data[0]);
     }
 
     /*
@@ -268,7 +269,7 @@ namespace mm {
         capabilities_.begin();
 
         // 恢复快照复制的是管理状态，运行时句柄还要转换成可在新实例中重新领取的令牌。
-        snapshot_.state    = state_;
+        snapshot_.state = state_;
         snapshot_.endpoint = capabilities_.encode(endpoint_);
 
         if (!snapshot_.endpoint) {
@@ -390,8 +391,8 @@ namespace mm {
         while (true) {
             os::IpcMessage reply{};
 
-            if (KernelMemory::control(os::MemoryOperation::FrozenNext, cursor,
-                                      0, reply)) {
+            if (KernelMemory().control(services::MemoryOperation::FrozenNext,
+                                       cursor, 0, reply)) {
                 return false;
             }
 
@@ -405,8 +406,9 @@ namespace mm {
             cursor = task + 1;
             // 被冻结任务尚未运行，因此不会观察到未提交的页表变化。
             while (true) {
-                if (KernelMemory::control(os::MemoryOperation::MappingNext,
-                                          task, 0, reply)) {
+                if (KernelMemory().control(
+                        services::MemoryOperation::MappingNext, task, 0,
+                        reply)) {
                     return false;
                 }
 
@@ -433,11 +435,11 @@ namespace mm {
 
                     // 写时复制页面重建时仍然禁止直接写入，并恢复专用标记，不能因服务重启失去私有复制保护。
                     const uint64_t protection =
-                        KernelMemory::nativeProtection(region->protection) &
+                        KernelMemory().nativeProtection(region->protection) &
                         (page.cow ? ~1ULL : ~0ULL);
                     const int result =
                         backing->kind == BackingKind::Shared
-                            ? KernelMemory::mapShared(
+                            ? KernelMemory().mapShared(
                                   backing->handle, task, page.address, 4096,
                                   region->offset + page.address -
                                       region->address,
@@ -467,8 +469,8 @@ namespace mm {
         while (true) {
             os::IpcMessage reply{};
 
-            if (KernelMemory::control(os::MemoryOperation::FrozenNext, cursor,
-                                      0, reply)) {
+            if (KernelMemory().control(services::MemoryOperation::FrozenNext,
+                                       cursor, 0, reply)) {
                 return false;
             }
 
@@ -479,9 +481,9 @@ namespace mm {
             }
 
             // 先推进枚举游标，再恢复这个任务；下轮即使任务退出或链表变化，也不会重复从原位置开始。
-            cursor           = task + 1;
-            const int result = KernelMemory::control(os::MemoryOperation::Thaw,
-                                                     task, 0, reply);
+            cursor = task + 1;
+            const int result = KernelMemory().control(
+                services::MemoryOperation::Thaw, task, 0, reply);
 
             // 枚举与恢复之间目标可能已退出，NotFound
             // 可以忽略，其他错误则不能假装任务已经恢复。
@@ -497,18 +499,19 @@ namespace mm {
     bool Recovery::collectFileLeases() {
         const uint64_t fs =
             os::detail::RegistryClient(os::detail::RegistryClient().endpoint())
-                .lookup(os::fsServiceName, 1000);
+                .lookup(services::fsServiceName, 1000);
 
         if (!fs) {
             return false;
         }
 
-        bool ok         = true;
+        bool ok = true;
         uint64_t cursor = 0;
 
         while (true) {
             os::IpcMessage request{}, reply{};
-            request.type   = static_cast<uint64_t>(os::FsRequest::ListMappings);
+            request.type =
+                static_cast<uint64_t>(services::FsRequest::ListMappings);
             request.length = 1;
             request.data[0] = cursor;
 
@@ -536,7 +539,7 @@ namespace mm {
             // 旧实例留下却不在已提交快照中的租用应归还，否则文件后备会一直以为还有内存映射使用它。
             if (!used) {
                 request.type =
-                    static_cast<uint64_t>(os::FsRequest::ReleaseMapping);
+                    static_cast<uint64_t>(services::FsRequest::ReleaseMapping);
                 request.data[0] = reply.data[1];
 
                 if (os::callService(fs, request, reply) ||
@@ -602,7 +605,7 @@ namespace mm {
                         backing.fs =
                             os::detail::RegistryClient(
                                 os::detail::RegistryClient().endpoint())
-                                .lookup(os::fsServiceName, 1000);
+                                .lookup(services::fsServiceName, 1000);
 
                         if (!backing.fs) {
                             return false;
@@ -613,7 +616,7 @@ namespace mm {
 
             for (size_t i = 0; i < outcomeCapacity; ++i) {
                 const Outcome& saved = snapshot_.outcomes[i];
-                os::wire::MemoryUsage usage{};
+                services::wire::MemoryUsage usage{};
 
                 if (!saved.task ||
                     os::detail::MemoryQuery().usage(usage, saved.task) ||

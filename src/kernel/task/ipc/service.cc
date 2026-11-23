@@ -19,7 +19,7 @@ namespace task {
         return static_cast<uint64_t>(static_cast<int64_t>(value));
     }
 
-    namespace IpcService {
+    namespace ipc_service {
 
         /*
          * 分发关闭、复制、权限收紧和标志操作；具体句柄校验与引用处理交给句柄表完成。
@@ -29,9 +29,9 @@ namespace task {
                                  uint64_t flags) {
             HandleTable& handles = caller.handles();
 
-            switch (static_cast<os::HandleOperation>(operation)) {
+            switch (static_cast<services::HandleOperation>(operation)) {
                 // 复制请求保留对象身份，但新权限只能取原权限的子集；新句柄编号由目标空槽决定。
-                case os::HandleOperation::Duplicate: {
+                case services::HandleOperation::Duplicate: {
                     if (rights > UINT32_MAX || flags > UINT32_MAX) {
                         return error(SyscallError::InvalidArgument);
                     }
@@ -44,19 +44,19 @@ namespace task {
                 }
 
                 // 权限收紧只修改一个槽位；即使调用者另有更强句柄，也不能用它为当前槽位增加权限。
-                case os::HandleOperation::RestrictRights:
+                case services::HandleOperation::RestrictRights:
                     return rights <= UINT32_MAX &&
                                    handles.restrictRights(handle, rights)
                                ? 0
                                : error(SyscallError::PermissionDenied);
-                case os::HandleOperation::SetFlags:
+                case services::HandleOperation::SetFlags:
                     return flags <= UINT32_MAX &&
                                    handles.setFlags(handle, flags)
                                ? 0
                                : error(SyscallError::InvalidArgument);
 
                 // 查询有效性不取得对象长期所有权，只返回当前句柄是否还能通过表内检查。
-                case os::HandleOperation::GetState: {
+                case services::HandleOperation::GetState: {
                     HandleTable::Pin pin(handles, handle, HandleType::Endpoint,
                                          0);
                     task::Endpoint* endpoint = pin.as<Endpoint>();
@@ -65,19 +65,19 @@ namespace task {
                                     : error(SyscallError::InvalidHandle);
                 }
 
-                case os::HandleOperation::References:
+                case services::HandleOperation::References:
                     return handles.references(handle);
                 // 端点身份不随句柄复制改变；销毁需要管理权限，请求查询需要接收权限，不能直接拿用户提供的对象地址当授权。
-                case os::HandleOperation::ObjectIdentity:
-                case os::HandleOperation::DestroyEndpoint:
-                case os::HandleOperation::RequestActive: {
-                    const os::HandleOperation op =
-                        static_cast<os::HandleOperation>(operation);
+                case services::HandleOperation::ObjectIdentity:
+                case services::HandleOperation::DestroyEndpoint:
+                case services::HandleOperation::RequestActive: {
+                    const services::HandleOperation op =
+                        static_cast<services::HandleOperation>(operation);
                     HandleTable::Pin pin(
                         handles, handle, HandleType::Endpoint,
-                        op == os::HandleOperation::DestroyEndpoint
+                        op == services::HandleOperation::DestroyEndpoint
                             ? handleRightManage
-                        : op == os::HandleOperation::RequestActive
+                        : op == services::HandleOperation::RequestActive
                             ? handleRightRead
                             : 0);
                     task::Endpoint* endpoint = pin.as<Endpoint>();
@@ -86,11 +86,11 @@ namespace task {
                         return error(SyscallError::InvalidHandle);
                     }
 
-                    if (op == os::HandleOperation::ObjectIdentity) {
+                    if (op == services::HandleOperation::ObjectIdentity) {
                         return endpoint->getId();
                     }
 
-                    if (op == os::HandleOperation::RequestActive) {
+                    if (op == services::HandleOperation::RequestActive) {
                         return endpoint->requestActive(rights) ? 1 : 0;
                     }
 
@@ -99,7 +99,7 @@ namespace task {
                     return 0;
                 }
 
-                case os::HandleOperation::Close:
+                case services::HandleOperation::Close:
                     break;
                 default:
                     return error(SyscallError::InvalidArgument);
@@ -121,9 +121,9 @@ namespace task {
 
             const uint64_t* args = request.data;
 
-            switch (static_cast<os::IpcOperation>(request.type)) {
+            switch (static_cast<services::IpcOperation>(request.type)) {
                 // 先创建端点对象再安装调用者句柄，安装失败需要归还本次新对象，不能留下不可访问端点。
-                case os::IpcOperation::CreateEndpoint: {
+                case services::IpcOperation::CreateEndpoint: {
                     Endpoint* endpoint = Endpoint::create();
 
                     if (!endpoint) {
@@ -144,14 +144,14 @@ namespace task {
                 }
 
                 // 只按协议服务类别取得已登记核心入口，不接受用户任意给出的内核地址。
-                case os::IpcOperation::GetCoreService: {
+                case services::IpcOperation::GetCoreService: {
                     if (args[0] >=
-                        static_cast<uint64_t>(os::CoreServiceKind::Count)) {
+                        static_cast<uint64_t>(services::CoreServiceKind::Count)) {
                         return -1;
                     }
 
                     const uint64_t handle = coreServices().getHandle(
-                        caller, static_cast<os::CoreServiceKind>(args[0]));
+                        caller, static_cast<services::CoreServiceKind>(args[0]));
 
                     if (!handle) {
                         return -4;
@@ -162,12 +162,12 @@ namespace task {
                     break;
                 }
 
-                case os::IpcOperation::Handle:
+                case services::IpcOperation::Handle:
                     reply.data[0] = handleOperation(caller, args[0], args[1],
                                                     args[2], args[3]);
 
                     if (args[1] == static_cast<uint64_t>(
-                                       os::HandleOperation::Duplicate) &&
+                                       services::HandleOperation::Duplicate) &&
                         static_cast<int64_t>(reply.data[0]) > 0) {
                         addCreatedHandle(reply, reply.data[0]);
                     }
@@ -182,13 +182,13 @@ namespace task {
             return 0;
         }
 
-    }  // namespace IpcService
+    }  // namespace ipc_service
 
     /*
      * 返回 IPC 内核服务入口描述，供核心服务表创建对应端点。
      */
     EndpointService& ipcKernelService() {
-        static EndpointService service(IpcService::call);
+        static EndpointService service(ipc_service::call);
 
         return service;
     }

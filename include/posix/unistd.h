@@ -54,6 +54,7 @@ extern "C" {
 extern char **environ;
 extern char *optarg;
 extern int optind, opterr, optopt;
+int getpagesize(void);
 ssize_t read(int fileDescriptor, void *buffer, size_t count);
 ssize_t write(int fileDescriptor, const void *buffer, size_t count);
 int close(int fileDescriptor);

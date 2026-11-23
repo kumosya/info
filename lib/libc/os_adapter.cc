@@ -8,12 +8,10 @@
 #include <unistd.h>
 
 #include "internal.h"
-#include "service/common/channel.h"
-#include "service/common/kernel-requests.h"
-#include "service/common/queries.h"
+#include <os/detail/client.h>
+#include "service/common/protocol.h"
 #include "service/common/records.h"
-#include "service/common/requests.h"
-#include "service/common/runtime.h"
+#include <os/runtime.h>
 #include "service/task/msgq-records.h"
 #include "service/tty/records.h"
 #include <os/console.h>
@@ -27,17 +25,16 @@
 #include <os/task.h>
 #include <sys/stat.h>
 extern "C" {
-#include "internal.h"
 }
 
-static_assert(sizeof(OsDirectoryEntry) == sizeof(os::wire::DirectoryEntry));
-static_assert(sizeof(OsTaskIdentifiers) == sizeof(os::wire::TaskIdentifiers));
-static_assert(sizeof(OsTaskInfo) == sizeof(os::wire::TaskInfo));
-static_assert(sizeof(OsCredentialInfo) == sizeof(os::wire::CredentialInfo));
-static_assert(sizeof(OsSignalAction) == sizeof(os::wire::SignalAction));
+static_assert(sizeof(OsDirectoryEntry) == sizeof(services::wire::DirectoryEntry));
+static_assert(sizeof(OsTaskIdentifiers) == sizeof(services::wire::TaskIdentifiers));
+static_assert(sizeof(OsTaskInfo) == sizeof(services::wire::TaskInfo));
+static_assert(sizeof(OsCredentialInfo) == sizeof(services::wire::CredentialInfo));
+static_assert(sizeof(OsSignalAction) == sizeof(services::wire::SignalAction));
 static_assert(sizeof(OsMessageQueueAttributes) ==
-              sizeof(os::wire::MessageQueueAttributes));
-static_assert(sizeof(OsExecImageInfo) == sizeof(os::wire::ExecImageInfo));
+              sizeof(services::wire::MessageQueueAttributes));
+static_assert(sizeof(OsExecImageInfo) == sizeof(services::wire::ExecImageInfo));
 
 static int64_t posixFileResult(int64_t status) {
     if (status >= 0) return status;
@@ -79,7 +76,7 @@ static os::File borrowedFile(uint64_t fs, uint64_t descriptor) {
     value.borrow(fs, descriptor, nullptr, O_RDWR);
     return value;
 }
-static bool filePathMessage(os::IpcMessage& request, os::FsRequest op,
+static bool filePathMessage(os::IpcMessage& request, services::FsRequest op,
                             const char* path) {
     if (!path || !*path || os::Runtime::stringLength(path) >= 384) return false;
     request.type   = static_cast<uint64_t>(op);
@@ -87,7 +84,7 @@ static bool filePathMessage(os::IpcMessage& request, os::FsRequest op,
     os::Runtime::copyString(reinterpret_cast<char*>(request.data), path, 384);
     return true;
 }
-static bool filePathCall(uint64_t fs, os::FsRequest op, const char* path) {
+static bool filePathCall(uint64_t fs, services::FsRequest op, const char* path) {
     os::IpcMessage request{}, reply{};
     return filePathMessage(request, op, path) &&
            !os::callService(fs, request, reply) && reply.length &&
@@ -105,17 +102,17 @@ int __libc_os_descriptor_ready(int kind, uint64_t handle) {
     os::IpcMessage request{}, reply{};
     if (kind == DESCRIPTOR_PIPE_READ || kind == DESCRIPTOR_PIPE_WRITE ||
         handle) {
-        request.type    = static_cast<uint64_t>(os::PipeOperation::Readiness);
+        request.type    = static_cast<uint64_t>(services::PipeOperation::Readiness);
         request.length  = 1;
         request.data[0] = handle;
         const int64_t status =
-            services::RequestChannel(os::CoreServiceKind::Pipe)
+            os::detail::RequestChannel(services::CoreServiceKind::Pipe)
                 .result(request, reply);
         return static_cast<int>(posixFileResult(status));
     }
-    request.type    = static_cast<uint64_t>(os::TerminalRequest::Readiness);
+    request.type    = static_cast<uint64_t>(services::TerminalRequest::Readiness);
     request.length  = 1;
-    request.data[0] = os::Runtime::getConsoleId();
+    request.data[0] = os::Runtime::current().getConsoleId();
     os::Ipc::Handle endpoint(os::detail::RegistryClient().lookup("console", 1));
     if (!endpoint.getValid()) return -ENODEV;
     const int status = os::callService(endpoint.getValue(), request, reply);
@@ -144,8 +141,8 @@ void __libc_os_readiness_end(uint64_t token) {
 void __libc_os_readiness_notify(void) { os::notifyReadiness(); }
 
 void __libc_os_bind_environment(char*** environment) {
-    os::Runtime::bindEnvironment(environment);
-    os::Runtime::bindWorkingDirectory(libcGetCurrentDirectory);
+    os::Runtime::current().bindEnvironment(environment);
+    os::Runtime::current().bindWorkingDirectory(libcGetCurrentDirectory);
 }
 
 void* __libc_file_adopt(uint64_t fs, uint64_t handle, const char* path,
@@ -177,7 +174,7 @@ uint64_t __libc_file_open(uint64_t fs, const char* path, int flags, mode_t mode,
                           int* error) {
     os::IpcMessage request{}, reply{};
     int status = -EINVAL;
-    if (filePathMessage(request, os::FsRequest::Open, path)) {
+    if (filePathMessage(request, services::FsRequest::Open, path)) {
         request.length      = 50;
         request.data[48]    = flags;
         request.data[49]    = mode;
@@ -286,7 +283,7 @@ int __libc_os_is_terminal_handle(uint64_t handle) {
 
 uint64_t __libc_os_get_fs_service() {
     return os::detail::RegistryClient(os::getBootstrapHandle())
-        .lookup(os::fsServiceName, 1000);
+        .lookup(services::fsServiceName, 1000);
 }
 
 uint64_t __libc_os_open_file(uint64_t fs, const char* path) {
@@ -295,7 +292,7 @@ uint64_t __libc_os_open_file(uint64_t fs, const char* path) {
 
 int __libc_os_close_file(uint64_t fs, uint64_t descriptor) {
     os::IpcMessage request{}, reply{};
-    request.type    = static_cast<uint64_t>(os::FsRequest::Close);
+    request.type    = static_cast<uint64_t>(services::FsRequest::Close);
     request.length  = 1;
     request.data[0] = descriptor;
     return !os::callService(fs, request, reply) && reply.length &&
@@ -327,7 +324,7 @@ int __libc_os_clone_file_descriptors(uint64_t fs, uint64_t parentTaskId,
                                      size_t capacity) {
     if (!oldDescriptors || !newDescriptors) return -1;
     os::IpcMessage request{}, reply{};
-    request.type    = static_cast<uint64_t>(os::FsRequest::CloneDescriptors);
+    request.type    = static_cast<uint64_t>(services::FsRequest::CloneDescriptors);
     request.length  = 1;
     request.data[0] = parentTaskId;
     if (os::callService(fs, request, reply) || reply.length < 2 ||
@@ -352,7 +349,7 @@ int __libc_os_create_file(uint64_t fs, const char* path) {
 int __libc_os_make_directory(uint64_t fs, const char* path) {
     if (!path || os::Runtime::stringLength(path) >= 384) return 0;
     os::IpcMessage request{}, reply{};
-    request.type     = static_cast<uint64_t>(os::FsRequest::DirCreate);
+    request.type     = static_cast<uint64_t>(services::FsRequest::DirCreate);
     request.length   = 49;
     request.data[48] = 0755;
     os::Runtime::copyString(reinterpret_cast<char*>(request.data), path, 384);
@@ -361,11 +358,11 @@ int __libc_os_make_directory(uint64_t fs, const char* path) {
 }
 
 int __libc_os_remove_path(uint64_t fs, const char* path) {
-    return filePathCall(fs, os::FsRequest::Remove, path);
+    return filePathCall(fs, services::FsRequest::Remove, path);
 }
 
 int __libc_os_truncate_file(uint64_t fs, const char* path) {
-    return filePathCall(fs, os::FsRequest::Truncate, path);
+    return filePathCall(fs, services::FsRequest::Truncate, path);
 }
 
 int __libc_os_stat_file(const char* path, OsFileStat* status) {
@@ -390,7 +387,7 @@ int __libc_os_stat_file(const char* path, OsFileStat* status) {
 int __libc_os_link_file(uint64_t fs, const char* existing,
                         const char* newPath) {
     os::IpcMessage request{}, reply{};
-    if (!filePathMessage(request, os::FsRequest::Link, existing) || !newPath ||
+    if (!filePathMessage(request, services::FsRequest::Link, existing) || !newPath ||
         os::Runtime::stringLength(newPath) >= 384)
         return 0;
     os::Runtime::copyString(reinterpret_cast<char*>(request.data) + 384,
@@ -401,7 +398,7 @@ int __libc_os_link_file(uint64_t fs, const char* existing,
 }
 int __libc_os_change_file_mode(uint64_t fs, const char* path, uint32_t mode) {
     os::IpcMessage request{}, reply{};
-    if (!filePathMessage(request, os::FsRequest::ChangeMode, path)) return 0;
+    if (!filePathMessage(request, services::FsRequest::ChangeMode, path)) return 0;
     request.length   = 49;
     request.data[48] = mode;
     return !os::callService(fs, request, reply) && reply.length &&
@@ -410,7 +407,7 @@ int __libc_os_change_file_mode(uint64_t fs, const char* path, uint32_t mode) {
 int __libc_os_change_file_owner(uint64_t fs, const char* path, uint32_t uid,
                                 uint32_t gid) {
     os::IpcMessage request{}, reply{};
-    if (!filePathMessage(request, os::FsRequest::ChangeOwner, path)) return 0;
+    if (!filePathMessage(request, services::FsRequest::ChangeOwner, path)) return 0;
     request.length   = 50;
     request.data[48] = uid;
     request.data[49] = gid;
@@ -421,7 +418,7 @@ int __libc_os_change_file_times(uint64_t fs, const char* path,
                                 uint64_t accessTime,
                                 uint64_t modificationTime) {
     os::IpcMessage request{}, reply{};
-    if (!filePathMessage(request, os::FsRequest::ChangeTimes, path)) return 0;
+    if (!filePathMessage(request, services::FsRequest::ChangeTimes, path)) return 0;
     request.length   = 50;
     request.data[48] = accessTime;
     request.data[49] = modificationTime;
@@ -438,7 +435,7 @@ int64_t __libc_os_read_directory_batch(uint64_t fs, const char* path,
         return static_cast<int>(os::ErrorCode::InvalidArgument);
     const size_t limit = capacity < 14 ? capacity : 14;
     os::IpcMessage request{}, reply{};
-    request.type   = static_cast<uint64_t>(os::FsRequest::ReadDirectoryBatch);
+    request.type   = static_cast<uint64_t>(services::FsRequest::ReadDirectoryBatch);
     request.length = 50;
     os::Runtime::copyString(reinterpret_cast<char*>(request.data), path, 384);
     request.data[48] = index;
@@ -463,7 +460,7 @@ int __libc_os_read_file_async(uint64_t fs, uint64_t descriptor, uint64_t offset,
     if (!fs || !descriptor || !completionEndpoint || !size || size > 4088)
         return 0;
     os::IpcMessage request{};
-    request.type        = static_cast<uint64_t>(os::FsRequest::ReadAtAsync);
+    request.type        = static_cast<uint64_t>(services::FsRequest::ReadAtAsync);
     request.length      = 4;
     request.data[0]     = descriptor;
     request.data[1]     = offset;
@@ -481,7 +478,7 @@ int __libc_os_write_file_async(uint64_t fs, uint64_t descriptor,
         size > 4088)
         return 0;
     os::IpcMessage request{};
-    request.type        = static_cast<uint64_t>(os::FsRequest::WriteAtAsync);
+    request.type        = static_cast<uint64_t>(services::FsRequest::WriteAtAsync);
     request.length      = 4 + (size + 7) / 8;
     request.data[0]     = descriptor;
     request.data[1]     = offset;
@@ -498,7 +495,7 @@ int __libc_os_wait_file_operation(uint64_t endpoint,
     if (!endpoint || !result) return 0;
     os::IpcMessage completion{};
     if (os::receiveMessage(endpoint, completion) ||
-        completion.type != os::fsCompletionNotification ||
+        completion.type != services::fsCompletionNotification ||
         completion.length < 3 || completion.data[2] > 4088)
         return 0;
     if (!completion.data[1] && completion.length > 3) {
@@ -526,6 +523,13 @@ int64_t __libc_os_read_pipe(uint64_t handle, void* buffer, size_t size) {
     return os::detail::PipeClient(handle).read(buffer, size);
 }
 
+/* 把 POSIX 描述符的非阻塞设置传给实际管道端，空管道读取由服务返回 EAGAIN。 */
+int __libc_os_pipe_nonblocking(uint64_t handle, int enabled) {
+    os::detail::PipeClient pipe(handle);
+    return pipe.setNonblocking(enabled != 0) ? 0 :
+        static_cast<int>(posixFileResult(pipe.getError()));
+}
+
 int64_t __libc_os_write_pipe(uint64_t handle, const void* buffer, size_t size) {
     return os::detail::PipeClient(handle).write(buffer, size);
 }
@@ -548,10 +552,10 @@ int64_t __libc_os_write_terminal(const void* buffer, size_t size) {
     return status ? status : console.write(buffer, size);
 }
 
-uint32_t __libc_os_get_terminal_id() { return os::Runtime::getConsoleId(); }
+uint32_t __libc_os_get_terminal_id() { return os::Runtime::current().getConsoleId(); }
 
 void __libc_os_set_terminal_id(uint32_t terminalId) {
-    os::Runtime::setConsoleId(terminalId);
+    os::Runtime::current().setConsoleId(terminalId);
 }
 
 void __libc_os_yield() { os::yield(); }
@@ -563,8 +567,15 @@ uint64_t __libc_os_create_thread(void (*entry)(void*), void* argument,
 }
 int __libc_os_wait_thread(uint64_t threadId, int* exitCode, int noHang) {
     if (exitCode == nullptr) return -1;
-    return os::detail::TaskControl().waitThread(threadId, *exitCode,
-                                                noHang != 0);
+
+    // pthread_join 等待期间处理完信号后继续回收线程，保留已经登记的回收权。
+    int status;
+    do {
+        status = os::detail::TaskControl().waitThread(threadId, *exitCode,
+                                                     noHang != 0);
+    } while (!noHang && status == static_cast<int>(os::ErrorCode::Interrupted));
+
+    return status;
 }
 int __libc_os_wait_address(volatile uint32_t* address, uint32_t expected) {
     return os::waitAddress(address, expected);
@@ -587,13 +598,13 @@ int __libc_os_wake_address(volatile uint32_t* address, uint32_t count) {
 /* 从调度器实际记账读取 CPU 用时，不能用启动后的墙上时间替代。 */
 int __libc_os_cpu_time(uint64_t id, int thread, uint64_t* nanoseconds) {
     if (thread) {
-        os::wire::ThreadInfo info{};
+        services::wire::ThreadInfo info{};
         const uint64_t target = id ? id : __libc_os_get_thread_id();
         const int status = os::detail::TaskQuery().threadInfo(0, target, info);
         if (status || info.id != target) return ESRCH;
         *nanoseconds = info.cpuNanoseconds;
     } else {
-        os::wire::TaskInfo info{};
+        services::wire::TaskInfo info{};
         const int status = os::detail::TaskQuery().query(
             id ? id : __libc_os_get_task_id(), info);
         if (status) return ESRCH;
@@ -604,8 +615,8 @@ int __libc_os_cpu_time(uint64_t id, int thread, uint64_t* nanoseconds) {
 int __libc_os_set_signal_action(uint32_t signal, const OsSignalAction* action,
                                 OsSignalAction* oldAction) {
     return os::detail::TaskControl().setSignalAction(
-        signal, reinterpret_cast<const os::wire::SignalAction*>(action),
-        reinterpret_cast<os::wire::SignalAction*>(oldAction));
+        signal, reinterpret_cast<const services::wire::SignalAction*>(action),
+        reinterpret_cast<services::wire::SignalAction*>(oldAction));
 }
 int __libc_os_set_signal_mask(int how, uint64_t mask, uint64_t* oldMask) {
     if (oldMask == nullptr) return -1;
@@ -631,7 +642,7 @@ int __libc_os_credentials(unsigned operation, uint32_t first, uint32_t second,
                           uint32_t third, const uint32_t* groups,
                           OsCredentialInfo* info) {
     os::IpcMessage request{}, reply{};
-    request.type    = static_cast<uint64_t>(os::TaskOperation::Credentials);
+    request.type    = static_cast<uint64_t>(services::TaskOperation::Credentials);
     request.length  = 4;
     request.data[0] = operation;
     request.data[1] = first;
@@ -642,7 +653,7 @@ int __libc_os_credentials(unsigned operation, uint32_t first, uint32_t second,
         request.length += first;
         for (uint32_t i = 0; i < first; ++i) request.data[4 + i] = groups[i];
     }
-    int result = services::RequestChannel(os::CoreServiceKind::Task)
+    int result = os::detail::RequestChannel(services::CoreServiceKind::Task)
                      .result(request, reply);
     if (result) return result == -3 ? 1 : result == -4 ? 3 : 5;
     if (!reply.data[1] && info)
@@ -652,13 +663,13 @@ int __libc_os_credentials(unsigned operation, uint32_t first, uint32_t second,
 int __libc_os_priority(unsigned operation, unsigned which, uint64_t who,
                        int value, int* result) {
     os::IpcMessage request{}, reply{};
-    request.type    = static_cast<uint64_t>(os::TaskOperation::Priority);
+    request.type    = static_cast<uint64_t>(services::TaskOperation::Priority);
     request.length  = 4;
     request.data[0] = operation;
     request.data[1] = which;
     request.data[2] = who;
     request.data[3] = static_cast<int64_t>(value);
-    if (services::RequestChannel(os::CoreServiceKind::Task)
+    if (os::detail::RequestChannel(services::CoreServiceKind::Task)
             .result(request, reply))
         return 5;
     if (result) *result = static_cast<int>(reply.data[2]);
@@ -667,14 +678,14 @@ int __libc_os_priority(unsigned operation, unsigned which, uint64_t who,
 int __libc_os_resource_limit(uint64_t pid, int resource, int set,
                              uint64_t* soft, uint64_t* hard) {
     os::IpcMessage request{}, reply{};
-    request.type    = static_cast<uint64_t>(os::TaskOperation::ResourceLimit);
+    request.type    = static_cast<uint64_t>(services::TaskOperation::ResourceLimit);
     request.length  = 5;
     request.data[0] = pid;
     request.data[1] = resource;
     request.data[2] = set;
     request.data[3] = *soft;
     request.data[4] = *hard;
-    if (services::RequestChannel(os::CoreServiceKind::Task)
+    if (os::detail::RequestChannel(services::CoreServiceKind::Task)
             .result(request, reply))
         return 5;
     if (!reply.data[1]) {
@@ -688,9 +699,9 @@ int __libc_os_accessible(const void* address, uint64_t size, int writable) {
 }
 uint64_t __libc_os_signal_generation(void) {
     os::IpcMessage request{}, reply{};
-    request.type   = static_cast<uint64_t>(os::TaskOperation::SignalGeneration);
+    request.type   = static_cast<uint64_t>(services::TaskOperation::SignalGeneration);
     request.length = 4;
-    services::RequestChannel(os::CoreServiceKind::Task).result(request, reply);
+    os::detail::RequestChannel(services::CoreServiceKind::Task).result(request, reply);
     return reply.data[1];
 }
 void __libc_os_signal_return(void* frame) {
@@ -759,7 +770,7 @@ int64_t __libc_os_fork_task() { return os::forkTask(); }
 int64_t __libc_os_fork_endpoint(void) {
     const int64_t endpoint = os::detail::EndpointControl().create();
     if (endpoint > 0 &&
-        os::Ipc::Handle(endpoint, false).setFlags(os::handleFlagCloseOnExec)) {
+        os::Ipc::Handle(endpoint, false).setFlags(services::handleFlagCloseOnExec)) {
         os::closeHandle(endpoint);
         return -5;
     }
@@ -785,11 +796,11 @@ int __libc_os_fork_receive(uint64_t endpoint, uint64_t child) {
 int64_t __libc_os_wait_id(int64_t taskId, int options, uint32_t* uid, int* code,
                           int* status) {
     os::IpcMessage request{}, reply{};
-    request.type         = static_cast<uint64_t>(os::TaskOperation::WaitId);
+    request.type         = static_cast<uint64_t>(services::TaskOperation::WaitId);
     request.length       = 4;
     request.data[0]      = taskId;
     request.data[1]      = options;
-    const int64_t result = services::RequestChannel(os::CoreServiceKind::Task)
+    const int64_t result = os::detail::RequestChannel(services::CoreServiceKind::Task)
                                .result(request, reply);
     if (result < 0) return result;
     *uid    = reply.data[2];
@@ -804,10 +815,10 @@ int64_t __libc_os_wait_child(int64_t taskId, int* status, int options) {
 int __libc_os_replace_task_image(const OsExecImageInfo* info) {
     if (info == nullptr) return -1;
     os::IpcMessage request{}, reply{};
-    request.type    = static_cast<uint64_t>(os::TaskOperation::ReplaceImage);
+    request.type    = static_cast<uint64_t>(services::TaskOperation::ReplaceImage);
     request.length  = 5;
     request.data[0] = reinterpret_cast<uint64_t>(info);
-    return services::RequestChannel(os::CoreServiceKind::Task)
+    return os::detail::RequestChannel(services::CoreServiceKind::Task)
         .result(request, reply);
 }
 int __libc_os_image_interpreter(const void* image, size_t size, char* path,
@@ -818,7 +829,7 @@ int __libc_os_image_interpreter(const void* image, size_t size, char* path,
 }
 int __libc_os_query_task(uint64_t taskId, OsTaskInfo* info) {
     if (!info) return -1;
-    os::wire::TaskInfo value{};
+    services::wire::TaskInfo value{};
     const int result = os::detail::TaskQuery().query(taskId, value);
     if (!result) os::Runtime::copyBytes(info, &value, sizeof(value));
     return result;
@@ -835,10 +846,10 @@ uint64_t __libc_os_get_thread_id() {
 }
 void __libc_os_exit_task(int status) { os::exitTask(status); }
 void* __libc_os_allocate_memory(size_t size) {
-    return os::Runtime::allocateMemory(size);
+    return os::Runtime::current().allocateMemory(size);
 }
 int __libc_os_free_memory(void* pointer) {
-    return os::Runtime::freeMemory(pointer);
+    return os::Runtime::current().freeMemory(pointer);
 }
 uint64_t __libc_os_map_memory(uint64_t address, uint64_t size,
                               uint64_t protection) {
@@ -859,10 +870,10 @@ uint64_t __libc_os_get_wall_clock_time() {
 }
 int __libc_os_set_wall_clock(uint64_t nanoseconds) {
     os::IpcMessage request{}, reply{};
-    request.type = static_cast<uint64_t>(os::SystemOperation::SetWallClockTime);
+    request.type = static_cast<uint64_t>(services::SystemOperation::SetWallClockTime);
     request.length       = 1;
     request.data[0]      = nanoseconds;
-    const int64_t status = services::RequestChannel(os::CoreServiceKind::System)
+    const int64_t status = os::detail::RequestChannel(services::CoreServiceKind::System)
                                .result(request, reply);
     return status == -3 ? EPERM : status ? EINVAL : 0;
 }
@@ -873,7 +884,7 @@ uint64_t __libc_os_get_clock_resolution() {
 int __libc_os_get_task_identifiers(OsTaskIdentifiers* identifiers,
                                    uint64_t taskId) {
     if (identifiers == nullptr) return -1;
-    os::wire::TaskIdentifiers value{};
+    services::wire::TaskIdentifiers value{};
     const int result = os::detail::TaskControl().getIdentifiers(value, taskId);
     if (result == 0) {
         identifiers->parentId    = value.parentId;
@@ -912,7 +923,7 @@ int __libc_os_get_task_state(uint64_t handle, int* exitCode) {
 int __libc_os_get_task_info(uint64_t handle, OsTaskInfo* info) {
     if (info == nullptr) return -1;
     return os::detail::TaskQuery().getInfo(
-        handle, *reinterpret_cast<os::wire::TaskInfo*>(info));
+        handle, *reinterpret_cast<services::wire::TaskInfo*>(info));
 }
 
 int __libc_os_rename_file(uint64_t fs, const char* existing,
@@ -921,7 +932,7 @@ int __libc_os_rename_file(uint64_t fs, const char* existing,
     if (!existing || !newPath || os::Runtime::stringLength(existing) >= 384 ||
         os::Runtime::stringLength(newPath) >= 384)
         return 0;
-    request.type = static_cast<uint64_t>(os::FsRequest::Rename);
+    request.type = static_cast<uint64_t>(services::FsRequest::Rename);
     os::Runtime::copyString(reinterpret_cast<char*>(request.data), existing,
                             384);
     os::Runtime::copyString(reinterpret_cast<char*>(request.data) + 384,
@@ -932,7 +943,7 @@ int __libc_os_rename_file(uint64_t fs, const char* existing,
 
 int __libc_os_sync_all(void) {
     os::IpcMessage request{}, reply{};
-    request.type        = static_cast<uint64_t>(os::FsRequest::SyncAll);
+    request.type        = static_cast<uint64_t>(services::FsRequest::SyncAll);
     const int transport = os::callService(libcFsService(), request, reply);
     if (transport) return static_cast<int>(-posixFileResult(transport));
     if (reply.length != 1) return EIO;
@@ -941,7 +952,7 @@ int __libc_os_sync_all(void) {
                : 0;
 }
 
-void __libc_os_runtime_fini() { os::Runtime::runtimeFini(); }
+void __libc_os_runtime_fini() { os::Runtime::current().runtimeFini(); }
 
 }  // extern "C"
 #pragma GCC visibility pop
@@ -1208,10 +1219,10 @@ extern "C" int posix_devctl(int descriptor, int command, void* data,
         return finish(EACCES);
     if (!description->handle || !isatty(descriptor)) return finish(ENOTTY);
     os::Ipc::Handle endpoint(
-        os::detail::RegistryClient().lookup(os::ttyServiceName, 100));
+        os::detail::RegistryClient().lookup(services::ttyServiceName, 100));
     if (!endpoint.getValue()) return finish(ENODEV);
     os::IpcMessage request{}, reply{};
-    request.type        = static_cast<uint64_t>(os::TtyRequest::DeviceControl);
+    request.type        = static_cast<uint64_t>(services::TtyRequest::DeviceControl);
     request.length      = command == OSINFO_DEVCTL_TTY_SET_SIZE ? 4 : 2;
     request.data[0]     = command;
     request.data[1]     = length;

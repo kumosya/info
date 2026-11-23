@@ -7,16 +7,23 @@
 
 #include "service/fs/vfs.h"
 
-namespace vfs {
+namespace fs::sysfs {
+
     /* 生成系统信息文件系统中的节点及其查询结果。 */
     class SystemFiles {
         public:
-            static bool init(FileSystem& root);
-            static bool lookup(const char* path, FileStatus& status);
-            static int directory(const char* path, uint32_t index,
-                                 DirectoryEntry& entry);
-            static int64_t read(uint32_t inode, uint64_t offset, void* buffer,
-                                size_t size);
+            SystemFiles() = default;
+            ~SystemFiles() = default;
+            bool init(FileSystem& root);
+            bool lookup(const char* path, FileStatus& status);
+            int directory(const char* path, uint32_t index,
+                          DirectoryEntry& entry);
+            int64_t read(uint32_t inode, uint64_t offset, void* buffer,
+                         size_t size);
+
+        private:
+            char version_[64]{};
+            char hostname_[64]{};
     };
-}  // namespace vfs
+}  // namespace fs::sysfs
 #endif

@@ -3,10 +3,11 @@
  * 按区域权限处理缺页，读取文件页面并建立实际映射。
  */
 
-#include "service/common/queries.h"
-#include "service/common/runtime.h"
-#include "service/mm/mm.h"
+#include <os/detail/client.h>
 #include <os/file.h>
+#include <os/runtime.h>
+
+#include "service/mm/mm.h"
 
 namespace mm {
 
@@ -85,21 +86,21 @@ namespace mm {
             return existing->used ? 0 : -4;
         }
 
-        if (state_.pagesUsed(task) >= 2048) {
+        if (state_.pagesUsed(task) >= MemoryState::taskPageLimit) {
             return -5;
         }
 
         ResidentPage* page = state_.vacantPage();
-        Backing* backing   = state_.backing(region->backing);
+        Backing* backing = state_.backing(region->backing);
 
         if (!page || !backing) {
             return -5;
         }
 
         // 先占驻留记录，再取得后备页；后续分配或文件读取失败时把本次记录清回空槽。
-        *page         = {};
-        page->used    = true;
-        page->task    = task;
+        *page = {};
+        page->used = true;
+        page->task = task;
         page->address = address;
         page->backing = region->backing;
 
@@ -147,7 +148,7 @@ namespace mm {
 
         address &= ~4095ULL;
         const uint64_t protection =
-            KernelMemory::nativeProtection(region->protection);
+            KernelMemory().nativeProtection(region->protection);
         ResidentPage* page = state_.page(task, address);
 
         // 写时复制不是普通权限错误：读取仍共享原页，写入才分配并复制私有页。
@@ -157,7 +158,7 @@ namespace mm {
 
         if (page && page->mapped) {
             // 管理记录说已映射还不够，重新读取内核页表确认；已有却权限不符时应报错，不能偷偷放宽。
-            const uint64_t actual = KernelMemory::pageState(task, address);
+            const uint64_t actual = KernelMemory().pageState(task, address);
 
             if ((actual & 1) && (!(flags & 2) || (actual & 2)) &&
                 (!(flags & 16) || !(actual & (1ULL << 63)))) {
@@ -178,7 +179,7 @@ namespace mm {
         bool fresh = page == nullptr;
 
         if (fresh) {
-            if (state_.pagesUsed(task) >= 2048) {
+            if (state_.pagesUsed(task) >= MemoryState::taskPageLimit) {
                 return -5;
             }
 
@@ -194,9 +195,9 @@ namespace mm {
                 return -5;
             }
 
-            *page         = {};
-            page->used    = true;
-            page->task    = task;
+            *page = {};
+            page->used = true;
+            page->task = task;
             page->address = address;
             page->backing = region->backing;
         }
@@ -213,7 +214,7 @@ namespace mm {
 
         // 共享页由共享对象管理，文件和匿名页则使用本服务持有的页对象句柄。
         if (backing->kind == BackingKind::Shared) {
-            const int result = KernelMemory::mapShared(
+            const int result = KernelMemory().mapShared(
                 backing->handle, task, address, 4096,
                 region->offset + address - region->address, protection);
 

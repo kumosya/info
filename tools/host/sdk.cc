@@ -52,7 +52,7 @@ namespace host {
                     data[4] != 2 || data[5] != 1 ||
                     static_cast<unsigned char>(data[18]) != 62 || data[19])
                     throw std::runtime_error(
-                        name + " must be little-endian ELF64 x86-64");
+                        name + " must be little-endian ELF64 amd64");
                 library = true;
             }
             write(checked, data);
@@ -73,7 +73,8 @@ namespace host {
         developmentPackage(context, destination, "libguiw-font", "guiw/",
                            {"font.h"});
         developmentPackage(context, destination, "libosgui-c++", "osgui-c++/",
-                           {"gui.h", "protocol.h", "session.h"});
+                           {"app.h", "control.h", "dialog.h", "file.h", "gui.h",
+                            "i18n.h", "icon.h", "image.h", "package.h", "widget.h"});
         developmentPackage(context, destination, "guiw-language", "", {});
     }
 
@@ -92,12 +93,42 @@ namespace host {
             guiPackage(context, destination);
             return;
         }
-        // Remove only the retired generated GUI development files when
-        // refreshing an existing SDK. Unknown files in that directory are left
-        // untouched.
+        // 更新 SDK 时移除已被整合的旧服务声明和旧图形开发文件。
         for (const auto& name :
              {"include/osgui-c++/osgui/font.h", "include/osgui-c++/osgui/gui.h",
-              "lib/libosgui-c++.so"}) {
+              "include/osgui-c++/osgui/protocol.h",
+              "include/osgui-c++/osgui/session.h",
+              "lib/libosgui-c++.so",
+              "include/service/common/channel.h",
+              "include/service/common/configuration.h",
+              "include/service/common/entry.h",
+              "include/service/common/kernel-requests.h",
+              "include/service/common/queries.h",
+              "include/service/common/replay.h",
+              "include/service/common/requests.h",
+              "include/service/common/runtime.h",
+              "include/service/common/client.h",
+              "include/service/console/client.h",
+              "include/service/console/display-session.h",
+              "include/service/users/identity.h",
+              "include/service/fs/block.h",
+              "include/service/fs/devices.h",
+              "include/service/fs/format.h",
+              "include/service/fs/fstab.h",
+              "include/service/fs/ext3/internal.h",
+              "include/service/fs/ext4/internal.h",
+              "include/service/fs/fat/name.h",
+              "include/service/fs/exfat/filesystem.h",
+              "include/service/fs/procfs/process_object.h",
+              "include/service/init/boot.h",
+              "include/service/init/session.h",
+              "include/service/init/sessions.h",
+              "include/service/init/service_manager.h",
+              "include/service/mm/page.h",
+              "include/service/users/accounts.h",
+              "include/service/users/directories.h",
+              "include/service/users/messages.h",
+              "include/service/users/sessions.h"}) {
             const auto retired = inside(destination, name);
             if (fs::is_regular_file(retired)) fs::remove(retired);
         }
@@ -135,11 +166,11 @@ namespace host {
                            .generic_string()] = hash;
             }
         std::ostringstream metadata;
-        metadata << "{\n  \"format\": 1,\n  \"target\": \"osinfo-x86-64\",\n  "
+        metadata << "{\n  \"format\": 1,\n  \"target\": \"osinfo-amd64\",\n  "
                     "\"syscall_count\": "
                  << OS_SYS_COUNT
                  << ",\n  \"interpreter\": "
-                    "\"/lib/ld-osinfo-x86-64.so\",\n  \"files\": {\n";
+                    "\"/lib/ld-osinfo-amd64.so\",\n  \"files\": {\n";
         bool first = true;
         for (const auto& [name, hash] : hashes) {
             if (!first) metadata << ",\n";
