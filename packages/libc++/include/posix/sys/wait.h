@@ -1,3 +1,7 @@
+/*
+ * 子进程等待和退出状态。
+ */
+
 #ifndef _POSIX_SYS_WAIT_H
 #define _POSIX_SYS_WAIT_H
 

@@ -1,3 +1,7 @@
+/*
+ * 文件服务设备目录。
+ */
+
 #pragma once
 
 // The catalog capacity belongs to the shared storage service contract.
@@ -9,30 +13,32 @@
 
 namespace vfs::server {
 
-struct DeviceRecord {
-    os::wire::StorageDeviceIdentity identity{};
-    Format format = Format::Unknown;
-    char uuid[40]{};
-    char label[40]{};
-    char opticalName[16]{};
-};
+    /* 保存设备身份、类别和服务访问句柄。 */
+    struct DeviceRecord {
+            os::wire::StorageDeviceIdentity identity{};
+            Format format = Format::Unknown;
+            char uuid[40]{};
+            char label[40]{};
+            char opticalName[16]{};
+    };
 
-class DeviceCatalog {
-   public:
-    static constexpr int missing   = -1;
-    static constexpr int ambiguous = -2;
-    bool add(const os::wire::StorageDeviceIdentity& identity,
-             SectorDevice& device);
-    int resolve(const char* source) const;
-    const DeviceRecord* get(uint32_t index) const;
-    uint32_t count() const { return count_; }
-    int list(const char* directory, uint32_t index,
-             DirectoryEntry& entry) const;
+    /* 枚举和保存可用设备，把设备标识转换为文件系统使用的记录。 */
+    class DeviceCatalog {
+        public:
+            static constexpr int missing   = -1;
+            static constexpr int ambiguous = -2;
+            bool add(const os::wire::StorageDeviceIdentity& identity,
+                     SectorDevice& device);
+            int resolve(const char* source) const;
+            const DeviceRecord* get(uint32_t index) const;
+            uint32_t count() const { return count_; }
+            int list(const char* directory, uint32_t index,
+                     DirectoryEntry& entry) const;
 
-   private:
-    DeviceRecord records_[os::maximumStorageDevices]{};
-    uint32_t count_        = 0;
-    uint32_t opticalCount_ = 0;
-};
+        private:
+            DeviceRecord records_[os::maximumStorageDevices]{};
+            uint32_t count_        = 0;
+            uint32_t opticalCount_ = 0;
+    };
 
 }  // namespace vfs::server

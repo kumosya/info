@@ -1,17 +1,13 @@
 #include <cstdlib>
 
-namespace {
-
 struct DestructorEntry {
-    void (*destructor)(void*);
-    void* object;
+        void (*destructor)(void*);
+        void* object;
 };
 
 constexpr size_t destructorCapacity = 32;
-DestructorEntry destructors[destructorCapacity];
-size_t destructorCount;
-
-}  // namespace
+static DestructorEntry destructors[destructorCapacity];
+static size_t destructorCount;
 
 extern "C" {
 

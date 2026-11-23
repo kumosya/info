@@ -1,20 +1,19 @@
 #include "service/fs/fat/filesystem.h"
 #include "service/fs/fat/name.h"
 
-namespace {
-
 constexpr uint32_t sectorSize = 512;
 constexpr uint32_t endOfChain = 0x0ffffff8U;
 
 class FatDirectoryCodec {
-   public:
-    static uint16_t read16(const uint8_t* bytes);
-    static uint32_t read32(const uint8_t* bytes);
-    static void write16(uint8_t* bytes, uint16_t value);
-    static void write32(uint8_t* bytes, uint32_t value);
-    static char upperAscii(char value);
-    static bool nameEquals(const char* requested, const char* shortName);
-    static void copyShortName(const uint8_t* raw, char* name, size_t capacity);
+    public:
+        static uint16_t read16(const uint8_t* bytes);
+        static uint32_t read32(const uint8_t* bytes);
+        static void write16(uint8_t* bytes, uint16_t value);
+        static void write32(uint8_t* bytes, uint32_t value);
+        static char upperAscii(char value);
+        static bool nameEquals(const char* requested, const char* shortName);
+        static void copyShortName(const uint8_t* raw, char* name,
+                                  size_t capacity);
 };
 
 uint16_t FatDirectoryCodec::read16(const uint8_t* bytes) {
@@ -80,8 +79,6 @@ void FatDirectoryCodec::copyShortName(const uint8_t* raw, char* name,
     }
     name[output] = '\0';
 }
-
-}  // namespace
 
 bool Fat32FileSystem::mount(vfs::SectorDevice& device) {
     uint8_t boot[sectorSize]{};

@@ -1,3 +1,7 @@
+/*
+ * POSIX 消息队列。
+ */
+
 #ifndef _POSIX_MQUEUE_H
 #define _POSIX_MQUEUE_H
 
@@ -10,11 +14,12 @@
 
 typedef uint64_t mqd_t;
 
+/* 保存 POSIX 消息队列标志、容量、消息大小和当前数量。 */
 struct mq_attr {
-    long mq_flags;
-    long mq_maxmsg;
-    long mq_msgsize;
-    long mq_curmsgs;
+        long mq_flags;
+        long mq_maxmsg;
+        long mq_msgsize;
+        long mq_curmsgs;
 };
 
 #define MQ_PRIO_MAX 32

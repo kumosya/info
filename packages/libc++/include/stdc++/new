@@ -1,14 +1,19 @@
+/*
+ * C++ 对象存储申请与定位构造。
+ */
+
 #pragma once
 
 #include <stddef.h>
 
 namespace std {
 
-struct nothrow_t {
-    explicit constexpr nothrow_t() = default;
-};
+    /* 区分不抛出异常的内存申请重载。 */
+    struct nothrow_t {
+            explicit constexpr nothrow_t() = default;
+    };
 
-extern const nothrow_t nothrow;
+    extern const nothrow_t nothrow;
 
 }  // namespace std
 

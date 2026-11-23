@@ -1,3 +1,7 @@
+/*
+ * C ABI 数据类型与调用接口。
+ */
+
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
@@ -7,109 +11,109 @@
 extern "C" {
 #endif
 typedef struct OsFileStat {
-    uint64_t type;
-    uint64_t size;
-    uint32_t mode;
-    uint64_t inode;
-    uint32_t links;
-    uint32_t uid;
-    uint32_t gid;
-    uint64_t accessTime;
-    uint64_t modificationTime;
-    uint64_t changeTime;
-    uint64_t device;
-    uint64_t specialDevice;
+        uint64_t type;
+        uint64_t size;
+        uint32_t mode;
+        uint64_t inode;
+        uint32_t links;
+        uint32_t uid;
+        uint32_t gid;
+        uint64_t accessTime;
+        uint64_t modificationTime;
+        uint64_t changeTime;
+        uint64_t device;
+        uint64_t specialDevice;
 } OsFileStat;
 
 typedef struct OsDirectoryEntry {
-    uint64_t type;
-    char name[256];
-    uint64_t inode;
-    uint64_t nextOffset;
+        uint64_t type;
+        char name[256];
+        uint64_t inode;
+        uint64_t nextOffset;
 } OsDirectoryEntry;
 
 typedef struct OsFileOperationResult {
-    uint64_t requestId;
-    int64_t status;
-    uint64_t transferred;
+        uint64_t requestId;
+        int64_t status;
+        uint64_t transferred;
 } OsFileOperationResult;
 
 typedef struct OsTaskIdentifiers {
-    uint64_t parentId;
-    uint64_t taskGroupId;
-    uint64_t sessionId;
+        uint64_t parentId;
+        uint64_t taskGroupId;
+        uint64_t sessionId;
 } OsTaskIdentifiers;
 
 typedef struct OsTaskInfo {
-    uint64_t id;
-    uint32_t state;
-    int32_t exitCode;
-    char name[48];
-    uint32_t uid, gid, effectiveUid, effectiveGid;
-    uint64_t parentId;
-    uint32_t trustedDeviceService;
-    uint32_t serviceRole;
-    uint64_t taskGroupId, sessionId;
-    uint64_t terminalForegroundGroup;
-    uint64_t startedNanoseconds, cpuNanoseconds;
-    uint32_t terminalKind, terminalIndex;
-    uint32_t commandLineSize;
-    uint32_t managedService;
-    char commandLine[384];
-    uint64_t mainThreadId;
-    int32_t nice;
-    uint32_t threadCount;
+        uint64_t id;
+        uint32_t state;
+        int32_t exitCode;
+        char name[48];
+        uint32_t uid, gid, effectiveUid, effectiveGid;
+        uint64_t parentId;
+        uint32_t trustedDeviceService;
+        uint32_t serviceRole;
+        uint64_t taskGroupId, sessionId;
+        uint64_t terminalForegroundGroup;
+        uint64_t startedNanoseconds, cpuNanoseconds;
+        uint32_t terminalKind, terminalIndex;
+        uint32_t commandLineSize;
+        uint32_t managedService;
+        char commandLine[384];
+        uint64_t mainThreadId;
+        int32_t nice;
+        uint32_t threadCount;
 } OsTaskInfo;
 typedef struct OsCredentialInfo {
-    uint32_t uid, effectiveUid, savedUid, gid, effectiveGid, savedGid,
-        groupCount;
-    uint32_t groups[32];
+        uint32_t uid, effectiveUid, savedUid, gid, effectiveGid, savedGid,
+            groupCount;
+        uint32_t groups[32];
 } OsCredentialInfo;
 
 typedef struct OsSignalAction {
-    uint64_t handler;
-    uint64_t mask;
-    uint64_t flags;
-    uint64_t restorer;
+        uint64_t handler;
+        uint64_t mask;
+        uint64_t flags;
+        uint64_t restorer;
 } OsSignalAction;
 
 typedef struct OsMessageQueueAttributes {
-    uint64_t flags;
-    uint64_t maximumMessages;
-    uint64_t messageSize;
-    uint64_t currentMessages;
+        uint64_t flags;
+        uint64_t maximumMessages;
+        uint64_t messageSize;
+        uint64_t currentMessages;
 } OsMessageQueueAttributes;
 
 typedef struct OsExecImageInfo {
-    const void* image;
-    uint64_t imageSize;
-    const char* name;
-    uint32_t argumentCount;
-    uint32_t environmentCount;
-    const char* const* arguments;
-    const char* const* environment;
-    const void* runtimeState;
-    uint64_t runtimeStateSize;
-    uint32_t sharedImageCount;
-    uint32_t sharedReserved;
-    const struct OsSharedImageInfo* sharedImages;
+        const void* image;
+        uint64_t imageSize;
+        const char* name;
+        uint32_t argumentCount;
+        uint32_t environmentCount;
+        const char* const* arguments;
+        const char* const* environment;
+        const void* runtimeState;
+        uint64_t runtimeStateSize;
+        uint32_t sharedImageCount;
+        uint32_t sharedReserved;
+        const struct OsSharedImageInfo* sharedImages;
 } OsExecImageInfo;
 
 typedef struct OsSharedImageInfo {
-    const void* image;
-    uint64_t imageSize;
-    const char* name;
+        const void* image;
+        uint64_t imageSize;
+        const char* name;
 } OsSharedImageInfo;
 
 typedef struct OsIpcMessage {
-    uint64_t type, senderPid, senderTid, replyToken;
-    uint32_t length, handleCount;
-    uint64_t data[515], handles[4];
-    uint32_t handleRights[4], handleOptions[4];
+        uint64_t type, senderPid, senderTid, replyToken;
+        uint32_t length, handleCount;
+        uint64_t data[515], handles[4];
+        uint32_t handleRights[4], handleOptions[4];
 } OsIpcMessage;
 typedef struct OsMountStat {
-    char device[64], target[64], type[16];
-    uint64_t readOnly;
+        char device[64], target[64], type[16];
+        uint64_t readOnly;
 } OsMountStat;
 
 int osFileOpen(uint64_t fs, const char* path, int flags, uint32_t mode,

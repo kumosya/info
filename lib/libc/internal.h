@@ -11,8 +11,8 @@ extern "C" {
 #endif
 
 typedef struct OsPipeHandles {
-    uint64_t readHandle;
-    uint64_t writeHandle;
+        uint64_t readHandle;
+        uint64_t writeHandle;
 } OsPipeHandles;
 
 #define LIBC_DESCRIPTOR_CAPACITY 32
@@ -30,40 +30,46 @@ typedef enum DescriptorKind {
 } DescriptorKind;
 
 typedef struct OpenDescription {
-    void* fileObject;
-    uint64_t handle;
-    uint64_t offset;
-    int flags;
-    DescriptorKind kind;
-    char path[LIBC_PATH_CAPACITY];
-    uint32_t referenceCount;
+        void* fileObject;
+        uint64_t handle;
+        uint64_t offset;
+        int flags;
+        DescriptorKind kind;
+        char path[LIBC_PATH_CAPACITY];
+        uint32_t referenceCount;
 } OpenDescription;
 
 typedef struct FileDescriptor {
-    OpenDescription* description;
-    int closeOnExec;
+        OpenDescription* description;
+        int closeOnExec;
+        uint64_t generation;
 } FileDescriptor;
 
+typedef struct LibcPollDescriptor {
+        OpenDescription* description;
+        uint64_t generation;
+} LibcPollDescriptor;
+
 typedef struct LibcExecDescriptorState {
-    int32_t fileDescriptor;
-    int32_t descriptionId;
-    int32_t closeOnExec;
-    int32_t kind;
-    int32_t flags;
-    uint32_t reserved;
-    uint64_t handle;
-    uint64_t offset;
-    char path[LIBC_PATH_CAPACITY];
+        int32_t fileDescriptor;
+        int32_t descriptionId;
+        int32_t closeOnExec;
+        int32_t kind;
+        int32_t flags;
+        uint32_t reserved;
+        uint64_t handle;
+        uint64_t offset;
+        char path[LIBC_PATH_CAPACITY];
 } LibcExecDescriptorState;
 
 typedef struct LibcExecState {
-    uint64_t magic;
-    uint32_t size;
-    uint32_t count;
-    uint32_t terminalId;
-    uint32_t reserved;
-    char currentDirectory[LIBC_PATH_CAPACITY];
-    LibcExecDescriptorState descriptors[LIBC_DESCRIPTOR_CAPACITY];
+        uint64_t magic;
+        uint32_t size;
+        uint32_t count;
+        uint32_t terminalId;
+        uint32_t reserved;
+        char currentDirectory[LIBC_PATH_CAPACITY];
+        LibcExecDescriptorState descriptors[LIBC_DESCRIPTOR_CAPACITY];
 } LibcExecState;
 
 uint64_t libcFsService(void);
@@ -73,6 +79,16 @@ OpenDescription* libcDescriptor(int fileDescriptor);
 int libcAllocateDescriptor(uint64_t handle, const char* path, int flags,
                            DescriptorKind kind);
 int libcReleaseDescriptor(int fileDescriptor);
+int libcPinDescriptor(int descriptor, LibcPollDescriptor* pin);
+int libcPinnedDescriptorValid(int descriptor, const LibcPollDescriptor* pin);
+void libcUnpinDescriptor(LibcPollDescriptor* pin);
+int libcReplaceDescriptor(int source, int destination, int closeOnExec);
+int __libc_os_descriptor_ready(int kind, uint64_t handle);
+int __libc_os_readiness_begin(OsReadinessState* state, const uint64_t* mask);
+uint64_t __libc_os_readiness_generation(void);
+int __libc_os_readiness_wait(const OsReadinessState* state, uint64_t deadline);
+void __libc_os_readiness_end(uint64_t token);
+void __libc_os_readiness_notify(void);
 void libcCloseAllDescriptors(void);
 int libcDuplicateDescriptor(int fileDescriptor, int minimum, int closeOnExec);
 void libcLockFileIo(void);
@@ -104,6 +120,7 @@ ssize_t __libc_file_pwrite(void* object, const void* buffer, size_t count,
                            off_t offset);
 off_t __libc_file_seek(void* object, off_t offset, int whence);
 int __libc_file_fsync(void* object);
+int __libc_file_truncate(void* object, off_t length);
 uint64_t __libc_file_handle(void* object);
 void __libc_file_set_flags(void* object, int flags);
 struct stat;
@@ -114,6 +131,7 @@ int __libc_file_to_descriptor(void* object);
 
 int __libc_os_rename_file(uint64_t fs, const char* existing,
                           const char* newPath);
+int __libc_os_sync_all(void);
 int __libc_os_credentials(unsigned operation, uint32_t first, uint32_t second,
                           uint32_t third, const uint32_t* groups,
                           OsCredentialInfo* info);
@@ -184,6 +202,10 @@ uint64_t __libc_os_create_thread(void (*entry)(void*), void* argument,
                                  uint64_t stack_pointer);
 int __libc_os_wait_thread(uint64_t thread_id, int* exit_code, int no_hang);
 int __libc_os_wait_address(volatile uint32_t* address, uint32_t expected);
+int __libc_os_wait_address_until(volatile uint32_t* address, uint32_t expected,
+                                 uint64_t deadline);
+int __libc_os_wait_address_masked(volatile uint32_t* address, uint32_t expected,
+                                  uint64_t deadline, const uint64_t* mask);
 int __libc_os_wake_address(volatile uint32_t* address, uint32_t count);
 int __libc_os_set_signal_action(uint32_t signal, const OsSignalAction* action,
                                 OsSignalAction* old_action);
@@ -194,6 +216,8 @@ int __libc_os_signal_stack(const void* stack, void* old_stack);
 int __libc_os_core_limit(int set, uint64_t* soft, uint64_t* hard);
 int __libc_os_priority(unsigned operation, unsigned which, uint64_t who,
                        int value, int* result);
+int __libc_os_cpu_time(uint64_t id, int thread, uint64_t* nanoseconds);
+int __libc_os_set_wall_clock(uint64_t nanoseconds);
 int __libc_os_resource_limit(uint64_t pid, int resource, int set,
                              uint64_t* soft, uint64_t* hard);
 int __libc_os_accessible(const void* address, uint64_t size, int writable);
@@ -248,11 +272,13 @@ uint64_t __libc_os_mm_shared(uint64_t handle, uint64_t size,
                              uint64_t hint);
 uint64_t __libc_os_mm_file(uint64_t descriptor, uint64_t size,
                            uint32_t protection, uint64_t offset, uint64_t hint);
-int64_t __libc_os_typed_open(const char* name,int flags,unsigned policy);
-int64_t __libc_os_typed_allocate(uint64_t handle,uint64_t size);
-int __libc_os_typed_info(uint64_t handle,uint64_t* available);
-int64_t __libc_os_mm_offset(uint64_t address,uint64_t size,uint64_t* offset,uint64_t* contiguous,unsigned* rights);
-int __libc_os_mm_policy(unsigned operation,uint64_t address,uint64_t size,uint64_t argument);
+int64_t __libc_os_typed_open(const char* name, int flags, unsigned policy);
+int64_t __libc_os_typed_allocate(uint64_t handle, uint64_t size);
+int __libc_os_typed_info(uint64_t handle, uint64_t* available);
+int64_t __libc_os_mm_offset(uint64_t address, uint64_t size, uint64_t* offset,
+                            uint64_t* contiguous, unsigned* rights);
+int __libc_os_mm_policy(unsigned operation, uint64_t address, uint64_t size,
+                        uint64_t argument);
 int __libc_os_mm_unmap(uint64_t address, uint64_t size);
 int __libc_os_mm_protect(uint64_t address, uint64_t size, uint32_t protection);
 int __libc_os_mm_sync(uint64_t address, uint64_t size);

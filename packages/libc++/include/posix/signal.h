@@ -1,3 +1,7 @@
+/*
+ * 信号处理、屏蔽与用户现场。
+ */
+
 #ifndef _POSIX_SIGNAL_H
 #define _POSIX_SIGNAL_H
 
@@ -9,9 +13,9 @@
 typedef uint64_t sigset_t;
 typedef int sig_atomic_t;
 typedef struct {
-    void* ss_sp;
-    int ss_flags;
-    size_t ss_size;
+        void* ss_sp;
+        int ss_flags;
+        size_t ss_size;
 } stack_t;
 #define SS_ONSTACK 1
 #define SS_DISABLE 2
@@ -20,36 +24,38 @@ typedef struct {
 typedef void (*sighandler_t)(int);
 
 typedef struct {
-    int si_signo;
-    int si_code;
-    int si_errno;
-    pid_t si_pid;
-    uid_t si_uid;
-    void* si_addr;
-    int si_status;
-    int64_t si_value;
+        int si_signo;
+        int si_code;
+        int si_errno;
+        pid_t si_pid;
+        uid_t si_uid;
+        void* si_addr;
+        int si_status;
+        int64_t si_value;
 } siginfo_t;
 
+/* 描述异步操作完成时采用的信号或线程通知方式。 */
 struct sigevent {
-    int sigev_notify;
-    int sigev_signo;
-    int64_t sigev_value;
-    void (*sigev_notify_function)(int64_t);
-    void* sigev_notify_attributes;
+        int sigev_notify;
+        int sigev_signo;
+        int64_t sigev_value;
+        void (*sigev_notify_function)(int64_t);
+        void* sigev_notify_attributes;
 };
 
 #define SIGEV_NONE 0
 #define SIGEV_SIGNAL 1
 #define SIGEV_THREAD 2
 
+/* 保存信号处理函数、处理标志及执行期间屏蔽集合。 */
 struct sigaction {
-    union {
-        sighandler_t handler;
-        void (*action)(int, siginfo_t*, void*);
-    } __handler;
-    sigset_t sa_mask;
-    int sa_flags;
-    void (*sa_restorer)(void);
+        union {
+                sighandler_t handler;
+                void (*action)(int, siginfo_t*, void*);
+        } __handler;
+        sigset_t sa_mask;
+        int sa_flags;
+        void (*sa_restorer)(void);
 };
 
 #define sa_handler __handler.handler
@@ -176,9 +182,10 @@ pid_t setsid(void);
 #define __DEFINED_siginfo_t
 
 /* Additional POSIX types. */
+/* 保存随信号或异步通知传递的整数或指针值。 */
 union sigval {
-    int sival_int;
-    void* sival_ptr;
+        int sival_int;
+        void* sival_ptr;
 };
 
 /* POSIX.1-2024 declarations. */

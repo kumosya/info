@@ -1,3 +1,7 @@
+/*
+ * 非局部跳转现场保存与恢复。
+ */
+
 #ifndef _STDC_SETJMP_H
 #define _STDC_SETJMP_H
 #ifndef _SETJMP_H
@@ -12,9 +16,9 @@ extern "C" {
 #include <bits/setjmp.h>
 
 typedef struct __jmp_buf_tag {
-    __jmp_buf __jb;
-    unsigned long __fl;
-    unsigned long __ss[128 / sizeof(long)];
+        __jmp_buf __jb;
+        unsigned long __fl;
+        unsigned long __ss[128 / sizeof(long)];
 } jmp_buf[1];
 
 #if __GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 1)

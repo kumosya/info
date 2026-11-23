@@ -1,3 +1,7 @@
+/*
+ * 描述符集合等待。
+ */
+
 #ifndef _POSIX_SYS_SELECT_H
 #define _POSIX_SYS_SELECT_H
 #ifndef _SYS_SELECT_H
@@ -22,7 +26,7 @@ extern "C" {
 typedef unsigned long fd_mask;
 
 typedef struct {
-    unsigned long fds_bits[FD_SETSIZE / 8 / sizeof(long)];
+        unsigned long fds_bits[FD_SETSIZE / 8 / sizeof(long)];
 } fd_set;
 
 #define FD_ZERO(s)                                                        \

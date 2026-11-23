@@ -3,18 +3,18 @@
  * SPDX-License-Identifier: BSD-2-Clause
  *
  * src/kernel/memory/memory.S
- * Freestanding byte-memory primitives required by the kernel compiler.
+ * 内核编译所需的独立内存操作。
  */
 
-// Compiler-required memory primitives; no user library is linked into the
-// kernel.
+// 内核不链接用户运行库，这些基础内存函数供编译器生成的代码调用。
 .section .text
 .code64
 .global memset
 .type memset, @function
-// SysV RDI = destination, ESI = byte value, RDX = byte count. Save the
-// original destination for RAX while REP advances RDI. Kernel callers must
-// enter with the direction flag clear, as required by the C ABI.
+
+/*
+ * 按调用约定，RDI 是目标、ESI 是字节值、RDX 是长度；先保存原目标，REP 修改指针后仍返回原地址。调用时方向标志应已清零。
+ */
 memset:
     movq %rdi, %r8
     movq %rdx, %rcx
@@ -23,21 +23,26 @@ memset:
     movq %r8, %rax
     ret
 .size memset, . - memset
+
 .global memcpy
 .type memcpy, @function
-// Copy forward from RSI to RDI for RDX bytes; overlap is the caller's error.
-// RAX keeps the original destination even after REP changes both pointers.
+
+/*
+ * 从 RSI 向 RDI 正向复制 RDX 字节，返回原目标；重叠区域应使用 memmove。
+ */
 memcpy:
     movq %rdi, %rax
     movq %rdx, %rcx
     rep movsb
     ret
 .size memcpy, . - memcpy
+
 .global memmove
 .type memmove, @function
-// Choose direction before modifying pointers. Destination at/below source can
-// copy forward; a higher destination copies backward so writes do not destroy
-// source bytes still needed by an overlapping region.
+
+/*
+ * 先判断复制方向；目标地址较高时倒序复制，防止覆盖仍未读取的源字节。
+ */
 memmove:
     movq %rdi, %rax
     movq %rdx, %rcx
@@ -45,9 +50,8 @@ memmove:
     jbe 1f
     leaq -1(%rdi,%rdx), %rdi
     leaq -1(%rsi,%rdx), %rsi
-    // Set backward direction only for the copy, then restore DF before return.
-    // Leaving it set would reverse unrelated compiler-generated memory
-    // operations.
+
+    // 倒序只用于这次复制，返回前必须清除方向标志，否则后续编译器生成的字符串操作也会反向执行。
     std
     rep movsb
     cld
@@ -55,4 +59,5 @@ memmove:
 1:  rep movsb
     ret
 .size memmove, . - memmove
+
 .section .note.GNU-stack,"",@progbits

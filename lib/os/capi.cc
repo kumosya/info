@@ -11,19 +11,19 @@
 #include <os/mm.h>
 #include <os/pty.h>
 #include <os/task.h>
-namespace {
+
 using namespace os;
 constexpr int invalid = static_cast<int>(ErrorCode::InvalidArgument),
               io      = static_cast<int>(ErrorCode::IoError);
 class CapiEncoding {
-   public:
-    int rawOutput(int64_t value, uint64_t* result);
-    int rawCall(uint64_t service, IpcMessage& request, IpcMessage& reply);
-    int fsResult(uint64_t service, IpcMessage& request, IpcMessage& reply);
-    bool pathRequest(IpcMessage& request, FsRequest type, const char* path);
-    int fileSimple(uint64_t fs, FsRequest type, uint64_t handle, uint64_t a = 0,
-                   uint64_t b = 0);
-    int decodeStat(const IpcMessage& reply, OsFileStat& out);
+    public:
+        int rawOutput(int64_t value, uint64_t* result);
+        int rawCall(uint64_t service, IpcMessage& request, IpcMessage& reply);
+        int fsResult(uint64_t service, IpcMessage& request, IpcMessage& reply);
+        bool pathRequest(IpcMessage& request, FsRequest type, const char* path);
+        int fileSimple(uint64_t fs, FsRequest type, uint64_t handle,
+                       uint64_t a = 0, uint64_t b = 0);
+        int decodeStat(const IpcMessage& reply, OsFileStat& out);
 };
 int CapiEncoding::rawOutput(int64_t value, uint64_t* result) {
     if (!result) return invalid;
@@ -88,7 +88,6 @@ int CapiEncoding::decodeStat(const IpcMessage& r, OsFileStat& out) {
     out                = s;
     return 0;
 }
-}  // namespace
 
 using namespace os;
 

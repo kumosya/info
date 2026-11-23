@@ -10,7 +10,6 @@
 #include <unistd.h>
 
 #include "internal.h"
-#include "internal.h"
 
 #define SPAWN_ACTION_CLOSE 1
 #define SPAWN_ACTION_DUP2 2
@@ -61,10 +60,38 @@ static int protect_status_fd(int fd, const posix_spawn_file_actions_t* actions) 
     errno = EMFILE; return -1;
 }
 
+/* PATH 来自调用进程；在子进程执行目录动作后解析相对项，环境参数仍交给 execve。 */
+static void execute_search(const char* file, char* const arguments[],
+                            char* const environment[]) {
+    const char* path = getenv("PATH");
+    if (!path) path = "/bin:/usr/bin";
+    const size_t name_length = strnlen(file, LIBC_PATH_CAPACITY);
+    if (name_length >= LIBC_PATH_CAPACITY) { errno = ENAMETOOLONG; return; }
+    int denied = 0, too_long = 0;
+    for (;;) {
+        const char* end = strchr(path, ':');
+        size_t prefix = end ? (size_t)(end - path) : strlen(path);
+        if (prefix + (prefix != 0) + name_length < LIBC_PATH_CAPACITY) {
+            char candidate[LIBC_PATH_CAPACITY];
+            memcpy(candidate, path, prefix);
+            size_t used = prefix;
+            if (prefix) candidate[used++] = '/';
+            memcpy(candidate + used, file, name_length + 1);
+            execve(candidate, arguments, environment);
+            if (errno == EACCES) denied = 1;
+            else if (errno != ENOENT && errno != ENOTDIR) return;
+        } else too_long = 1;
+        if (!end) break;
+        path = end + 1;
+    }
+    errno = denied ? EACCES : too_long ? ENAMETOOLONG : ENOENT;
+}
+
 static int spawn_impl(pid_t* task_id, const char* path,
                       const posix_spawn_file_actions_t* file_actions,
                       const posix_spawnattr_t* attributes,
-                      char* const arguments[], char* const environment[]) {
+                      char* const arguments[], char* const environment[],
+                      int search) {
     int argument_count = 0;
     unsigned int index;
     pid_t task;
@@ -112,6 +139,25 @@ static int spawn_impl(pid_t* task_id, const char* path,
             __libc_os_set_task_group((uint64_t)attributes->task_group, 0) != 0) {
             spawn_failure(status_pipe[1], EPERM);
         }
+        /* 身份和信号属性先于文件动作生效，避免以父进程的特权打开文件。 */
+        if (attributes != NULL) {
+            if ((attributes->flags & POSIX_SPAWN_RESETIDS) &&
+                (setegid(getgid()) || seteuid(getuid()))) {
+                spawn_failure(status_pipe[1], errno);
+            }
+            if ((attributes->flags & POSIX_SPAWN_SETSIGMASK) &&
+                sigprocmask(SIG_SETMASK, &attributes->signal_mask, NULL)) {
+                spawn_failure(status_pipe[1], errno);
+            }
+            if (attributes->flags & POSIX_SPAWN_SETSIGDEF) {
+                for (int number = 1; number <= 64; ++number) {
+                    if (!(attributes->signal_default & (1ULL << (number - 1)))) continue;
+                    struct sigaction action = {0};
+                    action.sa_handler = SIG_DFL;
+                    if (sigaction(number, &action, NULL)) spawn_failure(status_pipe[1], errno);
+                }
+            }
+        }
         if (file_actions != NULL) {
             for (index = 0; index < file_actions->count; ++index) {
                 const posix_spawn_file_action_t* action =
@@ -121,6 +167,10 @@ static int spawn_impl(pid_t* task_id, const char* path,
                 } else if (action->type == SPAWN_ACTION_DUP2) {
                     if (dup2(action->file_descriptor,
                              action->new_file_descriptor) < 0) {
+                        spawn_failure(status_pipe[1], errno);
+                    }
+                    /* spawn 的同号 dup 动作也必须让描述符跨 exec 保留。 */
+                    if (fcntl(action->new_file_descriptor, F_SETFD, 0) < 0) {
                         spawn_failure(status_pipe[1], errno);
                     }
                 } else if (action->type == SPAWN_ACTION_OPEN) {
@@ -141,24 +191,8 @@ static int spawn_impl(pid_t* task_id, const char* path,
                 }
             }
         }
-        if (attributes != NULL) {
-            if ((attributes->flags & POSIX_SPAWN_RESETIDS) && (setegid(getgid()) || seteuid(getuid()))) spawn_failure(status_pipe[1], errno);
-            if ((attributes->flags & POSIX_SPAWN_SETSIGMASK) != 0 &&
-                sigprocmask(SIG_SETMASK, &attributes->signal_mask, NULL) != 0) {
-                spawn_failure(status_pipe[1], errno);
-            }
-            if ((attributes->flags & POSIX_SPAWN_SETSIGDEF) != 0) {
-                int signal_number;
-                for (signal_number = 1; signal_number <= 64;
-                     ++signal_number) {
-                    if ((attributes->signal_default &
-                         (1ULL << (signal_number - 1))) != 0) {
-                        signal(signal_number, SIG_DFL);
-                    }
-                }
-            }
-        }
-        execve(path, arguments, environment);
+        if (search) execute_search(path, arguments, environment);
+        else execve(path, arguments, environment);
         spawn_failure(status_pipe[1], errno);
     }
     close(status_pipe[1]);
@@ -186,7 +220,7 @@ int posix_spawn(pid_t* task_id, const char* path,
                 const posix_spawnattr_t* attributes,
                 char* const arguments[], char* const environment[]) {
     const int saved = errno;
-    const int result = spawn_impl(task_id, path, file_actions, attributes, arguments, environment);
+    const int result = spawn_impl(task_id, path, file_actions, attributes, arguments, environment, 0);
     errno = saved;
     return result;
 }
@@ -195,19 +229,13 @@ int posix_spawnp(pid_t* task_id, const char* file,
                  const posix_spawn_file_actions_t* file_actions,
                  const posix_spawnattr_t* attributes,
                  char* const arguments[], char* const environment[]) {
-    char path[96];
-    size_t length;
     if (file == NULL) return EINVAL;
-    if (file[0] == '/') {
-        return spawn_impl(task_id, file, file_actions, attributes, arguments,
-                          environment);
-    }
-    length = strlen(file);
-    if (length + 6 >= sizeof(path)) return ENAMETOOLONG;
-    memcpy(path, "/bin/", 5);
-    memcpy(path + 5, file, length + 1);
-    return spawn_impl(task_id, path, file_actions, attributes, arguments,
-                      environment);
+    if (!*file) return ENOENT;
+    const int saved = errno;
+    const int result = spawn_impl(task_id, file, file_actions, attributes,
+                                   arguments, environment, strchr(file, '/') == NULL);
+    errno = saved;
+    return result;
 }
 
 int posix_spawn_file_actions_init(posix_spawn_file_actions_t* actions) {

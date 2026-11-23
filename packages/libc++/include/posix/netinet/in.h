@@ -1,3 +1,7 @@
+/*
+ * IPv4、IPv6 地址与组播选项。
+ */
+
 #ifndef _POSIX_NETINET_IN_H
 #define _POSIX_NETINET_IN_H
 #ifndef _NETINET_IN_H
@@ -14,39 +18,44 @@ extern "C" {
 
 typedef uint16_t in_port_t;
 typedef uint32_t in_addr_t;
+/* 按网络字节序保存一个 IPv4 地址。 */
 struct in_addr {
-    in_addr_t s_addr;
+        in_addr_t s_addr;
 };
 
+/* 保存 IPv4 套接字的协议族、端口和地址。 */
 struct sockaddr_in {
-    sa_family_t sin_family;
-    in_port_t sin_port;
-    struct in_addr sin_addr;
-    uint8_t sin_zero[8];
+        sa_family_t sin_family;
+        in_port_t sin_port;
+        struct in_addr sin_addr;
+        uint8_t sin_zero[8];
 };
 
+/* 按协议布局保存一个 128 位 IPv6 地址。 */
 struct in6_addr {
-    union {
-        uint8_t __s6_addr[16];
-        uint16_t __s6_addr16[8];
-        uint32_t __s6_addr32[4];
-    } __in6_union;
+        union {
+                uint8_t __s6_addr[16];
+                uint16_t __s6_addr16[8];
+                uint32_t __s6_addr32[4];
+        } __in6_union;
 };
 #define s6_addr __in6_union.__s6_addr
 #define s6_addr16 __in6_union.__s6_addr16
 #define s6_addr32 __in6_union.__s6_addr32
 
+/* 保存 IPv6 套接字的端口、地址和作用域信息。 */
 struct sockaddr_in6 {
-    sa_family_t sin6_family;
-    in_port_t sin6_port;
-    uint32_t sin6_flowinfo;
-    struct in6_addr sin6_addr;
-    uint32_t sin6_scope_id;
+        sa_family_t sin6_family;
+        in_port_t sin6_port;
+        uint32_t sin6_flowinfo;
+        struct in6_addr sin6_addr;
+        uint32_t sin6_scope_id;
 };
 
+/* 描述 IPv6 组播组和加入该组使用的接口。 */
 struct ipv6_mreq {
-    struct in6_addr ipv6mr_multiaddr;
-    unsigned ipv6mr_interface;
+        struct in6_addr ipv6mr_multiaddr;
+        unsigned ipv6mr_interface;
 };
 
 #define INADDR_ANY ((in_addr_t)0x00000000)
@@ -61,12 +70,12 @@ struct ipv6_mreq {
 #define INADDR_ALLSNOOPERS_GROUP ((in_addr_t)0xe000006a)
 #define INADDR_MAX_LOCAL_GROUP ((in_addr_t)0xe00000ff)
 
-#define IN6ADDR_ANY_INIT                                                \
-    {                                                                   \
+#define IN6ADDR_ANY_INIT                        \
+    {                                           \
         { { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 } } \
     }
-#define IN6ADDR_LOOPBACK_INIT                                           \
-    {                                                                   \
+#define IN6ADDR_LOOPBACK_INIT                   \
+    {                                           \
         { { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1 } } \
     }
 
@@ -240,9 +249,10 @@ uint16_t ntohs(uint16_t);
 #define IP_DEFAULT_MULTICAST_LOOP 1
 #define IP_MAX_MEMBERSHIPS 20
 
+/* 保存 IPv4 路由地址及协议选项字节。 */
 struct ip_opts {
-    struct in_addr ip_dst;
-    char ip_opts[40];
+        struct in_addr ip_dst;
+        char ip_opts[40];
 };
 
 #if defined(_GNU_SOURCE) || defined(_BSD_SOURCE)
@@ -258,70 +268,80 @@ struct ip_opts {
 #define MCAST_EXCLUDE 0
 #define MCAST_INCLUDE 1
 
+/* 描述 IPv4 组播地址和本地接口地址。 */
 struct ip_mreq {
-    struct in_addr imr_multiaddr;
-    struct in_addr imr_interface;
+        struct in_addr imr_multiaddr;
+        struct in_addr imr_interface;
 };
 
+/* 扩展 IPv4 组播请求，允许明确指定接口编号。 */
 struct ip_mreqn {
-    struct in_addr imr_multiaddr;
-    struct in_addr imr_address;
-    int imr_ifindex;
+        struct in_addr imr_multiaddr;
+        struct in_addr imr_address;
+        int imr_ifindex;
 };
 
+/* 描述 IPv4 组播组、本地接口和指定源地址。 */
 struct ip_mreq_source {
-    struct in_addr imr_multiaddr;
-    struct in_addr imr_interface;
-    struct in_addr imr_sourceaddr;
+        struct in_addr imr_multiaddr;
+        struct in_addr imr_interface;
+        struct in_addr imr_sourceaddr;
 };
 
+/* 描述 IPv4 组播源过滤模式和源地址集合。 */
 struct ip_msfilter {
-    struct in_addr imsf_multiaddr;
-    struct in_addr imsf_interface;
-    uint32_t imsf_fmode;
-    uint32_t imsf_numsrc;
-    struct in_addr imsf_slist[1];
+        struct in_addr imsf_multiaddr;
+        struct in_addr imsf_interface;
+        uint32_t imsf_fmode;
+        uint32_t imsf_numsrc;
+        struct in_addr imsf_slist[1];
 };
 #define IP_MSFILTER_SIZE(numsrc)                           \
     (sizeof(struct ip_msfilter) - sizeof(struct in_addr) + \
      (numsrc) * sizeof(struct in_addr))
 
+/* 描述指定网络接口上的组播组加入或退出请求。 */
 struct group_req {
-    uint32_t gr_interface;
-    struct sockaddr_storage gr_group;
+        uint32_t gr_interface;
+        struct sockaddr_storage gr_group;
 };
 
+/* 描述指定接口、组播地址和源地址的组播请求。 */
 struct group_source_req {
-    uint32_t gsr_interface;
-    struct sockaddr_storage gsr_group;
-    struct sockaddr_storage gsr_source;
+        uint32_t gsr_interface;
+        struct sockaddr_storage gsr_group;
+        struct sockaddr_storage gsr_source;
 };
 
+/* 描述组播过滤方式及允许或排除的源地址列表。 */
 struct group_filter {
-    uint32_t gf_interface;
-    struct sockaddr_storage gf_group;
-    uint32_t gf_fmode;
-    uint32_t gf_numsrc;
-    struct sockaddr_storage gf_slist[1];
+        uint32_t gf_interface;
+        struct sockaddr_storage gf_group;
+        uint32_t gf_fmode;
+        uint32_t gf_numsrc;
+        struct sockaddr_storage gf_slist[1];
 };
 #define GROUP_FILTER_SIZE(numsrc)                                    \
     (sizeof(struct group_filter) - sizeof(struct sockaddr_storage) + \
      (numsrc) * sizeof(struct sockaddr_storage))
 
+/* 保存 IPv4 数据包相关的接口编号和地址信息。 */
 struct in_pktinfo {
-    int ipi_ifindex;
-    struct in_addr ipi_spec_dst;
-    struct in_addr ipi_addr;
+        int ipi_ifindex;
+        struct in_addr ipi_spec_dst;
+        struct in_addr ipi_addr;
 };
 
+/* 保存 IPv6 数据包目标地址与接口编号。 */
 struct in6_pktinfo {
-    struct in6_addr ipi6_addr;
-    unsigned ipi6_ifindex;
+        struct in6_addr ipi6_addr;
+        unsigned ipi6_ifindex;
 };
 
+/* 保存 IPv6 路径地址及其最大传输单元查询结果。 */
 struct ip6_mtuinfo {
-    struct sockaddr_in6 ip6m_addr;
-    uint32_t ip6m_mtu;
+        struct sockaddr_in6 ip6m_addr;
+        uint32_t ip6m_mtu;
 };
 #endif
 

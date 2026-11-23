@@ -6,11 +6,11 @@
 
 #include <sys/types.h>
 typedef struct {
-    const unsigned char* position;
-    const wchar_t* wide;
-    FILE* stream;
-    off_t count, limit;
-    int exhausted, last;
+        const unsigned char* position;
+        const wchar_t* wide;
+        FILE* stream;
+        off_t count, limit;
+        int exhausted, last;
 } ScanInput;
 static inline void sh_fromstring(ScanInput* f, const char* s) {
     f->position  = (const unsigned char*)s;

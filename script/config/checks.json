@@ -28,6 +28,7 @@
     "invokeSyscall",
     "waitAddress",
     "wakeAddress",
+    "notifyReadiness",
     "sendMessage",
     "receiveMessage",
     "callService",

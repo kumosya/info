@@ -1,3 +1,7 @@
+/*
+ * C 线程与同步接口。
+ */
+
 #ifndef _STDC_THREADS_H
 #define _STDC_THREADS_H
 typedef void (*tss_dtor_t)(void*);

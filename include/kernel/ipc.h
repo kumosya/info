@@ -1,3 +1,7 @@
+/*
+ * 进程通信类型和接口。
+ */
+
 #pragma once
 
 #include <cstddef>
@@ -11,125 +15,132 @@
 #include <os/service.h>
 #include <os/task.h>
 
-namespace kernel::task {
+namespace task {
 
-class Task;
-class Thread;
-class EndpointService;
-class EndpointImplementation;
+    class Task;
+    class Thread;
+    class EndpointService;
+    class EndpointImplementation;
 
-constexpr uint32_t endpointRightSend    = 1U << 0;
-constexpr uint32_t endpointRightReceive = 1U << 1;
-constexpr uint32_t endpointRightManage  = 1U << 2;
+    constexpr uint32_t endpointRightSend    = 1U << 0;
+    constexpr uint32_t endpointRightReceive = 1U << 1;
+    constexpr uint32_t endpointRightManage  = 1U << 2;
 
-using IpcMessage = os::IpcMessage;
+    using IpcMessage = os::IpcMessage;
 
-class Endpoint {
-   public:
-    static void init();
-    static uint64_t duplicateHandle(Task* source, Task* destination,
-                                    uint64_t handle,
-                                    uint64_t destinationHandle = 0);
-    static Endpoint* create(EndpointService* service = nullptr);
-    static void expireWaits(uint64_t now);
-    static void cancelThread(Thread* thread);
-    static void interruptThread(Thread* thread);
-    static void closeOwner(Task* owner);
-    void retain();
-    void release();
-    bool isClosed();
-    void receiverClosed(Task* owner);
-    bool notifyFromInterrupt(uint64_t type, uint64_t value);
-    bool handlesContext(uint64_t operation) const;
-    int callImmediate(IpcMessage& request, IpcMessage& reply, uint64_t deadline,
-                      bool kernelOrigin = false);
-    int call(IpcMessage* request, IpcMessage* reply,
-             uint64_t deadline = UINT64_MAX);
-    int callFromKernel(IpcMessage* request, IpcMessage* reply,
-                       uint64_t deadline);
-    int reply(IpcMessage* message);
-    int receive(IpcMessage* message, uint64_t deadline = UINT64_MAX);
-    int send(IpcMessage* message, uint64_t deadline = UINT64_MAX);
-    int cancel(uint64_t threadId);
-    bool requestActive(uint64_t token);
-    bool grantAccess(Task* task, uint32_t rights);
-    bool protectRecovery(Task& owner);
-    bool adoptRecovery(Task& owner);
-    void releaseRecovery(Task& owner);
-    void destroy();
+    /* 管理消息收发、同步请求回复及等待者，是任务通信的内核对象。 */
+    class Endpoint {
+        public:
+            static void init();
+            static uint64_t duplicateHandle(Task* source, Task* destination,
+                                            uint64_t handle,
+                                            uint64_t destinationHandle = 0);
+            static Endpoint* create(EndpointService* service = nullptr);
+            static void expireWaits(uint64_t now);
+            static void cancelThread(Thread* thread);
+            static void interruptThread(Thread* thread);
+            static void closeOwner(Task* owner);
+            void retain();
+            void release();
+            bool isClosed();
+            void receiverClosed(Task* owner);
+            bool notifyFromInterrupt(uint64_t type, uint64_t value);
+            bool handlesContext(uint64_t operation) const;
+            int callImmediate(IpcMessage& request, IpcMessage& reply,
+                              uint64_t deadline, bool kernelOrigin = false);
+            int call(IpcMessage* request, IpcMessage* reply,
+                     uint64_t deadline = UINT64_MAX);
+            int callFromKernel(IpcMessage* request, IpcMessage* reply,
+                               uint64_t deadline);
+            int reply(IpcMessage* message);
+            int receive(IpcMessage* message, uint64_t deadline = UINT64_MAX);
+            int send(IpcMessage* message, uint64_t deadline = UINT64_MAX);
+            int cancel(uint64_t threadId);
+            bool requestActive(uint64_t token);
+            bool grantAccess(Task* task, uint32_t rights);
+            bool protectRecovery(Task& owner);
+            bool adoptRecovery(Task& owner);
+            void releaseRecovery(Task& owner);
+            void destroy();
 
-    uint64_t getId() const { return id; }
-    uint64_t setId(uint64_t value) {
-        id = value;
-        return id;
+            uint64_t getId() const { return id; }
+            uint64_t setId(uint64_t value) {
+                id = value;
+                return id;
+            }
+            Task* getOwner() const { return owner; }
+            Task* setOwner(Task* value) {
+                owner = value;
+                return owner;
+            }
+            EndpointImplementation* getImplementation() const {
+                return implementation;
+            }
+            EndpointImplementation* setImplementation(
+                EndpointImplementation* value) {
+                implementation = value;
+                return implementation;
+            }
+
+        private:
+            int callImpl(IpcMessage* request, IpcMessage* reply,
+                         uint64_t deadline, bool kernelOrigin);
+            uint64_t id;
+            Task* owner;
+            EndpointImplementation* implementation;
+            uint32_t references   = 1;
+            uint32_t recoveryRole = 0;
+    };
+
+    /* 描述可由端点直接调用的内核服务入口及上下文要求。 */
+    class EndpointService {
+        public:
+            using Handler = int (*)(Task&, const IpcMessage&, IpcMessage&);
+            explicit EndpointService(Handler handler) : handler_(handler) {}
+            int call(Task& caller, const IpcMessage& request,
+                     IpcMessage& reply) {
+                return handler_(caller, request, reply);
+            }
+
+        private:
+            Handler handler_;
+    };
+    EndpointService& ipcKernelService();
+    EndpointService& memoryKernelService();
+    EndpointService& deviceKernelService();
+    EndpointService& systemKernelService();
+    EndpointService& taskKernelService();
+    EndpointService& pciKernelService();
+    /* 维护核心内核服务端点，并为任务安装对应访问句柄。 */
+    class CoreServices {
+        public:
+            bool init();
+            uint64_t getHandle(Task& caller, os::CoreServiceKind kind);
+            uint64_t bootstrap(Task& caller);
+
+        private:
+            Endpoint* coreEndpoints[static_cast<uint64_t>(
+                os::CoreServiceKind::Count)]{};
+    };
+    CoreServices& coreServices();
+
+    inline bool readMessageName(const IpcMessage& message, uint32_t word,
+                                const char*& value, size_t limit = 64) {
+        if (message.length <= word) return false;
+        value              = reinterpret_cast<const char*>(&message.data[word]);
+        const size_t bytes = (message.length - word) * sizeof(uint64_t);
+        for (size_t i = 0; i < bytes && i < limit; ++i)
+            if (!value[i]) return i != 0;
+        return false;
     }
-    Task* getOwner() const { return owner; }
-    Task* setOwner(Task* value) {
-        owner = value;
-        return owner;
+    inline void copyMessageData(void* destination, const void* source,
+                                size_t bytes) {
+        uint8_t* to         = static_cast<uint8_t*>(destination);
+        const uint8_t* from = static_cast<const uint8_t*>(source);
+        for (size_t i = 0; i < bytes; ++i) to[i] = from[i];
     }
-    EndpointImplementation* getImplementation() const { return implementation; }
-    EndpointImplementation* setImplementation(EndpointImplementation* value) {
-        implementation = value;
-        return implementation;
-    }
-
-   private:
-    int callImpl(IpcMessage* request, IpcMessage* reply, uint64_t deadline,
-                 bool kernelOrigin);
-    uint64_t id;
-    Task* owner;
-    EndpointImplementation* implementation;
-    uint32_t references   = 1;
-    uint32_t recoveryRole = 0;
-};
-
-class EndpointService {
-   public:
-    using Handler = int (*)(Task&, const IpcMessage&, IpcMessage&);
-    explicit EndpointService(Handler handler) : handler_(handler) {}
-    int call(Task& caller, const IpcMessage& request, IpcMessage& reply) {
-        return handler_(caller, request, reply);
+    inline void addCreatedHandle(IpcMessage& reply, uint64_t handle) {
+        if (handle) reply.handles[reply.handleCount++] = handle;
     }
 
-   private:
-    Handler handler_;
-};
-EndpointService& ipcKernelService();
-EndpointService& memoryKernelService();
-EndpointService& deviceKernelService();
-EndpointService& systemKernelService();
-EndpointService& taskKernelService();
-EndpointService& pciKernelService();
-class CoreServices {
-   public:
-    bool init();
-    uint64_t getHandle(Task& caller, os::CoreServiceKind kind);
-    uint64_t bootstrap(Task& caller);
-
-   private:
-    Endpoint*
-        coreEndpoints[static_cast<uint64_t>(os::CoreServiceKind::Count)]{};
-};
-CoreServices& coreServices();
-
-inline bool readMessageName(const IpcMessage& message, uint32_t word,
-                            const char*& value, size_t limit = 64) {
-    if (message.length <= word) return false;
-    value              = reinterpret_cast<const char*>(&message.data[word]);
-    const size_t bytes = (message.length - word) * sizeof(uint64_t);
-    for (size_t i = 0; i < bytes && i < limit; ++i)
-        if (!value[i]) return i != 0;
-    return false;
-}
-inline void copyMessageData(void* destination, const void* source,
-                            size_t bytes) {
-    auto* to   = static_cast<uint8_t*>(destination);
-    auto* from = static_cast<const uint8_t*>(source);
-    for (size_t i = 0; i < bytes; ++i) to[i] = from[i];
-}
-inline void addCreatedHandle(IpcMessage& reply, uint64_t handle) {
-    if (handle) reply.handles[reply.handleCount++] = handle;
-}
-
-}  // namespace kernel::task
+}  // namespace task

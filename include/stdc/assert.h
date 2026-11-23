@@ -1,3 +1,7 @@
+/*
+ * 断言检查。
+ */
+
 #ifndef _STDC_ASSERT_H
 #define _STDC_ASSERT_H
 

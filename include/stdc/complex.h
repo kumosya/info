@@ -1,3 +1,7 @@
+/*
+ * 复数类型与运算。
+ */
+
 #ifndef _STDC_COMPLEX_H
 #define _STDC_COMPLEX_H
 #ifndef _COMPLEX_H

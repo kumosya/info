@@ -1,3 +1,7 @@
+/*
+ * 描述符事件轮询。
+ */
+
 #ifndef _POSIX_POLL_H
 #define _POSIX_POLL_H
 #ifndef _POLL_H
@@ -30,10 +34,11 @@ extern "C" {
 
 typedef unsigned long nfds_t;
 
+/* 指定要等待的描述符和事件，并接收实际发生的事件。 */
 struct pollfd {
-    int fd;
-    short events;
-    short revents;
+        int fd;
+        short events;
+        short revents;
 };
 
 int poll(struct pollfd *, nfds_t, int);

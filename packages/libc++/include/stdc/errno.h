@@ -1,3 +1,7 @@
+/*
+ * 线程错误码。
+ */
+
 #ifndef _STDC_ERRNO_H
 #define _STDC_ERRNO_H
 

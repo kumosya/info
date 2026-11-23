@@ -1,14 +1,19 @@
+/*
+ * 终端输入输出属性。
+ */
+
 #ifndef _POSIX_BITS_TERMIOS_H
 #define _POSIX_BITS_TERMIOS_H
+/* 保存终端输入输出处理模式、波特率及控制字符。 */
 struct termios {
-    tcflag_t c_iflag;
-    tcflag_t c_oflag;
-    tcflag_t c_cflag;
-    tcflag_t c_lflag;
-    cc_t c_line;
-    cc_t c_cc[NCCS];
-    speed_t __c_ispeed;
-    speed_t __c_ospeed;
+        tcflag_t c_iflag;
+        tcflag_t c_oflag;
+        tcflag_t c_cflag;
+        tcflag_t c_lflag;
+        cc_t c_line;
+        cc_t c_cc[NCCS];
+        speed_t __c_ispeed;
+        speed_t __c_ospeed;
 };
 
 #define VINTR 0

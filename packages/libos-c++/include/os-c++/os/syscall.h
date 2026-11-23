@@ -1,3 +1,7 @@
+/*
+ * 系统调用编号。
+ */
+
 #pragma once
 #ifndef _OS_SYSCALL_H
 #define _OS_SYSCALL_H
@@ -15,38 +19,44 @@
 #define OS_SYS_WAIT_ADDRESS 18U
 #define OS_SYS_WAKE_ADDRESS 19U
 
-#define OS_SYS_COUNT 6U
+#define OS_SYS_READINESS 20U
+#define OS_SYS_COUNT 7U
 
 #ifndef __ASSEMBLER__
 #include <stddef.h>
 #include <stdint.h>
 
+/* 就绪等待的内核快照；token 标识临时信号掩码作用域。 */
+typedef struct {
+        uint64_t generation, signalGeneration, token;
+} OsReadinessState;
+
 /* Native x86-64 signal ABI. Keep in sync with POSIX ucontext_t/siginfo_t. */
 typedef struct {
-    int signo, code, error, pid;
-    unsigned uid;
-    void* address;
-    int status;
-    int64_t value;
+        int signo, code, error, pid;
+        unsigned uid;
+        void* address;
+        int status;
+        int64_t value;
 } OsSignalInfo;
 
 typedef struct {
-    void* pointer;
-    int flags;
-    size_t size;
+        void* pointer;
+        int flags;
+        size_t size;
 } OsSignalStack;
 typedef struct {
-    int64_t registers[23];
-    void* fpregs;
-    uint64_t reserved[8];
+        int64_t registers[23];
+        void* fpregs;
+        uint64_t reserved[8];
 } OsMachineContext;
 typedef struct {
-    uint64_t flags;
-    void* link;
-    OsSignalStack stack;
-    OsMachineContext machine;
-    uint64_t mask;
-    uint64_t fpstate[64];
+        uint64_t flags;
+        void* link;
+        OsSignalStack stack;
+        OsMachineContext machine;
+        uint64_t mask;
+        uint64_t fpstate[64];
 } OsUserContext;
 
 enum {
@@ -78,47 +88,50 @@ enum {
 #ifdef __cplusplus
 #include <cstdint>
 namespace os {
-enum class SyscallNumber : uint64_t {
-    SendMessage    = OS_SYS_SEND_MESSAGE,
-    ReceiveMessage = OS_SYS_RECEIVE_MESSAGE,
-    CallService    = OS_SYS_CALL_SERVICE,
-    ReplyMessage   = OS_SYS_REPLY_MESSAGE,
-    WaitAddress    = OS_SYS_WAIT_ADDRESS,
-    WakeAddress    = OS_SYS_WAKE_ADDRESS,
-    Count          = OS_SYS_COUNT
-};
-enum class ErrorCode : int64_t {
-    Success          = 0,
-    InvalidArgument  = -1,
-    InvalidHandle    = -2,
-    PermissionDenied = -3,
-    NotFound         = -4,
-    OutOfMemory      = -5,
-    WouldBlock       = -6,
-    NotSupported     = -7,
-    Busy             = -8,
-    Timeout          = -9,
-    Interrupted      = -10,
-    IoError          = -11,
-    Cancelled        = -12,
-    EndpointClosed   = -13,
-    PeerDied         = -14,
-    BadAddress       = -15
-};
-struct IpcMessage;
-int waitAddress(volatile uint32_t* address, uint32_t expected);
-int wakeAddress(volatile uint32_t* address, uint32_t count);
-int sendMessage(uint64_t endpoint, IpcMessage& message,
-                uint64_t deadline = UINT64_MAX);
-int receiveMessage(uint64_t endpoint, IpcMessage& message,
-                   uint64_t deadline = UINT64_MAX);
-int callService(uint64_t endpoint, IpcMessage& request, IpcMessage& reply,
-                uint64_t deadline = UINT64_MAX);
-int replyMessage(uint64_t endpoint, uint64_t token, IpcMessage& reply);
+    enum class SyscallNumber : uint64_t {
+        SendMessage    = OS_SYS_SEND_MESSAGE,
+        ReceiveMessage = OS_SYS_RECEIVE_MESSAGE,
+        CallService    = OS_SYS_CALL_SERVICE,
+        ReplyMessage   = OS_SYS_REPLY_MESSAGE,
+        WaitAddress    = OS_SYS_WAIT_ADDRESS,
+        WakeAddress    = OS_SYS_WAKE_ADDRESS,
+        Readiness      = OS_SYS_READINESS,
+        Count          = OS_SYS_COUNT
+    };
+    enum class ErrorCode : int64_t {
+        Success          = 0,
+        InvalidArgument  = -1,
+        InvalidHandle    = -2,
+        PermissionDenied = -3,
+        NotFound         = -4,
+        OutOfMemory      = -5,
+        WouldBlock       = -6,
+        NotSupported     = -7,
+        Busy             = -8,
+        Timeout          = -9,
+        Interrupted      = -10,
+        IoError          = -11,
+        Cancelled        = -12,
+        EndpointClosed   = -13,
+        PeerDied         = -14,
+        BadAddress       = -15
+    };
+    struct IpcMessage;
+    void notifyReadiness();
+    int waitAddress(volatile uint32_t* address, uint32_t expected);
+    int wakeAddress(volatile uint32_t* address, uint32_t count);
+    int sendMessage(uint64_t endpoint, IpcMessage& message,
+                    uint64_t deadline = UINT64_MAX);
+    int receiveMessage(uint64_t endpoint, IpcMessage& message,
+                       uint64_t deadline = UINT64_MAX);
+    int callService(uint64_t endpoint, IpcMessage& request, IpcMessage& reply,
+                    uint64_t deadline = UINT64_MAX);
+    int replyMessage(uint64_t endpoint, uint64_t token, IpcMessage& reply);
 
-int64_t invokeSyscall(SyscallNumber number, uint64_t arg1 = 0,
-                      uint64_t arg2 = 0, uint64_t arg3 = 0, uint64_t arg4 = 0,
-                      uint64_t arg5 = 0, uint64_t arg6 = 0);
+    int64_t invokeSyscall(SyscallNumber number, uint64_t arg1 = 0,
+                          uint64_t arg2 = 0, uint64_t arg3 = 0,
+                          uint64_t arg4 = 0, uint64_t arg5 = 0,
+                          uint64_t arg6 = 0);
 }  // namespace os
 #endif
 

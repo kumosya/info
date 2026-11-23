@@ -1,3 +1,7 @@
+/*
+ * 本地化信息查询。
+ */
+
 #ifndef _POSIX_LANGINFO_H
 #define _POSIX_LANGINFO_H
 #ifndef _LANGINFO_H

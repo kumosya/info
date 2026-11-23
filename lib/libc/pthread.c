@@ -3,9 +3,11 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 
 #include "internal.h"
 #include "lock.h"
+#include "wait_deadline.h"
 
 #define LIBC_THREAD_CAPACITY 64
 #define LIBC_DEFAULT_STACK_SIZE (64U * 1024U)
@@ -18,6 +20,8 @@ typedef struct {
     pthread_t id;
     void* stack;
     size_t stack_size;
+    void* mapping;
+    size_t mapping_size;
     void* (*start)(void*);
     void* argument;
     void* result;
@@ -57,9 +61,10 @@ void __libc_pthread_fork_child(uint64_t previous) {
         else memset(&specific_values[i], 0, sizeof(specific_values[i]));
         if (controls[i].used && controls[i].id == previous) controls[i].id = current;
         else {
-            void* stack = controls[i].stack;
+            void* mapping = controls[i].mapping;
+            size_t mapping_size = controls[i].mapping_size;
             memset(&controls[i], 0, sizeof(controls[i]));
-            free(stack);
+            if (mapping) munmap(mapping, mapping_size);
         }
     }
 }
@@ -75,13 +80,15 @@ static ThreadControl* find_control(pthread_t id) {
 }
 
 static void release_control(ThreadControl* control) {
-    void* stack;
+    void* mapping;
+    size_t mapping_size;
     if (control == NULL) return;
     lock_registry();
-    stack = control->stack;
+    mapping = control->mapping;
+    mapping_size = control->mapping_size;
     memset(control, 0, sizeof(*control));
     unlock_registry();
-    free(stack);
+    if (mapping) munmap(mapping, mapping_size);
 }
 
 static void reap_detached(void) {
@@ -191,23 +198,12 @@ static void thread_entry(void* argument) {
     __libc_os_exit_thread(0);
 }
 
-static int valid_time(const struct timespec* value) {
-    return value != NULL && value->tv_sec >= 0 && value->tv_nsec >= 0 &&
-           value->tv_nsec < 1000000000L;
-}
-
-static int deadline_reached(const struct timespec* absolute_time) {
-    struct timespec now;
-    if (clock_gettime(CLOCK_REALTIME, &now) != 0) return 1;
-    return now.tv_sec > absolute_time->tv_sec ||
-           (now.tv_sec == absolute_time->tv_sec &&
-            now.tv_nsec >= absolute_time->tv_nsec);
-}
-
 int pthread_attr_init(pthread_attr_t* attr) {
     if (attr == NULL) return EINVAL;
     attr->stack_size = LIBC_DEFAULT_STACK_SIZE;
     attr->detach_state = PTHREAD_CREATE_JOINABLE;
+    attr->guard_size = 4096;
+    attr->stack_address = NULL;
     return 0;
 }
 
@@ -266,10 +262,33 @@ int pthread_create(pthread_t* thread, const pthread_attr_t* attr,
     unlock_registry();
     if (control == NULL) return EAGAIN;
 
-    control->stack = malloc(stack_size);
-    if (control->stack == NULL) {
-        release_control(control);
-        return EAGAIN;
+    /* 自供栈属于调用者；库分配的栈在低地址放置不可访问的保护页。 */
+    control->stack = attr ? attr->stack_address : NULL;
+    if (!control->stack) {
+        size_t guard = attr ? attr->guard_size : 4096;
+        if (guard > SIZE_MAX - 4095 || stack_size > SIZE_MAX - 4095) {
+            release_control(control);
+            return EINVAL;
+        }
+        guard = (guard + 4095) & ~(size_t)4095;
+        size_t rounded = (stack_size + 4095) & ~(size_t)4095;
+        if (rounded > SIZE_MAX - guard) {
+            release_control(control);
+            return EINVAL;
+        }
+        control->mapping_size = rounded + guard;
+        void* mapping = mmap(NULL, control->mapping_size, PROT_READ | PROT_WRITE,
+                              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (mapping == MAP_FAILED) {
+            release_control(control);
+            return EAGAIN;
+        }
+        control->mapping = mapping;
+        if (guard && mprotect(mapping, guard, PROT_NONE)) {
+            release_control(control);
+            return EAGAIN;
+        }
+        control->stack = (char*)mapping + guard;
     }
     control->stack_size = stack_size;
     control->detached = detached == PTHREAD_CREATE_DETACHED;
@@ -352,6 +371,8 @@ void pthread_exit(void* result) {
 int pthread_mutexattr_init(pthread_mutexattr_t* attr) {
     if (attr == NULL) return EINVAL;
     attr->type = PTHREAD_MUTEX_DEFAULT;
+    attr->shared = PTHREAD_PROCESS_PRIVATE;
+    attr->robust = PTHREAD_MUTEX_STALLED;
     return 0;
 }
 
@@ -377,6 +398,9 @@ int pthread_mutexattr_settype(pthread_mutexattr_t* attr, int type) {
 int pthread_mutex_init(pthread_mutex_t* mutex,
                        const pthread_mutexattr_t* attr) {
     if (mutex == NULL) return EINVAL;
+    if (attr && (attr->shared < PTHREAD_PROCESS_PRIVATE ||
+        attr->shared > PTHREAD_PROCESS_SHARED)) return EINVAL;
+    if (attr && attr->robust != PTHREAD_MUTEX_STALLED) return ENOTSUP;
     memset(mutex, 0, sizeof(*mutex));
     mutex->type = attr == NULL ? PTHREAD_MUTEX_DEFAULT : attr->type;
     if (mutex->type > PTHREAD_MUTEX_ERRORCHECK) return EINVAL;
@@ -439,13 +463,27 @@ int pthread_mutex_lock(pthread_mutex_t* mutex) {
 
 int pthread_mutex_timedlock(pthread_mutex_t* mutex,
                             const struct timespec* absolute_time) {
-    int result;
-    if (!valid_time(absolute_time)) return EINVAL;
-    while ((result = pthread_mutex_trylock(mutex)) == EBUSY) {
-        if (deadline_reached(absolute_time)) return ETIMEDOUT;
-        __libc_os_sleep(1);
+    return pthread_mutex_clocklock(mutex, CLOCK_REALTIME, absolute_time);
+}
+
+/* 先尝试获取；只有发生竞争才检查期限并登记内核等待。 */
+int pthread_mutex_clocklock(pthread_mutex_t* restrict mutex, clockid_t clock,
+                             const struct timespec* restrict absolute_time) {
+    if (!mutex || (clock != CLOCK_REALTIME && clock != CLOCK_MONOTONIC)) return EINVAL;
+    int result = pthread_mutex_trylock(mutex);
+    if (result != EBUSY) return result;
+    if (mutex->type == PTHREAD_MUTEX_ERRORCHECK && mutex->owner == pthread_self()) return EDEADLK;
+    while (__atomic_exchange_n(&mutex->state, 2, __ATOMIC_ACQUIRE) != 0) {
+        result = libcDeadlineWait(&mutex->state, 2, clock, absolute_time);
+        if (result && result != EINTR) {
+            /* 已获唤醒的等待者超时离开时，将机会传给其余等待者。 */
+            __libc_os_wake_address(&mutex->state, UINT32_MAX);
+            return result;
+        }
     }
-    return result;
+    __atomic_store_n(&mutex->owner, pthread_self(), __ATOMIC_RELEASE);
+    mutex->recursion = 1;
+    return 0;
 }
 
 int pthread_mutex_unlock(pthread_mutex_t* mutex) {
@@ -468,6 +506,7 @@ int pthread_mutex_unlock(pthread_mutex_t* mutex) {
 int pthread_condattr_init(pthread_condattr_t* attr) {
     if (attr == NULL) return EINVAL;
     attr->clock_id = CLOCK_REALTIME;
+    attr->shared = PTHREAD_PROCESS_PRIVATE;
     return 0;
 }
 
@@ -493,9 +532,12 @@ int pthread_condattr_setclock(pthread_condattr_t* attr, clockid_t clock) {
 
 int pthread_cond_init(pthread_cond_t* condition,
                       const pthread_condattr_t* attr) {
-    (void)attr;
     if (condition == NULL) return EINVAL;
+    if (attr && (attr->shared < PTHREAD_PROCESS_PRIVATE ||
+        attr->shared > PTHREAD_PROCESS_SHARED ||
+        (attr->clock_id != CLOCK_REALTIME && attr->clock_id != CLOCK_MONOTONIC))) return EINVAL;
     condition->sequence = 0;
+    condition->clock_id = attr ? attr->clock_id : CLOCK_REALTIME;
     return 0;
 }
 
@@ -518,22 +560,31 @@ int pthread_cond_wait(pthread_cond_t* condition, pthread_mutex_t* mutex) {
 
 int pthread_cond_timedwait(pthread_cond_t* condition, pthread_mutex_t* mutex,
                            const struct timespec* absolute_time) {
+    if (!condition) return EINVAL;
+    return pthread_cond_clockwait(condition, mutex, condition->clock_id, absolute_time);
+}
+
+/* 先拍下通知序号，再释放互斥锁；内核在入队时复查序号，避免丢通知。 */
+int pthread_cond_clockwait(pthread_cond_t* restrict condition,
+                            pthread_mutex_t* restrict mutex, clockid_t clock,
+                            const struct timespec* restrict absolute_time) {
     uint32_t sequence;
     int result;
-    if (condition == NULL || mutex == NULL || !valid_time(absolute_time)) {
+    if (condition == NULL || mutex == NULL || !absolute_time ||
+        absolute_time->tv_nsec < 0 || absolute_time->tv_nsec >= 1000000000L ||
+        (clock != CLOCK_REALTIME && clock != CLOCK_MONOTONIC)) {
         return EINVAL;
     }
     sequence = __atomic_load_n(&condition->sequence, __ATOMIC_ACQUIRE);
     result = pthread_mutex_unlock(mutex);
     if (result != 0) return result;
     while (__atomic_load_n(&condition->sequence, __ATOMIC_ACQUIRE) == sequence) {
-        if (deadline_reached(absolute_time)) {
-            pthread_mutex_lock(mutex);
-            return ETIMEDOUT;
-        }
-        __libc_os_sleep(1);
+        result = libcDeadlineWait(&condition->sequence, sequence, clock, absolute_time);
+        if (result == EINTR) result = 0;
+        if (result && result != EINTR) break;
     }
-    return pthread_mutex_lock(mutex);
+    int locked = pthread_mutex_lock(mutex);
+    return locked ? locked : result;
 }
 
 int pthread_cond_signal(pthread_cond_t* condition) {
@@ -632,8 +683,9 @@ int pthread_setspecific(pthread_key_t key, const void* value) {
 
 int pthread_rwlock_init(pthread_rwlock_t* lock,
                         const pthread_rwlockattr_t* attr) {
-    (void)attr;
     if (lock == NULL) return EINVAL;
+    if (attr && attr->reserved != PTHREAD_PROCESS_PRIVATE &&
+        attr->reserved != PTHREAD_PROCESS_SHARED) return EINVAL;
     memset(lock, 0, sizeof(*lock));
     pthread_mutex_init(&lock->mutex, NULL);
     pthread_cond_init(&lock->condition, NULL);
@@ -712,8 +764,9 @@ int pthread_rwlock_unlock(pthread_rwlock_t* lock) {
 int pthread_barrier_init(pthread_barrier_t* barrier,
                          const pthread_barrierattr_t* attr,
                          unsigned int count) {
-    (void)attr;
     if (barrier == NULL || count == 0) return EINVAL;
+    if (attr && attr->reserved != PTHREAD_PROCESS_PRIVATE &&
+        attr->reserved != PTHREAD_PROCESS_SHARED) return EINVAL;
     memset(barrier, 0, sizeof(*barrier));
     pthread_mutex_init(&barrier->mutex, NULL);
     pthread_cond_init(&barrier->condition, NULL);

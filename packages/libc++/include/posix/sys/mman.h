@@ -1,9 +1,14 @@
+/*
+ * 虚拟内存映射与锁页。
+ */
+
 #ifndef _POSIX_SYS_MMAN_H
 #define _POSIX_SYS_MMAN_H
 
 #include <stddef.h>
+/* 返回类型化内存对象当前可分配的最大空间。 */
 struct posix_typed_mem_info {
-    size_t posix_tmi_length;
+        size_t posix_tmi_length;
 };
 
 #include <sys/types.h>

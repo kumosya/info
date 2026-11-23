@@ -1,3 +1,7 @@
+/*
+ * 数学函数。
+ */
+
 #ifndef _STDC_MATH_H
 #define _STDC_MATH_H
 #ifndef _MATH_H
@@ -56,16 +60,16 @@ int __fpclassifyl(long double);
 
 static __inline unsigned __FLOAT_BITS(float __f) {
     union {
-        float __f;
-        unsigned __i;
+            float __f;
+            unsigned __i;
     } __u;
     __u.__f = __f;
     return __u.__i;
 }
 static __inline unsigned long long __DOUBLE_BITS(double __f) {
     union {
-        double __f;
-        unsigned long long __i;
+            double __f;
+            unsigned long long __i;
     } __u;
     __u.__f = __f;
     return __u.__i;

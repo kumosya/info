@@ -1,3 +1,7 @@
+/*
+ * 调度参数与 CPU 亲和性。
+ */
+
 #ifndef _POSIX_SCHED_H
 #define _POSIX_SCHED_H
 #ifndef _SCHED_H
@@ -18,18 +22,19 @@ extern "C" {
 
 #include <bits/alltypes.h>
 
+/* 保存调度策略使用的线程优先级参数。 */
 struct sched_param {
-    int sched_priority;
-    int __reserved1;
+        int sched_priority;
+        int __reserved1;
 #if _REDIR_TIME64
-    long __reserved2[4];
+        long __reserved2[4];
 #else
-    struct {
-        time_t __reserved1;
-        long __reserved2;
-    } __reserved2[2];
+        struct {
+                time_t __reserved1;
+                long __reserved2;
+        } __reserved2[2];
 #endif
-    int __reserved3;
+        int __reserved3;
 };
 
 int sched_get_priority_max(int);
@@ -87,7 +92,7 @@ void *calloc(size_t, size_t);
 void free(void *);
 
 typedef struct cpu_set_t {
-    unsigned long __bits[128 / sizeof(long)];
+        unsigned long __bits[128 / sizeof(long)];
 } cpu_set_t;
 int __sched_cpucount(size_t, const cpu_set_t *);
 int sched_getcpu(void);

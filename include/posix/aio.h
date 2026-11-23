@@ -1,3 +1,7 @@
+/*
+ * 异步文件读写。
+ */
+
 #ifndef _POSIX_AIO_H
 #define _POSIX_AIO_H
 
@@ -9,20 +13,21 @@
 
 struct sigevent;
 
+/* 描述一次异步文件操作的描述符、缓冲区、偏移和完成通知。 */
 struct aiocb {
-    int aio_fildes;
-    off_t aio_offset;
-    volatile void* aio_buf;
-    size_t aio_nbytes;
-    int aio_reqprio;
-    struct sigevent* aio_sigevent;
-    int aio_lio_opcode;
-    uint64_t _endpoint;
-    pthread_t _worker;
-    volatile uint32_t _state;
-    int _error;
-    ssize_t _return_value;
-    int _operation;
+        int aio_fildes;
+        off_t aio_offset;
+        volatile void* aio_buf;
+        size_t aio_nbytes;
+        int aio_reqprio;
+        struct sigevent* aio_sigevent;
+        int aio_lio_opcode;
+        uint64_t _endpoint;
+        pthread_t _worker;
+        volatile uint32_t _state;
+        int _error;
+        ssize_t _return_value;
+        int _operation;
 };
 
 #define AIO_CANCELED 0

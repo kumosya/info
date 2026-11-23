@@ -1,3 +1,7 @@
+/*
+ * 网络地址和协议名称查询。
+ */
+
 #ifndef _POSIX_NETDB_H
 #define _POSIX_NETDB_H
 #ifndef _NETDB_H
@@ -16,15 +20,16 @@ extern "C" {
 #include <bits/alltypes.h>
 #endif
 
+/* 保存地址解析结果中的地址、协议和下一条结果指针。 */
 struct addrinfo {
-    int ai_flags;
-    int ai_family;
-    int ai_socktype;
-    int ai_protocol;
-    socklen_t ai_addrlen;
-    struct sockaddr *ai_addr;
-    char *ai_canonname;
-    struct addrinfo *ai_next;
+        int ai_flags;
+        int ai_family;
+        int ai_socktype;
+        int ai_protocol;
+        socklen_t ai_addrlen;
+        struct sockaddr *ai_addr;
+        char *ai_canonname;
+        struct addrinfo *ai_next;
 };
 
 #define AI_PASSIVE 0x01
@@ -64,33 +69,37 @@ const char *gai_strerror(int);
 
 /* Legacy functions follow (marked OBsolete in SUS) */
 
+/* 保存网络名称、别名及网络编号查询结果。 */
 struct netent {
-    char *n_name;
-    char **n_aliases;
-    int n_addrtype;
-    uint32_t n_net;
+        char *n_name;
+        char **n_aliases;
+        int n_addrtype;
+        uint32_t n_net;
 };
 
+/* 保存主机名、别名及解析得到的网络地址列表。 */
 struct hostent {
-    char *h_name;
-    char **h_aliases;
-    int h_addrtype;
-    int h_length;
-    char **h_addr_list;
+        char *h_name;
+        char **h_aliases;
+        int h_addrtype;
+        int h_length;
+        char **h_addr_list;
 };
 #define h_addr h_addr_list[0]
 
+/* 保存网络服务名称、端口、协议和别名查询结果。 */
 struct servent {
-    char *s_name;
-    char **s_aliases;
-    int s_port;
-    char *s_proto;
+        char *s_name;
+        char **s_aliases;
+        int s_port;
+        char *s_proto;
 };
 
+/* 保存网络协议名称、别名和协议编号。 */
 struct protoent {
-    char *p_name;
-    char **p_aliases;
-    int p_proto;
+        char *p_name;
+        char **p_aliases;
+        int p_proto;
 };
 
 void sethostent(int);

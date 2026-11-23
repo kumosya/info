@@ -1,3 +1,7 @@
+/*
+ * 定宽整数类型。
+ */
+
 #ifndef _POSIX_BITS_STDINT_H
 #define _POSIX_BITS_STDINT_H
 typedef int32_t int_fast16_t;

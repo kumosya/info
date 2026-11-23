@@ -18,10 +18,10 @@
 #endif
 #define POWF_SCALE ((double)(1 << POWF_SCALE_BITS))
 extern hidden const struct powf_log2_data {
-    struct {
-        double invc, logc;
-    } tab[1 << POWF_LOG2_TABLE_BITS];
-    double poly[POWF_LOG2_POLY_ORDER];
+        struct {
+                double invc, logc;
+        } tab[1 << POWF_LOG2_TABLE_BITS];
+        double poly[POWF_LOG2_POLY_ORDER];
 } __powf_log2_data;
 
 #endif

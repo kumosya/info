@@ -25,25 +25,38 @@ static long long transition(int year,int month,int occurrence,int hour) {
     return begin+(day-1)*86400LL+hour*3600;
 }
 struct local_zone { int minutes,rule; };
+static void parse_zone_line(char* line,struct local_zone* zone) {
+    if(!strncmp(line,"offset_minutes=",15)) {
+        char* end;const long value=strtol(line+15,&end,10);
+        if(end!=line+15 && (!*end || *end=='\r') && value>=-720 && value<=840)zone->minutes=(int)value;
+    }else if(!strncmp(line,"dst_rule=",9)) {
+        line[strcspn(line,"\r")]=0;
+        if(!strcmp(line+9,"us"))zone->rule=1;
+        else if(!strcmp(line+9,"eu"))zone->rule=2;
+        else if(!strcmp(line+9,"australia"))zone->rule=3;
+        else if(!strcmp(line+9,"new-zealand"))zone->rule=4;
+        else zone->rule=0;
+    }
+}
 static struct local_zone read_zone(void) {
     const char* override=getenv("TZ");struct local_zone zone={0,0};
     if(!override || !*override) {
         FILE* input=fopen("/etc/timezone","rb");
         if(input) {
-            char line[128];
-            while(fgets(line,sizeof(line),input)) {
-                if(!strncmp(line,"offset_minutes=",15)) {
-                    char* end;const long value=strtol(line+15,&end,10);
-                    if(end!=line+15 && (!*end || *end=='\n' || *end=='\r') && value>=-720 && value<=840)zone.minutes=(int)value;
-                }else if(!strncmp(line,"dst_rule=",9)) {
-                    line[strcspn(line,"\r\n")]=0;
-                    if(!strcmp(line+9,"us"))zone.rule=1;
-                    else if(!strcmp(line+9,"eu"))zone.rule=2;
-                    else if(!strcmp(line+9,"australia"))zone.rule=3;
-                    else if(!strcmp(line+9,"new-zealand"))zone.rule=4;
-                    else zone.rule=0;
+            /* 每次转换仍读取最新时区，避免缓存使设置失效；分块读取，
+             * 不让每个配置字符都触发一次文件服务通信。 */
+            char bytes[256],line[128];size_t used=0,count;int overflow=0;
+            while((count=fread(bytes,1,sizeof(bytes),input))!=0) {
+                for(size_t i=0;i<count;++i) {
+                    if(bytes[i]=='\n') {
+                        line[used]=0;
+                        if(!overflow)parse_zone_line(line,&zone);
+                        used=0;overflow=0;
+                    }else if(used+1<sizeof(line))line[used++]=bytes[i];
+                    else overflow=1;
                 }
             }
+            if(used && !overflow){line[used]=0;parse_zone_line(line,&zone);}
             fclose(input);
         }
     }else if(strcmp(override,"UTC") && strcmp(override,"UTC0") && strcmp(override,"GMT") && strcmp(override,"GMT0"))errno=ENOTSUP;

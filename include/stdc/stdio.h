@@ -1,3 +1,7 @@
+/*
+ * 标准输入输出及文件流。
+ */
+
 #ifndef _STDC_STDIO_H
 #define _STDC_STDIO_H
 
@@ -8,12 +12,13 @@
 #define BUFSIZ 1024
 
 typedef struct FileStream {
-    int fileDescriptor;
-    int error;
-    int endOfFile;
-    int owned;
-    int pushed;
-    int orientation;
+        int fileDescriptor;
+        int error;
+        int endOfFile;
+        int owned;
+        int pushed;
+        int orientation;
+        struct __FileState *state;
 } FILE;
 
 #ifdef __cplusplus
@@ -56,6 +61,7 @@ void perror(const char *prefix);
 #include <sys/types.h>
 typedef off_t fpos_t;
 #define L_tmpnam 64
+#define L_ctermid 9
 #define TMP_MAX 256
 #define FOPEN_MAX 32
 #define _IOFBF 0

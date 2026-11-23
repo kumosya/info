@@ -1,3 +1,7 @@
+/*
+ * 货币格式化。
+ */
+
 #ifndef _POSIX_MONETARY_H
 #define _POSIX_MONETARY_H
 #ifndef _MONETARY_H

@@ -1,3 +1,7 @@
+/*
+ * 用户账户数据库查询。
+ */
+
 #ifndef _POSIX_PWD_H
 #define _POSIX_PWD_H
 #ifndef _PWD_H
@@ -19,14 +23,15 @@ extern "C" {
 
 #include <bits/alltypes.h>
 
+/* 保存账户名称、用户组编号、主目录与登录程序等查询结果。 */
 struct passwd {
-    char *pw_name;
-    char *pw_passwd;
-    uid_t pw_uid;
-    gid_t pw_gid;
-    char *pw_gecos;
-    char *pw_dir;
-    char *pw_shell;
+        char *pw_name;
+        char *pw_passwd;
+        uid_t pw_uid;
+        gid_t pw_gid;
+        char *pw_gecos;
+        char *pw_dir;
+        char *pw_shell;
 };
 
 #if defined(_XOPEN_SOURCE) || defined(_GNU_SOURCE) || defined(_BSD_SOURCE)

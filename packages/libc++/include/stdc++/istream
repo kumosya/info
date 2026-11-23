@@ -1,3 +1,7 @@
+/*
+ * C++ 输入流。
+ */
+
 #pragma once
 
 #include <ios>
@@ -5,20 +9,21 @@
 
 namespace std {
 
-class istream {
-   public:
-    explicit constexpr istream(int fileDescriptor) noexcept
-        : fileDescriptor_(fileDescriptor) {}
+    /* 提供格式化输入和流读取接口。 */
+    class istream {
+        public:
+            explicit constexpr istream(int fileDescriptor) noexcept
+                : fileDescriptor_(fileDescriptor) {}
 
-    istream& get(char& value);
-    istream& getline(char* buffer, streamsize size);
-    istream& read(char* buffer, streamsize size);
-    istream& operator>>(int& value);
-    explicit operator bool() const noexcept { return good_; }
+            istream& get(char& value);
+            istream& getline(char* buffer, streamsize size);
+            istream& read(char* buffer, streamsize size);
+            istream& operator>>(int& value);
+            explicit operator bool() const noexcept { return good_; }
 
-   private:
-    int fileDescriptor_;
-    bool good_ = true;
-};
+        private:
+            int fileDescriptor_;
+            bool good_ = true;
+    };
 
 }  // namespace std

@@ -1,3 +1,7 @@
+/*
+ * POSIX 基础类型。
+ */
+
 #ifndef _POSIX_SYS_TYPES_H
 #define _POSIX_SYS_TYPES_H
 

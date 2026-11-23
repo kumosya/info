@@ -1,3 +1,7 @@
+/*
+ * 系统日志。
+ */
+
 #ifndef _POSIX_SYSLOG_H
 #define _POSIX_SYSLOG_H
 #ifndef _SYSLOG_H
@@ -72,8 +76,8 @@ void vsyslog(int, const char *, va_list);
 #define INTERNAL_NOPRI 0x10
 #define INTERNAL_MARK (LOG_NFACILITIES << 3)
 typedef struct {
-    char *c_name;
-    int c_val;
+        char *c_name;
+        int c_val;
 } CODE;
 #define prioritynames                                 \
     ((CODE *)(const CODE[]){{"alert", LOG_ALERT},     \

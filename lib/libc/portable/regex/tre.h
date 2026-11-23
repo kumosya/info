@@ -94,26 +94,26 @@ typedef wctype_t tre_ctype_t;
 typedef struct tnfa_transition tre_tnfa_transition_t;
 
 struct tnfa_transition {
-    /* Range of accepted characters. */
-    tre_cint_t code_min;
-    tre_cint_t code_max;
-    /* Pointer to the destination state. */
-    tre_tnfa_transition_t *state;
-    /* ID number of the destination state. */
-    int state_id;
-    /* -1 terminated array of tags (or NULL). */
-    int *tags;
-    /* Assertion bitmap. */
-    int assertions;
-    /* Assertion parameters. */
-    union {
-        /* Character class assertion. */
-        tre_ctype_t class;
-        /* Back reference assertion. */
-        int backref;
-    } u;
-    /* Negative character class assertions. */
-    tre_ctype_t *neg_classes;
+        /* Range of accepted characters. */
+        tre_cint_t code_min;
+        tre_cint_t code_max;
+        /* Pointer to the destination state. */
+        tre_tnfa_transition_t *state;
+        /* ID number of the destination state. */
+        int state_id;
+        /* -1 terminated array of tags (or NULL). */
+        int *tags;
+        /* Assertion bitmap. */
+        int assertions;
+        /* Assertion parameters. */
+        union {
+                /* Character class assertion. */
+                tre_ctype_t class;
+                /* Back reference assertion. */
+                int backref;
+        } u;
+        /* Negative character class assertions. */
+        tre_ctype_t *neg_classes;
 };
 
 /* Assertions. */
@@ -134,12 +134,12 @@ typedef enum { TRE_TAG_MINIMIZE = 0, TRE_TAG_MAXIMIZE = 1 } tre_tag_direction_t;
 /* Instructions to compute submatch register values from tag values
    after a successful match.  */
 struct tre_submatch_data {
-    /* Tag that gives the value for rm_so (submatch start offset). */
-    int so_tag;
-    /* Tag that gives the value for rm_eo (submatch end offset). */
-    int eo_tag;
-    /* List of submatches this submatch is contained in. */
-    int *parents;
+        /* Tag that gives the value for rm_so (submatch start offset). */
+        int so_tag;
+        /* Tag that gives the value for rm_eo (submatch end offset). */
+        int eo_tag;
+        /* List of submatches this submatch is contained in. */
+        int *parents;
 };
 
 typedef struct tre_submatch_data tre_submatch_data_t;
@@ -148,23 +148,23 @@ typedef struct tre_submatch_data tre_submatch_data_t;
 typedef struct tnfa tre_tnfa_t;
 
 struct tnfa {
-    tre_tnfa_transition_t *transitions;
-    unsigned int num_transitions;
-    tre_tnfa_transition_t *initial;
-    tre_tnfa_transition_t *final;
-    tre_submatch_data_t *submatch_data;
-    char *firstpos_chars;
-    int first_char;
-    unsigned int num_submatches;
-    tre_tag_direction_t *tag_directions;
-    int *minimal_tags;
-    int num_tags;
-    int num_minimals;
-    int end_tag;
-    int num_states;
-    int cflags;
-    int have_backrefs;
-    int have_approx;
+        tre_tnfa_transition_t *transitions;
+        unsigned int num_transitions;
+        tre_tnfa_transition_t *initial;
+        tre_tnfa_transition_t *final;
+        tre_submatch_data_t *submatch_data;
+        char *firstpos_chars;
+        int first_char;
+        unsigned int num_submatches;
+        tre_tag_direction_t *tag_directions;
+        int *minimal_tags;
+        int num_tags;
+        int num_minimals;
+        int end_tag;
+        int num_states;
+        int cflags;
+        int have_backrefs;
+        int have_approx;
 };
 
 /* from tre-mem.h: */
@@ -172,17 +172,17 @@ struct tnfa {
 #define TRE_MEM_BLOCK_SIZE 1024
 
 typedef struct tre_list {
-    void *data;
-    struct tre_list *next;
+        void *data;
+        struct tre_list *next;
 } tre_list_t;
 
 typedef struct tre_mem_struct {
-    tre_list_t *blocks;
-    tre_list_t *current;
-    char *ptr;
-    size_t n;
-    int failed;
-    void **provided;
+        tre_list_t *blocks;
+        tre_list_t *current;
+        char *ptr;
+        size_t n;
+        int failed;
+        void **provided;
 } *tre_mem_t;
 
 #define tre_mem_new_impl __tre_mem_new_impl

@@ -1,15 +1,19 @@
+/*
+ * 字符分类及大小写转换。
+ */
+
 #pragma once
 
 #include <ctype.h>
 
 namespace std {
 
-using ::isalnum;
-using ::isalpha;
-using ::isdigit;
-using ::isprint;
-using ::isspace;
-using ::tolower;
-using ::toupper;
+    using ::isalnum;
+    using ::isalpha;
+    using ::isdigit;
+    using ::isprint;
+    using ::isspace;
+    using ::tolower;
+    using ::toupper;
 
 }  // namespace std

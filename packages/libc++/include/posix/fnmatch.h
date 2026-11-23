@@ -1,3 +1,7 @@
+/*
+ * 文件名模式匹配。
+ */
+
 /* Filename pattern matching. */
 #ifndef _POSIX_FNMATCH_H
 #define _POSIX_FNMATCH_H

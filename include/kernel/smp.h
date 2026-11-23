@@ -1,3 +1,7 @@
+/*
+ * 多 CPU 启动与跨核协调。
+ */
+
 #pragma once
 
 #include <cstdint>
@@ -6,64 +10,73 @@
 
 class BootInfo;
 
-namespace kernel::cpu {
+namespace cpu {
 
-class CpuLocalData;
+    class CpuLocalData;
 
-enum class CpuState : uint8_t { Offline, Starting, Online, Stopping, Failed };
+    enum class CpuState : uint8_t {
+        Offline,
+        Starting,
+        Online,
+        Stopping,
+        Failed
+    };
 
-class CpuDescriptor {
-   public:
-    uint32_t getCpuId() const { return cpuId; }
-    uint32_t setCpuId(uint32_t value) {
-        cpuId = value;
-        return cpuId;
-    }
-    uint32_t setTaskorId(uint32_t value) {
-        taskorId = value;
-        return taskorId;
-    }
-    uint32_t getApicId() const { return apicId; }
-    uint32_t setApicId(uint32_t value) {
-        apicId = value;
-        return apicId;
-    }
-    bool setEnabled(bool value) {
-        enabled = value;
-        return enabled;
-    }
-    ::Atomic<CpuState>& getState() { return state; }
-    const ::Atomic<CpuState>& getState() const { return state; }
-    ::Atomic<uint32_t>& getStartupStage() { return startupStage; }
-    const ::Atomic<uint32_t>& getStartupStage() const { return startupStage; }
-    CpuLocalData* getLocalData() const { return localData; }
-    CpuLocalData* setLocalData(CpuLocalData* value) {
-        localData = value;
-        return localData;
-    }
+    /* 记录一个 CPU 的启动标识和当前状态，供多核启动协调。 */
+    class CpuDescriptor {
+        public:
+            uint32_t getCpuId() const { return cpuId; }
+            uint32_t setCpuId(uint32_t value) {
+                cpuId = value;
+                return cpuId;
+            }
+            uint32_t setTaskorId(uint32_t value) {
+                taskorId = value;
+                return taskorId;
+            }
+            uint32_t getApicId() const { return apicId; }
+            uint32_t setApicId(uint32_t value) {
+                apicId = value;
+                return apicId;
+            }
+            bool setEnabled(bool value) {
+                enabled = value;
+                return enabled;
+            }
+            ::Atomic<CpuState>& getState() { return state; }
+            const ::Atomic<CpuState>& getState() const { return state; }
+            ::Atomic<uint32_t>& getStartupStage() { return startupStage; }
+            const ::Atomic<uint32_t>& getStartupStage() const {
+                return startupStage;
+            }
+            CpuLocalData* getLocalData() const { return localData; }
+            CpuLocalData* setLocalData(CpuLocalData* value) {
+                localData = value;
+                return localData;
+            }
 
-   private:
-    uint32_t cpuId;
-    uint32_t taskorId;
-    uint32_t apicId;
-    bool enabled;
-    ::Atomic<CpuState> state;
-    ::Atomic<uint32_t> startupStage;
-    CpuLocalData* localData;
-};
+        private:
+            uint32_t cpuId;
+            uint32_t taskorId;
+            uint32_t apicId;
+            bool enabled;
+            ::Atomic<CpuState> state;
+            ::Atomic<uint32_t> startupStage;
+            CpuLocalData* localData;
+    };
 
-constexpr uint8_t rescheduleIpiVector   = 0xf0;
-constexpr uint8_t tlbShootdownIpiVector = 0xf1;
+    constexpr uint8_t rescheduleIpiVector   = 0xf0;
+    constexpr uint8_t tlbShootdownIpiVector = 0xf1;
 
-void initSmp(const ::BootInfo* bootInfo);
-void startApplicationTaskors();
-uint32_t getDiscoveredCpuCount();
-uint32_t getOnlineCpuCount();
-CpuDescriptor* getCpuDescriptor(uint32_t cpuId);
-CpuLocalData* getCpuLocalData(uint32_t cpuId);
-void requestRemoteReschedule(uint32_t cpuId);
-void requestTlbShootdown(uint64_t virtualAddress, uint64_t size = 4096);
+    void initSmp(const ::BootInfo* bootInfo);
+    void startApplicationTaskors();
+    uint32_t getDiscoveredCpuCount();
+    uint32_t getOnlineCpuCount();
+    CpuDescriptor* getCpuDescriptor(uint32_t cpuId);
+    CpuLocalData* getCpuLocalData(uint32_t cpuId);
+    void requestRemoteReschedule(uint32_t cpuId);
+    void requestTlbShootdown(uint64_t virtualAddress, uint64_t size = 4096);
 
-extern "C" [[noreturn]] void applicationTaskorEntry(CpuLocalData* cpu);
+    extern "C" [[noreturn]] void applicationTaskorEntry(CpuLocalData* cpu);
 
-}  // namespace kernel::cpu
+}  // namespace cpu

@@ -1,47 +1,51 @@
+/*
+ * 标准输入输出及文件流。
+ */
+
 #pragma once
 
 #include <stdio.h>
 
 namespace std {
 
-using ::FILE;
-using ::clearerr;
-using ::fclose;
-using ::feof;
-using ::ferror;
-using ::fflush;
-using ::fgetc;
-using ::fgets;
-using ::fopen;
-using ::fprintf;
-using ::fputc;
-using ::fputs;
-using ::fread;
-using ::fwrite;
-using ::getchar;
-using ::perror;
-using ::printf;
-using ::putchar;
-using ::puts;
-using ::snprintf;
-using ::vsnprintf;
-using ::rename;
-using ::remove;
-using ::freopen;
-using ::fseek;
-using ::ftell;
-using ::rewind;
-using ::fgetpos;
-using ::fsetpos;
-using ::setbuf;
-using ::setvbuf;
-using ::ungetc;
-using ::scanf;
-using ::fscanf;
-using ::sscanf;
-using ::sprintf;
-using ::vprintf;
-using ::vfprintf;
-using ::vsprintf;
+    using ::clearerr;
+    using ::fclose;
+    using ::feof;
+    using ::ferror;
+    using ::fflush;
+    using ::fgetc;
+    using ::fgetpos;
+    using ::fgets;
+    using ::FILE;
+    using ::fopen;
+    using ::fprintf;
+    using ::fputc;
+    using ::fputs;
+    using ::fread;
+    using ::freopen;
+    using ::fscanf;
+    using ::fseek;
+    using ::fsetpos;
+    using ::ftell;
+    using ::fwrite;
+    using ::getchar;
+    using ::perror;
+    using ::printf;
+    using ::putchar;
+    using ::puts;
+    using ::remove;
+    using ::rename;
+    using ::rewind;
+    using ::scanf;
+    using ::setbuf;
+    using ::setvbuf;
+    using ::snprintf;
+    using ::sprintf;
+    using ::sscanf;
+    using ::ungetc;
+    using ::vfprintf;
+    using ::vprintf;
+    using ::vsnprintf;
+    using ::vsprintf;
 
 }  // namespace std

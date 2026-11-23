@@ -1,3 +1,7 @@
+/*
+ * 目录遍历。
+ */
+
 #ifndef _POSIX_DIRENT_H
 #define _POSIX_DIRENT_H
 
@@ -9,12 +13,13 @@
 #define DT_REG 8
 #define DT_DIR 4
 
+/* 保存目录枚举得到的对象编号、条目长度、类型和名称。 */
 struct dirent {
-    uint64_t d_ino;
-    int64_t d_off;
-    uint16_t d_reclen;
-    uint8_t d_type;
-    char d_name[256];
+        uint64_t d_ino;
+        int64_t d_off;
+        uint16_t d_reclen;
+        uint8_t d_type;
+        char d_name[256];
 };
 
 typedef struct DirectoryStream DIR;

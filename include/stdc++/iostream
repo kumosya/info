@@ -1,3 +1,7 @@
+/*
+ * 标准 C++ 输入输出流对象。
+ */
+
 #pragma once
 
 #include <istream>
@@ -5,8 +9,8 @@
 
 namespace std {
 
-extern istream cin;
-extern ostream cout;
-extern ostream cerr;
+    extern istream cin;
+    extern ostream cout;
+    extern ostream cerr;
 
 }  // namespace std

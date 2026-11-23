@@ -1,3 +1,7 @@
+/*
+ * 时间、日历和定时器。
+ */
+
 #ifndef _STDC_TIME_H
 #define _STDC_TIME_H
 /* musl 1.2.5 public declarations; see lib/libc/portable/COPYRIGHT. */
@@ -39,18 +43,19 @@ extern "C" {
 #define __tm_zone tm_zone
 #endif
 
+/* 保存拆分后的年、月、日、时、分、秒及日历辅助信息。 */
 struct tm {
-    int tm_sec;
-    int tm_min;
-    int tm_hour;
-    int tm_mday;
-    int tm_mon;
-    int tm_year;
-    int tm_wday;
-    int tm_yday;
-    int tm_isdst;
-    long __tm_gmtoff;
-    const char *__tm_zone;
+        int tm_sec;
+        int tm_min;
+        int tm_hour;
+        int tm_mday;
+        int tm_mon;
+        int tm_year;
+        int tm_wday;
+        int tm_yday;
+        int tm_isdst;
+        long __tm_gmtoff;
+        const char *__tm_zone;
 };
 
 clock_t clock(void);
@@ -82,9 +87,10 @@ char *ctime_r(const time_t *, char *);
 
 void tzset(void);
 
+/* 保存定时器首次到期时间及重复间隔。 */
 struct itimerspec {
-    struct timespec it_interval;
-    struct timespec it_value;
+        struct timespec it_interval;
+        struct timespec it_value;
 };
 
 #define CLOCK_REALTIME 0

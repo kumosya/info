@@ -1,3 +1,7 @@
+/*
+ * 栈上临时内存申请。
+ */
+
 #ifndef _POSIX_ALLOCA_H
 #define _POSIX_ALLOCA_H
 #ifndef _ALLOCA_H

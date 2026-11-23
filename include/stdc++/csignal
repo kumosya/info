@@ -1,9 +1,13 @@
+/*
+ * 信号处理、屏蔽与用户现场。
+ */
+
 #pragma once
 
 #include <signal.h>
 
 namespace std {
-using ::sig_atomic_t;
-using ::signal;
-using ::raise;
+    using ::raise;
+    using ::sig_atomic_t;
+    using ::signal;
 }  // namespace std

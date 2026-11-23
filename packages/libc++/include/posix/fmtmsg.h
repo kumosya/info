@@ -1,3 +1,7 @@
+/*
+ * 标准消息输出。
+ */
+
 #ifndef _POSIX_FMTMSG_H
 #define _POSIX_FMTMSG_H
 #ifndef _FMTMSG_H

@@ -1,12 +1,17 @@
+/*
+ * 时间、日历和定时器。
+ */
+
 #ifndef _POSIX_SYS_TIME_H
 #define _POSIX_SYS_TIME_H
 
 #include <sys/types.h>
 
 #ifndef __DEFINED_struct_timeval
+/* 用秒和微秒表示时间点或时间长度。 */
 struct timeval {
-    time_t tv_sec;
-    long tv_usec;
+        time_t tv_sec;
+        long tv_usec;
 };
 #define __DEFINED_struct_timeval
 #endif

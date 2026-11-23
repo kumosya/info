@@ -1,3 +1,7 @@
+/*
+ * System V 信号量。
+ */
+
 #ifndef _POSIX_SYS_SEM_H
 #define _POSIX_SYS_SEM_H
 #ifndef _SYS_SEM_H
@@ -34,23 +38,25 @@ extern "C" {
 #define SEM_INFO 19
 #define SEM_STAT_ANY (20 | (IPC_STAT & 0x100))
 
+/* 保存 System V 信号量实现支持的容量上限。 */
 struct seminfo {
-    int semmap;
-    int semmni;
-    int semmns;
-    int semmnu;
-    int semmsl;
-    int semopm;
-    int semume;
-    int semusz;
-    int semvmx;
-    int semaem;
+        int semmap;
+        int semmni;
+        int semmns;
+        int semmnu;
+        int semmsl;
+        int semopm;
+        int semume;
+        int semusz;
+        int semvmx;
+        int semaem;
 };
 
+/* 描述一次 System V 信号量操作的索引、数量变化和标志。 */
 struct sembuf {
-    unsigned short sem_num;
-    short sem_op;
-    short sem_flg;
+        unsigned short sem_num;
+        short sem_op;
+        short sem_flg;
 };
 
 int semctl(int, int, int, ...);

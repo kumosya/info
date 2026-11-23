@@ -1,3 +1,7 @@
+/*
+ * 设备控制命令。
+ */
+
 #ifndef _POSIX_BITS_IOCTL_H
 #define _POSIX_BITS_IOCTL_H
 #define _IOC(a, b, c, d) (((a) << 30) | ((b) << 8) | (c) | ((d) << 16))

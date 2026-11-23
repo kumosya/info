@@ -1,3 +1,7 @@
+/*
+ * POSIX 信号量。
+ */
+
 #ifndef _POSIX_SEMAPHORE_H
 #define _POSIX_SEMAPHORE_H
 
@@ -5,8 +9,8 @@
 #include <time.h>
 
 typedef struct {
-    volatile uint32_t value;
-    uint32_t initialized;
+        volatile uint32_t value;
+        uint32_t initialized;
 } sem_t;
 
 #define SEM_FAILED ((sem_t*)-1)

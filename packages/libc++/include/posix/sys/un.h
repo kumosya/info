@@ -1,3 +1,7 @@
+/*
+ * 本地套接字地址。
+ */
+
 #ifndef _SYS_UN_H
 #define _SYS_UN_H
 
@@ -14,9 +18,10 @@ extern "C" {
 
 #include <bits/alltypes.h>
 
+/* 保存本地套接字的路径地址。 */
 struct sockaddr_un {
-    sa_family_t sun_family;
-    char sun_path[108];
+        sa_family_t sun_family;
+        char sun_path[108];
 };
 
 #if defined(_GNU_SOURCE) || defined(_BSD_SOURCE)

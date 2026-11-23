@@ -7,6 +7,7 @@
 #include "internal.h"
 
 #define NANOSECONDS_PER_SECOND 1000000000ULL
+extern int __libc_cpu_clock_read(clockid_t clock, uint64_t* value);
 
 static int validTimespec(const struct timespec* value) {
     return value != NULL && value->tv_sec >= 0 && value->tv_nsec >= 0 &&
@@ -21,13 +22,16 @@ time_t time(time_t* result) {
 
 int clock_gettime(int clockId, struct timespec* value) {
     uint64_t nanoseconds;
-    if (value == NULL ||
-        (clockId != CLOCK_MONOTONIC && clockId != CLOCK_REALTIME)) {
-        errno = EINVAL;
+    if (value == NULL) {
+        errno = EFAULT;
         return -1;
     }
-    nanoseconds = clockId == CLOCK_MONOTONIC ? __libc_os_get_monotonic_time()
-                                             : __libc_os_get_wall_clock_time();
+    if (clockId == CLOCK_MONOTONIC) nanoseconds = __libc_os_get_monotonic_time();
+    else if (clockId == CLOCK_REALTIME) nanoseconds = __libc_os_get_wall_clock_time();
+    else {
+        int error = __libc_cpu_clock_read(clockId, &nanoseconds);
+        if (error) { errno = error; return -1; }
+    }
     value->tv_sec = (time_t)(nanoseconds / NANOSECONDS_PER_SECOND);
     value->tv_nsec = (long)(nanoseconds % NANOSECONDS_PER_SECOND);
     return 0;
@@ -36,13 +40,31 @@ int clock_gettime(int clockId, struct timespec* value) {
 int clock_getres(clockid_t clockId, struct timespec* value) {
     uint64_t resolution;
     if (clockId != CLOCK_MONOTONIC && clockId != CLOCK_REALTIME) {
+        uint64_t unused;
+        int error = __libc_cpu_clock_read(clockId, &unused);
+        if (error) { errno = error; return -1; }
+    }
+    if (value == NULL) return 0;
+    /* CPU 记账由 1 ms 调度时钟采样，不能把 TSC 的纳秒分辨率冒充记账精度。 */
+    resolution = clockId == CLOCK_REALTIME || clockId == CLOCK_MONOTONIC ?
+        __libc_os_get_clock_resolution() : 1000000ULL;
+    value->tv_sec = (time_t)(resolution / NANOSECONDS_PER_SECOND);
+    value->tv_nsec = (long)(resolution % NANOSECONDS_PER_SECOND);
+    return 0;
+}
+
+/* 权限由内核按当前进程凭据检查，不能依靠 libc 的 uid 判断保护系统时钟。 */
+int clock_settime(clockid_t clock, const struct timespec* value) {
+    if (clock != CLOCK_REALTIME) { errno = EINVAL; return -1; }
+    if (!value || !__libc_os_accessible(value, sizeof(*value), 0)) { errno = EFAULT; return -1; }
+    if (!validTimespec(value) || (uint64_t)value->tv_sec > INT64_MAX / NANOSECONDS_PER_SECOND) {
         errno = EINVAL;
         return -1;
     }
-    if (value == NULL) return 0;
-    resolution = __libc_os_get_clock_resolution();
-    value->tv_sec = (time_t)(resolution / NANOSECONDS_PER_SECOND);
-    value->tv_nsec = (long)(resolution % NANOSECONDS_PER_SECOND);
+    uint64_t nanoseconds = (uint64_t)value->tv_sec * NANOSECONDS_PER_SECOND + (uint64_t)value->tv_nsec;
+    if (nanoseconds > INT64_MAX) { errno = EINVAL; return -1; }
+    int error = __libc_os_set_wall_clock(nanoseconds);
+    if (error) { errno = error; return -1; }
     return 0;
 }
 

@@ -1,3 +1,7 @@
+/*
+ * 路径目录名和文件名处理。
+ */
+
 #ifndef _POSIX_LIBGEN_H
 #define _POSIX_LIBGEN_H
 #ifndef _LIBGEN_H

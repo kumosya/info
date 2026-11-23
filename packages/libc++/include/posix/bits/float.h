@@ -1,3 +1,7 @@
+/*
+ * 浮点类型范围与精度。
+ */
+
 #ifndef _POSIX_BITS_FLOAT_H
 #define _POSIX_BITS_FLOAT_H
 #ifdef __FLT_EVAL_METHOD__

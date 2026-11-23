@@ -1,7 +1,11 @@
+/*
+ * 本地化设置及数字格式。
+ */
+
 #pragma once
 #include <locale.h>
 namespace std {
-using ::lconv;
-using ::localeconv;
-using ::setlocale;
-}
+    using ::lconv;
+    using ::localeconv;
+    using ::setlocale;
+}  // namespace std

@@ -1,3 +1,7 @@
+/*
+ * C 布尔类型。
+ */
+
 #ifndef _STDC_STDBOOL_H
 #define _STDC_STDBOOL_H
 

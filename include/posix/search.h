@@ -1,3 +1,7 @@
+/*
+ * 通用查找、散列及树操作。
+ */
+
 #ifndef _POSIX_SEARCH_H
 #define _POSIX_SEARCH_H
 typedef void posix_tnode;
@@ -17,8 +21,8 @@ typedef enum { FIND, ENTER } ACTION;
 typedef enum { preorder, postorder, endorder, leaf } VISIT;
 
 typedef struct entry {
-    char *key;
-    void *data;
+        char *key;
+        void *data;
 } ENTRY;
 
 int hcreate(size_t);
@@ -26,10 +30,11 @@ void hdestroy(void);
 ENTRY *hsearch(ENTRY, ACTION);
 
 #ifdef _GNU_SOURCE
+/* 保存可重入散列表查询使用的表地址和容量状态。 */
 struct hsearch_data {
-    struct __tab *__tab;
-    unsigned int __unused1;
-    unsigned int __unused2;
+        struct __tab *__tab;
+        unsigned int __unused1;
+        unsigned int __unused2;
 };
 
 int hcreate_r(size_t, struct hsearch_data *);
@@ -52,9 +57,10 @@ void *tsearch(const void *, void **, int (*)(const void *, const void *));
 void twalk(const void *, void (*)(const void *, VISIT, int));
 
 #ifdef _GNU_SOURCE
+/* 保存通用双向队列的前后链接。 */
 struct qelem {
-    struct qelem *q_forw, *q_back;
-    char q_data[1];
+        struct qelem *q_forw, *q_back;
+        char q_data[1];
 };
 
 void tdestroy(void *, void (*)(void *));

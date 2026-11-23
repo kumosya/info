@@ -1,14 +1,19 @@
+/*
+ * C++ 流格式和状态。
+ */
+
 #pragma once
 
 #include <stddef.h>
 
 namespace std {
 
-using streamsize = ptrdiff_t;
+    using streamsize = ptrdiff_t;
 
-class ios_base {
-   public:
-    using fmtflags = unsigned int;
-};
+    /* 保存输入输出流的格式标志和状态定义。 */
+    class ios_base {
+        public:
+            using fmtflags = unsigned int;
+    };
 
 }  // namespace std

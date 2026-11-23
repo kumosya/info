@@ -1,3 +1,7 @@
+/*
+ * 浮点类型范围与精度。
+ */
+
 #ifndef _STDC_FLOAT_H
 #define _STDC_FLOAT_H
 #ifndef _FLOAT_H

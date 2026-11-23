@@ -1,35 +1,135 @@
-# 任务管理服务
+# 任务管理服务：用户态怎样启动一个程序
 
-Ring3 实现位于 `src/task/main.cc`，注册名 `task`、`control.task`，角色 Task，能力 Spawn。init 创建它；task 创建并监护 [pipe](pipe/README.md)、[msgq](msgq/README.md)，两个子服务就绪后才注册 task 的业务端点。服务源码使用 flat 遍历，子目录 main 不会被链接进父镜像。
+上一篇[任务管理](../../x86-64/task/task.md)讲的是内核里的 Task、Thread 和调度器。这一篇讲用户态的 `task` 服务：它负责把磁盘上的 ELF 读进来、解析参数、创建子进程，并监护 `pipe`、`msgq` 等子服务。
 
-## 请求协议
+你可能会问：内核已经有 `Task` 了，为什么还要一个用户态服务来“启动程序”？答案在于**机制与策略分离**：
 
-`os::TaskRequest` 保留 Wait=2、Execute=3，新增 ExecuteService=6。旧 Spawn/List/Kill 请求已删除；全系统进程发现使用 `/proc`，不维护第二份应用进程表。
+- 内核提供不可绕过的机制：建立地址空间、创建线程、切换页表、检查权限、回收资源。这些操作必须在内核态完成。
+- 用户态服务提供可修改的策略：程序文件放在哪、参数怎么解析、启动哪个服务、失败后怎么重试。把这些放在 Ring3，改起来不影响内核，也更容易限制权限。
 
-| 请求 | 内容 | 结果 |
+`task` 服务的实现位于 `src/task/main.cc`，注册名为 `task` 和 `control.task`，角色为 `Task`，拥有 `Spawn` 能力。它由 `init` 创建；启动后通过 `Lifecycle` 拉起并监护 `pipe`、`msgq` 等子服务，等子服务就绪后才注册自己的业务端点。
+
+## 1. 它在整个启动链中的位置
+
+~~~mermaid
+flowchart LR
+    K["内核 + boot 模块"] --> I["init"]
+    I --> T["task"]
+    T --> P["pipe / msgq"]
+    P --> S["device / storage / fs"]
+    S --> M["mm"]
+    M --> U["users"]
+    U --> TT["tty"]
+    TT --> C["console"]
+    C --> G["guiw"]
+~~~
+
+`task` 是启动链里很早的一环：没有它，后面的 `device`、`storage`、`fs` 等服务就无法被加载。但它自己不直接操作硬件，也不直接读磁盘上的文件系统路径；它通过 `fs` 服务读文件，通过内核 `task.kernel` 完成创建进程的机制。
+
+## 2. 一个程序是怎样被启动的
+
+以用户在 shell 里执行一个程序为例，完整路径大致是：
+
+1. shell 调用 `fork()` 创建子进程。
+2. 子进程调用 `execve(path, argv, envp)`。
+3. libc 把路径、参数和环境变量打包，向 `task` 服务发送 `Execute` 请求。
+4. `task` 服务向 `fs` 服务读取文件，检查它是不是普通文件、大小是否超过 8 MiB。
+5. `task` 服务解析 ELF，找到 `PT_INTERP`（动态链接器）。普通动态程序只预加载解释器，`DT_NEEDED` 列出的共享库由 Ring3 动态链接器处理。
+6. `task` 服务把映像、参数、标准流句柄等写入 `SpawnImageInfo`，调用内核的 `SpawnImage`。
+7. 内核创建子 Task、建立地址空间、写入参数、设置会话/TTY/角色，返回一个 `TaskHandle`。
+8. `task` 服务把句柄通过回复转移给调用者，关闭自己本地的副本。
+9. 子进程被调度器选中，从新程序入口开始执行。
+
+注意第 6 步和第 7 步：**用户态服务只负责“准备”，真正创建进程仍然在内核里完成**。内核会再次验证调用链、能力和角色，不能因为消息是 `task` 服务发来的就无条件相信。
+
+## 3. 请求协议
+
+`task` 服务处理三种请求（定义在 `include/service/common/requests.h` 的 `TaskRequest`）：
+
+| 请求 | 作用 | 结果 |
 | --- | --- | --- |
-| Execute | 绝对文件路径、参数、registry 与可选标准流句柄 | 状态及一个 TaskHandle |
-| ExecuteService | 相同负载；真实发送者必须具有 Init 角色 | 带受监护服务标记的任务句柄 |
-| Wait | 一个 TaskHandle | state 与 exitCode；0 运行、1 结束、2 停止或等待被中断 |
+| `Execute`（3） | 用绝对路径启动一个普通程序 | 状态 + 一个 `TaskHandle` |
+| `ExecuteService`（6） | 启动受监护的系统服务；真实发送者必须是 `Init` 角色 | 带“受监护服务”标记的任务句柄 |
+| `Wait`（2） | 等待一个任务句柄结束 | 状态和退出码：0 运行、1 结束、2 停止或等待被中断 |
 
-Execute 的 data[0] 低 32 位是参数个数；40/41/42 位标识 stdin/stdout/stderr，句柄按 registry、stdin、stdout、stderr 排列。32–39 位携带文本终端编号。data[1..] 为路径及参数的 NUL 字符串序列；最多 64 个参数，总字节数不超过 `(ipcDataWordCount-1)*8`，解析同时受 request.length 约束。程序名、PID、TaskHandle 含义不同。
+旧的 `Spawn`、`List`、`Kill` 请求已经删除。全系统的进程发现统一走 `/proc`，不再维护第二份应用进程表——这避免了“内核有一份、服务又有一份，两边不一致”的问题。
 
-## 加载与资源
+### 3.1 Execute 的参数打包
 
-文件要求是非空普通文件，最大 8 MiB。读取采用独立完成端点、深度 8 的异步窗口；确认大小后分配缓冲，全部失败路径应关闭文件、输入能力和映像缓冲。解析 ELF 的 PT_INTERP；普通动态程序只预载解释器，DT_NEEDED 由 Ring3 链接器处理。没有解释器的固定角色服务使用引导运行库完成重定位；运行库来源地址空间与主映像的任务地址空间分别记录。
+`Execute` 的 `data[0]` 里塞了不止一个字段：
 
-SpawnImage 的逻辑父进程来自 request.senderPid。内核在调度前写入参数、会话、TTY、角色和受监护标记。返回句柄通过回复转移后关闭 task 本地副本；创建方或服务 owner 持有自己的句柄并负责回收。
+- 低 32 位：参数个数。
+- 第 40、41、42 位：分别表示是否携带 stdin、stdout、stderr 句柄。
+- 第 32–39 位：文本终端编号。
 
-主线程串行加载磁盘程序，生命周期线程处理 pipe/msgq 的控制与监护。读取 ELF 的异步通知不会与业务请求端点混用。
+句柄按 `registry`、`stdin`、`stdout`、`stderr` 的顺序排列。`data[1..]` 是路径和参数的 NUL 字符串序列：
 
-## 权限
+- 最多 64 个参数。
+- 总字节数不超过 `(ipcDataWordCount - 1) * 8`。
+- 解析同时受 `request.length` 约束，不能读到消息缓冲区外面。
 
-普通 Execute 不接受能力或服务角色。只有 Init 发起的 ExecuteService 可请求受控服务加载；Task 角色也不能单靠路径代表普通调用者创建特权程序。固定 users/tty/console/guiw 路径由 task 识别角色，内核再次验证调用链与能力上限。普通 root、同名文件和自行传 role 都不能绕过检查。
+这里有一个初学者常混淆的点：**程序名、PID、`TaskHandle` 是三样不同的东西**。程序名是路径字符串；PID 是内核分配的进程号；`TaskHandle` 是调用者句柄表里的一个编号，用来引用这个任务对象。它们不能互相替代。
 
-非内置通用服务使用 None 角色，但仍有 managedService 标记和服务信号保护。旧 ProgramId 文件加载回退已禁用。Ring0 任务对象见 [task.kernel](task.kernel/README.md)，系统对象见 [system.kernel](system.kernel/README.md)。
+## 4. 加载与资源管理
 
-## 故障与诊断
+### 4.1 文件要求
 
-v0.1.3 增加独立 core writer 线程 `src/task/core_dump.cc`，从 `/etc/core` 读取策略，仅通过 task.kernel 票据读取已冻结复制的有界快照，复用 FS 服务写出 ELF core。它不占用程序加载请求端点；转储失败或超时不阻止进程回收。
+- 必须是非空普通文件。
+- 最大 8 MiB。
+- 读取使用独立的完成端点和深度为 8 的异步窗口：先确认文件大小，再分配缓冲区，分多次读取。
+- 任何失败路径都要关闭文件、释放输入能力、释放映像缓冲区。读文件不是“打开—读完—关闭”这么简单，中间任何一步失败都不能泄漏资源。
 
-异常分类、信号 ABI、转储权限及实际验证记录见[用户态异常与 core](../../x86-64/task/exceptions-and-core.md)。
+### 4.2 ELF 与动态链接
+
+`task` 服务解析 ELF 的 `PT_INTERP` 段：
+
+- 如果程序是动态链接的，先加载解释器（`/lib/ld-osinfo-x86-64.so`）。
+- `DT_NEEDED` 列出的共享库不在这里加载，由 Ring3 动态链接器在用户态处理。内核只验证和映射主 ELF 与解释器。
+- 没有解释器的固定角色服务，使用引导运行库完成重定位。运行库来自哪个地址空间、主映像属于哪个任务地址空间，要分别记录，不能混为一谈。
+
+### 4.3 创建子进程
+
+`SpawnImage` 的逻辑父进程来自 `request.senderPid`，不是 `task` 服务自己。内核在调度子进程之前写入参数、会话、TTY、角色和受监护标记。
+
+返回的 `TaskHandle` 通过回复转移给调用者后，`task` 服务关闭自己的本地副本。创建方或服务 owner 持有自己的句柄，并负责最终的回收。句柄不是“所有权凭证”本身，真正的所有权仍由内核的引用计数和句柄表管理。
+
+### 4.4 并发模型
+
+`task` 服务的主线程串行加载磁盘程序，另有一个生命周期线程处理 `pipe`/`msgq` 的控制与监护。读取 ELF 的异步通知不会和业务请求端点混用，避免“读文件读到一半，又来一个启动请求”造成状态错乱。
+
+## 5. 权限：为什么不能靠路径冒充服务
+
+这是任务管理里最容易被忽视、也最危险的部分。
+
+- 普通 `Execute` **不接受**能力或服务角色参数。
+- 只有 `Init` 发起的 `ExecuteService` 才能请求加载受控服务。
+- `Task` 角色本身也不能“因为我是 task 服务，所以我指定谁就启动谁”。
+- 固定路径 `users`、`tty`、`console`、`guiw` 由 `task` 识别角色，内核会再次验证调用链和能力上限。
+- 普通 root、同名文件、自己传一个 `role` 字段，都不能绕过检查。
+
+换句话说：**消息里的 PID、路径、自报身份都不能代替内核确定的 caller**。内核检查的是“谁真正调用了这个系统调用”，而不是“消息里说谁调用了”。
+
+非内置的通用服务使用 `None` 角色，但仍然有 `managedService` 标记和服务信号保护。旧的 `ProgramId` 文件加载回退已经禁用，避免通过旧接口绕过新检查。
+
+## 6. 故障与 core dump
+
+v0.1.3 增加了一个独立的 core writer 线程（`src/task/core_dump.cc`）：
+
+- 从 `/etc/core` 读取 core 策略。
+- 只通过 `task.kernel` 的票据读取“已经冻结并复制”的有界快照，不直接碰原进程内存。
+- 复用 `fs` 服务写出 ELF core。
+- 不占用程序加载请求端点，转储失败或超时不会阻止进程回收。
+
+core dump 的完整流程、异常分类、信号 ABI 和权限，见[用户态异常与 core](../../x86-64/task/core.md)。
+
+## 7. 和其他服务的关系
+
+| 服务 | 与 task 的关系 |
+| --- | --- |
+| `init` | 创建 `task`；通过 `ExecuteService` 启动受监护服务 |
+| `fs` | `task` 通过它读取 ELF 和共享库 |
+| `pipe` / `msgq` | `task` 启动并监护它们，就绪后才注册业务端点 |
+| `task.kernel` | 真正执行创建线程、fork、exec、等待和回收的机制 |
+| `/proc` | 全系统进程信息的来源，替代旧的 `List` 请求 |
+
+内核侧的任务机制见 [task.kernel](../../x86-64/task/service.md)，系统对象见 [system.kernel](../../x86-64/task/sys.md)，内核总览见[任务管理](../../x86-64/task/task.md)。`pipe`、`msgq` 的用户态协议见 [pipe](pipe.md) 和 [msgq](msgq.md)。

@@ -1,3 +1,7 @@
+/*
+ * 断言检查。
+ */
+
 #pragma once
 
 #include <assert.h>

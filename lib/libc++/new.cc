@@ -31,7 +31,7 @@ void operator delete[](void* pointer, const std::nothrow_t&) noexcept {
 
 namespace std {
 
-const nothrow_t nothrow{};
+    const nothrow_t nothrow{};
 
 }  // namespace std
 

@@ -1,3 +1,7 @@
+/*
+ * 系统调用编号。
+ */
+
 #ifndef _POSIX_SYS_SYSCALL_H
 #define _POSIX_SYS_SYSCALL_H
 

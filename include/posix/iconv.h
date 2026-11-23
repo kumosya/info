@@ -1,3 +1,7 @@
+/*
+ * 字符编码转换。
+ */
+
 #ifndef _POSIX_ICONV_H
 #define _POSIX_ICONV_H
 #ifndef _ICONV_H

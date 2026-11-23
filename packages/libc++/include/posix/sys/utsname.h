@@ -1,3 +1,7 @@
+/*
+ * 系统名称及版本。
+ */
+
 #ifndef _POSIX_SYS_UTSNAME_H
 #define _POSIX_SYS_UTSNAME_H
 #ifndef _SYS_UTSNAME_H
@@ -9,16 +13,17 @@ extern "C" {
 
 #include <features.h>
 
+/* 保存系统名称、主机名、版本及机器架构字符串。 */
 struct utsname {
-    char sysname[65];
-    char nodename[65];
-    char release[65];
-    char version[65];
-    char machine[65];
+        char sysname[65];
+        char nodename[65];
+        char release[65];
+        char version[65];
+        char machine[65];
 #ifdef _GNU_SOURCE
-    char domainname[65];
+        char domainname[65];
 #else
-    char __domainname[65];
+        char __domainname[65];
 #endif
 };
 

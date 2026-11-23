@@ -1,15 +1,13 @@
 #include "service/fs/iso/filesystem.h"
 
-namespace {
-
 constexpr uint32_t isoBlockSize = 2048;
 
 class IsoNames {
-   public:
-    static uint32_t readLe32(const uint8_t* value);
-    static char lower(char value);
-    static bool sameName(const uint8_t* raw, uint32_t rawLength,
-                         const char* name, size_t nameLength);
+    public:
+        static uint32_t readLe32(const uint8_t* value);
+        static char lower(char value);
+        static bool sameName(const uint8_t* raw, uint32_t rawLength,
+                             const char* name, size_t nameLength);
 };
 
 uint32_t IsoNames::readLe32(const uint8_t* value) {
@@ -42,8 +40,6 @@ bool IsoNames::sameName(const uint8_t* raw, uint32_t rawLength,
     }
     return true;
 }
-
-}  // namespace
 
 bool Iso9660FileSystem::mount(vfs::SectorDevice& device) {
     device_ = &device;

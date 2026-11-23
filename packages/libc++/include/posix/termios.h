@@ -1,3 +1,7 @@
+/*
+ * 终端输入输出属性。
+ */
+
 #ifndef _POSIX_TERMIOS_H
 #define _POSIX_TERMIOS_H
 #ifndef _TERMIOS_H

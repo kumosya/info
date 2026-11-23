@@ -1,3 +1,7 @@
+/*
+ * 基础尺寸、指针差与空值类型。
+ */
+
 #ifndef _STDC_STDDEF_H
 #define _STDC_STDDEF_H
 
@@ -12,8 +16,8 @@ typedef __WCHAR_TYPE__ wchar_t;
 #endif
 #ifndef __DEFINED_max_align_t
 typedef struct {
-    long long integer;
-    long double floating;
+        long long integer;
+        long double floating;
 } max_align_t;
 #define __DEFINED_max_align_t
 #endif

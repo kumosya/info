@@ -1,3 +1,7 @@
+/*
+ * 宽字符字符串与输入输出。
+ */
+
 #ifndef _STDC_WCHAR_H
 #define _STDC_WCHAR_H
 #ifndef _WCHAR_H

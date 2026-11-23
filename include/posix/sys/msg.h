@@ -1,3 +1,7 @@
+/*
+ * System V 消息队列。
+ */
+
 #ifndef _POSIX_SYS_MSG_H
 #define _POSIX_SYS_MSG_H
 #ifndef _SYS_MSG_H
@@ -31,9 +35,10 @@ typedef unsigned long msglen_t;
 #define MSG_INFO 12
 #define MSG_STAT_ANY (13 | (IPC_STAT & 0x100))
 
+/* 保存 System V 消息队列实现的容量上限和状态参数。 */
 struct msginfo {
-    int msgpool, msgmap, msgmax, msgmnb, msgmni, msgssz, msgtql;
-    unsigned short msgseg;
+        int msgpool, msgmap, msgmax, msgmnb, msgmni, msgssz, msgtql;
+        unsigned short msgseg;
 };
 
 int msgctl(int, int, struct msqid_ds *);
@@ -42,9 +47,10 @@ ssize_t msgrcv(int, void *, size_t, long, int);
 int msgsnd(int, const void *, size_t, int);
 
 #if defined(_GNU_SOURCE) || defined(_BSD_SOURCE)
+/* 保存 System V 消息的类型及可变长度正文起点。 */
 struct msgbuf {
-    long mtype;
-    char mtext[1];
+        long mtype;
+        char mtext[1];
 };
 #endif
 

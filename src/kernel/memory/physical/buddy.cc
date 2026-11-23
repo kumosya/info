@@ -3,221 +3,336 @@
  * SPDX-License-Identifier: BSD-2-Clause
  *
  * src/kernel/memory/physical/buddy.cc
- * NUMA-aware buddy block splitting, coalescing, and page ownership.
+ * 将连续物理页按二次幂拆分与合并，记录节点、归属和引用。
  */
 
 #include <new>
 
 #include "kernel/page.h"
 
-namespace kernel::mm {
+namespace mm {
 
-// Initialize caller-provided metadata before publishing any free block. Every
-// frame starts Reserved and points to itself; addRange later admits only
-// firmware-approved RAM, never implicitly treating metadata as usable.
-void BuddyAlloc::init(PageFrame* frames, uint32_t count) {
-    frames_ = frames;
-    count_  = count;
-    free_   = 0;
-    lock_.init();
-    for (auto& node : heads_)
-        for (auto& head : node) head = noFrame;
-    for (uint32_t i = 0; i < count; ++i) {
-        new (&frames_[i]) PageFrame{};
-        frames_[i].head = i;
-    }
-}
-// Caller holds lock_. Rewrite the whole block so each interior frame points to
-// its head, then put order/state on that head only. This lets query map an
-// interior address back to one owner/reference count after split or merge.
-void BuddyAlloc::mark(uint32_t head, uint32_t order, uint16_t node,
-                      FrameState state) {
-    for (uint32_t i = 0; i < (1U << order); ++i) {
-        auto& frame = frames_[head + i];
-        frame.reset();
-        frame.head  = head;
-        frame.node  = node;
-        frame.state = FrameState::Interior;
-    }
-    frames_[head].state = state;
-    frames_[head].order = order;
-}
-// Link a Free head into the list for its exact node and order. Lists contain
-// block heads only; interior frames must never become independent entries.
-void BuddyAlloc::insert(uint32_t head) {
-    auto& frame    = frames_[head];
-    auto& first    = heads_[frame.node][frame.order];
-    frame.previous = noFrame;
-    frame.next     = first;
-    if (first != noFrame) frames_[first].previous = head;
-    first = head;
-}
-// Detach using both directions while the allocator lock is held. Clearing
-// links prevents a later split/merge from accidentally unlinking it twice.
-void BuddyAlloc::remove(uint32_t head) {
-    auto& frame = frames_[head];
-    if (frame.previous == noFrame)
-        heads_[frame.node][frame.order] = frame.next;
-    else
-        frames_[frame.previous].next = frame.next;
-    if (frame.next != noFrame) frames_[frame.next].previous = frame.previous;
-    frame.next = frame.previous = noFrame;
-}
-// Accept a still-Reserved page interval on one NUMA node. Validate every frame
-// before changing accounting, then partition into aligned power-of-two blocks;
-// alignment and remaining length jointly limit each chosen order.
-bool BuddyAlloc::addRange(uint32_t first, uint32_t count, uint16_t node) {
-    if (!frames_ || !count || first >= count_ || count > count_ - first ||
-        node >= maximumMemoryNodes)
-        return false;
-    ::kernel::task::InterruptSpinLockGuard guard(lock_);
-    for (uint32_t i = first; i < first + count; ++i)
-        if (frames_[i].state != FrameState::Reserved) return false;
-    free_ += count;
-    // Choose the largest block aligned at first that fits inside this range.
-    // An unaligned block could later XOR to a buddy outside the admitted run.
-    while (count) {
-        uint32_t order = 0;
-        while (order < maximumBuddyOrder &&
-               (first & ((1U << (order + 1)) - 1)) == 0 &&
-               (1U << (order + 1)) <= count)
-            ++order;
-        mark(first, order, node, FrameState::Free);
-        insert(first);
-        first += 1U << order;
-        count -= 1U << order;
-    }
-    return true;
-}
-// Search the preferred node first, optionally stopping there for strict
-// placement. order requests 2^order pages; limit is an exclusive physical end
-// bound. Split a larger free block, return unused halves to their lists, then
-// publish one allocated head with its initial owner/reference.
-uint64_t BuddyAlloc::allocate(uint32_t order, uint64_t owner,
-                              uint16_t preferred, bool strict, uint64_t limit) {
-    if (!frames_ || order > maximumBuddyOrder ||
-        (preferred != anyMemoryNode && preferred >= maximumMemoryNodes))
-        return 0;
-    ::kernel::task::InterruptSpinLockGuard guard(lock_);
-    for (uint16_t pass = 0; pass < maximumMemoryNodes; ++pass) {
-        const uint16_t node = preferred == anyMemoryNode
-                                  ? pass
-                                  : (preferred + pass) % maximumMemoryNodes;
-        if (strict && preferred != anyMemoryNode && pass) break;
-        for (uint32_t found = order; found <= maximumBuddyOrder; ++found) {
-            uint32_t head = heads_[node][found];
-            while (
-                head != noFrame &&
-                (head == 0 || (static_cast<uint64_t>(head) + (1ULL << order)) *
-                                      physicalPageSize >
-                                  limit))
-                head = frames_[head].next;
-            if (head == noFrame) continue;
-            remove(head);
-            // Keep the lower half as the candidate and return each upper half
-            // as Free. Only the ultimately allocated pages reduce free_;
-            // splitting itself does not consume RAM or create another owner.
-            while (found > order) {
-                --found;
-                const uint32_t buddy = head + (1U << found);
-                mark(buddy, found, node, FrameState::Free);
-                insert(buddy);
+    /*
+     * 初始化物理页元数据、各节点空闲链表和锁。
+     * 所有页面先标为保留，只有启动扫描确认可用的区间才会加入分配器。
+     */
+    void BuddyAlloc::init(PageFrame* frames, uint32_t count) {
+        frames_ = frames;
+        count_  = count;
+        free_   = 0;
+        lock_.init();
+
+        for (uint16_t node = 0; node < maximumMemoryNodes; ++node) {
+            for (uint32_t order = 0; order <= maximumBuddyOrder; ++order) {
+                heads_[node][order] = noFrame;
             }
-            mark(head, order, node, FrameState::Allocated);
-            frames_[head].owner      = owner;
-            frames_[head].references = 1;
-            free_ -= 1ULL << order;
-            return static_cast<uint64_t>(head) * physicalPageSize;
+        }
+
+        for (uint32_t i = 0; i < count; ++i) {
+            new (&frames_[i]) PageFrame{};
+            frames_[i].head = i;
         }
     }
-    return 0;
-}
-// Retain an allocated block head only; reject interior, stale and overflowing
-// references. UINT64_MAX skips owner matching for trusted internal paths.
-bool BuddyAlloc::retain(uint64_t address, uint64_t owner) {
-    if ((address & 4095) || address / 4096 >= count_) return false;
-    ::kernel::task::InterruptSpinLockGuard guard(lock_);
-    auto& frame = frames_[address / 4096];
-    if (frame.state != FrameState::Allocated || !frame.references ||
-        frame.references == UINT32_MAX ||
-        (owner != UINT64_MAX && frame.owner != owner))
-        return false;
-    ++frame.references;
-    return true;
-}
-// Require matching head/order/owner before reducing references. A nonfinal
-// release leaves the allocation untouched; only zero references permits
-// coalescing and a return to free lists.
-bool BuddyAlloc::release(uint64_t address, uint32_t order, uint64_t owner) {
-    if ((address & 4095) || address / 4096 >= count_ ||
-        order > maximumBuddyOrder)
-        return false;
-    ::kernel::task::InterruptSpinLockGuard guard(lock_);
-    uint32_t head = address / 4096;
-    auto& frame   = frames_[head];
-    if (frame.state != FrameState::Allocated || frame.order != order ||
-        !frame.references || (owner != UINT64_MAX && frame.owner != owner))
-        return false;
-    if (--frame.references) return true;
-    const uint16_t node = frame.node;
-    free_ += 1ULL << order;
-    while (order < maximumBuddyOrder) {
-        // XOR flips the bit selecting the sibling at this order. Merge only a
-        // Free head of the same order and node; crossing a reserved hole, live
-        // block or NUMA boundary would fabricate a larger contiguous
-        // allocation.
-        const uint32_t buddy = head ^ (1U << order);
-        if (buddy >= count_ || frames_[buddy].state != FrameState::Free ||
-            frames_[buddy].node != node || frames_[buddy].order != order)
-            break;
-        remove(buddy);
-        // The merged block is represented by its lower address. Repeat at the
-        // next order because this newly formed block may have another free
-        // sibling.
-        if (buddy < head) head = buddy;
-        ++order;
-    }
-    mark(head, order, node, FrameState::Free);
-    insert(head);
-    return true;
-}
-// Assign an unowned allocation or reaffirm its owner. Do not silently move an
-// already owned live block into an unrelated process accounting domain.
-bool BuddyAlloc::assignOwner(uint64_t address, uint64_t owner) {
-    if ((address & 4095) || address / 4096 >= count_) return false;
-    ::kernel::task::InterruptSpinLockGuard guard(lock_);
-    auto& frame = frames_[address / 4096];
-    if (frame.state != FrameState::Allocated ||
-        (frame.owner && frame.owner != owner))
-        return false;
-    frame.owner = owner;
-    return true;
-}
-// Resolve any frame in a block to its head while locked. The returned wire
-// info describes that block, not a separate reference per interior page.
-bool BuddyAlloc::query(uint64_t address, PhysicalPageInfo& info) {
-    if (address / 4096 >= count_) return false;
-    ::kernel::task::InterruptSpinLockGuard guard(lock_);
-    const auto& frame = frames_[frames_[address / 4096].head];
-    info              = {frame.owner, frame.references, frame.node, frame.order,
-                         frame.state};
-    return true;
-}
-// Count allocated heads once, weighted by their order; scanning every frame as
-// an independent page would double-count interior block metadata.
-uint64_t BuddyAlloc::pagesOwned(uint64_t owner) {
-    ::kernel::task::InterruptSpinLockGuard guard(lock_);
-    uint64_t total = 0;
-    for (uint32_t i = 0; i < count_; ++i)
-        if (frames_[i].state == FrameState::Allocated &&
-            frames_[i].owner == owner)
-            total += 1ULL << frames_[i].order;
-    return total;
-}
-// Free physical page count under the allocator lock.
-uint64_t BuddyAlloc::freePages() {
-    ::kernel::task::InterruptSpinLockGuard guard(lock_);
-    return free_;
-}
 
-}  // namespace kernel::mm
+    /*
+     * 重写一个页块的元数据，让块内每一页都指向块头。
+     * 大小、归属和引用以块头为准，避免把中间页误当成独立分配。
+     */
+    void BuddyAlloc::mark(uint32_t head, uint32_t order, uint16_t node,
+                          FrameState state) {
+        for (uint32_t i = 0; i < (1U << order); ++i) {
+            PageFrame& frame = frames_[head + i];
+            frame.reset();
+            frame.head  = head;
+            frame.node  = node;
+            frame.state = FrameState::Interior;
+        }
+
+        frames_[head].state = state;
+        frames_[head].order = order;
+    }
+
+    /*
+     * 把空闲块头加入对应内存节点和大小的链表。
+     * 调用者持有分配器锁，链表里只存块头。
+     */
+    void BuddyAlloc::insert(uint32_t head) {
+        PageFrame& frame = frames_[head];
+        uint32_t& first  = heads_[frame.node][frame.order];
+        frame.previous   = noFrame;
+        frame.next       = first;
+
+        if (first != noFrame) {
+            frames_[first].previous = head;
+        }
+
+        first = head;
+    }
+
+    /*
+     * 从双向空闲链表摘下块头并清空链接。
+     * 调用者持锁；清空链接可避免后续拆分或合并误用旧关系。
+     */
+    void BuddyAlloc::remove(uint32_t head) {
+        PageFrame& frame = frames_[head];
+
+        if (frame.previous == noFrame) {
+            heads_[frame.node][frame.order] = frame.next;
+        } else {
+            frames_[frame.previous].next = frame.next;
+        }
+
+        if (frame.next != noFrame) {
+            frames_[frame.next].previous = frame.previous;
+        }
+
+        frame.next = frame.previous = noFrame;
+    }
+
+    /*
+     * 把尚未使用的物理区间加入空闲池。
+     * 先确认整段仍为保留状态，再按地址对齐和剩余长度拆成若干个二次幂页块。
+     */
+    bool BuddyAlloc::addRange(uint32_t first, uint32_t count, uint16_t node) {
+        if (!frames_ || !count || first >= count_ || count > count_ - first ||
+            node >= maximumMemoryNodes) {
+            return false;
+        }
+
+        ::task::InterruptSpinLockGuard guard(lock_);
+
+        // 整段都确认仍是保留页之后才增加空闲计数，避免检查到一半失败却已改变分配状态。
+        for (uint32_t i = first; i < first + count; ++i) {
+            if (frames_[i].state != FrameState::Reserved) {
+                return false;
+            }
+        }
+
+        free_ += count;
+        // 选择从 first
+        // 开始、对齐且不超过剩余范围的最大块；对齐错误会使伙伴计算越过可用区间。
+        while (count) {
+            uint32_t order = 0;
+
+            while (order < maximumBuddyOrder &&
+                   (first & ((1U << (order + 1)) - 1)) == 0 &&
+                   (1U << (order + 1)) <= count) {
+                ++order;
+            }
+
+            // 为选定块写好块头和中间页信息，再挂入该节点对应大小的空闲链。
+            mark(first, order, node, FrameState::Free);
+            insert(first);
+            first += 1U << order;
+            count -= 1U << order;
+        }
+
+        return true;
+    }
+
+    /*
+     * 申请包含 2 的 order 次方个页面的连续块。
+     * 优先选择指定节点，把过大的空闲块逐级对半拆开，多余半块放回空闲链表；找不到时返回零。
+     */
+    uint64_t BuddyAlloc::allocate(uint32_t order, uint64_t owner,
+                                  uint16_t preferred, bool strict,
+                                  uint64_t limit) {
+        if (!frames_ || order > maximumBuddyOrder ||
+            (preferred != anyMemoryNode && preferred >= maximumMemoryNodes)) {
+            return 0;
+        }
+
+        ::task::InterruptSpinLockGuard guard(lock_);
+
+        // 优先遍历指定节点；严格节点分配不能退到其他节点，普通分配才继续寻找替代空间。
+        for (uint16_t pass = 0; pass < maximumMemoryNodes; ++pass) {
+            const uint16_t node = preferred == anyMemoryNode
+                                      ? pass
+                                      : (preferred + pass) % maximumMemoryNodes;
+
+            if (strict && preferred != anyMemoryNode && pass) {
+                break;
+            }
+
+            // 从所需大小开始逐级找更大的空块；找大块后才能通过对半拆分得到目标大小。
+            for (uint32_t found = order; found <= maximumBuddyOrder; ++found) {
+                uint32_t head = heads_[node][found];
+
+                // 候选块必须避开零地址，并保证请求部分不越过设备或调用者指定的物理上限。
+                while (head != noFrame &&
+                       (head == 0 ||
+                        (static_cast<uint64_t>(head) + (1ULL << order)) *
+                                physicalPageSize >
+                            limit)) {
+                    head = frames_[head].next;
+                }
+
+                if (head == noFrame) {
+                    continue;
+                }
+
+                remove(head);
+                // 继续拆分较低地址的一半，把较高地址的一半放回空闲链；拆分本身不消耗页面，只有最终分配的部分扣减空闲计数。
+                while (found > order) {
+                    --found;
+                    const uint32_t buddy = head + (1U << found);
+                    mark(buddy, found, node, FrameState::Free);
+                    insert(buddy);
+                }
+
+                // 拆分完成后才登记分配归属和初始引用，空闲计数只扣除真正交出的页面。
+                mark(head, order, node, FrameState::Allocated);
+                frames_[head].owner      = owner;
+                frames_[head].references = 1;
+                free_ -= 1ULL << order;
+
+                return static_cast<uint64_t>(head) * physicalPageSize;
+            }
+        }
+
+        return 0;
+    }
+
+    /*
+     * 给已分配块增加引用。
+     * 只接受块头，并检查所有者和引用上限，避免给已释放或不属于调用方的块续命。
+     */
+    bool BuddyAlloc::retain(uint64_t address, uint64_t owner) {
+        if ((address & 4095) || address / 4096 >= count_) {
+            return false;
+        }
+
+        ::task::InterruptSpinLockGuard guard(lock_);
+        PageFrame& frame = frames_[address / 4096];
+
+        if (frame.state != FrameState::Allocated || !frame.references ||
+            frame.references == UINT32_MAX ||
+            (owner != UINT64_MAX && frame.owner != owner)) {
+            return false;
+        }
+
+        ++frame.references;
+
+        return true;
+    }
+
+    /*
+     * 归还一份物理块引用。
+     * 计数归零后才尝试与同节点、同大小的空闲伙伴合并，最后把合并后的块放回链表。
+     */
+    bool BuddyAlloc::release(uint64_t address, uint32_t order, uint64_t owner) {
+        if ((address & 4095) || address / 4096 >= count_ ||
+            order > maximumBuddyOrder) {
+            return false;
+        }
+
+        ::task::InterruptSpinLockGuard guard(lock_);
+        uint32_t head    = address / 4096;
+        PageFrame& frame = frames_[head];
+
+        // 核对块头、大小、引用和所有者，避免错误地址或不匹配的阶数破坏空闲链表。
+        if (frame.state != FrameState::Allocated || frame.order != order ||
+            !frame.references ||
+            (owner != UINT64_MAX && frame.owner != owner)) {
+            return false;
+        }
+
+        // 还有其他使用者时只减引用，不改变页面内容，也不尝试与伙伴合并。
+        if (--frame.references) {
+            return true;
+        }
+
+        const uint16_t node = frame.node;
+        free_ += 1ULL << order;
+
+        while (order < maximumBuddyOrder) {
+            // 异或对应大小的位得到伙伴块头；只有同节点、同大小且空闲的块才能合并，不能跨过保留区或仍在使用的内存。
+            const uint32_t buddy = head ^ (1U << order);
+
+            if (buddy >= count_ || frames_[buddy].state != FrameState::Free ||
+                frames_[buddy].node != node || frames_[buddy].order != order) {
+                break;
+            }
+
+            remove(buddy);
+            // 合并块使用较低地址作为块头，再向上一级继续尝试合并。
+            if (buddy < head) {
+                head = buddy;
+            }
+
+            ++order;
+        }
+
+        // 得到最终合并范围后统一重写块内元数据，只把一个块头放回空闲链。
+        mark(head, order, node, FrameState::Free);
+        insert(head);
+
+        return true;
+    }
+
+    /*
+     * 给尚未归属任务的物理块登记所有者，或确认已有归属。
+     * 已经属于其他任务的活块不能被直接改名。
+     */
+    bool BuddyAlloc::assignOwner(uint64_t address, uint64_t owner) {
+        if ((address & 4095) || address / 4096 >= count_) {
+            return false;
+        }
+
+        ::task::InterruptSpinLockGuard guard(lock_);
+        PageFrame& frame = frames_[address / 4096];
+
+        if (frame.state != FrameState::Allocated ||
+            (frame.owner && frame.owner != owner)) {
+            return false;
+        }
+
+        frame.owner = owner;
+
+        return true;
+    }
+
+    /*
+     * 由任意块内地址找到块头，返回整个块的归属、引用数和大小；不会把中间页算成另一块内存。
+     */
+    bool BuddyAlloc::query(uint64_t address, PhysicalPageInfo& info) {
+        if (address / 4096 >= count_) {
+            return false;
+        }
+
+        ::task::InterruptSpinLockGuard guard(lock_);
+        const PageFrame& frame = frames_[frames_[address / 4096].head];
+        info = {frame.owner, frame.references, frame.node, frame.order,
+                frame.state};
+
+        return true;
+    }
+
+    /*
+     * 统计指定所有者占用的页数。
+     * 只统计块头，并按块大小累计，避免重复计算块内页面。
+     */
+    uint64_t BuddyAlloc::pagesOwned(uint64_t owner) {
+        ::task::InterruptSpinLockGuard guard(lock_);
+        uint64_t total = 0;
+
+        for (uint32_t i = 0; i < count_; ++i) {
+            if (frames_[i].state == FrameState::Allocated &&
+                frames_[i].owner == owner) {
+                total += 1ULL << frames_[i].order;
+            }
+        }
+
+        return total;
+    }
+
+    /*
+     * 在分配器锁内读取当前空闲页数。
+     */
+    uint64_t BuddyAlloc::freePages() {
+        ::task::InterruptSpinLockGuard guard(lock_);
+
+        return free_;
+    }
+
+}  // namespace mm

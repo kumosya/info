@@ -1,3 +1,7 @@
+/*
+ * 带参数和文件操作的进程启动。
+ */
+
 #ifndef _POSIX_SPAWN_H
 #define _POSIX_SPAWN_H
 
@@ -14,24 +18,24 @@
 #define POSIX_SPAWN_FILE_ACTION_CAPACITY 16
 
 typedef struct {
-    int type;
-    int file_descriptor;
-    int new_file_descriptor;
-    int flags;
-    mode_t mode;
-    const char* path;
+        int type;
+        int file_descriptor;
+        int new_file_descriptor;
+        int flags;
+        mode_t mode;
+        const char* path;
 } posix_spawn_file_action_t;
 
 typedef struct {
-    unsigned int count;
-    posix_spawn_file_action_t actions[POSIX_SPAWN_FILE_ACTION_CAPACITY];
+        unsigned int count;
+        posix_spawn_file_action_t actions[POSIX_SPAWN_FILE_ACTION_CAPACITY];
 } posix_spawn_file_actions_t;
 
 typedef struct {
-    short flags;
-    pid_t task_group;
-    sigset_t signal_default;
-    sigset_t signal_mask;
+        short flags;
+        pid_t task_group;
+        sigset_t signal_default;
+        sigset_t signal_mask;
 } posix_spawnattr_t;
 
 #ifdef __cplusplus

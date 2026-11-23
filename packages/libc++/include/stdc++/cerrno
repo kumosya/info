@@ -1,3 +1,7 @@
+/*
+ * 线程错误码。
+ */
+
 #pragma once
 
 #include <errno.h>

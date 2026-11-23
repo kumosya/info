@@ -1,3 +1,7 @@
+/*
+ * 浮点环境、舍入方式与异常标志。
+ */
+
 #ifndef _STDC_FENV_H
 #define _STDC_FENV_H
 #ifndef _FENV_H

@@ -253,38 +253,38 @@ int64_t detail::StorageClient::deviceCount() {
 }  // namespace os
 
 namespace os {
-Storage::Storage() = default;
-int Storage::refresh() {
-    const int64_t count = detail::StorageClient().deviceCount();
-    if (count < 0) return count;
-    if (count > maximumStorageDevices)
-        return static_cast<int>(ErrorCode::IoError);
-    count_ = count;
-    return 0;
-}
-uint32_t Storage::getDeviceCount() const { return count_; }
-int Storage::queryDevice(uint32_t id, Device& device) {
-    return device.open(id);
-}
-int Storage::nextDevice(uint32_t minimumId, Device& device) {
-    if (device.getBlockCount() && device.service_.getValid())
-        return static_cast<int>(ErrorCode::Busy);
-    const int status = refresh();
-    if (status) return status;
-    return minimumId < count_ ? device.open(minimumId)
-                              : static_cast<int>(ErrorCode::NotFound);
-}
-Storage::Device::~Device() { close(); }
-int Storage::Device::open(uint32_t id) {
-    if (service_.getValid()) return static_cast<int>(ErrorCode::Busy);
-    return openService(id, 0) ? 0 : static_cast<int>(ErrorCode::IoError);
-}
-int Storage::Device::close() {
-    Guard guard(*this);
-    return service_.reset();
-}
-bool detail::StorageClient::open(Storage::Device& device, uint32_t id,
-                                 uint64_t service) {
-    return device.openService(id, service);
-}
+    Storage::Storage() = default;
+    int Storage::refresh() {
+        const int64_t count = detail::StorageClient().deviceCount();
+        if (count < 0) return count;
+        if (count > maximumStorageDevices)
+            return static_cast<int>(ErrorCode::IoError);
+        count_ = count;
+        return 0;
+    }
+    uint32_t Storage::getDeviceCount() const { return count_; }
+    int Storage::queryDevice(uint32_t id, Device& device) {
+        return device.open(id);
+    }
+    int Storage::nextDevice(uint32_t minimumId, Device& device) {
+        if (device.getBlockCount() && device.service_.getValid())
+            return static_cast<int>(ErrorCode::Busy);
+        const int status = refresh();
+        if (status) return status;
+        return minimumId < count_ ? device.open(minimumId)
+                                  : static_cast<int>(ErrorCode::NotFound);
+    }
+    Storage::Device::~Device() { close(); }
+    int Storage::Device::open(uint32_t id) {
+        if (service_.getValid()) return static_cast<int>(ErrorCode::Busy);
+        return openService(id, 0) ? 0 : static_cast<int>(ErrorCode::IoError);
+    }
+    int Storage::Device::close() {
+        Guard guard(*this);
+        return service_.reset();
+    }
+    bool detail::StorageClient::open(Storage::Device& device, uint32_t id,
+                                     uint64_t service) {
+        return device.openService(id, service);
+    }
 }  // namespace os

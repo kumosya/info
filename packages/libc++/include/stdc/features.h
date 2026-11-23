@@ -1,3 +1,7 @@
+/*
+ * 运行库功能与兼容性开关。
+ */
+
 #ifndef _STDC_FEATURES_H
 #define _STDC_FEATURES_H
 #ifndef _FEATURES_H

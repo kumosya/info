@@ -10,111 +10,107 @@
 
 namespace std::detail {
 
-struct ThreadState {
-    ThreadInvoker invoker;
-    void* object;
-    void* stack;
-    uint64_t id;
-    bool completed;
-    bool detached;
-    bool used;
-};
+    struct ThreadState {
+            ThreadInvoker invoker;
+            void* object;
+            void* stack;
+            uint64_t id;
+            bool completed;
+            bool detached;
+            bool used;
+    };
 
-namespace {
+    constexpr uint32_t threadCapacity = 8;
+    constexpr size_t threadStackSize  = 64 * 1024;
+    static ThreadState states[threadCapacity]{};
+    static bool stateLock;
 
-constexpr uint32_t threadCapacity = 8;
-constexpr size_t threadStackSize  = 64 * 1024;
-ThreadState states[threadCapacity]{};
-bool stateLock;
-
-void lockStates() {
-    while (__atomic_test_and_set(&stateLock, __ATOMIC_ACQUIRE)) {
-        os::yield();
-    }
-}
-
-void unlockStates() { __atomic_clear(&stateLock, __ATOMIC_RELEASE); }
-
-void run(void* argument) {
-    ThreadState* state = static_cast<ThreadState*>(argument);
-    state->invoker(state->object);
-    __atomic_store_n(&state->completed, true, __ATOMIC_RELEASE);
-    os::exitThread(0);
-}
-
-void releaseState(ThreadState& state) {
-    os::Runtime::freeMemory(state.stack);
-    state = {};
-}
-
-void reapDetachedThreads() {
-    for (ThreadState& state : states) {
-        int exitCode = 0;
-        if (state.used && state.detached && state.id != 0 &&
-            os::detail::TaskControl().waitThread(state.id, exitCode, true) ==
-                0) {
-            releaseState(state);
+    static void lockStates() {
+        while (__atomic_test_and_set(&stateLock, __ATOMIC_ACQUIRE)) {
+            os::yield();
         }
     }
-}
 
-}  // namespace
+    static void unlockStates() { __atomic_clear(&stateLock, __ATOMIC_RELEASE); }
 
-ThreadState* createStandardThread(ThreadInvoker invoker, void* object) {
-    if (invoker == nullptr) {
-        return nullptr;
+    static void run(void* argument) {
+        ThreadState* state = static_cast<ThreadState*>(argument);
+        state->invoker(state->object);
+        __atomic_store_n(&state->completed, true, __ATOMIC_RELEASE);
+        os::exitThread(0);
     }
-    lockStates();
-    reapDetachedThreads();
-    for (uint32_t index = 0; index < threadCapacity; ++index) {
-        ThreadState& state = states[index];
-        if (state.used) {
-            continue;
+
+    static void releaseState(ThreadState& state) {
+        os::Runtime::freeMemory(state.stack);
+        state = {};
+    }
+
+    static void reapDetachedThreads() {
+        for (ThreadState& state : states) {
+            int exitCode = 0;
+            if (state.used && state.detached && state.id != 0 &&
+                os::detail::TaskControl().waitThread(state.id, exitCode,
+                                                     true) == 0) {
+                releaseState(state);
+            }
         }
-        state       = {};
-        state.stack = os::Runtime::allocateMemory(threadStackSize);
-        if (state.stack == nullptr) {
-            unlockStates();
+    }
+
+    ThreadState* createStandardThread(ThreadInvoker invoker, void* object) {
+        if (invoker == nullptr) {
             return nullptr;
         }
-        state.invoker = invoker;
-        state.object  = object;
-        state.used    = true;
-        state.id      = os::createThread(
-            run, reinterpret_cast<uint64_t>(state.stack) + threadStackSize,
-            &state);
-        if (state.id == 0) {
-            os::Runtime::freeMemory(state.stack);
-            state = {};
+        lockStates();
+        reapDetachedThreads();
+        for (uint32_t index = 0; index < threadCapacity; ++index) {
+            ThreadState& state = states[index];
+            if (state.used) {
+                continue;
+            }
+            state       = {};
+            state.stack = os::Runtime::allocateMemory(threadStackSize);
+            if (state.stack == nullptr) {
+                unlockStates();
+                return nullptr;
+            }
+            state.invoker = invoker;
+            state.object  = object;
+            state.used    = true;
+            state.id      = os::createThread(
+                run, reinterpret_cast<uint64_t>(state.stack) + threadStackSize,
+                &state);
+            if (state.id == 0) {
+                os::Runtime::freeMemory(state.stack);
+                state = {};
+                unlockStates();
+                return nullptr;
+            }
             unlockStates();
-            return nullptr;
+            return &state;
         }
         unlockStates();
-        return &state;
+        return nullptr;
     }
-    unlockStates();
-    return nullptr;
-}
 
-void joinStandardThread(ThreadState* state) {
-    if (state == nullptr) {
-        return;
+    void joinStandardThread(ThreadState* state) {
+        if (state == nullptr) {
+            return;
+        }
+        int exitCode = 0;
+        os::detail::TaskControl().waitThread(state->id, exitCode);
+        lockStates();
+        releaseState(*state);
+        unlockStates();
     }
-    int exitCode = 0;
-    os::detail::TaskControl().waitThread(state->id, exitCode);
-    lockStates();
-    releaseState(*state);
-    unlockStates();
-}
 
-void detachStandardThread(ThreadState* state) {
-    if (state != nullptr) {
-        state->detached = true;
+    void detachStandardThread(ThreadState* state) {
+        if (state != nullptr) {
+            state->detached = true;
+        }
     }
-}
 
-uint64_t getStandardThreadId(const ThreadState* state) {
-    return state == nullptr ? 0 : state->id;
-}
+    uint64_t getStandardThreadId(const ThreadState* state) {
+        return state == nullptr ? 0 : state->id;
+    }
 
 }  // namespace std::detail

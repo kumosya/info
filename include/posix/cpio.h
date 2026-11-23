@@ -1,3 +1,7 @@
+/*
+ * cpio 归档格式常量。
+ */
+
 #ifndef _CPIO_H
 #define _CPIO_H
 

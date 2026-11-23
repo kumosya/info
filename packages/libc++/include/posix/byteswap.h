@@ -1,3 +1,7 @@
+/*
+ * 整数大小端字节交换。
+ */
+
 #ifndef _BYTESWAP_H
 #define _BYTESWAP_H
 

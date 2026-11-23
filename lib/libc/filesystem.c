@@ -207,17 +207,14 @@ denied:
 }
 
 int truncate(const char* path, off_t length) {
-    char absolute[LIBC_PATH_CAPACITY];
-    if (length != 0) {
-        errno = ENOSYS;
-        return -1;
-    }
-    libcCopyPath(absolute, path);
-    if (!__libc_os_truncate_file(libcFsService(), absolute)) {
-        errno = EIO;
-        return -1;
-    }
-    return 0;
+    if (length < 0) { errno = EINVAL; return -1; }
+    int descriptor = open(path, O_WRONLY | O_CLOEXEC);
+    if (descriptor < 0) return -1;
+    int result = ftruncate(descriptor, length);
+    int saved = errno;
+    close(descriptor);
+    errno = saved;
+    return result;
 }
 
 int ftruncate(int fileDescriptor, off_t length) {
@@ -242,7 +239,10 @@ int ftruncate(int fileDescriptor, off_t length) {
         errno = EINVAL;
         return -1;
     }
-    return truncate(value->path, length);
+    /* 必须截断已打开对象，不能按旧路径重新打开，更不能绕过原 FD 的写权限。 */
+    int status = __libc_file_truncate(value->fileObject, length);
+    if (status < 0) { errno = -status; return -1; }
+    return 0;
 }
 
 int fsync(int fileDescriptor) {

@@ -1,3 +1,7 @@
+/*
+ * 路径通配符展开。
+ */
+
 /* POSIX pathname expansion. */
 #ifndef _POSIX_GLOB_H
 #define _POSIX_GLOB_H
@@ -13,9 +17,9 @@
 #define GLOB_ABORTED 2
 #define GLOB_NOMATCH 3
 typedef struct {
-    size_t gl_pathc;
-    char** gl_pathv;
-    size_t gl_offs;
+        size_t gl_pathc;
+        char** gl_pathv;
+        size_t gl_offs;
 } glob_t;
 #ifdef __cplusplus
 extern "C" {

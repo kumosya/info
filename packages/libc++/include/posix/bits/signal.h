@@ -1,3 +1,7 @@
+/*
+ * 信号处理、屏蔽与用户现场。
+ */
+
 #ifndef _POSIX_BITS_SIGNAL_H
 #define _POSIX_BITS_SIGNAL_H
 #if defined(_POSIX_SOURCE) || defined(_POSIX_C_SOURCE) || \
@@ -60,49 +64,51 @@ enum { REG_CR2 = 22 };
 #if defined(_GNU_SOURCE) || defined(_BSD_SOURCE)
 typedef long long greg_t, gregset_t[23];
 typedef struct _fpstate {
-    unsigned short cwd, swd, ftw, fop;
-    unsigned long long rip, rdp;
-    unsigned mxcsr, mxcr_mask;
-    struct {
-        unsigned short significand[4], exponent, padding[3];
-    } _st[8];
-    struct {
-        unsigned element[4];
-    } _xmm[16];
-    unsigned padding[24];
+        unsigned short cwd, swd, ftw, fop;
+        unsigned long long rip, rdp;
+        unsigned mxcsr, mxcr_mask;
+        struct {
+                unsigned short significand[4], exponent, padding[3];
+        } _st[8];
+        struct {
+                unsigned element[4];
+        } _xmm[16];
+        unsigned padding[24];
 } *fpregset_t;
+/* 按平台布局保存信号发生时的用户寄存器及故障线索。 */
 struct sigcontext {
-    unsigned long r8, r9, r10, r11, r12, r13, r14, r15;
-    unsigned long rdi, rsi, rbp, rbx, rdx, rax, rcx, rsp, rip, eflags;
-    unsigned short cs, gs, fs, __pad0;
-    unsigned long err, trapno, oldmask, cr2;
-    struct _fpstate *fpstate;
-    unsigned long __reserved1[8];
+        unsigned long r8, r9, r10, r11, r12, r13, r14, r15;
+        unsigned long rdi, rsi, rbp, rbx, rdx, rax, rcx, rsp, rip, eflags;
+        unsigned short cs, gs, fs, __pad0;
+        unsigned long err, trapno, oldmask, cr2;
+        struct _fpstate *fpstate;
+        unsigned long __reserved1[8];
 };
 typedef struct {
-    gregset_t gregs;
-    fpregset_t fpregs;
-    unsigned long long __reserved1[8];
+        gregset_t gregs;
+        fpregset_t fpregs;
+        unsigned long long __reserved1[8];
 } mcontext_t;
 #else
 typedef struct {
-    unsigned long __space[32];
+        unsigned long __space[32];
 } mcontext_t;
 #endif
 
+/* 保存备用信号栈的地址、长度和当前状态。 */
 struct sigaltstack {
-    void *ss_sp;
-    int ss_flags;
-    size_t ss_size;
+        void *ss_sp;
+        int ss_flags;
+        size_t ss_size;
 };
 
 typedef struct __ucontext {
-    unsigned long uc_flags;
-    struct __ucontext *uc_link;
-    stack_t uc_stack;
-    mcontext_t uc_mcontext;
-    sigset_t uc_sigmask;
-    unsigned long __fpregs_mem[64];
+        unsigned long uc_flags;
+        struct __ucontext *uc_link;
+        stack_t uc_stack;
+        mcontext_t uc_mcontext;
+        sigset_t uc_sigmask;
+        unsigned long __fpregs_mem[64];
 } ucontext_t;
 
 #define SA_NOCLDSTOP 1

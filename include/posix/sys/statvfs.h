@@ -1,3 +1,7 @@
+/*
+ * 文件系统容量与挂载属性。
+ */
+
 #ifndef _POSIX_SYS_STATVFS_H
 #define _POSIX_SYS_STATVFS_H
 #ifndef _SYS_STATVFS_H
@@ -13,20 +17,21 @@ extern "C" {
 #define __NEED_fsfilcnt_t
 #include <bits/alltypes.h>
 
+/* 保存文件系统的块大小、容量、空闲量和挂载属性。 */
 struct statvfs {
-    unsigned long f_bsize, f_frsize;
-    fsblkcnt_t f_blocks, f_bfree, f_bavail;
-    fsfilcnt_t f_files, f_ffree, f_favail;
+        unsigned long f_bsize, f_frsize;
+        fsblkcnt_t f_blocks, f_bfree, f_bavail;
+        fsfilcnt_t f_files, f_ffree, f_favail;
 #if __BYTE_ORDER == __LITTLE_ENDIAN
-    unsigned long f_fsid;
-    unsigned : 8 * (2 * sizeof(int) - sizeof(long));
+        unsigned long f_fsid;
+        unsigned : 8 * (2 * sizeof(int) - sizeof(long));
 #else
-    unsigned : 8 * (2 * sizeof(int) - sizeof(long));
-    unsigned long f_fsid;
+        unsigned : 8 * (2 * sizeof(int) - sizeof(long));
+        unsigned long f_fsid;
 #endif
-    unsigned long f_flag, f_namemax;
-    unsigned int f_type;
-    int __reserved[5];
+        unsigned long f_flag, f_namemax;
+        unsigned int f_type;
+        int __reserved[5];
 };
 
 int statvfs(const char *__restrict, struct statvfs *__restrict);

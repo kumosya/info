@@ -8,15 +8,15 @@
 
 namespace fs::ext3 {
 
-using namespace detail;
+    using namespace detail;
 
-bool Filesystem::sync() {
-    superblock_.state = 1;
-    return writeSuperblock() && device_->flush();
-}
+    bool Filesystem::sync() {
+        superblock_.state = 1;
+        return writeSuperblock() && device_->flush();
+    }
 
-bool Filesystem::readOnly() const {
-    return device_ == nullptr || device_->readOnly();
-}
+    bool Filesystem::readOnly() const {
+        return device_ == nullptr || device_->readOnly();
+    }
 
 }  // namespace fs::ext3

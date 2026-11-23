@@ -1,3 +1,7 @@
+/*
+ * 可变参数访问。
+ */
+
 #ifndef _STDC_STDARG_H
 #define _STDC_STDARG_H
 

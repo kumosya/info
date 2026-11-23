@@ -1,3 +1,7 @@
+/*
+ * 动态库加载与符号查询。
+ */
+
 #ifndef _POSIX_DLFCN_H
 #define _POSIX_DLFCN_H
 #ifndef _DLFCN_H
@@ -29,10 +33,10 @@ void *dlsym(void *__restrict, const char *__restrict);
 #if defined(_GNU_SOURCE) || defined(_BSD_SOURCE) || \
     _POSIX_C_SOURCE >= 202405L || _XOPEN_SOURCE >= 800
 typedef struct {
-    const char *dli_fname;
-    void *dli_fbase;
-    const char *dli_sname;
-    void *dli_saddr;
+        const char *dli_fname;
+        void *dli_fbase;
+        const char *dli_sname;
+        void *dli_saddr;
 } Dl_info;
 int dladdr(const void *, Dl_info *);
 int dlinfo(void *, int, void *);

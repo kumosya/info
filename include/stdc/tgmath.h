@@ -1,3 +1,7 @@
+/*
+ * 按参数类型选择的数学接口。
+ */
+
 #ifndef _TGMATH_H
 #define _TGMATH_H
 

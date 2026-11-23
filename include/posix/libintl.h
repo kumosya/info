@@ -1,3 +1,7 @@
+/*
+ * 消息翻译接口。
+ */
+
 #ifndef _POSIX_LIBINTL_H
 #define _POSIX_LIBINTL_H
 #include <locale.h>

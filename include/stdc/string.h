@@ -1,3 +1,7 @@
+/*
+ * 字符串与字节缓冲区操作。
+ */
+
 #ifndef _STDC_STRING_H
 #define _STDC_STRING_H
 /* musl 1.2.5 public declarations; see lib/libc/portable/COPYRIGHT. */

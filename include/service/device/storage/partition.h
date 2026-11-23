@@ -1,3 +1,7 @@
+/*
+ * 磁盘分区表解析。
+ */
+
 #pragma once
 #include <cstdint>
 

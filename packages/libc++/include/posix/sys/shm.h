@@ -1,3 +1,7 @@
+/*
+ * System V 共享内存。
+ */
+
 #ifndef _POSIX_SYS_SHM_H
 #define _POSIX_SYS_SHM_H
 #ifndef _SYS_SHM_H

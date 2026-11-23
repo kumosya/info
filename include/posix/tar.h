@@ -1,3 +1,7 @@
+/*
+ * tar 归档格式常量。
+ */
+
 #ifndef _TAR_H
 #define _TAR_H
 

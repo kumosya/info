@@ -1,90 +1,110 @@
+/*
+ * 编译期类型判断和变换。
+ */
+
 #pragma once
 
 namespace std {
 
-template <class Type, Type valueValue>
-struct integral_constant {
-    static constexpr Type value = valueValue;
-    using value_type = Type;
-    using type = integral_constant;
-    constexpr operator value_type() const noexcept { return value; }
-};
+    /* 把一个编译期常量包装成类型，供模板条件计算使用。 */
+    template <class Type, Type valueValue>
+    struct integral_constant {
+            static constexpr Type value = valueValue;
+            using value_type            = Type;
+            using type                  = integral_constant;
+            constexpr operator value_type() const noexcept { return value; }
+    };
 
-using true_type = integral_constant<bool, true>;
-using false_type = integral_constant<bool, false>;
+    using true_type  = integral_constant<bool, true>;
+    using false_type = integral_constant<bool, false>;
 
-template <bool condition, class Type = void>
-struct enable_if {};
-template <class Type>
-struct enable_if<true, Type> {
-    using type = Type;
-};
-template <bool condition, class Type = void>
-using enable_if_t = typename enable_if<condition, Type>::type;
+    /* 根据编译期条件决定一个模板声明是否可用。 */
+    template <bool condition, class Type = void>
+    struct enable_if {};
+    /* 条件为真时公开目标类型，条件为假时主模板没有 type。 */
+    template <class Type>
+    struct enable_if<true, Type> {
+            using type = Type;
+    };
+    template <bool condition, class Type = void>
+    using enable_if_t = typename enable_if<condition, Type>::type;
 
-template <class Left, class Right>
-struct is_same : false_type {};
-template <class Type>
-struct is_same<Type, Type> : true_type {};
+    /* 在编译期判断两个类型是否相同。 */
+    template <class Left, class Right>
+    struct is_same : false_type {};
+    /* 两个模板参数相同时选择此特化，判断结果为真。 */
+    template <class Type>
+    struct is_same<Type, Type> : true_type {};
 
-template <class Type>
-struct remove_reference {
-    using type = Type;
-};
-template <class Type>
-struct remove_reference<Type&> {
-    using type = Type;
-};
-template <class Type>
-struct remove_reference<Type&&> {
-    using type = Type;
-};
-template <class Type>
-using remove_reference_t = typename remove_reference<Type>::type;
+    /* 取得去掉引用后的类型。 */
+    template <class Type>
+    struct remove_reference {
+            using type = Type;
+    };
+    /* 去掉左值引用限定，保留被引用的原类型。 */
+    template <class Type>
+    struct remove_reference<Type&> {
+            using type = Type;
+    };
+    /* 去掉右值引用限定，保留被引用的原类型。 */
+    template <class Type>
+    struct remove_reference<Type&&> {
+            using type = Type;
+    };
+    template <class Type>
+    using remove_reference_t = typename remove_reference<Type>::type;
 
-template <class Type>
-struct remove_const {
-    using type = Type;
-};
-template <class Type>
-struct remove_const<const Type> {
-    using type = Type;
-};
+    /* 取得去掉顶层 const 限定后的类型。 */
+    template <class Type>
+    struct remove_const {
+            using type = Type;
+    };
+    /* 仅去掉最外层 const，内部指针或元素类型不在这里递归修改。 */
+    template <class Type>
+    struct remove_const<const Type> {
+            using type = Type;
+    };
 
-template <class Type>
-struct remove_volatile {
-    using type = Type;
-};
-template <class Type>
-struct remove_volatile<volatile Type> {
-    using type = Type;
-};
+    /* 取得去掉顶层 volatile 限定后的类型。 */
+    template <class Type>
+    struct remove_volatile {
+            using type = Type;
+    };
+    /* 仅去掉最外层 volatile 限定。 */
+    template <class Type>
+    struct remove_volatile<volatile Type> {
+            using type = Type;
+    };
 
-template <class Type>
-struct remove_cv {
-    using type = typename remove_volatile<
-        typename remove_const<Type>::type>::type;
-};
+    /* 取得同时去掉顶层 const 和 volatile 后的类型。 */
+    template <class Type>
+    struct remove_cv {
+            using type = typename remove_volatile<
+                typename remove_const<Type>::type>::type;
+    };
 
-template <class Type>
-using remove_cv_t = typename remove_cv<Type>::type;
+    template <class Type>
+    using remove_cv_t = typename remove_cv<Type>::type;
 
-template <class Type>
-struct decay_helper {
-    using type = remove_cv_t<Type>;
-};
+    /* 按类型类别选择参数退化规则，供 decay 复用。 */
+    template <class Type>
+    struct decay_helper {
+            using type = remove_cv_t<Type>;
+    };
 
-template <class Result, class... Arguments>
-struct decay_helper<Result(Arguments...)> {
-    using type = Result (*)(Arguments...);
-};
+    /* 把函数类型转换成相应函数指针，匹配按值传参的类型规则。 */
+    template <class Result, class... Arguments>
+    struct decay_helper<Result(Arguments...)> {
+            using type = Result (*)(Arguments...);
+    };
 
-template <class Type>
-struct decay {
-    using type = typename decay_helper<remove_reference_t<Type>>::type;
-};
+    /* 计算按值传递时采用的类型，包括去引用和数组到指针等转换。 */
+    template <class Type>
+    struct decay {
+            using type = typename decay_helper<remove_reference_t<Type>>::type;
+    };
 
-template <class Type>
-using decay_t = typename decay<Type>::type;
+    template <class Type>
+    using decay_t = typename decay<Type>::type;
 
 }  // namespace std

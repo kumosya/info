@@ -1,3 +1,7 @@
+/*
+ * 基础整数类型范围。
+ */
+
 #ifndef _STDC_LIMITS_H
 #define _STDC_LIMITS_H
 

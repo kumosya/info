@@ -1,3 +1,7 @@
+/*
+ * 兼容字符串及字节操作。
+ */
+
 #ifndef _POSIX_STRINGS_H
 #define _POSIX_STRINGS_H
 #ifndef _STRINGS_H

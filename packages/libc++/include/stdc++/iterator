@@ -1,45 +1,58 @@
+/*
+ * 迭代器类别和类型提取。
+ */
+
 #pragma once
 
 #include <stddef.h>
 
 namespace std {
 
-struct input_iterator_tag {};
-struct output_iterator_tag {};
-struct forward_iterator_tag : input_iterator_tag {};
-struct bidirectional_iterator_tag : forward_iterator_tag {};
-struct random_access_iterator_tag : bidirectional_iterator_tag {};
+    /* 标记只要求顺序读取的迭代器类别。 */
+    struct input_iterator_tag {};
+    /* 标记只要求顺序写入的迭代器类别。 */
+    struct output_iterator_tag {};
+    /* 标记可以多次遍历的向前迭代器类别。 */
+    struct forward_iterator_tag : input_iterator_tag {};
+    /* 标记可以向前和向后移动的迭代器类别。 */
+    struct bidirectional_iterator_tag : forward_iterator_tag {};
+    /* 标记支持按偏移直接定位的迭代器类别。 */
+    struct random_access_iterator_tag : bidirectional_iterator_tag {};
 
-template <class Iterator>
-struct iterator_traits {};
+    /* 从迭代器类型提取元素和差值等类型信息，指针使用专门规则。 */
+    template <class Iterator>
+    struct iterator_traits {};
 
-template <class Type>
-struct iterator_traits<Type*> {
-    using difference_type = ptrdiff_t;
-    using value_type = Type;
-    using pointer = Type*;
-    using reference = Type&;
-    using iterator_category = random_access_iterator_tag;
-};
+    /* 指针迭代器直接使用元素指针，并以 ptrdiff_t 表示距离。 */
+    template <class Type>
+    struct iterator_traits<Type*> {
+            using difference_type   = ptrdiff_t;
+            using value_type        = Type;
+            using pointer           = Type*;
+            using reference         = Type&;
+            using iterator_category = random_access_iterator_tag;
+    };
 
-template <class Container>
-constexpr auto begin(Container& container) -> decltype(container.begin()) {
-    return container.begin();
-}
+    template <class Container>
+    constexpr decltype(static_cast<Container*>(nullptr)->begin()) begin(
+        Container& container) {
+        return container.begin();
+    }
 
-template <class Container>
-constexpr auto end(Container& container) -> decltype(container.end()) {
-    return container.end();
-}
+    template <class Container>
+    constexpr decltype(static_cast<Container*>(nullptr)->end()) end(
+        Container& container) {
+        return container.end();
+    }
 
-template <class Type, size_t size>
-constexpr Type* begin(Type (&array)[size]) noexcept {
-    return array;
-}
+    template <class Type, size_t size>
+    constexpr Type* begin(Type (&array)[size]) noexcept {
+        return array;
+    }
 
-template <class Type, size_t size>
-constexpr Type* end(Type (&array)[size]) noexcept {
-    return array + size;
-}
+    template <class Type, size_t size>
+    constexpr Type* end(Type (&array)[size]) noexcept {
+        return array + size;
+    }
 
 }  // namespace std

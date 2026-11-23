@@ -1,3 +1,7 @@
+/*
+ * 用户组数据库查询。
+ */
+
 #ifndef _POSIX_GRP_H
 #define _POSIX_GRP_H
 #ifndef _GRP_H
@@ -18,11 +22,12 @@ extern "C" {
 
 #include <bits/alltypes.h>
 
+/* 保存组名称、组编号及成员名称列表。 */
 struct group {
-    char *gr_name;
-    char *gr_passwd;
-    gid_t gr_gid;
-    char **gr_mem;
+        char *gr_name;
+        char *gr_passwd;
+        gid_t gr_gid;
+        char **gr_mem;
 };
 
 struct group *getgrgid(gid_t);

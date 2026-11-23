@@ -1,3 +1,7 @@
+/*
+ * 消息目录类型与访问。
+ */
+
 #ifndef _POSIX_NL_TYPES_H
 #define _POSIX_NL_TYPES_H
 #ifndef _NL_TYPES_H

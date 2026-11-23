@@ -1,3 +1,7 @@
+/*
+ * 进程、文件和基础 POSIX 操作。
+ */
+
 #ifndef _POSIX_UNISTD_H
 #define _POSIX_UNISTD_H
 
@@ -136,6 +140,7 @@ int getresuid(uid_t *__restrict, uid_t *__restrict, uid_t *__restrict);
 int lockf(int, int, off_t);
 int nice(int);
 int pause(void);
+#define POSIX_CLOSE_RESTART 1
 int posix_close(int, int);
 ssize_t readlinkat(int, const char *__restrict, char *__restrict, size_t);
 int setegid(gid_t);

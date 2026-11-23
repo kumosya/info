@@ -1,3 +1,7 @@
+/*
+ * 目录树遍历。
+ */
+
 #ifndef _POSIX_FTW_H
 #define _POSIX_FTW_H
 #ifndef _FTW_H
@@ -24,9 +28,10 @@ extern "C" {
 #define FTW_CHDIR 4
 #define FTW_DEPTH 8
 
+/* 向目录树遍历回调提供路径文件名偏移和当前层级。 */
 struct FTW {
-    int base;
-    int level;
+        int base;
+        int level;
 };
 
 int ftw(const char *, int (*)(const char *, const struct stat *, int), int);

@@ -1,10 +1,10 @@
-#include "internal.h"
-
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
-#include <sys/uio.h>
 #include <unistd.h>
+
+#include "internal.h"
+#include <sys/uio.h>
 
 int open(const char* path, int flags, ...) {
     char absolute[LIBC_PATH_CAPACITY];
@@ -18,14 +18,21 @@ int open(const char* path, int flags, ...) {
         createMode = va_arg(arguments, mode_t);
         va_end(arguments);
     }
-    if (libcPathAt(AT_FDCWD,path,absolute)) return -1;
+    if (libcPathAt(AT_FDCWD, path, absolute)) return -1;
     service = libcFsService();
     if (service == 0 || absolute[0] == '\0') {
         errno = ENOENT;
         return -1;
     }
-    { int status=0; handle=__libc_file_open(service,absolute,flags,libcCreationMode(createMode),&status);
-      if (!handle) { errno=status<0?-status:EIO; return -1; } }
+    {
+        int status = 0;
+        handle     = __libc_file_open(service, absolute, flags,
+                                      libcCreationMode(createMode), &status);
+        if (!handle) {
+            errno = status < 0 ? -status : EIO;
+            return -1;
+        }
+    }
     if (handle == 0) {
         errno = EIO;
         return -1;
@@ -35,7 +42,7 @@ int open(const char* path, int flags, ...) {
         __libc_os_close_file(service, handle);
         return -1;
     }
-    libcDescriptors[result].closeOnExec=(flags&O_CLOEXEC)!=0;
+    libcDescriptors[result].closeOnExec = (flags & O_CLOEXEC) != 0;
     return result;
 }
 
@@ -55,13 +62,18 @@ ssize_t read(int fileDescriptor, void* buffer, size_t count) {
         errno = EBADF;
         return -1;
     }
-    if (!__libc_os_accessible(buffer, count, 1)) { errno = EFAULT; return -1; }
+    if (!__libc_os_accessible(buffer, count, 1)) {
+        errno = EFAULT;
+        return -1;
+    }
     if (value->kind == DESCRIPTOR_FILE) libcLockFileIo();
-    result = __libc_file_read(value->fileObject,buffer,count);
-    if (result >= 0) value->offset += (uint64_t)result;
-    else errno = (int)-result;
+    result = __libc_file_read(value->fileObject, buffer, count);
+    if (result >= 0)
+        value->offset += (uint64_t)result;
+    else
+        errno = (int)-result;
     if (value->kind == DESCRIPTOR_FILE) libcUnlockFileIo();
-    return result<0?-1:result;
+    return result < 0 ? -1 : result;
 }
 
 ssize_t write(int fileDescriptor, const void* buffer, size_t count) {
@@ -75,13 +87,18 @@ ssize_t write(int fileDescriptor, const void* buffer, size_t count) {
         errno = EBADF;
         return -1;
     }
-    if (!__libc_os_accessible(buffer, count, 0)) { errno = EFAULT; return -1; }
-    if (value->kind==DESCRIPTOR_FILE) libcLockFileIo();
-    result=__libc_file_write(value->fileObject,buffer,count);
-    if (result >= 0) value->offset += (uint64_t)result;
-    else errno = (int)-result;
+    if (!__libc_os_accessible(buffer, count, 0)) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (value->kind == DESCRIPTOR_FILE) libcLockFileIo();
+    result = __libc_file_write(value->fileObject, buffer, count);
+    if (result >= 0)
+        value->offset += (uint64_t)result;
+    else
+        errno = (int)-result;
     if (value->kind == DESCRIPTOR_FILE) libcUnlockFileIo();
-    return result<0?-1:result;
+    return result < 0 ? -1 : result;
 }
 
 int close(int fileDescriptor) {
@@ -99,35 +116,16 @@ int dup(int fileDescriptor) {
 }
 
 int dup2(int fileDescriptor, int newFileDescriptor) {
-    OpenDescription* description = libcDescriptor(fileDescriptor);
-    if (description == NULL || newFileDescriptor < 0 ||
-        newFileDescriptor >= LIBC_DESCRIPTOR_CAPACITY) {
-        errno = EBADF;
-        return -1;
-    }
-    if (fileDescriptor == newFileDescriptor) return newFileDescriptor;
-    if (libcDescriptor(newFileDescriptor) != NULL &&
-        !libcReleaseDescriptor(newFileDescriptor)) {
-        errno = EIO;
-        return -1;
-    }
-    libcDescriptors[newFileDescriptor].description = description;
-    libcDescriptors[newFileDescriptor].closeOnExec = 0;
-    ++description->referenceCount;
-    return newFileDescriptor;
+    return libcReplaceDescriptor(fileDescriptor, newFileDescriptor, 0);
 }
 
 int dup3(int fileDescriptor, int newFileDescriptor, int flags) {
-    int result;
-    if (fileDescriptor == newFileDescriptor || (flags & ~O_CLOEXEC) != 0) {
+    if (fileDescriptor == newFileDescriptor || (flags & ~O_CLOEXEC)) {
         errno = EINVAL;
         return -1;
     }
-    result = dup2(fileDescriptor, newFileDescriptor);
-    if (result >= 0) {
-        libcDescriptors[result].closeOnExec = (flags & O_CLOEXEC) != 0;
-    }
-    return result;
+    return libcReplaceDescriptor(fileDescriptor, newFileDescriptor,
+                                 (flags & O_CLOEXEC) != 0);
 }
 
 int fcntl(int fileDescriptor, int command, ...) {
@@ -152,15 +150,16 @@ int fcntl(int fileDescriptor, int command, ...) {
     } else if (command == F_SETFL) {
         int flags = va_arg(arguments, int);
         if ((flags & O_NONBLOCK) != 0) {
-            errno = ENOSYS;
+            errno  = ENOSYS;
             result = -1;
         } else {
             slot->description->flags =
                 (slot->description->flags & ~O_APPEND) | (flags & O_APPEND);
-            __libc_file_set_flags(slot->description->fileObject,slot->description->flags);
+            __libc_file_set_flags(slot->description->fileObject,
+                                  slot->description->flags);
         }
     } else {
-        errno = EINVAL;
+        errno  = EINVAL;
         result = -1;
     }
     va_end(arguments);
@@ -181,21 +180,25 @@ int pipe2(int fileDescriptors[2], int flags) {
         errno = ENOMEM;
         return -1;
     }
-    readDescriptor = libcAllocateDescriptor(handles.readHandle, "pipe",
+    readDescriptor  = libcAllocateDescriptor(handles.readHandle, "pipe",
                                              O_RDONLY, DESCRIPTOR_PIPE_READ);
     writeDescriptor = libcAllocateDescriptor(handles.writeHandle, "pipe",
-                                              O_WRONLY, DESCRIPTOR_PIPE_WRITE);
+                                             O_WRONLY, DESCRIPTOR_PIPE_WRITE);
     if (readDescriptor < 0 || writeDescriptor < 0) {
-        if (readDescriptor >= 0) close(readDescriptor);
-        else __libc_os_close_handle(handles.readHandle);
-        if (writeDescriptor >= 0) close(writeDescriptor);
-        else __libc_os_close_handle(handles.writeHandle);
+        if (readDescriptor >= 0)
+            close(readDescriptor);
+        else
+            __libc_os_close_handle(handles.readHandle);
+        if (writeDescriptor >= 0)
+            close(writeDescriptor);
+        else
+            __libc_os_close_handle(handles.writeHandle);
         return -1;
     }
-    libcDescriptors[readDescriptor].closeOnExec = (flags & O_CLOEXEC) != 0;
+    libcDescriptors[readDescriptor].closeOnExec  = (flags & O_CLOEXEC) != 0;
     libcDescriptors[writeDescriptor].closeOnExec = (flags & O_CLOEXEC) != 0;
-    fileDescriptors[0] = readDescriptor;
-    fileDescriptors[1] = writeDescriptor;
+    fileDescriptors[0]                           = readDescriptor;
+    fileDescriptors[1]                           = writeDescriptor;
     return 0;
 }
 
@@ -215,7 +218,7 @@ off_t lseek(int fileDescriptor, off_t offset, int whence) {
         return -1;
     }
     libcLockFileIo();
-    target = __libc_file_seek(value->fileObject,offset,whence);
+    target = __libc_file_seek(value->fileObject, offset, whence);
     if (target < 0) {
         libcUnlockFileIo();
         errno = EINVAL;
@@ -227,26 +230,48 @@ off_t lseek(int fileDescriptor, off_t offset, int whence) {
 }
 
 ssize_t pread(int fd, void* buffer, size_t count, off_t offset) {
-    OpenDescription* value=libcDescriptor(fd);
+    OpenDescription* value = libcDescriptor(fd);
     ssize_t result;
-    if (!value || value->kind!=DESCRIPTOR_FILE || offset<0 || (!buffer && count)) {
-        errno=!value?EBADF:offset<0?EINVAL:!buffer&&count?EFAULT:ESPIPE; return -1;
+    if (!value || value->kind != DESCRIPTOR_FILE || offset < 0 ||
+        (!buffer && count)) {
+        errno = !value             ? EBADF
+                : offset < 0       ? EINVAL
+                : !buffer && count ? EFAULT
+                                   : ESPIPE;
+        return -1;
     }
-    if (!__libc_os_accessible(buffer, count, 1)) { errno = EFAULT; return -1; }
-    result=__libc_file_pread(value->fileObject,buffer,count,offset);
-    if (result<0) { errno=(int)-result; return -1; }
+    if (!__libc_os_accessible(buffer, count, 1)) {
+        errno = EFAULT;
+        return -1;
+    }
+    result = __libc_file_pread(value->fileObject, buffer, count, offset);
+    if (result < 0) {
+        errno = (int)-result;
+        return -1;
+    }
     return result;
 }
 
 ssize_t pwrite(int fd, const void* buffer, size_t count, off_t offset) {
-    OpenDescription* value=libcDescriptor(fd);
+    OpenDescription* value = libcDescriptor(fd);
     ssize_t result;
-    if (!value || value->kind!=DESCRIPTOR_FILE || offset<0 || (!buffer && count)) {
-        errno=!value?EBADF:offset<0?EINVAL:!buffer&&count?EFAULT:ESPIPE; return -1;
+    if (!value || value->kind != DESCRIPTOR_FILE || offset < 0 ||
+        (!buffer && count)) {
+        errno = !value             ? EBADF
+                : offset < 0       ? EINVAL
+                : !buffer && count ? EFAULT
+                                   : ESPIPE;
+        return -1;
     }
-    if (!__libc_os_accessible(buffer, count, 0)) { errno = EFAULT; return -1; }
-    result=__libc_file_pwrite(value->fileObject,buffer,count,offset);
-    if (result<0) { errno=(int)-result; return -1; }
+    if (!__libc_os_accessible(buffer, count, 0)) {
+        errno = EFAULT;
+        return -1;
+    }
+    result = __libc_file_pwrite(value->fileObject, buffer, count, offset);
+    if (result < 0) {
+        errno = (int)-result;
+        return -1;
+    }
     return result;
 }
 
@@ -258,7 +283,8 @@ ssize_t readv(int fd, const struct iovec* vectors, int vectorCount) {
         return -1;
     }
     for (index = 0; index < vectorCount; ++index) {
-        ssize_t count = read(fd, vectors[index].iov_base, vectors[index].iov_len);
+        ssize_t count =
+            read(fd, vectors[index].iov_base, vectors[index].iov_len);
         if (count < 0) return total == 0 ? -1 : total;
         total += count;
         if ((size_t)count != vectors[index].iov_len) break;
@@ -274,7 +300,8 @@ ssize_t writev(int fd, const struct iovec* vectors, int vectorCount) {
         return -1;
     }
     for (index = 0; index < vectorCount; ++index) {
-        ssize_t count = write(fd, vectors[index].iov_base, vectors[index].iov_len);
+        ssize_t count =
+            write(fd, vectors[index].iov_base, vectors[index].iov_len);
         if (count < 0) return total == 0 ? -1 : total;
         total += count;
         if ((size_t)count != vectors[index].iov_len) break;

@@ -1,10 +1,14 @@
+/*
+ * 键值数据库兼容接口。
+ */
+
 #ifndef _POSIX_NDBM_H
 #define _POSIX_NDBM_H
 
 #include <sys/types.h>
 typedef struct {
-    char *dptr;
-    int dsize;
+        char *dptr;
+        int dsize;
 } datum;
 typedef struct OsDbm DBM;
 #define DBM_INSERT 0

@@ -13,6 +13,7 @@ extern void __libc_random_fork_prepare(void), __libc_random_fork_parent(void), _
 extern void __libc_descriptors_fork_prepare(void), __libc_descriptors_fork_parent(void), __libc_descriptors_fork_child(void);
 extern void __libc_pthread_fork_prepare(void), __libc_pthread_fork_parent(void), __libc_pthread_fork_child(uint64_t);
 extern void __libc_errno_fork_child(uint64_t);
+extern void __libc_stdio_fork_prepare(void), __libc_stdio_fork_parent(void), __libc_stdio_fork_child(void);
 extern int __libc_fork_child_runtime(void);
 extern void __osinfo_runtime_fork_prepare(void), __osinfo_runtime_fork_parent(void), __osinfo_runtime_fork_child(void);
 
@@ -39,6 +40,7 @@ int64_t __libc_fork(void) {
         return -5;
     }
     __libc_pthread_fork_prepare();
+    __libc_stdio_fork_prepare();
     __libc_descriptors_fork_prepare();
     __libc_environment_fork_prepare();
     __libc_random_fork_prepare();
@@ -55,6 +57,7 @@ int64_t __libc_fork(void) {
         __libc_environment_fork_child();
         __libc_descriptors_fork_child();
         __libc_pthread_fork_child(previous);
+        __libc_stdio_fork_child();
         const int error = __libc_fork_child_runtime();
         const int notified = __libc_os_fork_notify(endpoint, error);
         __libc_os_close_handle(endpoint);
@@ -70,6 +73,7 @@ int64_t __libc_fork(void) {
         __libc_random_fork_parent();
         __libc_environment_fork_parent();
         __libc_descriptors_fork_parent();
+        __libc_stdio_fork_parent();
         __libc_pthread_fork_parent();
         libcWaitUnlock(&forkLock);
         if (handshake) {

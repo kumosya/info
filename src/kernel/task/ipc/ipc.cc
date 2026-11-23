@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  *
  * src/kernel/task/ipc/ipc.cc
- * Endpoint queues, authenticated requests, cancellation, and deadlines.
+ * 端点消息排队、同步请求回复、超时与线程退出取消。
  */
 
 #include "kernel/ipc.h"
@@ -18,937 +18,1332 @@
 #include "kernel/task.h"
 #include "kernel/time.h"
 
-namespace kernel::task {
+namespace task {
 
-namespace {
-// Eight ordinary FIFO messages per endpoint. IRQ 0..15 use a separate pending
-// bitmap so a full client queue cannot hide a device notification.
-constexpr uint32_t queueCapacity = 8;
-constexpr int waiting            = 1;
-// Native negative error representation used by endpoint results.
-constexpr int failure(os::ErrorCode error) { return static_cast<int>(error); }
+    // 每个端点保存八条普通先进先出消息；IRQ
+    // 另有待处理位图，普通队列满不能遮蔽设备通知。
+    constexpr uint32_t queueCapacity = 8;
+    constexpr int waiting            = 1;
 
-// Stack-owned wait registration linked under an endpoint lock and, for finite
-// deadlines, under timerLock. Complete atomically selects one result; all
-// links must be removed before the owning stack can disappear.
-struct Waiter {
-    Thread* thread;
-    Waiter* next      = nullptr;
-    Waiter* timerNext = nullptr;
-    uint64_t deadline;
-    int result = waiting;
-    bool timed = false;
-};
-
-// Caller-owned RPC state. The token identifies the request independently of
-// server thread scheduling; serverTask authorizes replies, while serverThread
-// tracks death of the thread that originally claimed it. replyTarget points to
-// caller kernel storage, never directly to another task's user address.
-struct PendingCall {
-    Thread* caller;
-    Task* callerTask;
-    Task* serverTask     = nullptr;
-    Thread* serverThread = nullptr;
-    uint64_t token;
-    IpcMessage* replyTarget;
-    uint64_t deadline;
-    PendingCall* next = nullptr;
-    int result        = waiting;
-};
-
-// The queue owns captured references until actual receive installs them. call
-// is null for one-way sends and points at the caller-owned RPC record
-// otherwise; cancellation must remove that pointer before stack teardown.
-struct QueuedMessage {
-    IpcMessage message{};
-    HandleTable::Transfer handles;
-    PendingCall* call = nullptr;
-};
-
-// Explicit permissions for trusted kernel clients; ordinary callers prove
-// access by holding appropriately restricted handle-table entries.
-struct AccessGrant {
-    Task* task;
-    uint32_t rights;
-    AccessGrant* next;
-};
-
-SpinLock timerLock;
-Waiter* timers;
-SpinLock endpointListLock;
-EndpointImplementation* endpoints;
-Atomic<uint64_t> nextEndpointId{1};
-Atomic<uint64_t> nextReplyToken{1};
-
-// Pin an active endpoint and chain cleanup to the current thread. Nesting can
-// occur during pager RPCs; remember the previous endpoint and restore it on
-// normal return. Forced thread cleanup releases the pin even when this C++
-// scope is never unwound.
-class Operation {
-   public:
-    explicit Operation(Endpoint* endpoint)
-        : endpoint_(endpoint),
-          thread_(currentThread()),
-          previous_(thread_->getActiveEndpoint()) {
-        endpoint_->retain();
-        cleanup_.attach(endpoint_, [](void* object) {
-            static_cast<Endpoint*>(object)->release();
-        });
-        thread_->setActiveIpcCall(true);
-        thread_->setActiveEndpoint(endpoint_);
-    }
-    ~Operation() {
-        thread_->setActiveEndpoint(previous_);
-        thread_->setActiveIpcCall(previous_ != nullptr);
+    /*
+     * 把错误枚举转换成 IPC 接口约定的负错误码。
+     */
+    static constexpr int failure(os::ErrorCode error) {
+        return static_cast<int>(error);
     }
 
-   private:
-    Endpoint* endpoint_;
-    Thread* thread_;
-    Endpoint* previous_;
-    ThreadCleanup cleanup_;
-};
+    // 等待记录位于调用线程栈上，同时挂入端点和可选定时链；完成结果只能确定一次，栈释放前必须摘除所有链接。
+    struct Waiter {
+            Thread* thread;
+            Waiter* next      = nullptr;
+            Waiter* timerNext = nullptr;
+            uint64_t deadline;
+            int result = waiting;
+            bool timed = false;
+    };
 
-// Only one wake, timeout, cancellation, or close may choose the result.
-// Compare/exchange makes later contenders harmless; waking makes the owner
-// runnable but does not guarantee it has returned from the wait yet.
-void complete(Waiter& waiter, int result) {
-    int expected = waiting;
-    if (__atomic_compare_exchange_n(&waiter.result, &expected, result, false,
-                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
-        wakeThread(waiter.thread);
-}
+    // 同步调用记录由调用者持有，令牌标识请求；服务任务用于回复授权，服务线程用于退出检测；回复目标始终是调用者的内核缓冲区。
+    struct PendingCall {
+            Thread* caller;
+            Task* callerTask;
+            Task* serverTask     = nullptr;
+            Thread* serverThread = nullptr;
+            uint64_t token;
+            IpcMessage* replyTarget;
+            uint64_t deadline;
+            PendingCall* next = nullptr;
+            int result        = waiting;
+    };
 
-// Link finite waits by absolute monotonic deadline while their stack record is
-// alive. Infinite waits never enter the global timer list.
-void armTimer(Waiter& waiter) {
-    if (waiter.deadline == os::ipcInfiniteDeadline) return;
-    InterruptSpinLockGuard guard(timerLock);
-    Waiter** link = &timers;
-    while (*link && (*link)->deadline <= waiter.deadline)
-        link = &(*link)->timerNext;
-    waiter.timerNext = *link;
-    *link            = &waiter;
-    waiter.timed     = true;
-}
+    // 队列先持有消息捕获的引用，接收时才安装句柄；同步调用指针指向调用者记录，取消时必须在栈消失前移除。
+    struct QueuedMessage {
+            IpcMessage message{};
+            HandleTable::Transfer handles;
+            PendingCall* call = nullptr;
+    };
 
-// Remove the timer registration before the stack-owned Waiter goes away. A
-// timer already completed by expiry is safe to disarm again.
-void disarmTimer(Waiter& waiter) {
-    InterruptSpinLockGuard guard(timerLock);
-    if (!waiter.timed) return;
-    Waiter** link = &timers;
-    while (*link && *link != &waiter) link = &(*link)->timerNext;
-    if (*link) *link = waiter.timerNext;
-    waiter.timed     = false;
-    waiter.timerNext = nullptr;
-}
+    // 显式授权只供可信内核调用者使用，普通进程通过受限句柄证明访问资格。
+    struct AccessGrant {
+            Task* task;
+            uint32_t rights;
+            AccessGrant* next;
+    };
 
-// Endpoint lock protects this unlink; timer membership is separate and must
-// also be disarmed by the enclosing operation.
-void removeWaiter(Waiter*& head, Waiter& waiter) {
-    Waiter** link = &head;
-    while (*link && *link != &waiter) link = &(*link)->next;
-    if (*link) *link = waiter.next;
-    waiter.next = nullptr;
-}
+    static SpinLock timerLock;
+    static Waiter* timers;
+    static SpinLock endpointListLock;
+    static EndpointImplementation* endpoints;
+    static Atomic<uint64_t> nextEndpointId{1};
+    static Atomic<uint64_t> nextReplyToken{1};
 
-// Prepare the scheduler wake handshake before publishing the waiter, append
-// FIFO, then arm its deadline. Caller holds the endpoint condition lock so no
-// message/close can pass between checking the condition and registering.
-void prepareWaiter(Waiter*& head, Waiter& waiter) {
-    prepareCurrentWait();
-    Waiter** tail = &head;
-    while (*tail) tail = &(*tail)->next;
-    *tail = &waiter;
-    armTimer(waiter);
-}
-
-// Skip already completed registrations and select the oldest still waiting
-// entry. Queue order is preserved, but CPU execution order is not promised.
-void wakeOne(Waiter*& head) {
-    while (head) {
-        Waiter* waiter = head;
-        head           = waiter->next;
-        waiter->next   = nullptr;
-        if (__atomic_load_n(&waiter->result, __ATOMIC_ACQUIRE) != waiting)
-            continue;
-        complete(*waiter, 0);
-        return;
-    }
-}
-
-// Bound the fixed wire payload and handle vector before any array access.
-bool validateMessage(const IpcMessage* message) {
-    return message && message->length <= os::ipcDataWordCount &&
-           message->handleCount <= 4;
-}
-
-// Overwrite client-supplied identity with the current kernel task/thread.
-// Service authorization must use this authenticated identity or caller object.
-void stampSender(IpcMessage& message) {
-    Task* task        = task::getCurrent();
-    Thread* thread    = currentThread();
-    message.senderPid = task ? task->id() : 0;
-    message.senderTid = thread ? thread->getId() : 0;
-}
-
-// Zero requests no waiting; a finite deadline is absolute monotonic time.
-// Callers check availability first where immediate completion is permitted.
-int deadlineError(uint64_t deadline) {
-    if (!deadline) return failure(os::ErrorCode::WouldBlock);
-    return deadline != os::ipcInfiniteDeadline &&
-                   time::getMonotonicTime() >= deadline
-               ? failure(os::ErrorCode::Timeout)
-               : 0;
-}
-}  // namespace
-
-bool hasRightLocked(const Endpoint* endpoint, Task* task, uint32_t right);
-void unlinkCall(EndpointImplementation& state, PendingCall& call);
-void closeLocked(EndpointImplementation& state, os::ErrorCode error,
-                 bool permanent = true);
-void discardCallMessage(EndpointImplementation& state, PendingCall& call);
-int enqueue(Endpoint* endpoint, IpcMessage& message, PendingCall* call,
-            uint64_t deadline, bool kernelOrigin = false);
-
-// State hidden from headers: one lock serializes queue slots, endpoint
-// closure, access grants and pending RPC state. Separate sender/receiver/
-// caller wait lists share the scheduler wake protocol.
-class EndpointImplementation {
-   public:
-    // Endpoint state lock.
-    SpinLock& getLock() { return lock; }
-
-   private:
-    friend class Endpoint;
-    friend bool hasRightLocked(const Endpoint*, Task*, uint32_t);
-    friend void unlinkCall(EndpointImplementation&, PendingCall&);
-    friend void closeLocked(EndpointImplementation&, os::ErrorCode, bool);
-    friend void discardCallMessage(EndpointImplementation&, PendingCall&);
-    friend int enqueue(Endpoint*, IpcMessage&, PendingCall*, uint64_t, bool);
-    SpinLock lock;
-    Endpoint* endpoint;
-    EndpointService* service = nullptr;
-    EndpointImplementation* next;
-    QueuedMessage queue[queueCapacity];
-    uint32_t head        = 0;
-    uint32_t count       = 0;
-    Waiter* receivers    = nullptr;
-    Waiter* senders      = nullptr;
-    Waiter* callers      = nullptr;
-    PendingCall* calls   = nullptr;
-    AccessGrant* grants  = nullptr;
-    bool destroyed       = false;
-    uint16_t pendingIrqs = 0;
-};
-
-// Translate endpoint operations to handle rights and check actual object
-// possession. Explicit grants and owner access are trusted internal paths. The
-// endpoint state lock is held by the caller.
-bool hasRightLocked(const Endpoint* endpoint, Task* task, uint32_t right) {
-    if (!task) return false;
-    const uint32_t rights =
-        ((right & endpointRightSend) ? handleRightWrite : 0) |
-        ((right & endpointRightReceive) ? handleRightRead : 0) |
-        ((right & endpointRightManage) ? handleRightManage : 0);
-    if (task->handles().hasObjectRights(const_cast<Endpoint*>(endpoint),
-                                        HandleType::Endpoint, rights))
-        return true;
-    // Explicit grants are only for trusted in-kernel clients (including
-    // probes).
-    for (auto* grant = endpoint->getImplementation()->grants; grant;
-         grant       = grant->next)
-        if (grant->task == task && (grant->rights & right) == right)
-            return true;
-    return task == endpoint->getOwner();
-}
-
-// Remove the caller-owned record before its enclosing stack frame returns.
-void unlinkCall(EndpointImplementation& state, PendingCall& call) {
-    PendingCall** link = &state.calls;
-    while (*link && *link != &call) link = &(*link)->next;
-    if (*link) *link = call.next;
-    call.next = nullptr;
-}
-
-// Finish every kind of waiter and release queued transfers before dropping
-// receiver ownership. permanent=false keeps a recoverable endpoint reusable,
-// but old requests still fail and are not replayed into the new instance.
-void closeLocked(EndpointImplementation& state, os::ErrorCode error,
-                 bool permanent) {
-    if (state.destroyed) return;
-    state.destroyed = permanent;
-    Waiter* lists[] = {state.receivers, state.senders, state.callers};
-    for (auto* list : lists)
-        for (auto* waiter = list; waiter; waiter = waiter->next)
-            complete(*waiter, failure(error));
-    for (auto* call = state.calls; call; call = call->next)
-        call->result = failure(error);
-    for (uint32_t i = 0; i < state.count; ++i) {
-        auto& queued = state.queue[(state.head + i) % queueCapacity];
-        queued.handles.clear();
-        queued = {};
-    }
-    state.count       = 0;
-    state.pendingIrqs = 0;
-}
-
-// Remove an unclaimed request and compact the ring without reordering other
-// messages. If receive already claimed it there is no queued slot to undo;
-// invalidating the RPC cannot roll back server-side work already performed.
-void discardCallMessage(EndpointImplementation& state, PendingCall& call) {
-    for (uint32_t i = 0; i < state.count; ++i) {
-        const uint32_t index = (state.head + i) % queueCapacity;
-        if (state.queue[index].call != &call) continue;
-        state.queue[index].handles.clear();
-        for (uint32_t j = i; j + 1 < state.count; ++j)
-            state.queue[(state.head + j) % queueCapacity] =
-                state.queue[(state.head + j + 1) % queueCapacity];
-        auto& last =
-            state.queue[(state.head + state.count - 1) % queueCapacity];
-        last = {};
-        --state.count;
-        wakeOne(state.senders);
-        return;
-    }
-}
-
-// Check endpoint/ownership/rights under the state lock, then either commit the
-// message and its captured references or register for space. After capture
-// succeeds, no fallible step may precede publication because move handles have
-// already left the sender. kernelOrigin is an internal access bypass, not a
-// user-message flag.
-int enqueue(Endpoint* endpoint, IpcMessage& message, PendingCall* call,
-            uint64_t deadline, bool kernelOrigin) {
-    auto& state  = *endpoint->getImplementation();
-    Task* sender = task::getCurrent();
-    while (true) {
-        Waiter waiter{currentThread(), nullptr, nullptr, deadline};
-        {
-            InterruptSpinLockGuard guard(state.lock);
-            if (state.destroyed) return failure(os::ErrorCode::EndpointClosed);
-            if (!endpoint->getOwner()) return failure(os::ErrorCode::PeerDied);
-            if (!kernelOrigin &&
-                !hasRightLocked(endpoint, sender, endpointRightSend))
-                return failure(os::ErrorCode::PermissionDenied);
-            if (state.count < queueCapacity) {
-                auto& queued =
-                    state.queue[(state.head + state.count) % queueCapacity];
-                if (!queued.handles.capture(sender->handles(), message))
-                    return failure(os::ErrorCode::InvalidHandle);
-                queued.message = message;
-                queued.call    = call;
-                ++state.count;
-                if (call) {
-                    call->next  = state.calls;
-                    state.calls = call;
-                }
-                wakeOne(state.receivers);
-                return 0;
+    // 操作期间固定活动端点并登记线程清理；补页调用可能嵌套，所以正常返回要恢复原端点，强制退出也要归还引用。
+    class Operation {
+        public:
+            /*
+             * 登记当前线程正在使用的端点并保留引用，记住之前的活动端点，支持调用嵌套和强制退出清理。
+             */
+            explicit Operation(Endpoint* endpoint)
+                : endpoint_(endpoint),
+                  thread_(currentThread()),
+                  previous_(thread_->getActiveEndpoint()) {
+                endpoint_->retain();
+                cleanup_.attach(endpoint_, [](void* object) {
+                    static_cast<Endpoint*>(object)->release();
+                });
+                thread_->setActiveIpcCall(true);
+                thread_->setActiveEndpoint(endpoint_);
             }
-            const int error = deadlineError(deadline);
-            if (error) return error;
-            prepareWaiter(state.senders, waiter);
-        }
-        blockWaitingThread();
-        {
-            InterruptSpinLockGuard guard(state.lock);
-            removeWaiter(state.senders, waiter);
-            disarmTimer(waiter);
-        }
-        const int result = __atomic_load_n(&waiter.result, __ATOMIC_ACQUIRE);
-        if (result < 0) return result;
-    }
-}
-// Initialize global endpoint/timer tracking before any endpoint is used.
-void Endpoint::init() {
-    timerLock.init();
-    endpointListLock.init();
-    device::serialWrite("[IPC] endpoint IPC initialized\n");
-}
 
-// Object lifetime reference; active operations and installed handles hold it.
-void Endpoint::retain() {
-    __atomic_add_fetch(&references, 1U, __ATOMIC_RELAXED);
-}
-// Drop a reference without freeing inline. Timer maintenance later reaps
-// zero-reference endpoints, avoiding destruction while their locks are held.
-void Endpoint::release() {
-    __atomic_sub_fetch(&references, 1U, __ATOMIC_RELEASE);
-}
-// Permanent endpoint closure state under its state lock.
-bool Endpoint::isClosed() {
-    InterruptSpinLockGuard guard(implementation->getLock());
-    return implementation->destroyed;
-}
-// Close when the actual owner loses its receiving capability. A handle held by
-// some unrelated task must not revoke the owner's endpoint.
-void Endpoint::receiverClosed(Task* task) {
-    InterruptSpinLockGuard guard(implementation->getLock());
-    if (getOwner() == task)
-        closeLocked(*implementation, os::ErrorCode::EndpointClosed);
-}
-
-// Allocate endpoint plus private state before linking into the global list.
-// The creation reference belongs to owner until destroy/owner exit; installed
-// handles acquire additional references. service selects resident dispatch
-// instead of ordinary user-server queueing.
-Endpoint* Endpoint::create(EndpointService* service) {
-    Task* owner = task::getCurrent();
-    if (!owner) return nullptr;
-    void* storage        = mm::allocateHeap(sizeof(Endpoint));
-    void* implementation = mm::allocateHeap(sizeof(EndpointImplementation));
-    if (!storage || !implementation) {
-        mm::freeHeap(storage);
-        mm::freeHeap(implementation);
-        return nullptr;
-    }
-    auto* endpoint = new (storage) Endpoint;
-    auto* state    = new (implementation) EndpointImplementation{};
-    state->lock.init();
-    state->endpoint = endpoint;
-    state->service  = service;
-    endpoint->setId(nextEndpointId.fetchAdd(1, MemoryOrder::Relaxed));
-    endpoint->setOwner(owner);
-    endpoint->setImplementation(state);
-    InterruptSpinLockGuard guard(endpointListLock);
-    state->next = endpoints;
-    endpoints   = state;
-    return endpoint;
-}
-
-// Require manage access, complete pending work, then release the owner
-// reference. Handle/operation references can keep the closed endpoint alive
-// until deferred reaping; closure is not immediate memory destruction.
-void Endpoint::destroy() {
-    auto& state = *getImplementation();
-    InterruptSpinLockGuard guard(state.lock);
-    if (state.destroyed ||
-        !hasRightLocked(this, task::getCurrent(), endpointRightManage))
-        return;
-    closeLocked(state, os::ErrorCode::EndpointClosed);
-    if (getOwner()) {
-        setOwner(nullptr);
-        release();
-    }
-}
-// Only the task that claimed a token can inspect its liveness. Delayed servers
-// use this before retaining more work for an abandoned RPC.
-bool Endpoint::requestActive(uint64_t token) {
-    auto& state = *getImplementation();
-    InterruptSpinLockGuard guard(state.lock);
-    for (auto* call = state.calls; call; call = call->next)
-        if (call->token == token && call->serverTask == task::getCurrent())
-            return call->result == waiting && !deadlineError(call->deadline);
-    return false;
-}
-
-// During task teardown, clear owned receivers and explicit grants under
-// list-then-state lock ordering. Recovery-protected endpoints retain their
-// identity but not old requests; other endpoints close permanently.
-void Endpoint::closeOwner(Task* owner) {
-    InterruptSpinLockGuard listGuard(endpointListLock);
-    for (auto* state = endpoints; state; state = state->next) {
-        InterruptSpinLockGuard guard(state->lock);
-        if (state->endpoint->getOwner() == owner) {
-            closeLocked(*state, os::ErrorCode::PeerDied,
-                        state->endpoint->recoveryRole == 0);
-            state->endpoint->setOwner(nullptr);
-            state->endpoint->release();
-        }
-        AccessGrant** link = &state->grants;
-        while (*link) {
-            auto* grant = *link;
-            if (grant->task != owner) {
-                link = &grant->next;
-                continue;
+            /*
+             * 恢复线程原来的活动端点，并由清理记录归还本次端点引用。
+             */
+            ~Operation() {
+                thread_->setActiveEndpoint(previous_);
+                thread_->setActiveIpcCall(previous_ != nullptr);
             }
-            *link = grant->next;
-            mm::freeHeap(grant);
-        }
-    }
-}
 
-// Protect only a live user-server endpoint owned by this managed role. Kernel
-// service endpoints cannot be turned into recoverable user receivers.
-bool Endpoint::protectRecovery(Task& task) {
-    InterruptSpinLockGuard guard(implementation->getLock());
-    const auto role = static_cast<uint32_t>(task.serviceRole());
-    if (implementation->destroyed || implementation->service ||
-        getOwner() != &task || !task.managedService() || !role ||
-        (recoveryRole && recoveryRole != role))
-        return false;
-    recoveryRole = role;
-    return true;
-}
-// A replacement of the same role may take an ownerless protected endpoint.
-// Reacquire the owner reference exactly once; another live owner is rejected.
-bool Endpoint::adoptRecovery(Task& task) {
-    InterruptSpinLockGuard guard(implementation->getLock());
-    if (implementation->destroyed || !recoveryRole ||
-        recoveryRole != static_cast<uint32_t>(task.serviceRole()) ||
-        (getOwner() && getOwner() != &task))
-        return false;
-    if (!getOwner()) {
-        retain();
-        setOwner(&task);
-    }
-    return true;
-}
-// Remove only matching-role protection; object lifetime still follows its
-// owner, handle and operation references.
-void Endpoint::releaseRecovery(Task& task) {
-    InterruptSpinLockGuard guard(implementation->getLock());
-    if (recoveryRole == static_cast<uint32_t>(task.serviceRole()))
-        recoveryRole = 0;
-}
+        private:
+            Endpoint* endpoint_;
+            Thread* thread_;
+            Endpoint* previous_;
+            ThreadCleanup cleanup_;
+    };
 
-// Install a trusted internal grant after manage authorization. Validate the
-// whole rights mask; user clients normally receive restricted handles instead.
-bool Endpoint::grantAccess(Task* task, uint32_t rights) {
-    if (!task || (rights & ~(endpointRightSend | endpointRightReceive |
-                             endpointRightManage)))
-        return false;
-    auto& state = *getImplementation();
-    InterruptSpinLockGuard guard(state.lock);
-    if (state.destroyed ||
-        !hasRightLocked(this, task::getCurrent(), endpointRightManage))
-        return false;
-    auto* grant =
-        static_cast<AccessGrant*>(mm::allocateHeap(sizeof(AccessGrant)));
-    if (!grant) return false;
-    *grant       = {task, rights, state.grants};
-    state.grants = grant;
-    return true;
-}
+    /*
+     * 给等待者写入完成结果并唤醒线程。
+     * 调用者负责先把等待者从所属队列摘下。
+     */
+    static void complete(Waiter& waiter, int result) {
+        int expected = waiting;
 
-// Fork/bootstrap helper that preserves optional handle values while sharing
-// the underlying endpoint Reference through the two handle tables.
-uint64_t Endpoint::duplicateHandle(Task* source, Task* destination,
-                                   uint64_t handle,
-                                   uint64_t destinationHandle) {
-    if (!source || !destination) return 0;
-    // The fork/bootstrap path preserves handle values when requested.
-    return source->handles().copyTo(destination->handles(), handle,
-                                    destinationHandle);
-}
+        if (__atomic_compare_exchange_n(&waiter.result, &expected, result,
+                                        false, __ATOMIC_ACQ_REL,
+                                        __ATOMIC_ACQUIRE)) {
+            wakeThread(waiter.thread);
+        }
+    }
 
-// Queue a one-way message with authenticated sender and no reply token.
-// Resident kernel services require call rather than queue-based send.
-int Endpoint::send(IpcMessage* message, uint64_t deadline) {
-    Operation operation(this);
-    if (getImplementation()->service)
-        return failure(os::ErrorCode::NotSupported);
-    if (!validateMessage(message) || !getImplementation())
-        return failure(os::ErrorCode::InvalidArgument);
-    IpcMessage copy = *message;
-    copy.replyToken = 0;
-    stampSender(copy);
-    return enqueue(this, copy, nullptr, deadline);
-}
+    /*
+     * 为有截止时间的等待登记计时器，使没有消息到达时也能及时结束等待。
+     */
+    static void armTimer(Waiter& waiter) {
+        if (waiter.deadline == os::ipcInfiniteDeadline) {
+            return;
+        }
 
-// Hold receive rights, prefer a coalesced IRQ, then claim the oldest queued
-// message. Install all captured handles into the task actually receiving; only
-// after successful installation remove the slot and wake one sender.
-int Endpoint::receive(IpcMessage* message, uint64_t deadline) {
-    Operation operation(this);
-    if (getImplementation()->service)
-        return failure(os::ErrorCode::NotSupported);
-    if (!message || !getImplementation())
-        return failure(os::ErrorCode::InvalidArgument);
-    auto& state = *getImplementation();
-    while (true) {
-        Waiter waiter{currentThread(), nullptr, nullptr, deadline};
-        {
-            InterruptSpinLockGuard guard(state.lock);
-            if (state.destroyed) return failure(os::ErrorCode::EndpointClosed);
-            if (!hasRightLocked(this, task::getCurrent(), endpointRightReceive))
-                return failure(os::ErrorCode::PermissionDenied);
-            if (recoveryRole && getOwner() != task::getCurrent())
-                return failure(os::ErrorCode::PermissionDenied);
-            if (state.pendingIrqs) {
-                const uint32_t irq = __builtin_ctz(state.pendingIrqs);
-                state.pendingIrqs &= static_cast<uint16_t>(~(1U << irq));
-                *message         = {};
-                message->type    = 0x495251;
-                message->length  = 1;
-                message->data[0] = irq;
-                return 0;
-            }
-            if (state.count) {
-                auto& queued = state.queue[state.head];
-                // Destination allocation can fail without consuming the queued
-                // message. No partial handle vector is exposed; the receiver
-                // can retry later.
-                if (!queued.handles.install(task::getCurrent()->handles(),
-                                            queued.message))
-                    return failure(os::ErrorCode::OutOfMemory);
-                *message = queued.message;
-                if (queued.call) {
-                    queued.call->serverTask   = task::getCurrent();
-                    queued.call->serverThread = currentThread();
-                }
-                queued     = {};
-                state.head = (state.head + 1) % queueCapacity;
-                --state.count;
-                wakeOne(state.senders);
-                return 0;
-            }
-            const int error = deadlineError(deadline);
-            if (error) return error;
-            prepareWaiter(state.receivers, waiter);
-        }
-        blockWaitingThread();
-        {
-            InterruptSpinLockGuard guard(state.lock);
-            removeWaiter(state.receivers, waiter);
-            disarmTimer(waiter);
-        }
-        const int result = __atomic_load_n(&waiter.result, __ATOMIC_ACQUIRE);
-        if (result < 0) return result;
-    }
-}
-
-// Match the explicit token and the authenticated claiming process, not the
-// current server thread's last request. Capture reply moves provisionally,
-// then atomically install at the caller before writing its replyTarget and
-// waking it. Invalid/expired tokens have no right to access that storage.
-int Endpoint::reply(IpcMessage* message) {
-    Operation operation(this);
-    if (!validateMessage(message) || !message->replyToken ||
-        !getImplementation())
-        return failure(os::ErrorCode::InvalidArgument);
-    auto& state = *getImplementation();
-    InterruptSpinLockGuard guard(state.lock);
-    if (state.destroyed) return failure(os::ErrorCode::EndpointClosed);
-    PendingCall* call = state.calls;
-    while (call && call->token != message->replyToken) call = call->next;
-    if (!call || call->serverTask != task::getCurrent() ||
-        call->result != waiting || deadlineError(call->deadline) ||
-        !hasRightLocked(this, task::getCurrent(), endpointRightReceive))
-        return failure(os::ErrorCode::InvalidArgument);
-    IpcMessage reply = *message;
-    stampSender(reply);
-    HandleTable::Transfer transfer;
-    if (!transfer.capture(task::getCurrent()->handles(), reply, false))
-        return failure(os::ErrorCode::InvalidHandle);
-    if (!transfer.install(call->callerTask->handles(), reply)) {
-        transfer.clear();
-        return failure(os::ErrorCode::OutOfMemory);
-    }
-    *call->replyTarget = reply;
-    call->result       = 0;
-    for (auto* waiter = state.callers; waiter; waiter = waiter->next)
-        if (waiter->thread == call->caller) complete(*waiter, 0);
-    return 0;
-}
-
-// Only taskKernelService has authority to change the current syscall frame. A
-// user endpoint with the same numeric operation cannot select this path.
-bool Endpoint::handlesContext(uint64_t operation) const {
-    return implementation && implementation->service == &taskKernelService() &&
-           ((operation >= static_cast<uint64_t>(os::TaskOperation::ExitTask) &&
-             operation <=
-                 static_cast<uint64_t>(os::TaskOperation::StandardHandle)) ||
-            operation ==
-                static_cast<uint64_t>(os::TaskOperation::SignalReturn));
-}
-// Execute caller-context mechanisms inline after access/deadline checks,
-// without publishing a stack-backed RPC waiter. These operations can exit,
-// replace the address space, or restore signal context; returning through a
-// normal pending-call record would refer to obsolete execution state.
-int Endpoint::callImmediate(IpcMessage& request, IpcMessage& reply,
-                            uint64_t deadline, bool kernelOrigin) {
-    Operation operation(this);
-    if (!validateMessage(&request) || request.handleCount ||
-        !handlesContext(request.type))
-        return failure(os::ErrorCode::InvalidArgument);
-    auto& state = *getImplementation();
-    {
-        InterruptSpinLockGuard guard(state.lock);
-        if (state.destroyed) return failure(os::ErrorCode::EndpointClosed);
-        if (!kernelOrigin &&
-            !hasRightLocked(this, task::getCurrent(), endpointRightSend))
-            return failure(os::ErrorCode::PermissionDenied);
-        if (deadline && deadlineError(deadline)) return deadlineError(deadline);
-    }
-    stampSender(request);
-    reply = {};
-    return state.service->call(*task::getCurrent(), request, reply);
-}
-// Untrusted/user entry: enforce endpoint rights before native or queued call.
-int Endpoint::call(IpcMessage* request, IpcMessage* reply, uint64_t deadline) {
-    return callImpl(request, reply, deadline, false);
-}
-// Internal caller entry; bypass endpoint possession only, while the concrete
-// service continues to receive the real current Task for its own checks.
-int Endpoint::callFromKernel(IpcMessage* request, IpcMessage* reply,
-                             uint64_t deadline) {
-    return callImpl(request, reply, deadline, true);
-}
-// Resident services execute inline, with a waiter registered when ordinary
-// cancellation/deadline accounting is needed. User services enqueue a unique
-// PendingCall, then wait for a token-authorized reply. In both cases active
-// operation ownership prevents endpoint/stack lifetime from ending early.
-int Endpoint::callImpl(IpcMessage* request, IpcMessage* reply,
-                       uint64_t deadline, bool kernelOrigin) {
-    Operation operation(this);
-    if (!validateMessage(request) || !reply || !getImplementation())
-        return failure(os::ErrorCode::InvalidArgument);
-    if (auto* service = getImplementation()->service) {
-        if (request->handleCount)
-            return failure(os::ErrorCode::InvalidArgument);
-        auto& state = *getImplementation();
-        if (handlesContext(request->type))
-            return callImmediate(*request, *reply, deadline, kernelOrigin);
-        Waiter waiter{currentThread(), nullptr, nullptr,
-                      deadline ? deadline : os::ipcInfiniteDeadline};
-        IpcMessage copy = *request;
-        stampSender(copy);
-        copy.replyToken = nextReplyToken.fetchAdd(1, MemoryOrder::Relaxed);
-        {
-            InterruptSpinLockGuard guard(state.lock);
-            if (state.destroyed) return failure(os::ErrorCode::EndpointClosed);
-            if (!kernelOrigin &&
-                !hasRightLocked(this, task::getCurrent(), endpointRightSend))
-                return failure(os::ErrorCode::PermissionDenied);
-            if (deadline && deadlineError(deadline))
-                return deadlineError(deadline);
-            prepareWaiter(state.callers, waiter);
-            waiter.thread->setIpcWaitResult(&waiter.result, deadline == 0);
-        }
-        *reply     = {};
-        int result = service->call(*task::getCurrent(), copy, *reply);
-        {
-            InterruptSpinLockGuard guard(state.lock);
-            complete(waiter, 0);
-            removeWaiter(state.callers, waiter);
-            disarmTimer(waiter);
-            waiter.thread->setIpcWaitResult(nullptr);
-            const int aborted =
-                __atomic_load_n(&waiter.result, __ATOMIC_ACQUIRE);
-            // A successful native service call may already have committed a
-            // non-repeatable operation (for example reaping a child). Do not
-            // discard its reply when a signal races with that completion.
-            if (aborted < 0 && result != 0) result = aborted;
-        }
-        reply->replyToken = copy.replyToken;
-        if (result) {
-            for (uint32_t i = 0; i < reply->handleCount; ++i)
-                task::getCurrent()->handles().close(reply->handles[i]);
-            reply->handleCount = 0;
-        }
-        return result;
-    }
-    // The record lives until completion/cancellation removes it from
-    // state.calls. Its replyTarget remains kernel-local even while the server
-    // executes under a different CR3, which is why syscall code copies to user
-    // memory afterward.
-    PendingCall call{currentThread(),
-                     task::getCurrent(),
-                     nullptr,
-                     nullptr,
-                     nextReplyToken.fetchAdd(1, MemoryOrder::Relaxed),
-                     reply,
-                     deadline};
-    IpcMessage copy = *request;
-    copy.replyToken = call.token;
-    stampSender(copy);
-    int result = enqueue(this, copy, &call, deadline, kernelOrigin);
-    if (result) return result;
-    auto& state = *getImplementation();
-    while (true) {
-        Waiter waiter{call.caller, nullptr, nullptr, deadline};
-        {
-            InterruptSpinLockGuard guard(state.lock);
-            if (call.result != waiting) {
-                result = call.result;
-                break;
-            }
-            result = deadlineError(deadline);
-            if (result) {
-                discardCallMessage(state, call);
-                break;
-            }
-            prepareWaiter(state.callers, waiter);
-        }
-        blockWaitingThread();
-        {
-            InterruptSpinLockGuard guard(state.lock);
-            removeWaiter(state.callers, waiter);
-            disarmTimer(waiter);
-            if (call.result != waiting)
-                result = call.result;
-            else
-                result = __atomic_load_n(&waiter.result, __ATOMIC_ACQUIRE);
-            if (result < 0) {
-                discardCallMessage(state, call);
-                break;
-            }
-        }
-    }
-    {
-        InterruptSpinLockGuard guard(state.lock);
-        unlinkCall(state, call);
-    }
-    return result;
-}
-
-// Allow a task to cancel only its own thread's registrations on this endpoint.
-// Unclaimed RPC messages are removed; claimed calls lose reply authority,
-// without reversing server-side effects already committed.
-int Endpoint::cancel(uint64_t threadId) {
-    auto& state = *getImplementation();
-    InterruptSpinLockGuard guard(state.lock);
-    int result = failure(os::ErrorCode::NotFound);
-    for (auto* call = state.calls; call; call = call->next) {
-        if (call->caller->getId() == threadId &&
-            call->callerTask == task::getCurrent() && call->result == waiting) {
-            call->result = failure(os::ErrorCode::Cancelled);
-            discardCallMessage(state, *call);
-            result = 0;
-        }
-    }
-    Waiter* lists[] = {state.senders, state.receivers, state.callers};
-    for (Waiter* list : lists) {
-        for (auto* waiter = list; waiter; waiter = waiter->next) {
-            if (waiter->thread->getId() != threadId ||
-                waiter->thread->getTask() != task::getCurrent())
-                continue;
-            complete(*waiter, failure(os::ErrorCode::Cancelled));
-            result = 0;
-        }
-    }
-    return result;
-}
-
-// Complete expired stack waiters while holding timerLock. Reap endpoints only
-// after reference count reaches zero under global-list serialization; release
-// never frees a locked endpoint inline.
-void Endpoint::expireWaits(uint64_t now) {
-    {
         InterruptSpinLockGuard guard(timerLock);
-        while (timers && timers->deadline <= now) {
-            Waiter* waiter    = timers;
-            timers            = waiter->timerNext;
-            waiter->timerNext = nullptr;
-            waiter->timed     = false;
-            complete(*waiter, failure(os::ErrorCode::Timeout));
-        }
-    }
-    InterruptSpinLockGuard guard(endpointListLock);
-    EndpointImplementation** link = &endpoints;
-    while (*link) {
-        auto* state        = *link;
-        Endpoint* endpoint = state->endpoint;
-        if (__atomic_load_n(&endpoint->references, __ATOMIC_ACQUIRE) != 0) {
-            link = &state->next;
-            continue;
-        }
-        *link = state->next;
-        while (state->grants) {
-            auto* grant   = state->grants;
-            state->grants = grant->next;
-            mm::freeHeap(grant);
-        }
-        mm::freeHeap(state);
-        mm::freeHeap(endpoint);
-    }
-}
+        Waiter** link = &timers;
 
-// Teardown path: remove endpoint/timer links and caller-owned RPC records
-// before stack freeing. A dead claiming thread fails its still-pending RPCs
-// with PeerDied. The target must be current-and-exiting or already quiesced;
-// ThreadCleanup later releases nested active-operation references.
-void Endpoint::cancelThread(Thread* thread) {
-    {
-        InterruptSpinLockGuard listGuard(endpointListLock);
-        for (auto* state = endpoints; state; state = state->next) {
-            InterruptSpinLockGuard guard(state->lock);
-            Waiter** heads[] = {&state->senders, &state->receivers,
-                                &state->callers};
-            for (Waiter** head : heads) {
-                Waiter** link = head;
-                while (*link) {
-                    Waiter* waiter = *link;
-                    if (waiter->thread != thread) {
-                        link = &waiter->next;
-                        continue;
-                    }
-                    *link = waiter->next;
-                    disarmTimer(*waiter);
-                    complete(*waiter, failure(os::ErrorCode::Interrupted));
-                }
+        while (*link && (*link)->deadline <= waiter.deadline) {
+            link = &(*link)->timerNext;
+        }
+
+        waiter.timerNext = *link;
+        *link            = &waiter;
+        waiter.timed     = true;
+    }
+
+    /*
+     * 撤销等待计时器，防止已经完成的请求后来又被超时路径处理。
+     */
+    static void disarmTimer(Waiter& waiter) {
+        InterruptSpinLockGuard guard(timerLock);
+
+        if (!waiter.timed) {
+            return;
+        }
+
+        Waiter** link = &timers;
+
+        while (*link && *link != &waiter) {
+            link = &(*link)->timerNext;
+        }
+
+        if (*link) {
+            *link = waiter.timerNext;
+        }
+
+        waiter.timed     = false;
+        waiter.timerNext = nullptr;
+    }
+
+    /*
+     * 从单向等待链表摘下指定节点，保持其余等待顺序。
+     */
+    static void removeWaiter(Waiter*& head, Waiter& waiter) {
+        Waiter** link = &head;
+
+        while (*link && *link != &waiter) {
+            link = &(*link)->next;
+        }
+
+        if (*link) {
+            *link = waiter.next;
+        }
+
+        waiter.next = nullptr;
+    }
+
+    /*
+     * 把当前等待节点登记到队列和线程清理状态中，使取消路径能找到它。
+     */
+    static void prepareWaiter(Waiter*& head, Waiter& waiter) {
+        prepareCurrentWait();
+        Waiter** tail = &head;
+
+        while (*tail) {
+            tail = &(*tail)->next;
+        }
+
+        *tail = &waiter;
+        armTimer(waiter);
+    }
+
+    /*
+     * 从等待链表取出一个可唤醒节点，完成后让对应线程继续运行。
+     */
+    static void wakeOne(Waiter*& head) {
+        while (head) {
+            Waiter* waiter = head;
+            head           = waiter->next;
+            waiter->next   = nullptr;
+
+            if (__atomic_load_n(&waiter->result, __ATOMIC_ACQUIRE) != waiting) {
+                continue;
             }
-            PendingCall** link = &state->calls;
-            while (*link) {
-                PendingCall* call = *link;
-                if (call->serverThread == thread && call->result == waiting) {
-                    call->result       = failure(os::ErrorCode::PeerDied);
-                    call->serverThread = nullptr;
-                    for (auto* waiter = state->callers; waiter;
-                         waiter       = waiter->next)
-                        if (waiter->thread == call->caller)
-                            complete(*waiter, failure(os::ErrorCode::PeerDied));
+
+            complete(*waiter, 0);
+
+            return;
+        }
+    }
+
+    /*
+     * 检查消息指针和长度等基本条件，拒绝超出固定消息容量的数据。
+     */
+    static bool validateMessage(const IpcMessage* message) {
+        return message && message->length <= os::ipcDataWordCount &&
+               message->handleCount <= 4;
+    }
+
+    /*
+     * 由内核写入发送者身份，避免用户消息伪造来源任务和用户编号。
+     */
+    static void stampSender(IpcMessage& message) {
+        Task* task        = task::getCurrent();
+        Thread* thread    = currentThread();
+        message.senderPid = task ? task->id() : 0;
+        message.senderTid = thread ? thread->getId() : 0;
+    }
+
+    /*
+     * 检查截止时间是否已经过去，并转换成接口约定的超时结果。
+     */
+    static int deadlineError(uint64_t deadline) {
+        if (!deadline) {
+            return failure(os::ErrorCode::WouldBlock);
+        }
+
+        return deadline != os::ipcInfiniteDeadline &&
+                       time::getMonotonicTime() >= deadline
+                   ? failure(os::ErrorCode::Timeout)
+                   : 0;
+    }
+
+    bool hasRightLocked(const Endpoint* endpoint, Task* task, uint32_t right);
+    void unlinkCall(EndpointImplementation& state, PendingCall& call);
+    void closeLocked(EndpointImplementation& state, os::ErrorCode error,
+                     bool permanent = true);
+    void discardCallMessage(EndpointImplementation& state, PendingCall& call);
+    int enqueue(Endpoint* endpoint, IpcMessage& message, PendingCall* call,
+                uint64_t deadline, bool kernelOrigin = false);
+
+    // 内部状态由一把锁保护消息槽、关闭状态、授权和未完成请求；发送、接收和调用等待各有队列。
+    class EndpointImplementation {
+        public:
+            /*
+             * 返回端点内部状态锁，供公共操作保护消息和等待队列。
+             */
+            SpinLock& getLock() { return lock; }
+
+        private:
+            friend class Endpoint;
+            friend bool hasRightLocked(const Endpoint*, Task*, uint32_t);
+            friend void unlinkCall(EndpointImplementation&, PendingCall&);
+            friend void closeLocked(EndpointImplementation&, os::ErrorCode,
+                                    bool);
+            friend void discardCallMessage(EndpointImplementation&,
+                                           PendingCall&);
+            friend int enqueue(Endpoint*, IpcMessage&, PendingCall*, uint64_t,
+                               bool);
+            SpinLock lock;
+            Endpoint* endpoint;
+            EndpointService* service = nullptr;
+            EndpointImplementation* next;
+            QueuedMessage queue[queueCapacity];
+            uint32_t head        = 0;
+            uint32_t count       = 0;
+            Waiter* receivers    = nullptr;
+            Waiter* senders      = nullptr;
+            Waiter* callers      = nullptr;
+            PendingCall* calls   = nullptr;
+            AccessGrant* grants  = nullptr;
+            bool destroyed       = false;
+            uint16_t pendingIrqs = 0;
+    };
+
+    /*
+     * 在端点锁内检查任务是否拥有指定访问权，结合句柄授权和端点归属判断。
+     */
+    bool hasRightLocked(const Endpoint* endpoint, Task* task, uint32_t right) {
+        if (!task) {
+            return false;
+        }
+
+        const uint32_t rights =
+            ((right & endpointRightSend) ? handleRightWrite : 0) |
+            ((right & endpointRightReceive) ? handleRightRead : 0) |
+            ((right & endpointRightManage) ? handleRightManage : 0);
+
+        if (task->handles().hasObjectRights(const_cast<Endpoint*>(endpoint),
+                                            HandleType::Endpoint, rights)) {
+            return true;
+        }
+
+        // 显式授权仅用于可信的内核调用者，包括内部检查路径。
+        for (AccessGrant* grant = endpoint->getImplementation()->grants; grant;
+             grant              = grant->next) {
+            if (grant->task == task && (grant->rights & right) == right) {
+                return true;
+            }
+        }
+
+        return task == endpoint->getOwner();
+    }
+
+    /*
+     * 从端点的未完成调用链表中摘下请求，防止回复、取消和超时再次找到同一请求。
+     */
+    void unlinkCall(EndpointImplementation& state, PendingCall& call) {
+        PendingCall** link = &state.calls;
+
+        while (*link && *link != &call) {
+            link = &(*link)->next;
+        }
+
+        if (*link) {
+            *link = call.next;
+        }
+
+        call.next = nullptr;
+    }
+
+    /*
+     * 把端点改为关闭或暂时失联状态，结束排队请求并唤醒等待者。
+     * 是否允许恢复由 permanent 参数决定。
+     */
+    void closeLocked(EndpointImplementation& state, os::ErrorCode error,
+                     bool permanent) {
+        if (state.destroyed) {
+            return;
+        }
+
+        state.destroyed = permanent;
+        Waiter* lists[] = {state.receivers, state.senders, state.callers};
+
+        for (Waiter* list : lists) {
+            for (Waiter* waiter = list; waiter; waiter = waiter->next) {
+                complete(*waiter, failure(error));
+            }
+        }
+
+        for (PendingCall* call = state.calls; call; call = call->next) {
+            call->result = failure(error);
+        }
+
+        for (uint32_t i = 0; i < state.count; ++i) {
+            QueuedMessage& queued =
+                state.queue[(state.head + i) % queueCapacity];
+            queued.handles.clear();
+            queued = {};
+        }
+
+        state.count       = 0;
+        state.pendingIrqs = 0;
+    }
+
+    /*
+     * 删除已经入队但不应再交付的调用消息，同时清理该消息持有的对象引用。
+     */
+    void discardCallMessage(EndpointImplementation& state, PendingCall& call) {
+        for (uint32_t i = 0; i < state.count; ++i) {
+            const uint32_t index = (state.head + i) % queueCapacity;
+
+            if (state.queue[index].call != &call) {
+                continue;
+            }
+
+            state.queue[index].handles.clear();
+
+            for (uint32_t j = i; j + 1 < state.count; ++j) {
+                state.queue[(state.head + j) % queueCapacity] =
+                    state.queue[(state.head + j + 1) % queueCapacity];
+            }
+
+            QueuedMessage& last =
+                state.queue[(state.head + state.count - 1) % queueCapacity];
+            last = {};
+            --state.count;
+            wakeOne(state.senders);
+
+            return;
+        }
+    }
+
+    /*
+     * 将消息及其句柄引用加入端点队列。
+     * 队列满时按截止时间等待，醒来后重新检查端点和容量，避免把唤醒当成成功保证。
+     */
+    int enqueue(Endpoint* endpoint, IpcMessage& message, PendingCall* call,
+                uint64_t deadline, bool kernelOrigin) {
+        EndpointImplementation& state = *endpoint->getImplementation();
+        Task* sender                  = task::getCurrent();
+
+        while (true) {
+            // 每轮使用栈上等待记录；离开这一轮前必须摘掉端点链和计时链，不能把悬空栈指针留在队列。
+            Waiter waiter{currentThread(), nullptr, nullptr, deadline};
+            {
+                InterruptSpinLockGuard guard(state.lock);
+
+                if (state.destroyed) {
+                    return failure(os::ErrorCode::EndpointClosed);
                 }
-                if (call->caller != thread) {
-                    link = &call->next;
+
+                if (!endpoint->getOwner()) {
+                    return failure(os::ErrorCode::PeerDied);
+                }
+
+                if (!kernelOrigin &&
+                    !hasRightLocked(endpoint, sender, endpointRightSend)) {
+                    return failure(os::ErrorCode::PermissionDenied);
+                }
+
+                // 有空槽时先捕获消息附带对象引用，再提交消息内容，队列因此独立于发送方句柄的后续关闭。
+                if (state.count < queueCapacity) {
+                    QueuedMessage& queued =
+                        state.queue[(state.head + state.count) % queueCapacity];
+
+                    if (!queued.handles.capture(sender->handles(), message)) {
+                        return failure(os::ErrorCode::InvalidHandle);
+                    }
+
+                    queued.message = message;
+                    queued.call    = call;
+                    ++state.count;
+
+                    // 同步调用还要挂入未完成调用表，后续服务回复、取消和超时都通过该记录找到调用者。
+                    if (call) {
+                        call->next  = state.calls;
+                        state.calls = call;
+                    }
+
+                    wakeOne(state.receivers);
+
+                    return 0;
+                }
+
+                const int error = deadlineError(deadline);
+
+                if (error) {
+                    return error;
+                }
+
+                // 队列满时在同一把锁下登记等待，避免接收者刚腾出位置却错过发送者的睡眠登记。
+                prepareWaiter(state.senders, waiter);
+            }
+
+            // 放开端点锁后才睡眠；醒来先拆除旧等待登记，再回到循环重新检查容量。
+            blockWaitingThread();
+            {
+                InterruptSpinLockGuard guard(state.lock);
+                removeWaiter(state.senders, waiter);
+                disarmTimer(waiter);
+            }
+
+            const int result =
+                __atomic_load_n(&waiter.result, __ATOMIC_ACQUIRE);
+
+            if (result < 0) {
+                return result;
+            }
+        }
+    }
+
+    /*
+     * 初始化端点的对象字段和内部状态，供创建路径发布使用。
+     */
+    void Endpoint::init() {
+        timerLock.init();
+        endpointListLock.init();
+        device::serialWrite("[IPC] endpoint IPC initialized\n");
+    }
+
+    /*
+     * 增加端点引用，保证通信期间端点对象不会被释放。
+     */
+    void Endpoint::retain() {
+        __atomic_add_fetch(&references, 1U, __ATOMIC_RELAXED);
+    }
+
+    /*
+     * 归还端点引用，最后一份引用触发端点销毁。
+     */
+    void Endpoint::release() {
+        __atomic_sub_fetch(&references, 1U, __ATOMIC_RELEASE);
+    }
+
+    /*
+     * 持端点锁查询是否已经关闭，避免读到并发关闭的中间状态。
+     */
+    bool Endpoint::isClosed() {
+        InterruptSpinLockGuard guard(implementation->getLock());
+
+        return implementation->destroyed;
+    }
+
+    /*
+     * 处理任务失去接收端句柄的情况，按接收者归属决定是否关闭或交给恢复机制。
+     */
+    void Endpoint::receiverClosed(Task* task) {
+        InterruptSpinLockGuard guard(implementation->getLock());
+
+        if (getOwner() == task) {
+            closeLocked(*implementation, os::ErrorCode::EndpointClosed);
+        }
+    }
+
+    /*
+     * 分配端点和实现状态，初始化服务入口；失败时按分配顺序释放已取得的存储。
+     */
+    Endpoint* Endpoint::create(EndpointService* service) {
+        Task* owner = task::getCurrent();
+
+        if (!owner) {
+            return nullptr;
+        }
+
+        void* storage        = mm::allocateHeap(sizeof(Endpoint));
+        void* implementation = mm::allocateHeap(sizeof(EndpointImplementation));
+
+        if (!storage || !implementation) {
+            mm::freeHeap(storage);
+            mm::freeHeap(implementation);
+
+            return nullptr;
+        }
+
+        // 先分别取得对象和内部状态存储，任一步失败都应回收尚未发布的部分。
+        Endpoint* endpoint = new (storage) Endpoint;
+        EndpointImplementation* state =
+            new (implementation) EndpointImplementation{};
+
+        // 初始化完成后才安装服务入口与拥有者，避免其他路径看见未准备好的队列状态。
+        state->lock.init();
+        state->endpoint = endpoint;
+        state->service  = service;
+        endpoint->setId(nextEndpointId.fetchAdd(1, MemoryOrder::Relaxed));
+        endpoint->setOwner(owner);
+        endpoint->setImplementation(state);
+        InterruptSpinLockGuard guard(endpointListLock);
+        state->next = endpoints;
+        endpoints   = state;
+
+        return endpoint;
+    }
+
+    /*
+     * 结束端点尚未完成的通信并释放内部存储。
+     * 只有对象不再被引用时才进入最终销毁。
+     */
+    void Endpoint::destroy() {
+        EndpointImplementation& state = *getImplementation();
+        InterruptSpinLockGuard guard(state.lock);
+
+        if (state.destroyed ||
+            !hasRightLocked(this, task::getCurrent(), endpointRightManage)) {
+            return;
+        }
+
+        closeLocked(state, os::ErrorCode::EndpointClosed);
+
+        if (getOwner()) {
+            setOwner(nullptr);
+            release();
+        }
+    }
+
+    /*
+     * 通过请求令牌检查同步调用是否仍在等待，供服务避免向已经取消的调用提交结果。
+     */
+    bool Endpoint::requestActive(uint64_t token) {
+        EndpointImplementation& state = *getImplementation();
+        InterruptSpinLockGuard guard(state.lock);
+
+        for (PendingCall* call = state.calls; call; call = call->next) {
+            if (call->token == token &&
+                call->serverTask == task::getCurrent()) {
+                return call->result == waiting &&
+                       !deadlineError(call->deadline);
+            }
+        }
+
+        return false;
+    }
+
+    /*
+     * 关闭属于某任务的接收端。
+     * 恢复保护的端点保留必要身份，普通端点则结束等待和消息。
+     */
+    void Endpoint::closeOwner(Task* owner) {
+        InterruptSpinLockGuard listGuard(endpointListLock);
+
+        // 逐个端点处理所属任务退出；每次在该端点锁内关闭通信并清除该任务的显式授权。
+        for (EndpointImplementation* state = endpoints; state;
+             state                         = state->next) {
+            InterruptSpinLockGuard guard(state->lock);
+
+            if (state->endpoint->getOwner() == owner) {
+                closeLocked(*state, os::ErrorCode::PeerDied,
+                            state->endpoint->recoveryRole == 0);
+                state->endpoint->setOwner(nullptr);
+                state->endpoint->release();
+            }
+
+            AccessGrant** link = &state->grants;
+
+            while (*link) {
+                AccessGrant* grant = *link;
+
+                if (grant->task != owner) {
+                    link = &grant->next;
                     continue;
                 }
-                discardCallMessage(*state, *call);
-                *link = call->next;
+
+                *link = grant->next;
+                mm::freeHeap(grant);
             }
         }
     }
-    // Operation references, including nested pager calls, belong to
-    // ThreadCleanup.
-    thread->setActiveEndpoint(nullptr);
-    thread->setActiveIpcCall(false);
-    thread->setIpcWaitResult(nullptr);
-}
 
-// Signal interruption completes waits but leaves normal operation return paths
-// to remove their registrations. Unlike forced teardown this does not free the
-// target stack or transfer its temporary ownership.
-void Endpoint::interruptThread(Thread* thread) {
-    InterruptSpinLockGuard listGuard(endpointListLock);
-    for (auto* state = endpoints; state; state = state->next) {
-        InterruptSpinLockGuard guard(state->lock);
-        for (auto* call = state->calls; call; call = call->next) {
-            if (call->caller != thread || call->result != waiting) continue;
-            call->result = failure(os::ErrorCode::Interrupted);
-            discardCallMessage(*state, *call);
+    /*
+     * 将端点置于恢复保护之下，为服务重启保留接收者身份和通信对象。
+     */
+    bool Endpoint::protectRecovery(Task& task) {
+        InterruptSpinLockGuard guard(implementation->getLock());
+        const uint32_t role = static_cast<uint32_t>(task.serviceRole());
+
+        if (implementation->destroyed || implementation->service ||
+            getOwner() != &task || !task.managedService() || !role ||
+            (recoveryRole && recoveryRole != role)) {
+            return false;
         }
-        Waiter* lists[] = {state->senders, state->receivers, state->callers};
-        for (auto* list : lists)
-            for (auto* waiter = list; waiter; waiter = waiter->next)
-                if (waiter->thread == thread)
-                    complete(*waiter, failure(os::ErrorCode::Interrupted));
-    }
-}
 
-// IRQ notifications set a bitmap bit and wake a receiver without waiting for a
-// free ordinary slot. Repeated same-IRQ events coalesce, so the payload is a
-// pending source, not an interrupt count. Other types may fail if full.
-bool Endpoint::notifyFromInterrupt(uint64_t type, uint64_t value) {
-    auto& state = *getImplementation();
-    InterruptSpinLockGuard guard(state.lock);
-    if (state.destroyed) return false;
-    if (type == 0x495251 && value < 16) {
-        state.pendingIrqs |= static_cast<uint16_t>(1U << value);
-        wakeOne(state.receivers);
+        recoveryRole = role;
+
         return true;
     }
-    if (state.count == queueCapacity) return false;
-    auto& queued   = state.queue[(state.head + state.count) % queueCapacity];
-    queued.message = {};
-    queued.message.type    = type;
-    queued.message.length  = 1;
-    queued.message.data[0] = value;
-    ++state.count;
-    wakeOne(state.receivers);
-    return true;
-}
 
-}  // namespace kernel::task
+    /*
+     * 让重启后的服务接管原受保护端点，重新建立接收者归属。
+     */
+    bool Endpoint::adoptRecovery(Task& task) {
+        InterruptSpinLockGuard guard(implementation->getLock());
+
+        if (implementation->destroyed || !recoveryRole ||
+            recoveryRole != static_cast<uint32_t>(task.serviceRole()) ||
+            (getOwner() && getOwner() != &task)) {
+            return false;
+        }
+
+        if (!getOwner()) {
+            retain();
+            setOwner(&task);
+        }
+
+        return true;
+    }
+
+    /*
+     * 解除端点的恢复保护并归还代管引用，之后按普通引用规则回收。
+     */
+    void Endpoint::releaseRecovery(Task& task) {
+        InterruptSpinLockGuard guard(implementation->getLock());
+
+        if (recoveryRole == static_cast<uint32_t>(task.serviceRole())) {
+            recoveryRole = 0;
+        }
+    }
+
+    /*
+     * 为任务登记端点访问权限。
+     * 已经存在的授权按规则合并，新授权需要空闲记录。
+     */
+    bool Endpoint::grantAccess(Task* task, uint32_t rights) {
+        if (!task || (rights & ~(endpointRightSend | endpointRightReceive |
+                                 endpointRightManage))) {
+            return false;
+        }
+
+        EndpointImplementation& state = *getImplementation();
+        InterruptSpinLockGuard guard(state.lock);
+
+        if (state.destroyed ||
+            !hasRightLocked(this, task::getCurrent(), endpointRightManage)) {
+            return false;
+        }
+
+        AccessGrant* grant =
+            static_cast<AccessGrant*>(mm::allocateHeap(sizeof(AccessGrant)));
+
+        if (!grant) {
+            return false;
+        }
+
+        *grant       = {task, rights, state.grants};
+        state.grants = grant;
+
+        return true;
+    }
+
+    /*
+     * 复制端点句柄时同步处理接收者身份和权限，避免仅复制槽位却遗漏端点层面的归属关系。
+     */
+    uint64_t Endpoint::duplicateHandle(Task* source, Task* destination,
+                                       uint64_t handle,
+                                       uint64_t destinationHandle) {
+        if (!source || !destination) {
+            return 0;
+        }
+
+        // fork 和引导继承可以要求保持原句柄编号。
+        return source->handles().copyTo(destination->handles(), handle,
+                                        destinationHandle);
+    }
+
+    /*
+     * 发送单向消息。
+     * 校验消息和发送权限，补写发送者身份后加入端点队列。
+     */
+    int Endpoint::send(IpcMessage* message, uint64_t deadline) {
+        Operation operation(this);
+
+        if (getImplementation()->service) {
+            return failure(os::ErrorCode::NotSupported);
+        }
+
+        if (!validateMessage(message) || !getImplementation()) {
+            return failure(os::ErrorCode::InvalidArgument);
+        }
+
+        IpcMessage copy = *message;
+        copy.replyToken = 0;
+        stampSender(copy);
+
+        return enqueue(this, copy, nullptr, deadline);
+    }
+
+    /*
+     * 接收一条消息并把附带引用安装成当前任务的句柄。
+     * 没有消息时等待；同步调用还要维护供后续回复使用的令牌。
+     */
+    int Endpoint::receive(IpcMessage* message, uint64_t deadline) {
+        Operation operation(this);
+
+        if (getImplementation()->service) {
+            return failure(os::ErrorCode::NotSupported);
+        }
+
+        if (!message || !getImplementation()) {
+            return failure(os::ErrorCode::InvalidArgument);
+        }
+
+        EndpointImplementation& state = *getImplementation();
+
+        while (true) {
+            Waiter waiter{currentThread(), nullptr, nullptr, deadline};
+            {
+                InterruptSpinLockGuard guard(state.lock);
+
+                if (state.destroyed) {
+                    return failure(os::ErrorCode::EndpointClosed);
+                }
+
+                if (!hasRightLocked(this, task::getCurrent(),
+                                    endpointRightReceive)) {
+                    return failure(os::ErrorCode::PermissionDenied);
+                }
+
+                if (recoveryRole && getOwner() != task::getCurrent()) {
+                    return failure(os::ErrorCode::PermissionDenied);
+                }
+
+                // 中断通知有独立位图，优先取出一个待处理
+                // IRQ，普通消息队列满也不能挡住它。
+                if (state.pendingIrqs) {
+                    const uint32_t irq = __builtin_ctz(state.pendingIrqs);
+                    state.pendingIrqs &= static_cast<uint16_t>(~(1U << irq));
+                    *message         = {};
+                    message->type    = 0x495251;
+                    message->length  = 1;
+                    message->data[0] = irq;
+
+                    return 0;
+                }
+
+                // 先把附带引用安装成接收者自己的句柄，安装成功才允许把消息从队列取走。
+                if (state.count) {
+                    QueuedMessage& queued = state.queue[state.head];
+                    // 目标句柄安装失败时保留队列消息，不向接收者公开半份句柄数组，允许稍后重试。
+                    if (!queued.handles.install(task::getCurrent()->handles(),
+                                                queued.message)) {
+                        return failure(os::ErrorCode::OutOfMemory);
+                    }
+
+                    *message = queued.message;
+
+                    // 同步请求首次交给服务时记录领取任务和线程，回复授权与服务线程退出检测都需要它们。
+                    if (queued.call) {
+                        queued.call->serverTask   = task::getCurrent();
+                        queued.call->serverThread = currentThread();
+                    }
+
+                    // 消息内容交付完再推进环形队首并唤醒发送者，腾出的槽位此时才能复用。
+                    queued     = {};
+                    state.head = (state.head + 1) % queueCapacity;
+                    --state.count;
+                    wakeOne(state.senders);
+
+                    return 0;
+                }
+
+                const int error = deadlineError(deadline);
+
+                if (error) {
+                    return error;
+                }
+
+                // 没有消息时登记接收等待，醒来仍回到循环检查，普通唤醒本身不保证已有消息。
+                prepareWaiter(state.receivers, waiter);
+            }
+
+            blockWaitingThread();
+            {
+                InterruptSpinLockGuard guard(state.lock);
+                removeWaiter(state.receivers, waiter);
+                disarmTimer(waiter);
+            }
+
+            const int result =
+                __atomic_load_n(&waiter.result, __ATOMIC_ACQUIRE);
+
+            if (result < 0) {
+                return result;
+            }
+        }
+    }
+
+    /*
+     * 按令牌查找等待回复的调用，复制回复和句柄引用，再唤醒调用者。
+     * 失效或不属于本端点的令牌被拒绝。
+     */
+    int Endpoint::reply(IpcMessage* message) {
+        Operation operation(this);
+
+        if (!validateMessage(message) || !message->replyToken ||
+            !getImplementation()) {
+            return failure(os::ErrorCode::InvalidArgument);
+        }
+
+        EndpointImplementation& state = *getImplementation();
+        InterruptSpinLockGuard guard(state.lock);
+
+        if (state.destroyed) {
+            return failure(os::ErrorCode::EndpointClosed);
+        }
+
+        // 令牌标识一次具体调用，不能按调用者线程的当前状态猜测应该回复哪一个请求。
+        PendingCall* call = state.calls;
+
+        while (call && call->token != message->replyToken) {
+            call = call->next;
+        }
+
+        // 令牌存在还不够，必须属于已领取请求的服务任务、仍在等待且没有超时。
+        if (!call || call->serverTask != task::getCurrent() ||
+            call->result != waiting || deadlineError(call->deadline) ||
+            !hasRightLocked(this, task::getCurrent(), endpointRightReceive)) {
+            return failure(os::ErrorCode::InvalidArgument);
+        }
+
+        IpcMessage reply = *message;
+        stampSender(reply);
+
+        // 回复中带出的句柄也要转成调用者本地句柄；目标安装失败时归还这次临时引用。
+        HandleTable::Transfer transfer;
+
+        if (!transfer.capture(task::getCurrent()->handles(), reply, false)) {
+            return failure(os::ErrorCode::InvalidHandle);
+        }
+
+        if (!transfer.install(call->callerTask->handles(), reply)) {
+            transfer.clear();
+
+            return failure(os::ErrorCode::OutOfMemory);
+        }
+
+        // 先写完整内核回复，再改完成状态和唤醒调用者，防止被唤醒线程读到半份结果。
+        *call->replyTarget = reply;
+        call->result       = 0;
+
+        for (Waiter* waiter = state.callers; waiter; waiter = waiter->next) {
+            if (waiter->thread == call->caller) {
+                complete(*waiter, 0);
+            }
+        }
+
+        return 0;
+    }
+
+    /*
+     * 判断服务操作是否需要系统调用现场，例如 fork、exec
+     * 需要读取或修改返回用户态的寄存器。
+     */
+    bool Endpoint::handlesContext(uint64_t operation) const {
+        return implementation &&
+               implementation->service == &taskKernelService() &&
+               ((operation >=
+                     static_cast<uint64_t>(os::TaskOperation::ExitTask) &&
+                 operation <= static_cast<uint64_t>(
+                                  os::TaskOperation::StandardHandle)) ||
+                operation ==
+                    static_cast<uint64_t>(os::TaskOperation::SignalReturn));
+    }
+
+    /*
+     * 直接调用内核服务入口，省去用户服务的排队过程；仍执行请求校验和调用上下文处理。
+     */
+    int Endpoint::callImmediate(IpcMessage& request, IpcMessage& reply,
+                                uint64_t deadline, bool kernelOrigin) {
+        Operation operation(this);
+
+        if (!validateMessage(&request) || request.handleCount ||
+            !handlesContext(request.type)) {
+            return failure(os::ErrorCode::InvalidArgument);
+        }
+
+        EndpointImplementation& state = *getImplementation();
+        {
+            InterruptSpinLockGuard guard(state.lock);
+
+            if (state.destroyed) {
+                return failure(os::ErrorCode::EndpointClosed);
+            }
+
+            if (!kernelOrigin &&
+                !hasRightLocked(this, task::getCurrent(), endpointRightSend)) {
+                return failure(os::ErrorCode::PermissionDenied);
+            }
+
+            if (deadline && deadlineError(deadline)) {
+                return deadlineError(deadline);
+            }
+        }
+
+        stampSender(request);
+        reply = {};
+
+        return state.service->call(*task::getCurrent(), request, reply);
+    }
+
+    /*
+     * 发起普通同步调用，等待服务回复或截止时间到达。
+     */
+    int Endpoint::call(IpcMessage* request, IpcMessage* reply,
+                       uint64_t deadline) {
+        return callImpl(request, reply, deadline, false);
+    }
+
+    /*
+     * 从内核发起同步调用，显式标记请求来源，使内部补页等请求不冒用用户消息内容。
+     */
+    int Endpoint::callFromKernel(IpcMessage* request, IpcMessage* reply,
+                                 uint64_t deadline) {
+        return callImpl(request, reply, deadline, true);
+    }
+
+    /*
+     * 同步调用的公共实现。
+     * 登记未完成请求、传递消息并等待回复，统一处理取消、超时、句柄传递和清理。
+     */
+    int Endpoint::callImpl(IpcMessage* request, IpcMessage* reply,
+                           uint64_t deadline, bool kernelOrigin) {
+        Operation operation(this);
+
+        if (!validateMessage(request) || !reply || !getImplementation()) {
+            return failure(os::ErrorCode::InvalidArgument);
+        }
+
+        // 内核服务可以在当前线程直接执行；用户服务则必须经过排队、领取和令牌回复。
+        if (EndpointService* service = getImplementation()->service) {
+            if (request->handleCount) {
+                return failure(os::ErrorCode::InvalidArgument);
+            }
+
+            EndpointImplementation& state = *getImplementation();
+
+            // 会修改用户返回现场的操作使用专用直接路径，不能让普通回复写入覆盖新寄存器现场。
+            if (handlesContext(request->type)) {
+                return callImmediate(*request, *reply, deadline, kernelOrigin);
+            }
+
+            Waiter waiter{currentThread(), nullptr, nullptr,
+                          deadline ? deadline : os::ipcInfiniteDeadline};
+            IpcMessage copy = *request;
+            stampSender(copy);
+            copy.replyToken = nextReplyToken.fetchAdd(1, MemoryOrder::Relaxed);
+            {
+                InterruptSpinLockGuard guard(state.lock);
+
+                if (state.destroyed) {
+                    return failure(os::ErrorCode::EndpointClosed);
+                }
+
+                if (!kernelOrigin && !hasRightLocked(this, task::getCurrent(),
+                                                     endpointRightSend)) {
+                    return failure(os::ErrorCode::PermissionDenied);
+                }
+
+                if (deadline && deadlineError(deadline)) {
+                    return deadlineError(deadline);
+                }
+
+                prepareWaiter(state.callers, waiter);
+                waiter.thread->setIpcWaitResult(&waiter.result, deadline == 0);
+            }
+
+            *reply = {};
+
+            // 等待登记完成后才执行服务，信号和取消路径因此能找到这个正在进行的调用。
+            int result = service->call(*task::getCurrent(), copy, *reply);
+            {
+                InterruptSpinLockGuard guard(state.lock);
+                complete(waiter, 0);
+                removeWaiter(state.callers, waiter);
+                disarmTimer(waiter);
+                waiter.thread->setIpcWaitResult(nullptr);
+                const int aborted =
+                    __atomic_load_n(&waiter.result, __ATOMIC_ACQUIRE);
+                // 内核服务可能已经完成不可重复操作，例如收走子任务退出状态；与信号同时发生时，不能丢弃已经完成的回复。
+                if (aborted < 0 && result != 0) {
+                    result = aborted;
+                }
+            }
+
+            reply->replyToken = copy.replyToken;
+
+            // 调用失败时，回复里新建的句柄还没有成功交给用户，需要在当前任务表中关闭。
+            if (result) {
+                for (uint32_t i = 0; i < reply->handleCount; ++i) {
+                    task::getCurrent()->handles().close(reply->handles[i]);
+                }
+
+                reply->handleCount = 0;
+            }
+
+            return result;
+        }
+
+        // 记录要等完成或取消摘链后才能销毁；服务使用另一套页表时，回复目标仍是公共内核地址，之后由系统调用层写回用户空间。
+        PendingCall call{currentThread(),
+                         task::getCurrent(),
+                         nullptr,
+                         nullptr,
+                         nextReplyToken.fetchAdd(1, MemoryOrder::Relaxed),
+                         reply,
+                         deadline};
+        IpcMessage copy = *request;
+        copy.replyToken = call.token;
+        stampSender(copy);
+
+        // 用户服务路径先把请求入队，队列持有它需要的对象引用，之后调用者才开始等令牌回复。
+        int result = enqueue(this, copy, &call, deadline, kernelOrigin);
+
+        if (result) {
+            return result;
+        }
+
+        EndpointImplementation& state = *getImplementation();
+
+        while (true) {
+            Waiter waiter{call.caller, nullptr, nullptr, deadline};
+            {
+                InterruptSpinLockGuard guard(state.lock);
+
+                // 检查完成结果与登记睡眠使用同一端点锁，避免回复先到却又把调用者睡下。
+                if (call.result != waiting) {
+                    result = call.result;
+                    break;
+                }
+
+                result = deadlineError(deadline);
+
+                if (result) {
+                    // 超时或取消时连同尚未领取的消息一起撤走，防止服务以后读到已离开作用域的调用记录。
+                    discardCallMessage(state, call);
+                    break;
+                }
+
+                prepareWaiter(state.callers, waiter);
+            }
+
+            blockWaitingThread();
+            {
+                InterruptSpinLockGuard guard(state.lock);
+                removeWaiter(state.callers, waiter);
+                disarmTimer(waiter);
+
+                if (call.result != waiting) {
+                    result = call.result;
+                } else {
+                    result = __atomic_load_n(&waiter.result, __ATOMIC_ACQUIRE);
+                }
+
+                if (result < 0) {
+                    discardCallMessage(state, call);
+                    break;
+                }
+            }
+        }
+
+        {
+            InterruptSpinLockGuard guard(state.lock);
+
+            // 返回调用方之前最后摘除未完成记录，栈上的 PendingCall
+            // 到这里才允许销毁。
+            unlinkCall(state, call);
+        }
+
+        return result;
+    }
+
+    /*
+     * 取消指定线程的未完成调用，摘除请求及排队消息，再唤醒等待线程返回取消结果。
+     */
+    int Endpoint::cancel(uint64_t threadId) {
+        EndpointImplementation& state = *getImplementation();
+        InterruptSpinLockGuard guard(state.lock);
+        int result = failure(os::ErrorCode::NotFound);
+
+        for (PendingCall* call = state.calls; call; call = call->next) {
+            if (call->caller->getId() == threadId &&
+                call->callerTask == task::getCurrent() &&
+                call->result == waiting) {
+                call->result = failure(os::ErrorCode::Cancelled);
+                discardCallMessage(state, *call);
+                result = 0;
+            }
+        }
+
+        Waiter* lists[] = {state.senders, state.receivers, state.callers};
+
+        for (Waiter* list : lists) {
+            for (Waiter* waiter = list; waiter; waiter = waiter->next) {
+                if (waiter->thread->getId() != threadId ||
+                    waiter->thread->getTask() != task::getCurrent()) {
+                    continue;
+                }
+
+                complete(*waiter, failure(os::ErrorCode::Cancelled));
+                result = 0;
+            }
+        }
+
+        return result;
+    }
+
+    /*
+     * 扫描过期等待并结束它们，清除请求和计时状态，避免超时与正常回复重复完成同一请求。
+     */
+    void Endpoint::expireWaits(uint64_t now) {
+        {
+            InterruptSpinLockGuard guard(timerLock);
+
+            // 超时扫描先在计时链上找到到期等待，再按所属端点锁完成取消，不能直接释放仍挂在端点上的栈节点。
+            while (timers && timers->deadline <= now) {
+                Waiter* waiter    = timers;
+                timers            = waiter->timerNext;
+                waiter->timerNext = nullptr;
+                waiter->timed     = false;
+                complete(*waiter, failure(os::ErrorCode::Timeout));
+            }
+        }
+
+        InterruptSpinLockGuard guard(endpointListLock);
+        EndpointImplementation** link = &endpoints;
+
+        while (*link) {
+            EndpointImplementation* state = *link;
+            Endpoint* endpoint            = state->endpoint;
+
+            if (__atomic_load_n(&endpoint->references, __ATOMIC_ACQUIRE) != 0) {
+                link = &state->next;
+                continue;
+            }
+
+            *link = state->next;
+            while (state->grants) {
+                AccessGrant* grant = state->grants;
+                state->grants      = grant->next;
+                mm::freeHeap(grant);
+            }
+
+            mm::freeHeap(state);
+            mm::freeHeap(endpoint);
+        }
+    }
+
+    /*
+     * 在线程退出时取消它仍挂在端点上的发送、接收或同步调用，解除栈上等待节点的登记。
+     */
+    void Endpoint::cancelThread(Thread* thread) {
+        {
+            InterruptSpinLockGuard listGuard(endpointListLock);
+
+            for (EndpointImplementation* state = endpoints; state;
+                 state                         = state->next) {
+                InterruptSpinLockGuard guard(state->lock);
+                Waiter** heads[] = {&state->senders, &state->receivers,
+                                    &state->callers};
+
+                for (Waiter** head : heads) {
+                    Waiter** link = head;
+
+                    while (*link) {
+                        Waiter* waiter = *link;
+
+                        if (waiter->thread != thread) {
+                            link = &waiter->next;
+                            continue;
+                        }
+
+                        *link = waiter->next;
+                        disarmTimer(*waiter);
+                        complete(*waiter, failure(os::ErrorCode::Interrupted));
+                    }
+                }
+
+                // 线程退出时既可能是请求方，也可能是领取同步调用的服务线程，两类关系都必须清理。
+                PendingCall** link = &state->calls;
+
+                while (*link) {
+                    PendingCall* call = *link;
+
+                    if (call->serverThread == thread &&
+                        call->result == waiting) {
+                        call->result       = failure(os::ErrorCode::PeerDied);
+                        call->serverThread = nullptr;
+
+                        for (Waiter* waiter = state->callers; waiter;
+                             waiter         = waiter->next) {
+                            if (waiter->thread == call->caller) {
+                                complete(*waiter,
+                                         failure(os::ErrorCode::PeerDied));
+                            }
+                        }
+                    }
+
+                    if (call->caller != thread) {
+                        link = &call->next;
+                        continue;
+                    }
+
+                    discardCallMessage(*state, *call);
+                    *link = call->next;
+                }
+            }
+        }
+
+        // 活动操作引用包含嵌套补页调用，统一由 ThreadCleanup 归还。
+        thread->setActiveEndpoint(nullptr);
+        thread->setActiveIpcCall(false);
+        thread->setIpcWaitResult(nullptr);
+    }
+
+    /*
+     * 用信号打断线程的可中断 IPC 等待，使线程能够返回用户态处理信号。
+     */
+    void Endpoint::interruptThread(Thread* thread) {
+        InterruptSpinLockGuard listGuard(endpointListLock);
+
+        for (EndpointImplementation* state = endpoints; state;
+             state                         = state->next) {
+            InterruptSpinLockGuard guard(state->lock);
+
+            for (PendingCall* call = state->calls; call; call = call->next) {
+                if (call->caller != thread || call->result != waiting) {
+                    continue;
+                }
+
+                call->result = failure(os::ErrorCode::Interrupted);
+                discardCallMessage(*state, *call);
+            }
+
+            Waiter* lists[] = {state->senders, state->receivers,
+                               state->callers};
+
+            for (Waiter* list : lists) {
+                for (Waiter* waiter = list; waiter; waiter = waiter->next) {
+                    if (waiter->thread == thread) {
+                        complete(*waiter, failure(os::ErrorCode::Interrupted));
+                    }
+                }
+            }
+        }
+    }
+
+    /*
+     * 从中断上下文投递简短通知。
+     * 只使用不会阻塞的路径，队列无法容纳时返回失败。
+     */
+    bool Endpoint::notifyFromInterrupt(uint64_t type, uint64_t value) {
+        EndpointImplementation& state = *getImplementation();
+        InterruptSpinLockGuard guard(state.lock);
+
+        if (state.destroyed) {
+            return false;
+        }
+
+        if (type == 0x495251 && value < 16) {
+            state.pendingIrqs |= static_cast<uint16_t>(1U << value);
+            wakeOne(state.receivers);
+
+            return true;
+        }
+
+        if (state.count == queueCapacity) {
+            return false;
+        }
+
+        QueuedMessage& queued =
+            state.queue[(state.head + state.count) % queueCapacity];
+        queued.message         = {};
+        queued.message.type    = type;
+        queued.message.length  = 1;
+        queued.message.data[0] = value;
+        ++state.count;
+        wakeOne(state.receivers);
+
+        return true;
+    }
+
+}  // namespace task

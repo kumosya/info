@@ -1,3 +1,7 @@
+/*
+ * 设备控制命令。
+ */
+
 #ifndef _POSIX_SYS_IOCTL_H
 #define _POSIX_SYS_IOCTL_H
 #ifndef _SYS_IOCTL_H

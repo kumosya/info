@@ -1,3 +1,7 @@
+/*
+ * 网络地址文本与二进制转换。
+ */
+
 #ifndef _POSIX_ARPA_INET_H
 #define _POSIX_ARPA_INET_H
 #ifndef _ARPA_INET_H

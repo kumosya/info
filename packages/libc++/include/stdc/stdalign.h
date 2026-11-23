@@ -1,3 +1,7 @@
+/*
+ * 类型对齐兼容定义。
+ */
+
 #ifndef _STDALIGN_H
 #define _STDALIGN_H
 

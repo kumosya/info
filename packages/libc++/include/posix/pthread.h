@@ -1,3 +1,7 @@
+/*
+ * POSIX 线程、互斥及条件等待。
+ */
+
 #ifndef _POSIX_PTHREAD_H
 #define _POSIX_PTHREAD_H
 
@@ -9,55 +13,61 @@ typedef uint64_t pthread_t;
 typedef unsigned int pthread_key_t;
 
 typedef struct {
-    size_t stack_size;
-    int detach_state;
+        size_t stack_size;
+        int detach_state;
+        size_t guard_size;
+        void *stack_address;
 } pthread_attr_t;
 
 typedef struct {
-    volatile uint32_t state;
-    uint32_t type;
-    volatile uint64_t owner;
-    uint32_t recursion;
+        volatile uint32_t state;
+        uint32_t type;
+        volatile uint64_t owner;
+        uint32_t recursion;
 } pthread_mutex_t;
 
 typedef struct {
-    int type;
+        int type;
+        int shared;
+        int robust;
 } pthread_mutexattr_t;
 
 typedef struct {
-    volatile uint32_t sequence;
+        volatile uint32_t sequence;
+        clockid_t clock_id;
 } pthread_cond_t;
 
 typedef struct {
-    int clock_id;
+        int clock_id;
+        int shared;
 } pthread_condattr_t;
 
 typedef struct {
-    volatile uint32_t state;
+        volatile uint32_t state;
 } pthread_once_t;
 
 typedef struct {
-    pthread_mutex_t mutex;
-    pthread_cond_t condition;
-    uint32_t readers;
-    uint32_t waiting_writers;
-    uint32_t writer;
+        pthread_mutex_t mutex;
+        pthread_cond_t condition;
+        uint32_t readers;
+        uint32_t waiting_writers;
+        uint32_t writer;
 } pthread_rwlock_t;
 
 typedef struct {
-    int reserved;
+        int reserved;
 } pthread_rwlockattr_t;
 
 typedef struct {
-    pthread_mutex_t mutex;
-    pthread_cond_t condition;
-    uint32_t threshold;
-    uint32_t waiting;
-    uint32_t generation;
+        pthread_mutex_t mutex;
+        pthread_cond_t condition;
+        uint32_t threshold;
+        uint32_t waiting;
+        uint32_t generation;
 } pthread_barrier_t;
 
 typedef struct {
-    int reserved;
+        int reserved;
 } pthread_barrierattr_t;
 
 typedef volatile uint32_t pthread_spinlock_t;
@@ -70,6 +80,10 @@ typedef volatile uint32_t pthread_spinlock_t;
 #define PTHREAD_MUTEX_DEFAULT PTHREAD_MUTEX_NORMAL
 #define PTHREAD_PROCESS_PRIVATE 0
 #define PTHREAD_PROCESS_SHARED 1
+#define PTHREAD_SCOPE_SYSTEM 0
+#define PTHREAD_SCOPE_PROCESS 1
+#define PTHREAD_MUTEX_STALLED 0
+#define PTHREAD_MUTEX_ROBUST 1
 #define PTHREAD_BARRIER_SERIAL_THREAD (-1)
 #define PTHREAD_DESTRUCTOR_ITERATIONS 4
 #define PTHREAD_KEYS_MAX 64
@@ -81,7 +95,7 @@ typedef volatile uint32_t pthread_spinlock_t;
 #define PTHREAD_STACK_MIN 16384
 
 #define PTHREAD_MUTEX_INITIALIZER {0, PTHREAD_MUTEX_DEFAULT, 0, 0}
-#define PTHREAD_COND_INITIALIZER {0}
+#define PTHREAD_COND_INITIALIZER {0, CLOCK_REALTIME}
 #define PTHREAD_ONCE_INIT {0}
 #define PTHREAD_RWLOCK_INITIALIZER \
     {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0, 0, 0}
@@ -90,10 +104,11 @@ typedef volatile uint32_t pthread_spinlock_t;
 extern "C" {
 #endif
 
+/* 登记线程取消时要执行的清理函数及其参数。 */
 struct __pthread_cleanup {
-    void (*routine)(void *);
-    void *argument;
-    struct __pthread_cleanup *previous;
+        void (*routine)(void *);
+        void *argument;
+        struct __pthread_cleanup *previous;
 };
 void __pthread_cleanup_push(struct __pthread_cleanup *, void (*)(void *),
                             void *);

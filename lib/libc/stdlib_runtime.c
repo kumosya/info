@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 #include "internal.h"
 #include "internal.h"
@@ -35,6 +36,7 @@ void __libc_run_exit_handlers(void) {
 
 void exit(int status) {
     __libc_run_exit_handlers();
+    fflush(NULL);
     __libc_os_runtime_fini();
     libcCloseAllDescriptors();
     __libc_os_exit_task(status);

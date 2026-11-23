@@ -1,3 +1,7 @@
+/*
+ * 资源限制和使用统计。
+ */
+
 #ifndef _POSIX_SYS_RESOURCE_H
 #define _POSIX_SYS_RESOURCE_H
 #ifndef _SYS_RESOURCE_H
@@ -22,31 +26,33 @@ extern "C" {
 
 typedef unsigned long long rlim_t;
 
+/* 保存某项资源的软上限与硬上限。 */
 struct rlimit {
-    rlim_t rlim_cur;
-    rlim_t rlim_max;
+        rlim_t rlim_cur;
+        rlim_t rlim_max;
 };
 
+/* 保存进程 CPU 时间和其他资源使用统计。 */
 struct rusage {
-    struct timeval ru_utime;
-    struct timeval ru_stime;
-    /* linux extentions, but useful */
-    long ru_maxrss;
-    long ru_ixrss;
-    long ru_idrss;
-    long ru_isrss;
-    long ru_minflt;
-    long ru_majflt;
-    long ru_nswap;
-    long ru_inblock;
-    long ru_oublock;
-    long ru_msgsnd;
-    long ru_msgrcv;
-    long ru_nsignals;
-    long ru_nvcsw;
-    long ru_nivcsw;
-    /* room for more... */
-    long __reserved[16];
+        struct timeval ru_utime;
+        struct timeval ru_stime;
+        /* linux extentions, but useful */
+        long ru_maxrss;
+        long ru_ixrss;
+        long ru_idrss;
+        long ru_isrss;
+        long ru_minflt;
+        long ru_majflt;
+        long ru_nswap;
+        long ru_inblock;
+        long ru_oublock;
+        long ru_msgsnd;
+        long ru_msgrcv;
+        long ru_nsignals;
+        long ru_nvcsw;
+        long ru_nivcsw;
+        /* room for more... */
+        long __reserved[16];
 };
 
 int getrlimit(int, struct rlimit *);

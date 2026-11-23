@@ -80,10 +80,10 @@ IMAGE_INPUTS := $(KERNEL) $(APPLICATION_PROGRAMS) $(SERVICE_PROGRAMS) \
 	$(USER_SHARED_LIBRARIES) $(INTERPRETER) script/lib/version.1 script/etc/hostname
 USER_SHARED_LDFLAGS := -shared -nostdlib -nostartfiles -nodefaultlibs \
 	-Wl,--build-id=none -Wl,--hash-style=sysv
-LIBC_SOURCES := internal.c fd.c filesystem.c directory.c glob.c credentials.c memory_runtime.c fenv_runtime.c resource_runtime.c basic_posix.c random_runtime.c signal_names.c message_runtime.c \
-	string_runtime.c ctype_runtime.c stdlib_runtime.c stdio_runtime.c \
-	time_runtime.c task_runtime.c signal_runtime.c atfork.c spawn.c mman.c aio.c mqueue.c environment.c errors.c pthread.c threads.c \
-	semaphore.c errno.c locale_runtime.c unicode_runtime.c stdio_extra.c posix_runtime.c accounts.c extensions.c
+LIBC_SOURCES := internal.c fd.c filesystem.c path_runtime.c file_advice.c directory.c tree_walk.c select_runtime.c poll_runtime.c glob.c credentials.c memory_runtime.c fenv_runtime.c resource_runtime.c basic_posix.c random_runtime.c signal_names.c message_runtime.c \
+	string_runtime.c ctype_runtime.c stdlib_runtime.c stdio_runtime.c stdio_stream.c stdio_process.c \
+	time_runtime.c cpu_clock.c task_runtime.c signal_runtime.c atfork.c spawn.c mman.c aio.c mqueue.c environment.c errors.c pthread.c pthread_attributes.c pthread_timed.c threads.c \
+	semaphore.c errno.c locale_runtime.c unicode_runtime.c termios_runtime.c stdio_extra.c wide_stdio.c posix_runtime.c accounts.c extensions.c
 LIBC_OBJECTS := $(addprefix $(OBJECT_DIR)/lib/libc/,$(LIBC_SOURCES:.c=.o)) $(OBJECT_DIR)/lib/libc/os_adapter.o
 LIBC_OBJECTS += $(OBJECT_DIR)/lib/libc/dlfcn_runtime.o
 PORTABLE_LIBC_SOURCES := $(wildcard lib/libc/portable/*/*.c)
@@ -135,7 +135,7 @@ kernel: $(KERNEL)
 services: $(SERVICE_PROGRAMS)
 applications: $(APPLICATION_PROGRAMS)
 
-libraries: $(USER_SHARED_LIBRARIES) $(PACKAGE_DIR)/libc++/COPYRIGHT $(INTERPRETER)
+libraries: $(LIBC) $(LIBCPP) $(LIBCPPABI) $(USER_SHARED_LIBRARIES) $(PACKAGE_DIR)/libc++/COPYRIGHT $(INTERPRETER)
 
 $(OBJECT_DIR)/lib/ld-x86-64/main.o: lib/ld-x86-64/main.cc
 	@mkdir -p $(@D)

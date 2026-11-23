@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  *
  * src/kernel/task/syscall/entry.S
- * SYSCALL stack entry and complete user-register restoration through IRET.
+ * 系统调用入口换栈与 IRET 用户寄存器恢复。
  */
 
 #include "kernel/cpu.h"
@@ -14,26 +14,22 @@
 .type syscallEntry, @function
 .extern syscallDispatchEntry
 
-// Offsets come from the CPU header shared with C++; hardcoding a second layout
-// here could save a user RSP into an unrelated per-CPU field.
+// 偏移直接使用与 C++ 共用的 CPU 头文件，避免两处布局不一致而把用户栈指针写进其他 CPU 字段。
 .set cpuKernelStackOffset, KERNEL_CPU_STACK_OFFSET
 .set cpuSyscallUserStackOffset, KERNEL_CPU_USER_STACK_OFFSET
 
-// SYSCALL supplies user RIP in RCX and flags in R11 but does not switch RSP.
-// After swapgs, save user RSP in per-CPU storage before loading the current
-// thread's kernel stack. IF is masked by FMASK during this vulnerable window.
+/*
+ * SYSCALL 只把用户 RIP 和标志放入 RCX、R11，不自动换栈；swapgs 后先保存用户 RSP，再切到线程内核栈，此窗口由 FMASK 屏蔽中断。
+ */
 syscallEntry:
     swapgs
     movq %rsp, %gs:cpuSyscallUserStackOffset
     movq %gs:cpuKernelStackOffset, %rsp
-    // Reserve room for converting the three-word user continuation to the
-    // five-word IRET tail later; it is not part of the eighteen-word C++
-    // context.
+
+    // 额外预留两个字，返回时把三字执行位置扩成五字 IRET 帧；它们不属于十八字的 C++ 现场。
     subq $16, %rsp
 
-    // Push user RSP/RFLAGS/RIP, then RAX and the remaining GPRs in reverse
-    // SyscallContext order. C++ receives a pointer to R15 at the lowest
-    // address.
+    // 按 SyscallContext 的相反顺序压入用户返回信息和通用寄存器，最终最低地址是 R15，C++ 收到的指针就指向这里。
     pushq %gs:cpuSyscallUserStackOffset
     pushq %r11
     pushq %rcx
@@ -54,21 +50,19 @@ syscallEntry:
     pushq %r15
 
     movq %rsp, %rdi
-    // The complete frame and kernel stack are now established, so C++ may
-    // allow interrupts while paging or waiting. Disable them again before
-    // return-frame conversion and GS ownership changes.
+
+    // 完整现场与内核栈建立后才允许中断；进入返回帧转换和 GS 切换之前再次关中断。
     sti
     call syscallDispatchEntry
     cli
 
 .global userContextReturn
-// Shared return target for ordinary syscalls, fork resume and signal return.
-// At offset 120 is RIP; replace the following three-word tail in place with
-// RIP/CS/RFLAGS/RSP/SS, using the two words reserved on entry. Do this before
-// restoring GPRs because RAX/RCX are temporary registers during conversion.
+
+/*
+ * 普通调用、fork 和信号返回共用此入口；先用预留空间把尾部改成 RIP、CS、RFLAGS、RSP、SS，再恢复会被转换过程使用的通用寄存器。
+ */
 userContextReturn:
-    # Convert the native three-word tail to an IRET frame before restoring GPRs.
-    # SYSRET cannot restore RCX/R11 or all signal-return flag combinations.
+    // 先转换返回帧再恢复寄存器；SYSRET 不能完整恢复 RCX、R11 和信号返回要求的标志组合。
     movq 128(%rsp), %rax
     movq 136(%rsp), %rcx
     movq $0x23, 128(%rsp)
@@ -90,9 +84,8 @@ userContextReturn:
     popq %rcx
     popq %rbx
     popq %rax
-    // All kernel GS-relative work is complete. Switch to user GS immediately
-    // before IRET; there must be no interruptible kernel continuation after
-    // it.
+
+    // 依赖内核 GS 的工作已经全部结束，紧邻 IRET 才切回用户 GS，中间不能再留下可被中断的内核后续操作。
     swapgs
     iretq
 .size syscallEntry, . - syscallEntry

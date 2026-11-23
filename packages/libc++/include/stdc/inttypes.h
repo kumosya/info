@@ -1,3 +1,7 @@
+/*
+ * 定宽整数格式化和转换。
+ */
+
 #ifndef _STDC_INTTYPES_H
 #define _STDC_INTTYPES_H
 #ifndef _INTTYPES_H
@@ -14,7 +18,7 @@ extern "C" {
 #include <bits/alltypes.h>
 
 typedef struct {
-    intmax_t quot, rem;
+        intmax_t quot, rem;
 } imaxdiv_t;
 
 intmax_t imaxabs(intmax_t);

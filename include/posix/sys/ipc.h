@@ -1,3 +1,7 @@
+/*
+ * 进程通信类型和接口。
+ */
+
 #ifndef _POSIX_SYS_IPC_H
 #define _POSIX_SYS_IPC_H
 #ifndef _SYS_IPC_H

@@ -1,3 +1,7 @@
+/*
+ * 用户目录管理。
+ */
+
 #include "service/users/messages.h"
 #pragma once
 
@@ -11,63 +15,69 @@
 #include <sys/stat.h>
 
 namespace users {
-class DirectoryManager {
-   public:
-    bool init() {
-        const char* directories[] = {
-            "/media",         "/run",       "/run/lock",       "/run/user",
-            "/lib",           "/var",       "/var/log",        "/var/lib",
-            "/var/lib/inpkg", "/var/cache", "/var/tmp",        "/etc/xdg",
-            "/usr/share",     "/usr/local", "/usr/local/share"};
-        for (const char* directory : directories)
-            if (!ensure(directory,
-                        !strcmp(directory, "/var/tmp") ? 01777 : 0755, 0, 0))
-                return false;
-        struct stat legacy{};
-        if (!lstat("/etc/inpkg/system", &legacy) &&
-            !merge("/etc/inpkg/system", "/var/lib/inpkg", 0))
-            return false;
-        return true;
-    }
+    /* 处理用户目录的创建、归属及访问条件。 */
+    class DirectoryManager {
+        public:
+            bool init() {
+                const char* directories[] = {
+                    "/media",     "/run",       "/run/lock",
+                    "/run/user",  "/lib",       "/var",
+                    "/var/log",   "/var/lib",   "/var/lib/inpkg",
+                    "/var/cache", "/var/tmp",   "/etc/xdg",
+                    "/usr/share", "/usr/local", "/usr/local/share"};
+                for (const char* directory : directories)
+                    if (!ensure(directory,
+                                !strcmp(directory, "/var/tmp") ? 01777 : 0755,
+                                0, 0))
+                        return false;
+                struct stat legacy{};
+                if (!lstat("/etc/inpkg/system", &legacy) &&
+                    !merge("/etc/inpkg/system", "/var/lib/inpkg", 0))
+                    return false;
+                return true;
+            }
 
-    bool prepare(const os::wire::UserProfile& profile) {
-        if (profile.home[0] != '/' || !strcmp(profile.home, "/") ||
-            !ensure(profile.home, profile.uid ? 0755 : 0700, profile.uid,
-                    profile.gid))
-            return false;
-        char old[512], current[512];
-        if (!join(old, sizeof(old), profile.home, "app") ||
-            !join(current, sizeof(current), profile.home, ".local"))
-            return false;
-        struct stat status{};
-        if (!lstat(old, &status) && !merge(old, current, 0)) return false;
-        const char* suffixes[] = {
-            ".local",         ".local/bin",   ".local/lib",
-            ".local/include", ".local/share", ".local/state",
-            ".config",        ".cache",       ".local/state/inpkg"};
-        for (const char* suffix : suffixes) {
-            if (!join(current, sizeof(current), profile.home, suffix) ||
-                !ensure(current, 0700, profile.uid, profile.gid))
-                return false;
-        }
-        if (std::snprintf(old, sizeof(old), "/etc/inpkg/%s", profile.name) >=
-            static_cast<int>(sizeof(old)))
-            return false;
-        if (!lstat(old, &status) && !merge(old, current, 0)) return false;
-        return true;
-    }
+            bool prepare(const os::wire::UserProfile& profile) {
+                if (profile.home[0] != '/' || !strcmp(profile.home, "/") ||
+                    !ensure(profile.home, profile.uid ? 0755 : 0700,
+                            profile.uid, profile.gid))
+                    return false;
+                char old[512], current[512];
+                if (!join(old, sizeof(old), profile.home, "app") ||
+                    !join(current, sizeof(current), profile.home, ".local"))
+                    return false;
+                struct stat status{};
+                if (!lstat(old, &status) && !merge(old, current, 0))
+                    return false;
+                const char* suffixes[] = {
+                    ".local",         ".local/bin",   ".local/lib",
+                    ".local/include", ".local/share", ".local/state",
+                    ".config",        ".cache",       ".local/state/inpkg"};
+                for (const char* suffix : suffixes) {
+                    if (!join(current, sizeof(current), profile.home, suffix) ||
+                        !ensure(current, 0700, profile.uid, profile.gid))
+                        return false;
+                }
+                if (std::snprintf(old, sizeof(old), "/etc/inpkg/%s",
+                                  profile.name) >=
+                    static_cast<int>(sizeof(old)))
+                    return false;
+                if (!lstat(old, &status) && !merge(old, current, 0))
+                    return false;
+                return true;
+            }
 
-    bool runtime(const os::wire::UserProfile& profile) {
-        char path[64];
-        std::snprintf(path, sizeof(path), "/run/user/%u", profile.uid);
-        return ensure(path, 0700, profile.uid, profile.gid);
-    }
+            bool runtime(const os::wire::UserProfile& profile) {
+                char path[64];
+                std::snprintf(path, sizeof(path), "/run/user/%u", profile.uid);
+                return ensure(path, 0700, profile.uid, profile.gid);
+            }
 
-    bool removeRuntime(uint32_t uid) {
-        char path[64];
-        std::snprintf(path, sizeof(path), "/run/user/%u", uid);
-        return removeTree(path, 0);
-    }
+            bool removeRuntime(uint32_t uid) {
+                char path[64];
+                std::snprintf(path, sizeof(path), "/run/user/%u", uid);
+                return removeTree(path, 0);
+            }
 
    private:
     static bool join(char* result, size_t capacity, const char* parent,

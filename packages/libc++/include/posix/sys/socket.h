@@ -1,3 +1,7 @@
+/*
+ * 套接字地址与消息收发。
+ */
+
 #ifndef _POSIX_SYS_SOCKET_H
 #define _POSIX_SYS_SOCKET_H
 #ifndef _SYS_SOCKET_H
@@ -20,50 +24,54 @@ extern "C" {
 #include <bits/alltypes.h>
 #include <bits/socket.h>
 
+/* 汇总套接字地址、分散缓冲区和控制消息，用于一次消息收发。 */
 struct msghdr {
-    void *msg_name;
-    socklen_t msg_namelen;
-    struct iovec *msg_iov;
+        void *msg_name;
+        socklen_t msg_namelen;
+        struct iovec *msg_iov;
 #if __LONG_MAX > 0x7fffffff && __BYTE_ORDER == __BIG_ENDIAN
-    int __pad1;
+        int __pad1;
 #endif
-    int msg_iovlen;
+        int msg_iovlen;
 #if __LONG_MAX > 0x7fffffff && __BYTE_ORDER == __LITTLE_ENDIAN
-    int __pad1;
+        int __pad1;
 #endif
-    void *msg_control;
+        void *msg_control;
 #if __LONG_MAX > 0x7fffffff && __BYTE_ORDER == __BIG_ENDIAN
-    int __pad2;
+        int __pad2;
 #endif
-    socklen_t msg_controllen;
+        socklen_t msg_controllen;
 #if __LONG_MAX > 0x7fffffff && __BYTE_ORDER == __LITTLE_ENDIAN
-    int __pad2;
+        int __pad2;
 #endif
-    int msg_flags;
+        int msg_flags;
 };
 
+/* 描述套接字控制消息的长度、所属协议层和类型。 */
 struct cmsghdr {
 #if __LONG_MAX > 0x7fffffff && __BYTE_ORDER == __BIG_ENDIAN
-    int __pad1;
+        int __pad1;
 #endif
-    socklen_t cmsg_len;
+        socklen_t cmsg_len;
 #if __LONG_MAX > 0x7fffffff && __BYTE_ORDER == __LITTLE_ENDIAN
-    int __pad1;
+        int __pad1;
 #endif
-    int cmsg_level;
-    int cmsg_type;
+        int cmsg_level;
+        int cmsg_type;
 };
 
 #ifdef _GNU_SOURCE
+/* 保存套接字传递的进程、用户和组身份。 */
 struct ucred {
-    pid_t pid;
-    uid_t uid;
-    gid_t gid;
+        pid_t pid;
+        uid_t uid;
+        gid_t gid;
 };
 
+/* 在普通消息头之外保存一次批量收发消息的实际长度。 */
 struct mmsghdr {
-    struct msghdr msg_hdr;
-    unsigned int msg_len;
+        struct msghdr msg_hdr;
+        unsigned int msg_len;
 };
 
 struct timespec;
@@ -73,9 +81,10 @@ int recvmmsg(int, struct mmsghdr *, unsigned int, unsigned int,
              struct timespec *);
 #endif
 
+/* 保存套接字关闭时是否等待待发送数据以及等待时长。 */
 struct linger {
-    int l_onoff;
-    int l_linger;
+        int l_onoff;
+        int l_linger;
 };
 
 #define SHUT_RD 0
@@ -377,15 +386,17 @@ struct linger {
 #define SCM_RIGHTS 0x01
 #define SCM_CREDENTIALS 0x02
 
+/* 提供套接字地址的通用协议族和地址存储入口。 */
 struct sockaddr {
-    sa_family_t sa_family;
-    char sa_data[14];
+        sa_family_t sa_family;
+        char sa_data[14];
 };
 
+/* 提供足够大且对齐的存储，可容纳不同协议族的套接字地址。 */
 struct sockaddr_storage {
-    sa_family_t ss_family;
-    char __ss_padding[128 - sizeof(long) - sizeof(sa_family_t)];
-    unsigned long __ss_align;
+        sa_family_t ss_family;
+        char __ss_padding[128 - sizeof(long) - sizeof(sa_family_t)];
+        unsigned long __ss_align;
 };
 
 int socket(int, int, int);

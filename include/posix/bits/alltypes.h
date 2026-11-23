@@ -1,3 +1,7 @@
+/*
+ * 跨 POSIX 头文件共享的基础类型布局。
+ */
+
 /* musl 1.2.5 scalar type requests, with osinfo aggregate ABIs. */
 #define _Addr long
 #define _Int64 long
@@ -40,8 +44,8 @@ typedef double double_t;
 
 #if defined(__NEED_max_align_t) && !defined(__DEFINED_max_align_t)
 typedef struct {
-    long long __ll;
-    long double __ld;
+        long long __ll;
+        long double __ld;
 } max_align_t;
 #define __DEFINED_max_align_t
 #endif
@@ -221,19 +225,21 @@ typedef long clock_t;
 #endif
 
 #if defined(__NEED_struct_timeval) && !defined(__DEFINED_struct_timeval)
+/* 用秒和微秒表示时间点或时间长度。 */
 struct timeval {
-    time_t tv_sec;
-    suseconds_t tv_usec;
+        time_t tv_sec;
+        suseconds_t tv_usec;
 };
 #define __DEFINED_struct_timeval
 #endif
 
 #if defined(__NEED_struct_timespec) && !defined(__DEFINED_struct_timespec)
+/* 用秒和纳秒表示时间点或时间长度。 */
 struct timespec {
-    time_t tv_sec;
-    int : 8 * (sizeof(time_t) - sizeof(long)) * (__BYTE_ORDER == 4321);
-    long tv_nsec;
-    int : 8 * (sizeof(time_t) - sizeof(long)) * (__BYTE_ORDER != 4321);
+        time_t tv_sec;
+        int : 8 * (sizeof(time_t) - sizeof(long)) * (__BYTE_ORDER == 4321);
+        long tv_nsec;
+        int : 8 * (sizeof(time_t) - sizeof(long)) * (__BYTE_ORDER != 4321);
 };
 #define __DEFINED_struct_timespec
 #endif
@@ -275,8 +281,9 @@ typedef unsigned useconds_t;
 #endif
 
 #if defined(__NEED_struct__IO_FILE) && !defined(__DEFINED_struct__IO_FILE)
+/* 保存标准文件流的描述符、缓冲及状态，是 FILE 的内部表示。 */
 struct _IO_FILE {
-    char __x;
+        char __x;
 };
 #define __DEFINED_struct__IO_FILE
 #endif
@@ -298,7 +305,7 @@ typedef __builtin_va_list __isoc_va_list;
 
 #if defined(__NEED_mbstate_t) && !defined(__DEFINED_mbstate_t)
 typedef struct __mbstate_t {
-    unsigned __opaque1, __opaque2;
+        unsigned __opaque1, __opaque2;
 } mbstate_t;
 #define __DEFINED_mbstate_t
 #endif
@@ -314,16 +321,18 @@ typedef __UINT64_TYPE__ sigset_t;
 #endif
 
 #if defined(__NEED_struct_iovec) && !defined(__DEFINED_struct_iovec)
+/* 描述分散读写中的一个缓冲区地址及长度。 */
 struct iovec {
-    void *iov_base;
-    size_t iov_len;
+        void *iov_base;
+        size_t iov_len;
 };
 #define __DEFINED_struct_iovec
 #endif
 
 #if defined(__NEED_struct_winsize) && !defined(__DEFINED_struct_winsize)
+/* 保存终端字符行列数与像素尺寸。 */
 struct winsize {
-    unsigned short ws_row, ws_col, ws_xpixel, ws_ypixel;
+        unsigned short ws_row, ws_col, ws_xpixel, ws_ypixel;
 };
 #define __DEFINED_struct_winsize
 #endif
@@ -340,22 +349,22 @@ typedef unsigned short sa_family_t;
 
 #if defined(__NEED_mtx_t) && !defined(__DEFINED_mtx_t)
 typedef struct {
-    union {
-        int __i[sizeof(long) == 8 ? 10 : 6];
-        volatile int __vi[sizeof(long) == 8 ? 10 : 6];
-        volatile void *volatile __p[sizeof(long) == 8 ? 5 : 6];
-    } __u;
+        union {
+                int __i[sizeof(long) == 8 ? 10 : 6];
+                volatile int __vi[sizeof(long) == 8 ? 10 : 6];
+                volatile void *volatile __p[sizeof(long) == 8 ? 5 : 6];
+        } __u;
 } mtx_t;
 #define __DEFINED_mtx_t
 #endif
 
 #if defined(__NEED_cnd_t) && !defined(__DEFINED_cnd_t)
 typedef struct {
-    union {
-        int __i[12];
-        volatile int __vi[12];
-        void *__p[12 * sizeof(int) / sizeof(void *)];
-    } __u;
+        union {
+                int __i[12];
+                volatile int __vi[12];
+                void *__p[12 * sizeof(int) / sizeof(void *)];
+        } __u;
 } cnd_t;
 #define __DEFINED_cnd_t
 #endif

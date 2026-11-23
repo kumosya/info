@@ -1,3 +1,7 @@
+/*
+ * 字节序判断与转换。
+ */
+
 #ifndef _POSIX_ENDIAN_H
 #define _POSIX_ENDIAN_H
 #ifndef _ENDIAN_H

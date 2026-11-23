@@ -1,3 +1,7 @@
+/*
+ * 宽字符分类和转换。
+ */
+
 #ifndef _STDC_WCTYPE_H
 #define _STDC_WCTYPE_H
 #ifndef _WCTYPE_H

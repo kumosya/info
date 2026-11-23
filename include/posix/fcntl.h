@@ -1,3 +1,7 @@
+/*
+ * 文件打开方式与描述符控制。
+ */
+
 #ifndef _POSIX_FCNTL_H
 #define _POSIX_FCNTL_H
 
@@ -29,6 +33,12 @@
 #define F_GETFL 3
 #define F_SETFL 4
 #define F_DUPFD_CLOEXEC 1030
+#define POSIX_FADV_NORMAL 0
+#define POSIX_FADV_RANDOM 1
+#define POSIX_FADV_SEQUENTIAL 2
+#define POSIX_FADV_WILLNEED 3
+#define POSIX_FADV_DONTNEED 4
+#define POSIX_FADV_NOREUSE 5
 
 #ifdef __cplusplus
 extern "C" {

@@ -1,3 +1,7 @@
+/*
+ * C 原子操作。
+ */
+
 #ifndef _STDC_STDATOMIC_H
 #define _STDC_STDATOMIC_H
 
@@ -65,7 +69,7 @@ __ATOMIC_INTEGER_TYPES(64)
 #undef __ATOMIC_INTEGER_TYPES
 
 typedef struct {
-    atomic_bool value;
+        atomic_bool value;
 } atomic_flag;
 #define ATOMIC_FLAG_INIT {false}
 #define atomic_init(p, v) (*(p) = (v))

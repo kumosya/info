@@ -1,3 +1,7 @@
+/*
+ * 设备编号编码和拆解。
+ */
+
 #ifndef _POSIX_SYS_SYSMACROS_H
 #define _POSIX_SYS_SYSMACROS_H
 

@@ -185,8 +185,8 @@ static void a_barrier() {
 #define a_and_64 a_and_64
 static inline void a_and_64(volatile uint64_t *p, uint64_t v) {
     union {
-        uint64_t v;
-        uint32_t r[2];
+            uint64_t v;
+            uint32_t r[2];
     } u = {v};
     if (u.r[0] + 1) a_and((int *)p, u.r[0]);
     if (u.r[1] + 1) a_and((int *)p + 1, u.r[1]);
@@ -197,8 +197,8 @@ static inline void a_and_64(volatile uint64_t *p, uint64_t v) {
 #define a_or_64 a_or_64
 static inline void a_or_64(volatile uint64_t *p, uint64_t v) {
     union {
-        uint64_t v;
-        uint32_t r[2];
+            uint64_t v;
+            uint32_t r[2];
     } u = {v};
     if (u.r[0]) a_or((int *)p, u.r[0]);
     if (u.r[1]) a_or((int *)p + 1, u.r[1]);

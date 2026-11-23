@@ -1,8 +1,9 @@
 #include <cerrno>
+#include <cstdlib>
 #include <devctl.h>
 #include <fcntl.h>
-#include <cstdlib>
 #include <new>
+#include <poll.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -38,8 +39,7 @@ static_assert(sizeof(OsMessageQueueAttributes) ==
               sizeof(os::wire::MessageQueueAttributes));
 static_assert(sizeof(OsExecImageInfo) == sizeof(os::wire::ExecImageInfo));
 
-namespace {
-int64_t posixFileResult(int64_t status) {
+static int64_t posixFileResult(int64_t status) {
     if (status >= 0) return status;
     switch (static_cast<os::ErrorCode>(status)) {
         case os::ErrorCode::InvalidArgument:
@@ -74,29 +74,74 @@ int64_t posixFileResult(int64_t status) {
             return -EIO;
     }
 }
-os::File borrowedFile(uint64_t fs, uint64_t descriptor) {
+static os::File borrowedFile(uint64_t fs, uint64_t descriptor) {
     os::File value;
     value.borrow(fs, descriptor, nullptr, O_RDWR);
     return value;
 }
-bool filePathMessage(os::IpcMessage& request, os::FsRequest op,
-                     const char* path) {
+static bool filePathMessage(os::IpcMessage& request, os::FsRequest op,
+                            const char* path) {
     if (!path || !*path || os::Runtime::stringLength(path) >= 384) return false;
     request.type   = static_cast<uint64_t>(op);
     request.length = 48;
     os::Runtime::copyString(reinterpret_cast<char*>(request.data), path, 384);
     return true;
 }
-bool filePathCall(uint64_t fs, os::FsRequest op, const char* path) {
+static bool filePathCall(uint64_t fs, os::FsRequest op, const char* path) {
     os::IpcMessage request{}, reply{};
     return filePathMessage(request, op, path) &&
            !os::callService(fs, request, reply) && reply.length &&
            !reply.data[0];
 }
-}  // namespace
 
 #pragma GCC visibility push(hidden)
 extern "C" {
+
+/* 后端只观察就绪状态；不调用 read/write，也不改变文件偏移。 */
+int __libc_os_descriptor_ready(int kind, uint64_t handle) {
+    if (kind == DESCRIPTOR_FILE || kind == DESCRIPTOR_SHARED_MEMORY ||
+        kind == DESCRIPTOR_TYPED_MEMORY)
+        return POLLIN | POLLRDNORM | POLLOUT | POLLWRNORM;
+    os::IpcMessage request{}, reply{};
+    if (kind == DESCRIPTOR_PIPE_READ || kind == DESCRIPTOR_PIPE_WRITE ||
+        handle) {
+        request.type    = static_cast<uint64_t>(os::PipeOperation::Readiness);
+        request.length  = 1;
+        request.data[0] = handle;
+        const int64_t status =
+            services::RequestChannel(os::CoreServiceKind::Pipe)
+                .result(request, reply);
+        return static_cast<int>(posixFileResult(status));
+    }
+    request.type    = static_cast<uint64_t>(os::TerminalRequest::Readiness);
+    request.length  = 1;
+    request.data[0] = os::Runtime::getConsoleId();
+    os::Ipc::Handle endpoint(os::detail::RegistryClient().lookup("console", 1));
+    if (!endpoint.getValid()) return -ENODEV;
+    const int status = os::callService(endpoint.getValue(), request, reply);
+    if (status) return static_cast<int>(posixFileResult(status));
+    if (reply.length != 2) return -EIO;
+    if (reply.data[0]) return static_cast<int>(posixFileResult(reply.data[0]));
+    return POLLOUT | POLLWRNORM | (reply.data[1] ? POLLIN | POLLRDNORM : 0);
+}
+
+int __libc_os_readiness_begin(OsReadinessState* state, const uint64_t* mask) {
+    return static_cast<int>(posixFileResult(os::invokeSyscall(
+        os::SyscallNumber::Readiness, 0, reinterpret_cast<uint64_t>(state), 0,
+        reinterpret_cast<uint64_t>(mask))));
+}
+uint64_t __libc_os_readiness_generation(void) {
+    return os::invokeSyscall(os::SyscallNumber::Readiness, 4);
+}
+int __libc_os_readiness_wait(const OsReadinessState* state, uint64_t deadline) {
+    return static_cast<int>(posixFileResult(
+        os::invokeSyscall(os::SyscallNumber::Readiness, 1,
+                          reinterpret_cast<uint64_t>(state), deadline)));
+}
+void __libc_os_readiness_end(uint64_t token) {
+    os::invokeSyscall(os::SyscallNumber::Readiness, 3, token);
+}
+void __libc_os_readiness_notify(void) { os::notifyReadiness(); }
 
 void __libc_os_bind_environment(char*** environment) {
     os::Runtime::bindEnvironment(environment);
@@ -112,7 +157,8 @@ void* __libc_file_adopt(uint64_t fs, uint64_t handle, const char* path,
         kind == DESCRIPTOR_FILE
             ? result->adopt(fs, handle, path, flags)
             : result->adoptHandle(handle,
-                                  (kind == DESCRIPTOR_SHARED_MEMORY || kind == DESCRIPTOR_TYPED_MEMORY)
+                                  (kind == DESCRIPTOR_SHARED_MEMORY ||
+                                   kind == DESCRIPTOR_TYPED_MEMORY)
                                       ? os::File::Backend::SharedMemory
                                   : (kind == DESCRIPTOR_TERMINAL_READ ||
                                      kind == DESCRIPTOR_TERMINAL_WRITE) &&
@@ -152,6 +198,12 @@ int __libc_file_close(void* object) {
     file->~File();
     free(file);
     return 1;
+}
+
+int __libc_file_truncate(void* object, off_t length) {
+    if (!object) return -EBADF;
+    return static_cast<int>(
+        posixFileResult(static_cast<os::File*>(object)->truncate(length)));
 }
 void __libc_file_rebind(void* object, uint64_t handle) {
     if (!object) return;
@@ -517,8 +569,37 @@ int __libc_os_wait_thread(uint64_t threadId, int* exitCode, int noHang) {
 int __libc_os_wait_address(volatile uint32_t* address, uint32_t expected) {
     return os::waitAddress(address, expected);
 }
+int __libc_os_wait_address_until(volatile uint32_t* address, uint32_t expected,
+                                 uint64_t deadline) {
+    return static_cast<int>(os::invokeSyscall(
+        os::SyscallNumber::WaitAddress, reinterpret_cast<uint64_t>(address),
+        expected, deadline));
+}
+int __libc_os_wait_address_masked(volatile uint32_t* address, uint32_t expected,
+                                  uint64_t deadline, const uint64_t* mask) {
+    return static_cast<int>(os::invokeSyscall(
+        os::SyscallNumber::WaitAddress, reinterpret_cast<uint64_t>(address),
+        expected, deadline, reinterpret_cast<uint64_t>(mask)));
+}
 int __libc_os_wake_address(volatile uint32_t* address, uint32_t count) {
     return os::wakeAddress(address, count);
+}
+/* 从调度器实际记账读取 CPU 用时，不能用启动后的墙上时间替代。 */
+int __libc_os_cpu_time(uint64_t id, int thread, uint64_t* nanoseconds) {
+    if (thread) {
+        os::wire::ThreadInfo info{};
+        const uint64_t target = id ? id : __libc_os_get_thread_id();
+        const int status = os::detail::TaskQuery().threadInfo(0, target, info);
+        if (status || info.id != target) return ESRCH;
+        *nanoseconds = info.cpuNanoseconds;
+    } else {
+        os::wire::TaskInfo info{};
+        const int status = os::detail::TaskQuery().query(
+            id ? id : __libc_os_get_task_id(), info);
+        if (status) return ESRCH;
+        *nanoseconds = info.cpuNanoseconds;
+    }
+    return 0;
 }
 int __libc_os_set_signal_action(uint32_t signal, const OsSignalAction* action,
                                 OsSignalAction* oldAction) {
@@ -776,6 +857,15 @@ uint64_t __libc_os_get_monotonic_time() {
 uint64_t __libc_os_get_wall_clock_time() {
     return os::Sys().readWallClockTime();
 }
+int __libc_os_set_wall_clock(uint64_t nanoseconds) {
+    os::IpcMessage request{}, reply{};
+    request.type = static_cast<uint64_t>(os::SystemOperation::SetWallClockTime);
+    request.length       = 1;
+    request.data[0]      = nanoseconds;
+    const int64_t status = services::RequestChannel(os::CoreServiceKind::System)
+                               .result(request, reply);
+    return status == -3 ? EPERM : status ? EINVAL : 0;
+}
 uint64_t __libc_os_get_clock_resolution() {
     return os::Sys().readClockResolution();
 }
@@ -838,6 +928,17 @@ int __libc_os_rename_file(uint64_t fs, const char* existing,
                             newPath, 384);
     request.length = 96;
     return os::callService(fs, request, reply) == 0 && reply.data[0] == 0;
+}
+
+int __libc_os_sync_all(void) {
+    os::IpcMessage request{}, reply{};
+    request.type        = static_cast<uint64_t>(os::FsRequest::SyncAll);
+    const int transport = os::callService(libcFsService(), request, reply);
+    if (transport) return static_cast<int>(-posixFileResult(transport));
+    if (reply.length != 1) return EIO;
+    return reply.data[0]
+               ? static_cast<int>(-static_cast<int64_t>(reply.data[0]))
+               : 0;
 }
 
 void __libc_os_runtime_fini() { os::Runtime::runtimeFini(); }
@@ -904,37 +1005,59 @@ extern "C" int __libc_os_mm_sync(uint64_t address, uint64_t size) {
 
 extern "C" pid_t tcgetpgrp(int descriptor) {
     OpenDescription* description = libcDescriptor(descriptor);
-    if (!description) { errno=EBADF;return -1; }
+    if (!description) {
+        errno = EBADF;
+        return -1;
+    }
     if (!isatty(descriptor)) return -1;
-    uint64_t group=0;
+    uint64_t group = 0;
     if (description->handle) {
         os::detail::PtyClient terminal(description->handle);
-        const int status=terminal.queryForegroundGroup(group);
-        if(status) {errno=-posixFileResult(status);return -1;}
+        const int status = terminal.queryForegroundGroup(group);
+        if (status) {
+            errno = -posixFileResult(status);
+            return -1;
+        }
     } else {
         os::Console terminal;
-        const int status=terminal.openCurrent();
-        if(status) {errno=-posixFileResult(status);return -1;}
-        group=terminal.getForegroundGroup();
+        const int status = terminal.openCurrent();
+        if (status) {
+            errno = -posixFileResult(status);
+            return -1;
+        }
+        group = terminal.getForegroundGroup();
     }
-    if(group>INT32_MAX) {errno=EOVERFLOW;return -1;}
+    if (group > INT32_MAX) {
+        errno = EOVERFLOW;
+        return -1;
+    }
     return pid_t(group);
 }
 extern "C" int tcsetpgrp(int descriptor, pid_t group) {
     OpenDescription* description = libcDescriptor(descriptor);
-    if (!description) {errno=EBADF;return -1;}
+    if (!description) {
+        errno = EBADF;
+        return -1;
+    }
     if (!isatty(descriptor)) return -1;
-    if(group<=0) {errno=EINVAL;return -1;}
+    if (group <= 0) {
+        errno = EINVAL;
+        return -1;
+    }
     if (description->handle) {
         os::detail::PtyClient terminal(description->handle);
-        if(!terminal.setForegroundGroup(uint64_t(group))) {
-            errno=-posixFileResult(terminal.getError());return -1;
+        if (!terminal.setForegroundGroup(uint64_t(group))) {
+            errno = -posixFileResult(terminal.getError());
+            return -1;
         }
     } else {
         os::Console terminal;
-        int status=terminal.openCurrent();
-        if(!status)status=terminal.setForegroundGroup(uint64_t(group));
-        if(status) {errno=-posixFileResult(status);return -1;}
+        int status = terminal.openCurrent();
+        if (!status) status = terminal.setForegroundGroup(uint64_t(group));
+        if (status) {
+            errno = -posixFileResult(status);
+            return -1;
+        }
     }
     return 0;
 }
@@ -1054,37 +1177,50 @@ extern "C" int tcsetattr(int descriptor, int action,
     return 0;
 }
 
-extern "C" int __libc_os_mm_policy(unsigned operation,uint64_t address,uint64_t size,uint64_t argument) {
-    const int result=os::detail::MappingClient().policy(operation,address,size,argument);
-    return result<0?-int(posixFileResult(result)):result;
+extern "C" int __libc_os_mm_policy(unsigned operation, uint64_t address,
+                                   uint64_t size, uint64_t argument) {
+    const int result =
+        os::detail::MappingClient().policy(operation, address, size, argument);
+    return result < 0 ? -int(posixFileResult(result)) : result;
 }
 
 extern "C" int posix_devctl(int descriptor, int command, void* data,
-                             size_t length, int* deviceInfo) {
-    const int saved = errno;
-    const auto finish = [saved](int error) { errno = saved; return error; };
+                            size_t length, int* deviceInfo) {
+    const int saved   = errno;
+    const auto finish = [saved](int error) {
+        errno = saved;
+        return error;
+    };
     OpenDescription* description = libcDescriptor(descriptor);
     if (!description) return finish(EBADF);
-    if (!data || !deviceInfo || !__libc_os_accessible(deviceInfo,sizeof(*deviceInfo),1)) return finish(EFAULT);
-    if (command != OSINFO_DEVCTL_TTY_GET_SIZE && command != OSINFO_DEVCTL_TTY_SET_SIZE)
+    if (!data || !deviceInfo ||
+        !__libc_os_accessible(deviceInfo, sizeof(*deviceInfo), 1))
+        return finish(EFAULT);
+    if (command != OSINFO_DEVCTL_TTY_GET_SIZE &&
+        command != OSINFO_DEVCTL_TTY_SET_SIZE)
         return finish(ENOTTY);
     if (length != sizeof(osinfo_devctl_tty_size)) return finish(EINVAL);
-    if(!__libc_os_accessible(data,length,command==OSINFO_DEVCTL_TTY_GET_SIZE))return finish(EFAULT);
+    if (!__libc_os_accessible(data, length,
+                              command == OSINFO_DEVCTL_TTY_GET_SIZE))
+        return finish(EFAULT);
     if (command == OSINFO_DEVCTL_TTY_SET_SIZE &&
-        (description->flags & O_ACCMODE) == O_RDONLY) return finish(EACCES);
+        (description->flags & O_ACCMODE) == O_RDONLY)
+        return finish(EACCES);
     if (!description->handle || !isatty(descriptor)) return finish(ENOTTY);
-    os::Ipc::Handle endpoint(os::detail::RegistryClient().lookup(os::ttyServiceName, 100));
+    os::Ipc::Handle endpoint(
+        os::detail::RegistryClient().lookup(os::ttyServiceName, 100));
     if (!endpoint.getValue()) return finish(ENODEV);
     os::IpcMessage request{}, reply{};
-    request.type = static_cast<uint64_t>(os::TtyRequest::DeviceControl);
-    request.length = command == OSINFO_DEVCTL_TTY_SET_SIZE ? 4 : 2;
-    request.data[0] = command;
-    request.data[1] = length;
+    request.type        = static_cast<uint64_t>(os::TtyRequest::DeviceControl);
+    request.length      = command == OSINFO_DEVCTL_TTY_SET_SIZE ? 4 : 2;
+    request.data[0]     = command;
+    request.data[1]     = length;
     request.handleCount = 1;
-    request.handles[0] = description->handle;
+    request.handles[0]  = description->handle;
     if (command == OSINFO_DEVCTL_TTY_SET_SIZE)
         os::Runtime::copyBytes(&request.data[2], data, length);
-    if (os::callService(endpoint.getValue(), request, reply) || reply.length != 4)
+    if (os::callService(endpoint.getValue(), request, reply) ||
+        reply.length != 4)
         return finish(EIO);
     if (reply.data[0]) return finish(static_cast<int>(reply.data[0]));
     *deviceInfo = static_cast<int>(reply.data[1]);
@@ -1093,17 +1229,20 @@ extern "C" int posix_devctl(int descriptor, int command, void* data,
     return finish(0);
 }
 
-extern "C" int64_t __libc_os_mm_offset(uint64_t address,uint64_t size,
-                                        uint64_t* offset,uint64_t* contiguous,unsigned* rights) {
-    return os::detail::MappingClient().memoryOffset(address,size,*offset,*contiguous,*rights);
+extern "C" int64_t __libc_os_mm_offset(uint64_t address, uint64_t size,
+                                       uint64_t* offset, uint64_t* contiguous,
+                                       unsigned* rights) {
+    return os::detail::MappingClient().memoryOffset(address, size, *offset,
+                                                    *contiguous, *rights);
 }
 
-extern "C" int64_t __libc_os_typed_open(const char* name,int flags,unsigned policy) {
-    return os::detail::MappingClient().openTyped(name,flags,policy);
+extern "C" int64_t __libc_os_typed_open(const char* name, int flags,
+                                        unsigned policy) {
+    return os::detail::MappingClient().openTyped(name, flags, policy);
 }
-extern "C" int64_t __libc_os_typed_allocate(uint64_t handle,uint64_t size) {
-    return os::detail::MappingClient().allocateTyped(handle,size);
+extern "C" int64_t __libc_os_typed_allocate(uint64_t handle, uint64_t size) {
+    return os::detail::MappingClient().allocateTyped(handle, size);
 }
-extern "C" int __libc_os_typed_info(uint64_t handle,uint64_t* available) {
-    return os::detail::MappingClient().typedInfo(handle,*available);
+extern "C" int __libc_os_typed_info(uint64_t handle, uint64_t* available) {
+    return os::detail::MappingClient().typedInfo(handle, *available);
 }

@@ -1,3 +1,7 @@
+/*
+ * 字符分类及大小写转换。
+ */
+
 #ifndef _STDC_CTYPE_H
 #define _STDC_CTYPE_H
 

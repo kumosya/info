@@ -3,10 +3,12 @@
 #include <semaphore.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <pthread.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
 #include "internal.h"
+#include "wait_deadline.h"
 
 #define NAMED_SEMAPHORE_CAPACITY 16
 #define NAMED_SEMAPHORE_PAGE_SIZE 4096
@@ -61,19 +63,6 @@ static int register_named_semaphore(sem_t* semaphore, int descriptor) {
     return 0;
 }
 
-static int valid_time(const struct timespec* value) {
-    return value != NULL && value->tv_sec >= 0 && value->tv_nsec >= 0 &&
-           value->tv_nsec < 1000000000L;
-}
-
-static int deadline_reached(const struct timespec* absolute_time) {
-    struct timespec now;
-    if (clock_gettime(CLOCK_REALTIME, &now) != 0) return 1;
-    return now.tv_sec > absolute_time->tv_sec ||
-           (now.tv_sec == absolute_time->tv_sec &&
-            now.tv_nsec >= absolute_time->tv_nsec);
-}
-
 int sem_init(sem_t* semaphore, int task_shared, unsigned int value) {
     if (semaphore == NULL || value > SEM_VALUE_MAX) {
         errno = EINVAL;
@@ -117,23 +106,37 @@ int sem_wait(sem_t* semaphore) {
     }
     while (sem_trywait(semaphore) != 0) {
         if (errno != EAGAIN) return -1;
+        pthread_testcancel();
+        uint64_t generation = __libc_os_signal_generation();
         __libc_os_wait_address(&semaphore->value, 0);
+        pthread_testcancel();
+        if (__libc_os_signal_generation() != generation) {
+            errno = EINTR;
+            return -1;
+        }
     }
     return 0;
 }
 
 int sem_timedwait(sem_t* semaphore, const struct timespec* absolute_time) {
-    if (!valid_time(absolute_time)) {
+    return sem_clockwait(semaphore, CLOCK_REALTIME, absolute_time);
+}
+
+/* post 与等待登记之间由内核再次检查计数，不会在计数可用时误睡。 */
+int sem_clockwait(sem_t* restrict semaphore, clockid_t clock,
+                   const struct timespec* restrict absolute_time) {
+    if (clock != CLOCK_REALTIME && clock != CLOCK_MONOTONIC) {
         errno = EINVAL;
         return -1;
     }
     while (sem_trywait(semaphore) != 0) {
         if (errno != EAGAIN) return -1;
-        if (deadline_reached(absolute_time)) {
-            errno = ETIMEDOUT;
-            return -1;
-        }
-        __libc_os_sleep(1);
+        pthread_testcancel();
+        uint64_t generation = __libc_os_signal_generation();
+        int error = libcDeadlineWait(&semaphore->value, 0, clock, absolute_time);
+        pthread_testcancel();
+        if (__libc_os_signal_generation() != generation) error = EINTR;
+        if (error) { errno = error; return -1; }
     }
     return 0;
 }

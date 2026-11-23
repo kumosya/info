@@ -1,3 +1,7 @@
+/*
+ * Unicode 字符转换。
+ */
+
 #ifndef _STDC_UCHAR_H
 #define _STDC_UCHAR_H
 #ifndef _UCHAR_H

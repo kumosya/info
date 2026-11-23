@@ -1,3 +1,7 @@
+/*
+ * 分散读写缓冲区。
+ */
+
 #ifndef _POSIX_SYS_UIO_H
 #define _POSIX_SYS_UIO_H
 
@@ -6,9 +10,10 @@
 #include <sys/types.h>
 
 #ifndef __DEFINED_struct_iovec
+/* 描述分散读写中的一个缓冲区地址及长度。 */
 struct iovec {
-    void* iov_base;
-    size_t iov_len;
+        void* iov_base;
+        size_t iov_len;
 };
 #define __DEFINED_struct_iovec
 #endif

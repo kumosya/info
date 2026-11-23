@@ -12,3 +12,8 @@ IncludeCategories:
     Priority: 3
   - Regex: '^"(kernel)/'
     Priority: 4
+
+UseTab: Never
+NamespaceIndentation: All
+AccessModifierOffset: 0
+IndentAccessModifiers: true

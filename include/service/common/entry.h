@@ -1,3 +1,7 @@
+/*
+ * 服务启动入口。
+ */
+
 #pragma once
 /* Native startup auxiliary-vector tags, separate from syscall entry numbers. */
 #define OS_AUX_KERNEL_HANDLE 0x60000004

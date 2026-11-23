@@ -1,3 +1,7 @@
+/*
+ * 定宽整数类型。
+ */
+
 #ifndef _STDC_STDINT_H
 #define _STDC_STDINT_H
 #ifndef _STDINT_H

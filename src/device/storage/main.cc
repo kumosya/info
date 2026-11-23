@@ -17,8 +17,6 @@
 #include <os/sync.h>
 #include <os/task.h>
 
-namespace {
-
 constexpr uint16_t virtioVendorId         = 0x1af4;
 constexpr uint16_t virtioBlockDeviceId    = 0x1042;
 constexpr uint8_t virtioCapabilityId      = 0x09;
@@ -55,29 +53,29 @@ constexpr uint64_t mmioBaseAddress        = 0x0000000040000000ULL;
 constexpr uint32_t maximumCapabilityWalk  = 48;
 
 struct VirtioPciCapability {
-    bool present;
-    uint8_t bar;
-    uint32_t offset;
-    uint32_t length;
-    uint32_t notifyMultiplier;
+        bool present;
+        uint8_t bar;
+        uint32_t offset;
+        uint32_t length;
+        uint32_t notifyMultiplier;
 };
 
 struct VirtQueueDescriptor {
-    uint64_t address;
-    uint32_t length;
-    uint16_t flags;
-    uint16_t next;
+        uint64_t address;
+        uint32_t length;
+        uint16_t flags;
+        uint16_t next;
 } __attribute__((packed));
 
 struct VirtQueueUsedElement {
-    uint32_t id;
-    uint32_t length;
+        uint32_t id;
+        uint32_t length;
 } __attribute__((packed));
 
 struct VirtioBlockRequest {
-    uint32_t type;
-    uint32_t reserved;
-    uint64_t sector;
+        uint32_t type;
+        uint32_t reserved;
+        uint64_t sector;
 } __attribute__((packed));
 
 uint32_t alignUp(uint32_t value, uint32_t alignment) {
@@ -85,33 +83,33 @@ uint32_t alignUp(uint32_t value, uint32_t alignment) {
 }
 
 class PciConfiguration {
-   public:
-    explicit PciConfiguration(const os::Device::Pci& function)
-        : function_(function) {}
+    public:
+        explicit PciConfiguration(const os::Device::Pci& function)
+            : function_(function) {}
 
-    bool read32(uint16_t offset, uint32_t& value) const {
-        os::Device::Pci function = function_;
-        return function.readConfig(offset, value) == 0;
-    }
-
-    bool read8(uint16_t offset, uint8_t& value) const {
-        uint32_t word;
-        if (!read32(static_cast<uint16_t>(offset & ~3U), word)) {
-            return false;
+        bool read32(uint16_t offset, uint32_t& value) const {
+            os::Device::Pci function = function_;
+            return function.readConfig(offset, value) == 0;
         }
-        value = static_cast<uint8_t>(word >> ((offset & 3U) * 8));
-        return true;
-    }
 
-    bool writeCommand(uint16_t flags) const {
-        uint32_t command;
-        os::Device::Pci function = function_;
-        return read32(4, command) &&
-               function.writeConfig(4, (command | flags) & 0xffff) == 0;
-    }
+        bool read8(uint16_t offset, uint8_t& value) const {
+            uint32_t word;
+            if (!read32(static_cast<uint16_t>(offset & ~3U), word)) {
+                return false;
+            }
+            value = static_cast<uint8_t>(word >> ((offset & 3U) * 8));
+            return true;
+        }
 
-   private:
-    const os::Device::Pci& function_;
+        bool writeCommand(uint16_t flags) const {
+            uint32_t command;
+            os::Device::Pci function = function_;
+            return read32(4, command) &&
+                   function.writeConfig(4, (command | flags) & 0xffff) == 0;
+        }
+
+    private:
+        const os::Device::Pci& function_;
 };
 
 template <typename Type>
@@ -125,41 +123,46 @@ void writeMmio(volatile uint8_t* base, uint32_t offset, Type value) {
 }
 
 class VirtioPciTransport {
-   public:
-    bool init(const os::Device::Pci& function, os::Device& owner) {
-        function_ = function;
-        owner_    = &owner;
-        PciConfiguration configuration(function_);
-        uint32_t statusCommand;
-        uint8_t capabilityOffset;
-        if (!configuration.read32(4, statusCommand) ||
-            !configuration.read8(0x34, capabilityOffset)) {
-            os::Sys().log("[STORAGE] unable to read PCI capability pointer\n");
-            return false;
+    public:
+        bool init(const os::Device::Pci& function, os::Device& owner) {
+            function_ = function;
+            owner_    = &owner;
+            PciConfiguration configuration(function_);
+            uint32_t statusCommand;
+            uint8_t capabilityOffset;
+            if (!configuration.read32(4, statusCommand) ||
+                !configuration.read8(0x34, capabilityOffset)) {
+                os::Sys().log(
+                    "[STORAGE] unable to read PCI capability pointer\n");
+                return false;
+            }
+            if ((statusCommand & (1U << 20)) == 0) {
+                os::Sys().log("[STORAGE] PCI capability list is unavailable\n");
+                return false;
+            }
+            if (!scanCapabilities(configuration, capabilityOffset)) {
+                os::Sys().log(
+                    "[STORAGE] required VirtIO PCI capabilities are missing\n");
+                return false;
+            }
+            if (!mapBars()) {
+                os::Sys().log("[STORAGE] VirtIO PCI BAR mapping failed\n");
+                return false;
+            }
+            if (!configuration.writeCommand(0x0006)) {
+                os::Sys().log(
+                    "[STORAGE] PCI memory/bus-master enable failed\n");
+                return false;
+            }
+            common_ =
+                mappedBars_[commonCapability_.bar] + commonCapability_.offset;
+            notify_ =
+                mappedBars_[notifyCapability_.bar] + notifyCapability_.offset;
+            isr_ = mappedBars_[isrCapability_.bar] + isrCapability_.offset;
+            device_ =
+                mappedBars_[deviceCapability_.bar] + deviceCapability_.offset;
+            return true;
         }
-        if ((statusCommand & (1U << 20)) == 0) {
-            os::Sys().log("[STORAGE] PCI capability list is unavailable\n");
-            return false;
-        }
-        if (!scanCapabilities(configuration, capabilityOffset)) {
-            os::Sys().log(
-                "[STORAGE] required VirtIO PCI capabilities are missing\n");
-            return false;
-        }
-        if (!mapBars()) {
-            os::Sys().log("[STORAGE] VirtIO PCI BAR mapping failed\n");
-            return false;
-        }
-        if (!configuration.writeCommand(0x0006)) {
-            os::Sys().log("[STORAGE] PCI memory/bus-master enable failed\n");
-            return false;
-        }
-        common_ = mappedBars_[commonCapability_.bar] + commonCapability_.offset;
-        notify_ = mappedBars_[notifyCapability_.bar] + notifyCapability_.offset;
-        isr_    = mappedBars_[isrCapability_.bar] + isrCapability_.offset;
-        device_ = mappedBars_[deviceCapability_.bar] + deviceCapability_.offset;
-        return true;
-    }
 
     volatile uint8_t* common() const { return common_; }
     volatile uint8_t* device() const { return device_; }
@@ -180,53 +183,53 @@ class VirtioPciTransport {
         static_cast<void>(readMmio<uint8_t>(isr_, 0));
     }
 
-    uint8_t interruptLine() const {
-        PciConfiguration configuration(function_);
-        uint8_t line = 0xff;
-        configuration.read8(0x3c, line);
-        return line;
-    }
+        uint8_t interruptLine() const {
+            PciConfiguration configuration(function_);
+            uint8_t line = 0xff;
+            configuration.read8(0x3c, line);
+            return line;
+        }
 
-   private:
-    bool scanCapabilities(const PciConfiguration& configuration,
-                          uint8_t offset) {
-        uint32_t walked = 0;
-        while (offset >= 0x40 && walked++ < maximumCapabilityWalk) {
-            uint8_t id;
-            uint8_t next;
-            if (!configuration.read8(offset, id) ||
-                !configuration.read8(offset + 1, next)) {
-                return false;
+    private:
+        bool scanCapabilities(const PciConfiguration& configuration,
+                              uint8_t offset) {
+            uint32_t walked = 0;
+            while (offset >= 0x40 && walked++ < maximumCapabilityWalk) {
+                uint8_t id;
+                uint8_t next;
+                if (!configuration.read8(offset, id) ||
+                    !configuration.read8(offset + 1, next)) {
+                    return false;
+                }
+                if (id == virtioCapabilityId &&
+                    !readVirtioCapability(configuration, offset)) {
+                    return false;
+                }
+                if (next == 0 || next == offset) {
+                    break;
+                }
+                offset = next;
             }
-            if (id == virtioCapabilityId &&
-                !readVirtioCapability(configuration, offset)) {
-                return false;
+            notifyMultiplier_ = notifyCapability_.notifyMultiplier;
+            if (!commonCapability_.present) {
+                os::Sys().log("[STORAGE] VirtIO common capability missing\n");
             }
-            if (next == 0 || next == offset) {
-                break;
+            if (!notifyCapability_.present) {
+                os::Sys().log("[STORAGE] VirtIO notify capability missing\n");
             }
-            offset = next;
+            if (!isrCapability_.present) {
+                os::Sys().log("[STORAGE] VirtIO ISR capability missing\n");
+            }
+            if (!deviceCapability_.present) {
+                os::Sys().log("[STORAGE] VirtIO device capability missing\n");
+            }
+            if (notifyMultiplier_ == 0) {
+                os::Sys().log("[STORAGE] VirtIO notify multiplier is zero\n");
+            }
+            return commonCapability_.present && notifyCapability_.present &&
+                   isrCapability_.present && deviceCapability_.present &&
+                   notifyMultiplier_ != 0;
         }
-        notifyMultiplier_ = notifyCapability_.notifyMultiplier;
-        if (!commonCapability_.present) {
-            os::Sys().log("[STORAGE] VirtIO common capability missing\n");
-        }
-        if (!notifyCapability_.present) {
-            os::Sys().log("[STORAGE] VirtIO notify capability missing\n");
-        }
-        if (!isrCapability_.present) {
-            os::Sys().log("[STORAGE] VirtIO ISR capability missing\n");
-        }
-        if (!deviceCapability_.present) {
-            os::Sys().log("[STORAGE] VirtIO device capability missing\n");
-        }
-        if (notifyMultiplier_ == 0) {
-            os::Sys().log("[STORAGE] VirtIO notify multiplier is zero\n");
-        }
-        return commonCapability_.present && notifyCapability_.present &&
-               isrCapability_.present && deviceCapability_.present &&
-               notifyMultiplier_ != 0;
-    }
 
     bool readVirtioCapability(const PciConfiguration& configuration,
                               uint8_t offset) {
@@ -283,34 +286,34 @@ class VirtioPciTransport {
         return true;
     }
 
-    bool mapBars() {
-        for (uint8_t bar = 0; bar < 6; ++bar) {
-            if (requiredBarSize_[bar] == 0) {
-                continue;
+        bool mapBars() {
+            for (uint8_t bar = 0; bar < 6; ++bar) {
+                if (requiredBarSize_[bar] == 0) {
+                    continue;
+                }
+                if (!owner_ || barMappings_[bar].open(*owner_, bar, 0,
+                                                      requiredBarSize_[bar]))
+                    return false;
+                mappedBars_[bar] = reinterpret_cast<volatile uint8_t*>(
+                    barMappings_[bar].getAddress());
             }
-            if (!owner_ ||
-                barMappings_[bar].open(*owner_, bar, 0, requiredBarSize_[bar]))
-                return false;
-            mappedBars_[bar] = reinterpret_cast<volatile uint8_t*>(
-                barMappings_[bar].getAddress());
+            return true;
         }
-        return true;
-    }
 
-    os::Device::Pci function_{};
-    VirtioPciCapability commonCapability_{};
-    VirtioPciCapability notifyCapability_{};
-    VirtioPciCapability isrCapability_{};
-    VirtioPciCapability deviceCapability_{};
-    uint32_t requiredBarSize_[6]{};
-    volatile uint8_t* mappedBars_[6]{};
-    volatile uint8_t* common_  = nullptr;
-    volatile uint8_t* notify_  = nullptr;
-    volatile uint8_t* isr_     = nullptr;
-    volatile uint8_t* device_  = nullptr;
-    uint32_t notifyMultiplier_ = 0;
-    os::Device* owner_{};
-    os::Device::Mmio barMappings_[6];
+        os::Device::Pci function_{};
+        VirtioPciCapability commonCapability_{};
+        VirtioPciCapability notifyCapability_{};
+        VirtioPciCapability isrCapability_{};
+        VirtioPciCapability deviceCapability_{};
+        uint32_t requiredBarSize_[6]{};
+        volatile uint8_t* mappedBars_[6]{};
+        volatile uint8_t* common_  = nullptr;
+        volatile uint8_t* notify_  = nullptr;
+        volatile uint8_t* isr_     = nullptr;
+        volatile uint8_t* device_  = nullptr;
+        uint32_t notifyMultiplier_ = 0;
+        os::Device* owner_{};
+        os::Device::Mmio barMappings_[6];
 };
 
 class VirtioBlockDriver final : public storage::BlockBackend {
@@ -683,15 +686,15 @@ class VirtioBlockDriver final : public storage::BlockBackend {
         descriptors[head + 2]  = {physical + 16 + bytes, 1, descriptorWrite, 0};
         slots_.submit(slot);
 
-        volatile uint16_t* available = reinterpret_cast<volatile uint16_t*>(
-            queueMemory_ + availableOffset_);
-        const uint16_t availableIndex = available[1];
-        available[2 + (availableIndex % queueSize)] =
-            static_cast<uint16_t>(head);
-        __atomic_thread_fence(__ATOMIC_RELEASE);
-        available[1] = static_cast<uint16_t>(availableIndex + 1);
-        transport_.notifyQueue(0, notifyOffset_);
-    }
+            volatile uint16_t* available = reinterpret_cast<volatile uint16_t*>(
+                queueMemory_ + availableOffset_);
+            const uint16_t availableIndex = available[1];
+            available[2 + (availableIndex % queueSize)] =
+                static_cast<uint16_t>(head);
+            __atomic_thread_fence(__ATOMIC_RELEASE);
+            available[1] = static_cast<uint16_t>(availableIndex + 1);
+            transport_.notifyQueue(0, notifyOffset_);
+        }
 
     bool taskUsedLocked() {
         volatile uint16_t* usedHeader =
@@ -1132,9 +1135,9 @@ class StorageService {
         return result;
     }
 
-    static uint64_t encode(os::Storage::Error error) {
-        return static_cast<uint64_t>(static_cast<int64_t>(error));
-    }
+        static uint64_t encode(os::Storage::Error error) {
+            return static_cast<uint64_t>(static_cast<int64_t>(error));
+        }
 
     uint64_t endpoint_ = 0;
     os::Ipc irqEndpoint_;
@@ -1166,22 +1169,23 @@ class StorageService {
                    part.getBlockCount(), first, count, physical);
     }
 
-    static void decimal(char* output, uint32_t value) {
-        char reverse[10];
-        uint32_t count = 0;
-        do {
-            reverse[count++] = static_cast<char>('0' + value % 10);
-            value /= 10;
-        } while (value);
-        for (uint32_t i = 0; i < count; ++i) output[i] = reverse[count - i - 1];
-        output[count] = '\0';
-    }
+        static void decimal(char* output, uint32_t value) {
+            char reverse[10];
+            uint32_t count = 0;
+            do {
+                reverse[count++] = static_cast<char>('0' + value % 10);
+                value /= 10;
+            } while (value);
+            for (uint32_t i = 0; i < count; ++i)
+                output[i] = reverse[count - i - 1];
+            output[count] = '\0';
+        }
 
-    static void hexByte(char* output, uint8_t value) {
-        constexpr char hex[] = "0123456789abcdef";
-        output[0]            = hex[value >> 4];
-        output[1]            = hex[value & 15];
-    }
+        static void hexByte(char* output, uint8_t value) {
+            constexpr char hex[] = "0123456789abcdef";
+            output[0]            = hex[value >> 4];
+            output[1]            = hex[value & 15];
+        }
 
     void addDevice(uint32_t driver, uint32_t parent,
                    const os::Storage::Part& partition) {
@@ -1271,7 +1275,6 @@ int StorageService::startup() {
     return 0;
 }
 
-}  // namespace
 int main(int, char**) {
     static StorageService service;
     return service.startup();

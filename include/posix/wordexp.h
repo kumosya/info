@@ -1,3 +1,7 @@
+/*
+ * 命令行单词展开。
+ */
+
 #ifndef _POSIX_WORDEXP_H
 #define _POSIX_WORDEXP_H
 #ifndef _WORDEXP_H
@@ -21,9 +25,9 @@ extern "C" {
 #define WRDE_UNDEF 32
 
 typedef struct {
-    size_t we_wordc;
-    char **we_wordv;
-    size_t we_offs;
+        size_t we_wordc;
+        char **we_wordv;
+        size_t we_offs;
 } wordexp_t;
 
 #define WRDE_NOSYS -1

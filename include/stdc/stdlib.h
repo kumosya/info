@@ -1,3 +1,7 @@
+/*
+ * 内存分配、数值转换和程序控制。
+ */
+
 #ifndef _STDC_STDLIB_H
 #define _STDC_STDLIB_H
 /* musl 1.2.5 public declarations; see lib/libc/portable/COPYRIGHT. */
@@ -67,13 +71,13 @@ long labs(long);
 long long llabs(long long);
 
 typedef struct {
-    int quot, rem;
+        int quot, rem;
 } div_t;
 typedef struct {
-    long quot, rem;
+        long quot, rem;
 } ldiv_t;
 typedef struct {
-    long long quot, rem;
+        long long quot, rem;
 } lldiv_t;
 
 div_t div(int, int);

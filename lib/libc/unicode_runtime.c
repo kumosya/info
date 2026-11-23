@@ -1,4 +1,5 @@
 /* Stateful C / UTF-8 conversion, including split multibyte input. */
+#define _GNU_SOURCE 1
 #include <wchar.h>
 #include <uchar.h>
 #include <stdlib.h>
@@ -29,6 +30,14 @@ size_t mbrtowc(wchar_t* restrict output,const char* restrict input,size_t size,m
     while (remaining && consumed < size) {
         unsigned char c = input[consumed++];
         if ((c & 0xc0) != 0x80) goto invalid;
+        /*
+         * 第一续字节已经能确定这些前缀非法，不应等到整段收齐才报错。
+         * 同一检查也覆盖上次调用只收到了起始字节的情况。
+         */
+        if (remaining == total - 1 &&
+            ((total == 3 && ((code == 0 && c < 0xa0) || (code == 13 && c >= 0xa0))) ||
+             (total == 4 && ((code == 0 && c < 0x90) || (code == 4 && c >= 0x90)))))
+            goto invalid;
         code = (code << 6) | (c & 63); --remaining;
     }
     if (remaining) { state->__opaque1 = (total << 8) | remaining; state->__opaque2 = code; return (size_t)-2; }
@@ -50,30 +59,19 @@ size_t wcrtomb(char* restrict output,wchar_t character,mbstate_t* restrict state
     output[0] = 0xf0|(c>>18); output[1] = 0x80|((c>>12)&63); output[2] = 0x80|((c>>6)&63); output[3] = 0x80|(c&63); return 4;
 }
 size_t mbsrtowcs(wchar_t* restrict output,const char** restrict source,size_t size,mbstate_t* restrict state) {
-    static mbstate_t internal; if (!state) state = &internal;
-    mbstate_t copy = *state; mbstate_t* conversion = output ? state : &copy;
-    const char* s = *source; size_t count = 0;
-    while (!output || count < size) {
-        wchar_t c; size_t bytes = mbrtowc(&c,s,strlen(s)+1,conversion);
-        if (bytes == (size_t)-1 || bytes == (size_t)-2) { if (output) *source = s; return (size_t)-1; }
-        if (output) output[count] = c;
-        if (!c) { if (output) *source = NULL; return count; }
-        s += bytes; ++count;
-    }
-    if (output) *source = s;
-    return count;
+    static mbstate_t internal;
+    /*
+     * 复用有界转换核心。解码器只读取当前字符需要的字节，遇到 NUL 停止，
+     * 无需为每个字符反复 strlen；输出容量为零时也不会碰源字符或状态。
+     */
+    return mbsnrtowcs(output, source, SIZE_MAX, size, state ? state : &internal);
 }
 size_t wcsrtombs(char* restrict output,const wchar_t** restrict source,size_t size,mbstate_t* restrict state) {
-    const wchar_t* s = *source; size_t count = 0; char encoded[4];
-    while (1) {
-        size_t bytes = wcrtomb(encoded,*s,state);
-        if (bytes == (size_t)-1) { if (output) *source = s; return bytes; }
-        if (output && bytes > size-count) { *source = s; return count; }
-        if (output) memcpy(output+count,encoded,bytes);
-        if (!*s) { if (output) *source = NULL; return count; }
-        count += bytes; ++s;
-    }
+    static mbstate_t internal;
+    /* NULL 输出使用核心中的状态副本，计数不会改变调用者的转换状态。 */
+    return wcsnrtombs(output, source, SIZE_MAX, size, state ? state : &internal);
 }
+
 size_t mbsnrtowcs(wchar_t* restrict output, const char** restrict source, size_t available, size_t limit, mbstate_t* restrict state) {
     static mbstate_t internal;
     if (!state) state = &internal;

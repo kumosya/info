@@ -1,22 +1,26 @@
+/*
+ * 时间、日历和定时器。
+ */
+
 #pragma once
 
 #include <time.h>
 
 namespace std {
 
-using ::clock_gettime;
-using ::time;
-using ::time_t;
-using ::timespec;
-using ::tm;
-using ::clock;
-using ::clock_t;
-using ::difftime;
-using ::mktime;
-using ::asctime;
-using ::ctime;
-using ::gmtime;
-using ::localtime;
-using ::strftime;
+    using ::asctime;
+    using ::clock;
+    using ::clock_gettime;
+    using ::clock_t;
+    using ::ctime;
+    using ::difftime;
+    using ::gmtime;
+    using ::localtime;
+    using ::mktime;
+    using ::strftime;
+    using ::time;
+    using ::time_t;
+    using ::timespec;
+    using ::tm;
 
 }  // namespace std
